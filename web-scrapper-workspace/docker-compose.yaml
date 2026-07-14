@@ -1,0 +1,139 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler
+      POSTGRES_DB: crawler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawler -d crawler"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      shared:
+        aliases:
+          - postgres
+          - rag-postgres
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      shared:
+        aliases:
+          - redis
+          - rag-redis
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: qdrant
+    networks:
+      shared:
+        aliases:
+          - qdrant
+          - rag-qdrant
+
+  migrate:
+    build: .
+    command: ["crawler-db-migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://crawler:crawler@postgres:5432/crawler
+      REDIS_URL: redis://redis:6379/0
+      CRAWL_DATA_DIR: /app/data/crawls
+      SCRAPE_DATA_DIR: /app/data/scrapes
+    restart: "no"
+    networks:
+      - shared
+
+  worker:
+    build: .
+    shm_size: "2gb"
+    command: ["sh", "/app/scripts/run-worker.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      api:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - shared
+
+  api:
+    build: .
+    command: ["sh", "/app/scripts/run-api.sh"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    networks:
+      - shared
+
+  # cli:
+  #   build: .
+  #   command: ["sh", "/app/scripts/run-cli.sh", "--help"]
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     migrate:
+  #       condition: service_completed_successfully
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data
+
+volumes:
+  pgdata:
+  qdrantdata:
+
+# Shared network for postgres, redis, qdrant (and this stack's api/worker).
+# This compose CREATES rag-shared on `docker compose up` — do NOT set external: true here.
+# The RAG compose stack attaches with:
+#   networks:
+#     rag-shared:
+#       external: true
+#       name: rag-shared
+networks:
+  shared:
+    name: rag-shared
+    external: true

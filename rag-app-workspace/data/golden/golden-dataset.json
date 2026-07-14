@@ -1,0 +1,31 @@
+{
+  "name": "scrape-corpus-golden",
+  "description": "Quick smoke-test golden set (5 queries) from arXiv Attention paper and W3Schools Python crawl. Re-upload with replace to refresh the DB copy.",
+  "items": [
+    {
+      "query": "What is the scaled dot-product attention formula in the Transformer paper?",
+      "source": "https://arxiv.org/html/1706.03762v7",
+      "response": "Attention(Q,K,V) = softmax(QK^T / sqrt(d_k)) V — dot products of the query with all keys, scaled by sqrt(d_k), then softmax weights applied to values."
+    },
+    {
+      "query": "What network architecture does the Transformer paper propose instead of recurrence and convolutions?",
+      "source": "https://arxiv.org/html/1706.03762v7",
+      "response": "The Transformer — a sequence transduction model based solely on attention mechanisms, without recurrence or convolutions."
+    },
+    {
+      "query": "What are variables in Python according to W3Schools?",
+      "source": "https://www.w3schools.com/python/python_variables.asp",
+      "response": "Variables are containers for storing data values."
+    },
+    {
+      "query": "Compare the WMT 2014 English-to-German and English-to-French BLEU scores reported for the Transformer big model.",
+      "source": "https://arxiv.org/html/1706.03762v7",
+      "response": "English-to-German: 28.4 BLEU; English-to-French big model: about 41.0–41.8 BLEU. Both exceed prior state-of-the-art results on those tasks."
+    },
+    {
+      "query": "Does the scraped W3Schools content explain how to implement a Transformer in PyTorch?",
+      "source": "https://www.w3schools.com/python/python_variables.asp",
+      "response": "No — the indexed W3Schools pages cover Python variables, the homepage, and Academy marketing content, not a PyTorch Transformer implementation guide."
+    }
+  ]
+}

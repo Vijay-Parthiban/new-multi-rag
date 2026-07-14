@@ -1,0 +1,228 @@
+services:
+  # --- Ingestion backend ---
+  migrate:
+    build:
+      context: ./ingestion-backend
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-migrate.sh"]
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./ingestion-backend
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-api.sh"]
+    ports:
+      - "8007:8000"
+    env_file:
+      - .env
+    volumes:
+      - file_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+      scraper-api:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./ingestion-backend
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-worker.sh"]
+    env_file:
+      - .env
+    volumes:
+      - file_storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+      scraper-api:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./ingestion-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8007
+      - VITE_SCRAPER_URL=http://localhost:8000
+      - VITE_RAG_API_URL=http://localhost:8001
+    depends_on:
+      - api
+
+  # --- Web scrapper (pre-built image — no sibling repo required) ---
+  scraper-api:
+    image: tharun0511/web-scrapper-wokspace:latest
+    command: ["sh", "/app/scripts/run-api.sh"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.scraper
+    volumes:
+      - scraper_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      scraper-migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  scraper-worker:
+    image: tharun0511/web-scrapper-wokspace:latest
+    command: ["sh", "/app/scripts/run-worker.sh"]
+    shm_size: "2gb"
+    env_file:
+      - .env.scraper
+    volumes:
+      - scraper_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      scraper-api:
+        condition: service_started
+      scraper-migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  scraper-migrate:
+    image: tharun0511/web-scrapper-wokspace:latest
+    command: ["crawler-db-migrate"]
+    env_file:
+      - .env.scraper
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # --- Shared infrastructure ---
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: qdrant
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ingestion
+      POSTGRES_PASSWORD: ingestion
+      POSTGRES_DB: ingestion
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-crawler-db.sql:/docker-entrypoint-initdb.d/02-crawler.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ingestion -d ingestion"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  # --- RAG App services ---
+  rag-migrate:
+    build:
+      context: ../rag-app-workspace
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-migrate.sh"]
+    env_file:
+      - .env.rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  rag-api:
+    build:
+      context: ../rag-app-workspace
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-api.sh"]
+    ports:
+      - "8001:8001"
+    depends_on:
+      rag-migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env.rag
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  eval-worker:
+    build:
+      context: ../rag-app-workspace
+      dockerfile: Dockerfile
+    command: ["sh", "/app/scripts/run-worker.sh"]
+    depends_on:
+      rag-migrate:
+        condition: service_completed_successfully
+      rag-api:
+        condition: service_started
+    env_file:
+      - .env.rag
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  file_storage:
+  pg_data:
+  qdrant_data:
+  scraper_data:
+  hf-cache:

@@ -1,0 +1,27 @@
+[project]
+name = "web-scrapper-workspace"
+version = "0.1.0"
+description = "Web scraping monorepo workspace"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "poethepoet>=0.28",
+]
+
+[tool.poe.tasks]
+# Download Chromium only (no apt). Uses the playwright package from this venv.
+playwright-install = "playwright install chromium"
+
+[tool.uv.workspace]
+members = ["libs/*", "apps/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["libs/shared/src", "libs/database/src", "libs/crawler-core/src", "libs/scrapper-core/src", "apps/api/src", "apps/cli/src", "apps/worker/src"]

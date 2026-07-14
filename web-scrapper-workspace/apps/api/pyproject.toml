@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "api"
+version = "0.1.0"
+description = "FastAPI server for web crawler"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "crawler-db",
+    "crawler-shared",
+]
+
+[tool.uv.sources]
+crawler-db = { workspace = true }
+crawler-shared = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/api"]
+
+[project.scripts]
+crawler-api = "api.main:run"

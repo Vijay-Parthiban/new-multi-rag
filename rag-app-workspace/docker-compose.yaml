@@ -1,0 +1,53 @@
+services:
+  migrate:
+    build: .
+    command: ["sh", "/app/scripts/run-migrate.sh"]
+    env_file:
+      - .env
+    networks:
+      - rag-shared
+    restart: on-failure
+
+  rag-api:
+    build: .
+    command: ["sh", "/app/scripts/run-api.sh"]
+    ports:
+      - "8001:8001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    networks:
+      - rag-shared
+
+  eval-worker:
+    build: .
+    command: ["sh", "/app/scripts/run-worker.sh"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rag-api:
+        condition: service_started
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    networks:
+      - rag-shared
+
+# Attach to shared infra from web-scrapper-workspace (postgres, redis, qdrant).
+# Start web-scrapper first: it CREATES rag-shared on `docker compose up`.
+volumes:
+  hf-cache:
+
+networks:
+  rag-shared:
+    external: true
+    name: rag-shared
