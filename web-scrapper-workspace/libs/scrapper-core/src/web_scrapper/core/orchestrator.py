@@ -20,7 +20,11 @@ def enqueue_scrape_pages(
     embedding_source: EmbeddingSource,
 ) -> int:
     """Push one queue item per crawl URL. Returns number of pages enqueued."""
-    links = fetch_crawl_links(settings.api_base_url, crawl_job_id)
+    links = fetch_crawl_links(
+        settings.api_base_url,
+        crawl_job_id,
+        api_key=settings.api_key or None,
+    )
     job_id = str(scrape_job_id)
     init_scrape_job(job_id, total_pages=len(links))
 

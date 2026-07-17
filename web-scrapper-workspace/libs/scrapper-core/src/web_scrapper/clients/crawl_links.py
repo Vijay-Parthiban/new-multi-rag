@@ -14,11 +14,13 @@ def fetch_crawl_links(
     *,
     client: httpx.Client | None = None,
     page_size: int = 5000,
+    api_key: str | None = None,
 ) -> list[CrawlLinkRecord]:
     """Load all URLs for a crawl job from the API `/crawls/{id}/links` endpoint."""
     base = api_base_url.rstrip("/")
     owns_client = client is None
-    http = client or httpx.Client(timeout=60.0)
+    headers = {"X-API-Key": api_key} if api_key else None
+    http = client or httpx.Client(timeout=60.0, headers=headers)
     links: list[CrawlLinkRecord] = []
     offset = 0
 
@@ -27,6 +29,7 @@ def fetch_crawl_links(
             response = http.get(
                 f"{base}/crawls/{crawl_job_id}/links",
                 params={"limit": page_size, "offset": offset},
+                headers=headers if client is not None else None,
             )
             response.raise_for_status()
             batch = response.json()

@@ -13,6 +13,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://crawler:crawler@localhost:5432/crawler"
     redis_url: str = "redis://localhost:6379/0"
+
+    @property
+    def async_database_url(self) -> str:
+        """psycopg v3 natively supports async; same URL works with create_async_engine."""
+        return self.database_url
     crawl_data_dir: Path = Path("./data/crawls")
     scrape_data_dir: Path = Path("./data/scrapes")
     rq_default_timeout: int = 3600
@@ -30,6 +35,9 @@ class Settings(BaseSettings):
     scrape_io_workers: int = 4
     scrape_embed_workers: int = 4
     scrape_max_retries: int = 3
+    api_key: str = ""
+    # When true, seed URLs may target private/loopback hosts (local/dev only).
+    allow_private_crawl_urls: bool = False
 
 
 @lru_cache

@@ -143,6 +143,7 @@ async def calculate_retrieval_ragas_async(
     precision_scorer = ContextPrecision(llm=llm)
     recall_scorer = ContextRecall(llm=llm)
 
+    # ragas>=0.4 collections metrics use ascore(**fields), not single_turn_ascore(sample)
     precision_result = await precision_scorer.ascore(
         user_input=question,
         reference=reference,
@@ -184,8 +185,7 @@ async def calculate_generation_ragas_async(
         return {}
 
     llm = build_ragas_llm(settings)
-    
-    # Faithfulness
+
     faithfulness_scorer = Faithfulness(llm=llm)
     faith_task = faithfulness_scorer.ascore(
         user_input=question,
@@ -193,25 +193,24 @@ async def calculate_generation_ragas_async(
         retrieved_contexts=contexts,
     )
 
-    # Answer Relevancy
     relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=build_ragas_embeddings(settings))
+    # AnswerRelevancy.ascore only accepts user_input + response in ragas 0.4
     rel_task = relevancy_scorer.ascore(
         user_input=question,
         response=answer,
-        retrieved_contexts=contexts,
     )
 
     results = await asyncio.gather(faith_task, rel_task, return_exceptions=True)
-    
-    output = {}
+
+    output: dict[str, float | None] = {}
     f_val = _score_value(results[0], metric_name="faithfulness")
     if f_val is not None:
         output["faithfulness"] = f_val
-        
+
     r_val = _score_value(results[1], metric_name="answer_relevancy")
     if r_val is not None:
         output["answer_relevancy"] = r_val
-        
+
     return output
 
 
@@ -282,6 +281,58 @@ def compute_generation_ragas_metrics(
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_generation_ragas_async(
+            settings,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+        )
+    )
+
+
+async def calculate_faithfulness_ragas_async(
+    settings: "Settings",
+    *,
+    question: str,
+    answer: str,
+    contexts: list[str],
+) -> dict[str, float | None]:
+    """RAGAS faithfulness metric only."""
+    from ragas.metrics.collections import Faithfulness
+
+    if not settings.ragas_enabled:
+        return {}
+
+    if not answer or not answer.strip():
+        logger.warning("Skipping faithfulness — answer is empty")
+        return {}
+
+    contexts = _normalize_contexts(contexts)
+    if not contexts:
+        logger.warning("Skipping faithfulness — no contexts")
+        return {}
+
+    llm = build_ragas_llm(settings)
+    faithfulness_scorer = Faithfulness(llm=llm)
+    result = await faithfulness_scorer.ascore(
+        user_input=question,
+        response=answer,
+        retrieved_contexts=contexts,
+    )
+    f_val = _score_value(result, metric_name="faithfulness")
+    if f_val is not None:
+        return {"faithfulness": f_val}
+    return {}
+
+
+def compute_faithfulness_metrics(
+    settings: "Settings",
+    *,
+    question: str,
+    answer: str,
+    contexts: list[str],
+) -> dict[str, float | None]:
+    return asyncio.run(
+        calculate_faithfulness_ragas_async(
             settings,
             question=question,
             answer=answer,

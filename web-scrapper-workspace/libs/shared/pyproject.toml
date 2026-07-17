@@ -13,7 +13,11 @@ dependencies = [
     "pydantic-settings",
     "redis",
     "rq",
+    "platform-common",
 ]
+
+[tool.uv.sources]
+platform-common = { path = "../../../shared-libs/platform-common", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/crawler_shared"]

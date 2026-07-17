@@ -3,9 +3,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from rag_core import RAGPipeline
+from rag_shared.auth import verify_api_key
 from rag_shared.config import Settings, get_settings
 from rag_shared.logging_config import setup_logging
 from redis import Redis
@@ -39,7 +40,12 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="RAG Platform API", 
+        version="0.1.0", 
+        lifespan=lifespan,
+        dependencies=[Depends(verify_api_key)]
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

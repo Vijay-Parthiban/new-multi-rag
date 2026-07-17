@@ -1888,6 +1888,25 @@ wheels = [
 ]
 
 [[package]]
+name = "platform-common"
+version = "0.1.0"
+source = { editable = "../shared-libs/platform-common" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "fastembed" },
+    { name = "openai" },
+    { name = "qdrant-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fastembed", specifier = ">=0.4.0" },
+    { name = "openai", specifier = ">=1.0.0" },
+    { name = "qdrant-client", specifier = ">=1.12.0" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2524,12 +2543,14 @@ name = "rag-shared"
 version = "0.1.0"
 source = { editable = "libs/shared" }
 dependencies = [
+    { name = "platform-common" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "platform-common", editable = "../shared-libs/platform-common" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
 ]
@@ -3201,6 +3222,7 @@ source = { editable = "libs/vector-core" }
 dependencies = [
     { name = "fastembed" },
     { name = "openai" },
+    { name = "platform-common" },
     { name = "qdrant-client" },
     { name = "rag-shared" },
 ]
@@ -3209,6 +3231,7 @@ dependencies = [
 requires-dist = [
     { name = "fastembed", specifier = ">=0.8.0" },
     { name = "openai", specifier = ">=1.0" },
+    { name = "platform-common", editable = "../shared-libs/platform-common" },
     { name = "qdrant-client", specifier = ">=1.12" },
     { name = "rag-shared", editable = "libs/shared" },
 ]

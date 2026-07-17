@@ -94,35 +94,38 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# Copy Workspace manifests
-COPY pyproject.toml uv.lock* ./
-COPY libs/shared/pyproject.toml libs/shared/
-COPY libs/database/pyproject.toml libs/database/
-COPY libs/crawler-core/pyproject.toml libs/crawler-core/
-COPY libs/scrapper-core/pyproject.toml libs/scrapper-core/
-COPY apps/api/pyproject.toml apps/api/
-COPY apps/worker/pyproject.toml apps/worker/
-COPY apps/cli/pyproject.toml apps/cli/
+# Build with monorepo root as context:
+#   docker build -f web-scrapper-workspace/Dockerfile <repo-root>
+COPY shared-libs/platform-common /shared-libs/platform-common
+COPY web-scrapper-workspace/pyproject.toml web-scrapper-workspace/uv.lock* ./
+COPY web-scrapper-workspace/libs/shared/pyproject.toml libs/shared/
+COPY web-scrapper-workspace/libs/database/pyproject.toml libs/database/
+COPY web-scrapper-workspace/libs/crawler-core/pyproject.toml libs/crawler-core/
+COPY web-scrapper-workspace/libs/scrapper-core/pyproject.toml libs/scrapper-core/
+COPY web-scrapper-workspace/apps/api/pyproject.toml apps/api/
+COPY web-scrapper-workspace/apps/worker/pyproject.toml apps/worker/
+COPY web-scrapper-workspace/apps/cli/pyproject.toml apps/cli/
 
 # Cache layer 1: Install external dependencies only
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-workspace --package api --package worker --package cli
+    uv sync --no-dev --no-install-workspace --package api --package worker --package cli
 
 # Copy updated local source code for all workspace members
-COPY libs/shared/src libs/shared/src
-COPY libs/database/src libs/database/src
-COPY libs/database/alembic libs/database/alembic
-COPY libs/database/alembic.ini libs/database/alembic.ini
-COPY libs/crawler-core/src libs/crawler-core/src
-COPY libs/scrapper-core/src libs/scrapper-core/src
-COPY apps/api/src apps/api/src
-COPY apps/worker/src apps/worker/src
-COPY apps/cli/src apps/cli/src
-COPY scripts scripts
+COPY web-scrapper-workspace/libs/shared/src libs/shared/src
+COPY web-scrapper-workspace/libs/database/src libs/database/src
+COPY web-scrapper-workspace/libs/database/alembic libs/database/alembic
+COPY web-scrapper-workspace/libs/database/alembic.ini libs/database/alembic.ini
+COPY web-scrapper-workspace/libs/crawler-core/src libs/crawler-core/src
+COPY web-scrapper-workspace/libs/scrapper-core/src libs/scrapper-core/src
+COPY web-scrapper-workspace/apps/api/src apps/api/src
+COPY web-scrapper-workspace/apps/worker/src apps/worker/src
+COPY web-scrapper-workspace/apps/cli/src apps/cli/src
+COPY web-scrapper-workspace/scripts scripts
 
 # Cache layer 2: Re-sync workspace local changes into the .venv
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable --package api --package worker --package cli
+    uv sync --no-dev --no-editable --package api --package worker --package cli \
+    && .venv/bin/pip install --no-cache-dir /shared-libs/platform-common
 
 
 # --- STAGE 2: Pre-Baked Base Environment ---

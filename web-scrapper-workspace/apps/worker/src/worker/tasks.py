@@ -143,6 +143,9 @@ def run_scrape_job(job_id: str) -> None:
             crawl_job_id,
             count,
         )
+        if count == 0:
+            # No page tasks will run; finalize immediately so the job does not stay RUNNING.
+            enqueue_scrape_finalize(job_id, str(crawl_job_id), embedding_source)
     except Exception as exc:
         logger.exception("scrape_job_orchestrate_failed id=%s error=%s", job_uuid, str(exc))
         with session_scope() as session:

@@ -2,12 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY pyproject.toml .
-COPY alembic.ini .
-COPY alembic ./alembic
-COPY apps ./apps
-COPY src ./src
-COPY scripts ./scripts
+# Shared RAG/Qdrant helpers (repo root must be the build context).
+COPY shared-libs/platform-common /tmp/platform-common
+RUN pip install --no-cache-dir /tmp/platform-common && rm -rf /tmp/platform-common
+
+COPY ingestion-workspace/ingestion-backend/pyproject.toml .
+COPY ingestion-workspace/ingestion-backend/alembic.ini .
+COPY ingestion-workspace/ingestion-backend/alembic ./alembic
+COPY ingestion-workspace/ingestion-backend/apps ./apps
+COPY ingestion-workspace/ingestion-backend/src ./src
+COPY ingestion-workspace/ingestion-backend/scripts ./scripts
 
 RUN pip install --no-cache-dir .
 

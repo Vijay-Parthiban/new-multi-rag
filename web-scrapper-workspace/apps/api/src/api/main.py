@@ -15,11 +15,13 @@ from sqlalchemy.orm import Session
 from crawler_db.models.crawl_job import CrawlJob
 from crawler_db.models.scrape_job import ScrapeJob
 from crawler_db.services.crawl_service import CrawlService, ScrapeService
-from crawler_db.session import get_session_factory
+from crawler_db.session import get_session_factory, async_get_db
 from crawler_shared.logging_config import setup_logging
-from crawler_shared.config import get_settings  # Added to fetch system configs
 from crawler_shared.types import SourceTypeFilter
 from crawler_shared.redis.queue import enqueue_crawl, enqueue_crawl_and_scrape, enqueue_scrape
+from crawler_shared.auth import verify_api_key
+from crawler_shared.config import get_settings
+from platform_common.ssrf import UnsafeURLError, validate_public_http_url
 
 from web_scrapper.vector.search import search_scrape_chunks
 
@@ -28,7 +30,11 @@ from api.router import router
 setup_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Web Crawler API", version="0.1.0")
+app = FastAPI(
+    title="Web Crawler API", 
+    version="0.1.0",
+    dependencies=[Depends(verify_api_key)]
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -228,6 +234,17 @@ class RAGChunkItem(BaseModel):
     scrape_job_id: str
 
 
+def _validated_seed_url(seed_url: str) -> str:
+    settings = get_settings()
+    try:
+        return validate_public_http_url(
+            seed_url,
+            allow_private=settings.allow_private_crawl_urls,
+        )
+    except UnsafeURLError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -236,9 +253,10 @@ def health() -> dict[str, str]:
 @app.post("/crawls", response_model=CrawlJobResponse, status_code=201)
 def create_crawl(payload: CrawlCreateRequest, db: Session = Depends(get_db)) -> CrawlJobResponse:
     """Create a crawl job, enqueue it for the worker, and return the created job."""
+    seed_url = _validated_seed_url(payload.seed_url)
     job = crawl_service.create_crawl_job(
         db,
-        seed_url=payload.seed_url,
+        seed_url=seed_url,
         max_depth=payload.max_depth,
         max_pages=payload.max_pages,
         crawl_mode=payload.mode,
@@ -352,10 +370,11 @@ def create_crawl_scrape_pipeline(
     db: Session = Depends(get_db),
 ) -> CrawlScrapePipelineResponse:
     """Create crawl + scrape jobs; reuse completed crawl or skip if already ingested."""
+    seed_url = _validated_seed_url(payload.seed_url)
     vector_config = _vector_config_from_payload(payload)
     existing_crawl = crawl_service.find_completed_crawl_by_config(
         db,
-        seed_url=payload.seed_url,
+        seed_url=seed_url,
         max_depth=payload.max_depth,
         max_pages=payload.max_pages,
         crawl_mode=payload.mode,
@@ -439,7 +458,7 @@ def create_crawl_scrape_pipeline(
 
     crawl_job = crawl_service.create_crawl_job(
         db,
-        seed_url=payload.seed_url,
+        seed_url=seed_url,
         max_depth=payload.max_depth,
         max_pages=payload.max_pages,
         crawl_mode=payload.mode,
@@ -459,7 +478,7 @@ def create_crawl_scrape_pipeline(
         "crawl_scrape_pipeline_created crawl_job_id=%s scrape_job_id=%s seed_url=%s mode=%s collection=%s",
         crawl_job.id,
         scrape_job.id,
-        payload.seed_url,
+        seed_url,
         payload.mode,
         payload.qdrant_collection,
     )
@@ -520,7 +539,7 @@ def get_scrape(job_id: UUID, db: Session = Depends(get_db)) -> ScrapeJobResponse
 
 # --- NEW ENDPOINT 2: RETRIEVE CROSS-MODAL CHUNKS FROM QDRANT ---
 @app.post("/scrapes/query", response_model=list[RAGChunkItem])
-def query_vector_chunks(payload: RAGQueryRequest) -> list[RAGChunkItem]:
+async def query_vector_chunks(payload: RAGQueryRequest) -> list[RAGChunkItem]:
     """Search stored chunks with dense, sparse, or hybrid retrieval."""
     settings = get_settings()
 

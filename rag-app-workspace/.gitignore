@@ -8,3 +8,8 @@ __pycache__/
 dist/
 build/
 *.db
+
+# Secrets / local env
+.env
+.env.*
+!.env.example

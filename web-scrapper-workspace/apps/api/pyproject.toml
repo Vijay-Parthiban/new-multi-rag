@@ -12,11 +12,15 @@ dependencies = [
     "uvicorn[standard]",
     "crawler-db",
     "crawler-shared",
+    "web-scrapper",
+    "platform-common",
 ]
 
 [tool.uv.sources]
 crawler-db = { workspace = true }
 crawler-shared = { workspace = true }
+web-scrapper = { workspace = true }
+platform-common = { path = "../../../shared-libs/platform-common", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api"]

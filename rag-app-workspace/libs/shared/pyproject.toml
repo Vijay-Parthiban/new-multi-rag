@@ -5,7 +5,11 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    "platform-common",
 ]
+
+[tool.uv.sources]
+platform-common = { path = "../../../shared-libs/platform-common", editable = true }
 
 [build-system]
 requires = ["hatchling"]

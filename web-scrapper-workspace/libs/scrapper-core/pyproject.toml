@@ -15,12 +15,14 @@ dependencies = [
     "playwright",
     "qdrant-client",
     "crawler-shared",
+    "platform-common",
     "playwright-stealth>=2.0.3",
     "fastembed>=0.8.0",
 ]
 
 [tool.uv.sources]
 crawler-shared = { workspace = true }
+platform-common = { path = "../../../shared-libs/platform-common", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/web_scrapper"]

@@ -8,8 +8,10 @@ import typer
 
 from crawler_db.services.crawl_service import CrawlService, ScrapeService
 from crawler_db.session import session_scope
+from crawler_shared.config import get_settings
 from crawler_shared.logging_config import setup_logging
 from crawler_shared.redis.queue import enqueue_crawl, enqueue_scrape
+from platform_common.ssrf import UnsafeURLError, validate_public_http_url
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -53,6 +55,13 @@ def crawl(
     mode: Literal["httpx", "playwright", "auto"] = typer.Option("httpx", "--mode"),
 ) -> None:
     """Create a crawl job and enqueue it."""
+    settings = get_settings()
+    try:
+        url = validate_public_http_url(url, allow_private=settings.allow_private_crawl_urls)
+    except UnsafeURLError as exc:
+        typer.echo(f"Unsafe seed URL: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
     service = CrawlService()
     with session_scope() as session:
         job = service.create_crawl_job(

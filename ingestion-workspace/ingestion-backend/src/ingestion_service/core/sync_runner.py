@@ -271,9 +271,29 @@ async def sync_all_pipelines() -> None:
     from src.shared.db.session import AsyncSessionLocal
 
     logger.info("sync_all_pipelines_start")
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Pipeline))
-        pipelines = result.scalars().all()
+
+    # Retry DB connection with exponential backoff for DNS/startup resilience
+    max_retries = 5
+    pipelines = []
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(Pipeline))
+                pipelines = result.scalars().all()
+            break
+        except Exception as exc:
+            if attempt == max_retries:
+                logger.error(
+                    "sync_all_pipelines: DB unreachable after %d attempts",
+                    max_retries,
+                )
+                raise
+            wait = 2 ** attempt
+            logger.warning(
+                "sync_all_pipelines: DB not ready (attempt %d/%d), retrying in %ds: %s",
+                attempt, max_retries, wait, exc,
+            )
+            await asyncio.sleep(wait)
 
     for pipeline in pipelines:
         if not pipeline.directory_names:

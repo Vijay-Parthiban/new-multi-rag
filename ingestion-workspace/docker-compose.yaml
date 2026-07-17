@@ -2,8 +2,8 @@ services:
   # --- Ingestion backend ---
   migrate:
     build:
-      context: ./ingestion-backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
     command: ["sh", "/app/scripts/run-migrate.sh"]
     env_file:
       - .env
@@ -14,8 +14,8 @@ services:
 
   api:
     build:
-      context: ./ingestion-backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
     command: ["sh", "/app/scripts/run-api.sh"]
     ports:
       - "8007:8000"
@@ -40,13 +40,14 @@ services:
 
   worker:
     build:
-      context: ./ingestion-backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
     command: ["sh", "/app/scripts/run-worker.sh"]
     env_file:
       - .env
     volumes:
       - file_storage:/app/storage
+      - hf-cache:/root/.cache/huggingface
     depends_on:
       redis:
         condition: service_started
@@ -174,8 +175,8 @@ services:
   # --- RAG App services ---
   rag-migrate:
     build:
-      context: ../rag-app-workspace
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-migrate.sh"]
     env_file:
       - .env.rag
@@ -186,8 +187,8 @@ services:
 
   rag-api:
     build:
-      context: ../rag-app-workspace
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-api.sh"]
     ports:
       - "8001:8001"
@@ -204,8 +205,8 @@ services:
 
   eval-worker:
     build:
-      context: ../rag-app-workspace
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-worker.sh"]
     depends_on:
       rag-migrate:

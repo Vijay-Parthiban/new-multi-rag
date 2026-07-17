@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     # Web scrapper API (crawl-scrape pipeline)
     scraper_api_url: str = "http://localhost:8000"
+    scraper_api_key: str = ""
+    api_key: str = ""
 
     @property
     def embedding_model_options(self) -> list[str]:

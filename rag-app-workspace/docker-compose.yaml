@@ -1,6 +1,8 @@
 services:
   migrate:
-    build: .
+    build:
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-migrate.sh"]
     env_file:
       - .env
@@ -9,7 +11,9 @@ services:
     restart: on-failure
 
   rag-api:
-    build: .
+    build:
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-api.sh"]
     ports:
       - "8001:8001"
@@ -26,7 +30,9 @@ services:
       - rag-shared
 
   eval-worker:
-    build: .
+    build:
+      context: ..
+      dockerfile: rag-app-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-worker.sh"]
     depends_on:
       migrate:
@@ -42,12 +48,9 @@ services:
     networks:
       - rag-shared
 
-# Attach to shared infra from web-scrapper-workspace (postgres, redis, qdrant).
-# Start web-scrapper first: it CREATES rag-shared on `docker compose up`.
 volumes:
   hf-cache:
 
 networks:
   rag-shared:
     external: true
-    name: rag-shared

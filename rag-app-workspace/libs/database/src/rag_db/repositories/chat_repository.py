@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from rag_db.models.chat import ChatMessage, ChatMessageMetrics, ChatPipelineTrace, ChatSession
+from rag_db.sanitize import strip_null_bytes
 
 
 class ChatRepository:
@@ -22,14 +23,18 @@ class ChatRepository:
         session = ChatSession(
             source_type=source_type,
             source_id=source_id,
-            metadata_=metadata or {},
+            metadata_=strip_null_bytes(metadata or {}),
         )
         self._session.add(session)
         self._session.flush()
         return session
 
     def add_message(self, session_id: uuid.UUID, role: str, content: str) -> ChatMessage:
-        message = ChatMessage(session_id=session_id, role=role, content=content)
+        message = ChatMessage(
+            session_id=session_id,
+            role=role,
+            content=strip_null_bytes(content),
+        )
         self._session.add(message)
         self._session.flush()
         return message
@@ -50,15 +55,15 @@ class ChatRepository:
     ) -> ChatPipelineTrace:
         trace = ChatPipelineTrace(
             chat_message_id=chat_message_id,
-            query=query,
+            query=strip_null_bytes(query),
             retrieval_mode=retrieval_mode,
             retrieve_limit=retrieve_limit,
             rerank_enabled=rerank_enabled,
             rerank_model=rerank_model,
             generation_model=generation_model,
-            retrieved_chunks=retrieved_chunks,
-            reranked_chunks=reranked_chunks,
-            latency_ms=latency_ms,
+            retrieved_chunks=strip_null_bytes(retrieved_chunks),
+            reranked_chunks=strip_null_bytes(reranked_chunks),
+            latency_ms=strip_null_bytes(latency_ms),
         )
         self._session.add(trace)
         self._session.flush()
@@ -95,9 +100,9 @@ class ChatRepository:
         metrics.answer_relevancy = scores.get("answer_relevancy")
         metrics.context_precision = scores.get("context_precision")
         metrics.context_recall = scores.get("context_recall")
-        metrics.raw_ragas = scores.get("raw_ragas") or scores
+        metrics.raw_ragas = strip_null_bytes(scores.get("raw_ragas") or scores)
         metrics.status = status
-        metrics.error_message = error_message
+        metrics.error_message = strip_null_bytes(error_message) if error_message else None
         metrics.computed_at = datetime.now(timezone.utc)
         self._session.flush()
         return metrics

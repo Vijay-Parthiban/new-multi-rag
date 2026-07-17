@@ -212,16 +212,10 @@ async def process_scrape_page(
             "stem": stem,
         }
 
-    except Exception as exc:
-        logger.error("scrape_page_failed url=%s error=%s", url, str(exc), exc_info=True)
-        return failed_page_payload(
-            index=index,
-            url=url,
-            depth=depth,
-            parent=parent,
-            stem=stem,
-            error=str(exc),
-        )
+    except Exception:
+        # Re-raise so RQ / run_scrape_page can retry; only exhaust to failed_page_payload there.
+        logger.error("scrape_page_failed url=%s", url, exc_info=True)
+        raise
 
 
 def failed_page_payload(

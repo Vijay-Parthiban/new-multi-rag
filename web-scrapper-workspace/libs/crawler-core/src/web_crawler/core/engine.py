@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
@@ -8,6 +9,7 @@ from concurrent.futures import as_completed
 import httpx
 
 from crawler_shared.types import DiscoveredLink
+from platform_common.ssrf import validate_public_http_url
 from web_crawler.core.frontier import FrontierItem
 from web_crawler.core.frontier import CrawlFrontier
 from web_crawler.core.link_extractor import FetchMode
@@ -78,6 +80,12 @@ class CrawlerEngine:
         """
         started = time.perf_counter()
         seed = self._extractor.normalize(seed_url)
+        allow_private = os.getenv("ALLOW_PRIVATE_CRAWL_URLS", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        seed = validate_public_http_url(seed, allow_private=allow_private)
         logger.info(
             "crawl_start seed=%s max_depth=%d max_pages=%d mode=%s workers=%d same_domain_only=%s",
             seed,

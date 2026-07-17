@@ -7,6 +7,7 @@ import pytest
 from eval_core.ragas_client import (
     _ragas_openai_v1_base_url,
     _should_skip_precision_recall,
+    compute_faithfulness_metrics,
     compute_generation_metrics,
     get_ragas_openai_client,
     reset_ragas_openai_client,
@@ -32,17 +33,26 @@ def test_should_skip_precision_recall(label, category, expected) -> None:
     assert _should_skip_precision_recall(label=label, category=category) is expected
 
 
+@patch("eval_core.ragas_client.build_ragas_embeddings")
 @patch("eval_core.ragas_client.build_ragas_llm")
-def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(mock_llm) -> None:
+def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(
+    mock_llm, mock_embeddings
+) -> None:
     mock_llm.return_value = MagicMock()
+    mock_embeddings.return_value = MagicMock()
     faith_scorer = MagicMock()
     faith_scorer.ascore = AsyncMock(return_value=_MetricResult(0.8))
+    relevancy = MagicMock()
+    relevancy.ascore = AsyncMock(return_value=_MetricResult(0.75))
 
     settings = MagicMock()
     settings.ragas_enabled = True
     settings.ragas_judge_model = "llama-3.3-70b-versatile"
 
-    with patch("ragas.metrics.collections.Faithfulness", return_value=faith_scorer):
+    with (
+        patch("ragas.metrics.collections.Faithfulness", return_value=faith_scorer),
+        patch("ragas.metrics.collections.AnswerRelevancy", return_value=relevancy),
+    ):
         scores = compute_generation_metrics(
             settings,
             question="What is the stock price?",
@@ -52,7 +62,7 @@ def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(moc
             category="out_of_corpus",
         )
 
-    assert scores == {"faithfulness": 0.8}
+    assert scores == {"faithfulness": 0.8, "answer_relevancy": 0.75}
     faith_scorer.ascore.assert_awaited_once()
 
 
@@ -82,6 +92,8 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
         )
 
     assert scores == {"context_precision": 0.7, "context_recall": 0.6}
+    precision.ascore.assert_awaited_once()
+    recall.ascore.assert_awaited_once()
 
 
 @patch("eval_core.ragas_client.build_ragas_llm")
@@ -105,11 +117,14 @@ def test_compute_faithfulness_metrics_only(mock_llm) -> None:
         )
 
     assert scores == {"faithfulness": 0.9}
+    faith.ascore.assert_awaited_once()
 
 
+@patch("eval_core.ragas_client.build_ragas_embeddings")
 @patch("eval_core.ragas_client.build_ragas_llm")
-def test_compute_generation_metrics_returns_all_three(mock_llm) -> None:
+def test_compute_generation_metrics_returns_all_metrics(mock_llm, mock_embeddings) -> None:
     mock_llm.return_value = MagicMock()
+    mock_embeddings.return_value = MagicMock()
 
     precision = MagicMock()
     precision.ascore = AsyncMock(return_value=_MetricResult(0.7))
@@ -117,6 +132,8 @@ def test_compute_generation_metrics_returns_all_three(mock_llm) -> None:
     recall.ascore = AsyncMock(return_value=_MetricResult(0.6))
     faith = MagicMock()
     faith.ascore = AsyncMock(return_value=_MetricResult(0.9))
+    relevancy = MagicMock()
+    relevancy.ascore = AsyncMock(return_value=_MetricResult(0.85))
 
     settings = MagicMock()
     settings.ragas_enabled = True
@@ -126,6 +143,7 @@ def test_compute_generation_metrics_returns_all_three(mock_llm) -> None:
         patch("ragas.metrics.collections.ContextPrecision", return_value=precision),
         patch("ragas.metrics.collections.ContextRecall", return_value=recall),
         patch("ragas.metrics.collections.Faithfulness", return_value=faith),
+        patch("ragas.metrics.collections.AnswerRelevancy", return_value=relevancy),
     ):
         scores = compute_generation_metrics(
             settings,
@@ -140,6 +158,7 @@ def test_compute_generation_metrics_returns_all_three(mock_llm) -> None:
         "context_precision": 0.7,
         "context_recall": 0.6,
         "faithfulness": 0.9,
+        "answer_relevancy": 0.85,
     }
 
 

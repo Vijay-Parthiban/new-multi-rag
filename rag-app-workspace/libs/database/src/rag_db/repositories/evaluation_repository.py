@@ -12,6 +12,7 @@ from rag_db.models.evaluation import (
     GoldenDataset,
     GoldenDatasetItem,
 )
+from rag_db.sanitize import strip_null_bytes
 
 
 class EvaluationRepository:
@@ -160,12 +161,12 @@ class EvaluationRepository:
         if not item:
             return
         item.status = "completed"
-        item.retrieved_chunks = retrieved_chunks
-        item.retrieval_metrics = retrieval_metrics
-        item.reranked_chunks = reranked_chunks
-        item.rerank_metrics = rerank_metrics
-        item.generated_answer = generated_answer
-        item.generation_metrics = generation_metrics
+        item.retrieved_chunks = strip_null_bytes(retrieved_chunks)
+        item.retrieval_metrics = strip_null_bytes(retrieval_metrics)
+        item.reranked_chunks = strip_null_bytes(reranked_chunks)
+        item.rerank_metrics = strip_null_bytes(rerank_metrics)
+        item.generated_answer = strip_null_bytes(generated_answer)
+        item.generation_metrics = strip_null_bytes(generation_metrics)
         self._session.flush()
 
     def fail_run_item(self, item_id: uuid.UUID, error: str) -> None:

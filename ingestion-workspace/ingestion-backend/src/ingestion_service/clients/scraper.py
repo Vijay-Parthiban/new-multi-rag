@@ -37,7 +37,11 @@ async def start_crawl_scrape_pipeline(
         "use_sparse": use_sparse,
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=payload)
+        headers = {}
+        key = settings.scraper_api_key or settings.api_key
+        if key:
+            headers["X-API-Key"] = key
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         logger.info(

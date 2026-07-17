@@ -3,8 +3,15 @@ import { computeFileHash } from "./hash";
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8007";
 export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://localhost:8000";
 export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://localhost:8001";
+export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
+export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;
 
 export const CHUNK_SIZE = 5 * 1024 * 1024;
+
+function authHeaders(apiKey: string = API_KEY): HeadersInit {
+  return apiKey ? { "X-API-Key": apiKey } : {};
+}
 
 export interface ApiErrorBody {
   error: {
@@ -42,7 +49,11 @@ async function parseError(res: Response): Promise<never> {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, init);
+  const headers = {
+    ...authHeaders(API_KEY),
+    ...(init?.headers ?? {}),
+  };
+  const res = await fetch(`${API_URL}${path}`, { ...init, headers });
   if (!res.ok) await parseError(res);
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -317,7 +328,11 @@ export async function listAllPipelineRuns(limit = 100): Promise<PipelineRunWithP
 // --- Scraper API ---
 
 async function scraperFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${SCRAPER_URL}${path}`, init);
+  const headers = {
+    ...authHeaders(SCRAPER_API_KEY),
+    ...(init?.headers ?? {}),
+  };
+  const res = await fetch(`${SCRAPER_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     throw new Error(`Scraper API error ${res.status}: ${res.statusText}`);
   }
@@ -375,7 +390,11 @@ export async function getScraperScrape(jobId: string): Promise<ScraperScrapeJob>
 // --- RAG API Endpoints ---
 
 async function ragFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${RAG_API_URL}${path}`, init);
+  const headers = {
+    ...authHeaders(RAG_API_KEY),
+    ...(init?.headers ?? {}),
+  };
+  const res = await fetch(`${RAG_API_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`RAG API error ${res.status}: ${text || res.statusText}`);

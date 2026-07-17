@@ -50,7 +50,9 @@ services:
           - rag-qdrant
 
   migrate:
-    build: .
+    build:
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     command: ["crawler-db-migrate"]
     depends_on:
       postgres:
@@ -65,7 +67,9 @@ services:
       - shared
 
   worker:
-    build: .
+    build:
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     shm_size: "2gb"
     command: ["sh", "/app/scripts/run-worker.sh"]
     depends_on:
@@ -89,7 +93,9 @@ services:
       - shared
 
   api:
-    build: .
+    build:
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     command: ["sh", "/app/scripts/run-api.sh"]
     ports:
       - "8000:8000"
