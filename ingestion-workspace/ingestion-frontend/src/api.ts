@@ -1,8 +1,8 @@
 import { computeFileHash } from "./hash";
 
-export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8007";
-export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://localhost:8000";
-export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://localhost:8001";
+export const API_URL = import.meta.env.VITE_API_URL ?? "";
+export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "/scraper-api";
+export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "/rag-api";
 export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
 export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;

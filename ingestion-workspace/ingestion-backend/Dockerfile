@@ -13,7 +13,7 @@ COPY ingestion-workspace/ingestion-backend/apps ./apps
 COPY ingestion-workspace/ingestion-backend/src ./src
 COPY ingestion-workspace/ingestion-backend/scripts ./scripts
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . psycopg[binary]
 
 ENV PYTHONPATH=/app
 ENV STORAGE_PATH=/app/storage

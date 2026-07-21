@@ -70,9 +70,9 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:8007
-      - VITE_SCRAPER_URL=http://localhost:8000
-      - VITE_RAG_API_URL=http://localhost:8001
+      - VITE_API_URL=
+      - VITE_SCRAPER_URL=/scraper-api
+      - VITE_RAG_API_URL=/rag-api
     depends_on:
       - api
 
@@ -142,6 +142,9 @@ services:
     environment:
       QDRANT__SERVICE__API_KEY: qdrant
     restart: unless-stopped
+    networks:
+      - default
+      - rag-shared
 
   redis:
     image: redis:7-alpine
@@ -149,13 +152,16 @@ services:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 2s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: unless-stopped
+    networks:
+      - default
+      - rag-shared
 
   postgres:
-    image: postgres:16-alpine
+    image: custom-postgres-init:latest
     environment:
       POSTGRES_USER: ingestion
       POSTGRES_PASSWORD: ingestion
@@ -164,13 +170,10 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./docker/postgres/init-crawler-db.sql:/docker-entrypoint-initdb.d/02-crawler.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ingestion -d ingestion"]
-      interval: 2s
-      timeout: 5s
-      retries: 15
     restart: unless-stopped
+    networks:
+      - default
+      - rag-shared
 
   # --- RAG App services ---
   rag-migrate:
@@ -221,9 +224,25 @@ services:
       - hf-cache:/root/.cache/huggingface
     restart: unless-stopped
 
+  proxy:
+    build: ./proxy
+    ports:
+      - "8090:8090"
+    depends_on:
+      - web
+      - api
+      - scraper-api
+      - rag-api
+    restart: unless-stopped
+
 volumes:
   file_storage:
   pg_data:
   qdrant_data:
   scraper_data:
   hf-cache:
+
+networks:
+  rag-shared:
+    external: true
+    name: rag-shared
