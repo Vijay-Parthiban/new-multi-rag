@@ -390,10 +390,19 @@ export async function getScraperScrape(jobId: string): Promise<ScraperScrapeJob>
 // --- RAG API Endpoints ---
 
 async function ragFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = {
-    ...authHeaders(RAG_API_KEY),
-    ...(init?.headers ?? {}),
-  };
+  const baseHeaders = { ...authHeaders(RAG_API_KEY) };
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const headers: HeadersInit = isFormData
+    ? { ...baseHeaders, ...(init?.headers ?? {}) }
+    : { ...baseHeaders, ...(init?.headers ?? {}) };
+
+  // For FormData uploads, never force Content-Type — browser sets multipart boundary.
+  if (isFormData && headers && typeof headers === "object" && !Array.isArray(headers)) {
+    const h = headers as Record<string, string>;
+    delete h["Content-Type"];
+    delete h["content-type"];
+  }
+
   const res = await fetch(`${RAG_API_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
@@ -553,6 +562,58 @@ export async function getChatStats(limit = 20): Promise<RAGChatStatsResponse> {
 
 export async function listGoldenDatasets(limit = 50): Promise<GoldenDatasetSummary[]> {
   const res = await ragFetch<{ items: GoldenDatasetSummary[] }>(`/evaluate/datasets?limit=${limit}`);
+  return res.items || [];
+}
+
+export async function uploadGoldenDataset(
+  file: File,
+  replace = false,
+): Promise<{ dataset_id: string; name: string; item_count: number; replaced: boolean }> {
+  const form = new FormData();
+  form.append("file", file);
+  const qs = replace ? "?replace=true" : "";
+  return ragFetch(`/evaluate/datasets/upload${qs}`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function deleteGoldenDataset(datasetId: string): Promise<void> {
+  await ragFetch(`/evaluate/datasets/${datasetId}`, { method: "DELETE" });
+}
+
+export interface DatasetRunsResponse {
+  items: EvalRunResponse[];
+  count: number;
+}
+
+export async function listDatasetRuns(
+  datasetId: string,
+  opts: { skip?: number; limit?: number } = {},
+): Promise<DatasetRunsResponse> {
+  const skip = opts.skip ?? 0;
+  const limit = opts.limit ?? 10;
+  return ragFetch<DatasetRunsResponse>(
+    `/evaluate/datasets/${datasetId}/runs?skip=${skip}&limit=${limit}`,
+  );
+}
+
+export interface EvalRunItemRow {
+  item_id: string;
+  dataset_item_id: string;
+  status: string;
+  question: string | null;
+  expected_sources: Array<string | { name: string; page?: number }>;
+  ground_truth_answer: string | null;
+  generated_answer: string | null;
+  retrieval_metrics: Record<string, number> | null;
+  rerank_metrics: Record<string, number> | null;
+  generation_metrics: Record<string, number> | null;
+  error_message: string | null;
+}
+
+export async function listEvaluationRunItems(runId: string): Promise<EvalRunItemRow[]> {
+  const res = await ragFetch<{ items: EvalRunItemRow[] }>(`/evaluate/runs/${runId}/items`);
   return res.items || [];
 }
 

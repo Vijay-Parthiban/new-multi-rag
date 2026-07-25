@@ -133,6 +133,19 @@ services:
     restart: "no"
 
   # --- Shared infrastructure ---
+  otel-collector:
+    image: otel/opentelemetry-collector:0.148.0
+    container_name: otel
+    restart: unless-stopped
+    ports:
+      - 4317:4317 # OTLP gRPC receiver
+      - 4318:4318 # OTLP http receiver
+    env_file:
+      - ../otel/.env
+    volumes:
+      - ../otel/otel-collector-config.yaml:/etc/otelcol/config.yaml
+    command: ["--config=/etc/otelcol/config.yaml"]
+
   qdrant:
     image: qdrant/qdrant:v1.18.0
     ports:
@@ -195,8 +208,12 @@ services:
     depends_on:
       rag-migrate:
         condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
     env_file:
       - .env.rag
+    environment:
+      OTEL_SERVICE_NAME: rag-api
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -213,8 +230,12 @@ services:
         condition: service_completed_successfully
       rag-api:
         condition: service_started
+      otel-collector:
+        condition: service_started
     env_file:
       - .env.rag
+    environment:
+      OTEL_SERVICE_NAME: eval-worker
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

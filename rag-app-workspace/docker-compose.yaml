@@ -22,6 +22,8 @@ services:
         condition: service_completed_successfully
     env_file:
       - .env
+    environment:
+      OTEL_SERVICE_NAME: rag-api
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -41,6 +43,8 @@ services:
         condition: service_started
     env_file:
       - .env
+    environment:
+      OTEL_SERVICE_NAME: eval-worker
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

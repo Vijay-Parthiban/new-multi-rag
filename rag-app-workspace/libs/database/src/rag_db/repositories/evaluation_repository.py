@@ -45,13 +45,70 @@ class EvaluationRepository:
         )
 
     def delete_dataset(self, dataset_id: uuid.UUID) -> None:
-        self._session.query(GoldenDatasetItem).filter(
-            GoldenDatasetItem.dataset_id == dataset_id
-        ).delete()
+        """Wipe a dataset and cascade-related runs/run-items."""
+        run_ids = [
+            row[0]
+            for row in self._session.query(EvaluationRun.id)
+            .filter(EvaluationRun.dataset_id == dataset_id)
+            .all()
+        ]
+        if run_ids:
+            self._session.query(EvaluationRunItem).filter(
+                EvaluationRunItem.run_id.in_(run_ids)
+            ).delete(synchronize_session=False)
+            self._session.query(EvaluationRun).filter(
+                EvaluationRun.id.in_(run_ids)
+            ).delete(synchronize_session=False)
+
+        item_ids = [
+            row[0]
+            for row in self._session.query(GoldenDatasetItem.id)
+            .filter(GoldenDatasetItem.dataset_id == dataset_id)
+            .all()
+        ]
+        if item_ids:
+            self._session.query(EvaluationRunItem).filter(
+                EvaluationRunItem.dataset_item_id.in_(item_ids)
+            ).delete(synchronize_session=False)
+            self._session.query(GoldenDatasetItem).filter(
+                GoldenDatasetItem.id.in_(item_ids)
+            ).delete(synchronize_session=False)
+
         dataset = self.get_dataset(dataset_id)
         if dataset:
             self._session.delete(dataset)
             self._session.flush()
+
+    def count_runs_for_dataset(self, dataset_id: uuid.UUID) -> int:
+        return (
+            self._session.query(EvaluationRun)
+            .filter(EvaluationRun.dataset_id == dataset_id)
+            .count()
+        )
+
+    def list_runs_for_dataset(
+        self,
+        dataset_id: uuid.UUID,
+        *,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> list[EvaluationRun]:
+        return (
+            self._session.query(EvaluationRun)
+            .filter(EvaluationRun.dataset_id == dataset_id)
+            .order_by(EvaluationRun.created_at.desc())
+            .offset(max(0, skip))
+            .limit(limit)
+            .all()
+        )
+
+    def list_run_items(self, run_id: uuid.UUID) -> list[EvaluationRunItem]:
+        return (
+            self._session.query(EvaluationRunItem)
+            .filter(EvaluationRunItem.run_id == run_id)
+            .order_by(EvaluationRunItem.created_at.asc())
+            .all()
+        )
 
     def import_dataset(
         self,
@@ -177,30 +234,52 @@ class EvaluationRepository:
             self._session.flush()
 
     def aggregate_run_metrics(self, run_id: uuid.UUID) -> dict:
+        """Average KPIs grouped by stage, with run config alongside."""
+        run = self.get_run(run_id)
         items = (
             self._session.query(EvaluationRunItem)
             .filter(EvaluationRunItem.run_id == run_id, EvaluationRunItem.status == "completed")
             .all()
         )
         if not items:
-            return {}
-        numeric_keys: set[str] = set()
-        for item in items:
-            for block in (item.retrieval_metrics, item.rerank_metrics, item.generation_metrics):
-                if block:
-                    numeric_keys.update(k for k, v in block.items() if isinstance(v, (int, float)))
-        aggregated: dict[str, float] = {}
-        for key in numeric_keys:
-            values = []
+            return {
+                "retrieval": {},
+                "reranker": {},
+                "generation": {},
+                "item_count": 0,
+                "config": (run.config if run else {}) or {},
+            }
+
+        stage_blocks = {
+            "retrieval": "retrieval_metrics",
+            "reranker": "rerank_metrics",
+            "generation": "generation_metrics",
+        }
+        grouped: dict[str, dict[str, float]] = {
+            "retrieval": {},
+            "reranker": {},
+            "generation": {},
+        }
+
+        for stage, attr in stage_blocks.items():
+            keys: set[str] = set()
             for item in items:
-                for block in (item.retrieval_metrics, item.rerank_metrics, item.generation_metrics):
-                    if block and key in block and isinstance(block[key], (int, float)):
-                        values.append(float(block[key]))
-                        break
-            if values:
-                aggregated[f"mean_{key}"] = mean(values)
-        aggregated["item_count"] = len(items)
-        return aggregated
+                block = getattr(item, attr) or {}
+                keys.update(k for k, v in block.items() if isinstance(v, (int, float)))
+            for key in keys:
+                values = [
+                    float((getattr(item, attr) or {}).get(key))
+                    for item in items
+                    if isinstance((getattr(item, attr) or {}).get(key), (int, float))
+                ]
+                if values:
+                    grouped[stage][f"mean_{key}"] = mean(values)
+
+        return {
+            **grouped,
+            "item_count": len(items),
+            "config": (run.config if run else {}) or {},
+        }
 
     def create_dataset(
         self,
@@ -218,7 +297,7 @@ class EvaluationRepository:
         *,
         question: str,
         ground_truth_answer: str | None,
-        expected_sources: list[str],
+        expected_sources: list,
         metadata: dict | None = None,
     ) -> GoldenDatasetItem:
         item = GoldenDatasetItem(

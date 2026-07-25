@@ -20,5 +20,8 @@ def chunk_from_search_hit(hit: dict[str, object]) -> RetrievedChunk:
             "scrape_job_id": hit.get("scrape_job_id"),
             "image_base64": hit.get("image_base64"),
             "mime_type": hit.get("mime_type"),
+            "file_name": hit.get("file_name"),
+            "page_index": hit.get("page_index"),
+            "url": hit.get("url"),
         },
     )

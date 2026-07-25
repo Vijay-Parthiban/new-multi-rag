@@ -276,7 +276,7 @@ export default function PipelinesPage() {
                 Chat users select pipelines by this description, not by UUID.
               </p>
 
-              <label className="field-label" htmlFor="rag-strategy">RAG strategy</label>
+              <label className="field-label" htmlFor="rag-strategy">Search Strategy</label>
               <select
                 id="rag-strategy"
                 className="input"
@@ -290,46 +290,41 @@ export default function PipelinesPage() {
                 ))}
               </select>
 
-              <label className="field-label" htmlFor="embedding-model">Embedding model</label>
-              <input
+              <label className="field-label" htmlFor="embedding-model">Primary Text Engine</label>
+              <select
                 id="embedding-model"
                 className="input mono"
-                list="embedding-model-suggestions"
                 value={embeddingModel}
                 onChange={(e) => setEmbeddingModel(e.target.value)}
-                placeholder="nvidia-embed-passage"
                 required
-              />
-              <datalist id="embedding-model-suggestions">
+              >
+                <option value="" disabled>Select an engine...</option>
                 {options?.suggested_embedding_models.map((m) => (
-                  <option key={m} value={m} />
+                  <option key={m} value={m}>{m}</option>
                 ))}
-              </datalist>
-              <p className="field-hint">Any LiteLLM-compatible model name — not limited to suggestions.</p>
+              </select>
 
               {showSparse && (
                 <>
-                  <label className="field-label" htmlFor="sparse-model">Sparse embedding model</label>
-                  <input
+                  <label className="field-label" htmlFor="sparse-model">Keyword Search Engine</label>
+                  <select
                     id="sparse-model"
                     className="input mono"
-                    list="sparse-model-suggestions"
                     value={sparseEmbeddingModel}
                     onChange={(e) => setSparseEmbeddingModel(e.target.value)}
-                    placeholder="Qdrant/bm25"
                     required
-                  />
-                  <datalist id="sparse-model-suggestions">
+                  >
+                    <option value="" disabled>Select an engine...</option>
                     {options?.suggested_sparse_models.map((m) => (
-                      <option key={m} value={m} />
+                      <option key={m} value={m}>{m}</option>
                     ))}
-                  </datalist>
+                  </select>
                 </>
               )}
 
               {showModality && (
                 <>
-                  <label className="field-label" htmlFor="modality">Modality</label>
+                  <label className="field-label" htmlFor="modality">Content Type</label>
                   <select
                     id="modality"
                     className="input"
@@ -367,7 +362,7 @@ export default function PipelinesPage() {
 
               <div className="form-row">
                 <div>
-                  <label className="field-label" htmlFor="chunk-size">Chunk size</label>
+                  <label className="field-label" htmlFor="chunk-size">Document processing size</label>
                   <input
                     id="chunk-size"
                     type="number"
@@ -379,7 +374,7 @@ export default function PipelinesPage() {
                   />
                 </div>
                 <div>
-                  <label className="field-label" htmlFor="chunk-overlap">Chunk overlap</label>
+                  <label className="field-label" htmlFor="chunk-overlap">Overlap</label>
                   <input
                     id="chunk-overlap"
                     type="number"
@@ -575,11 +570,11 @@ export default function PipelinesPage() {
                           </thead>
                           <tbody>
                             <tr>
-                              <td className="muted">RAG Strategy</td>
+                              <td className="muted">Search Strategy</td>
                               <td><span className="mono">{activePipeline.rag_strategy}</span></td>
                             </tr>
                             <tr>
-                              <td className="muted">Embedding Models</td>
+                              <td className="muted">Processing Engines</td>
                               <td>
                                 <span className="mono">{activePipeline.embedding_model}</span>
                                 {activePipeline.sparse_embedding_model && (
@@ -592,7 +587,7 @@ export default function PipelinesPage() {
                               <td><span className="mono">{activePipeline.qdrant_collection}</span></td>
                             </tr>
                             <tr>
-                              <td className="muted">Chunking</td>
+                              <td className="muted">Processing Size</td>
                               <td><span className="mono">Size: {activePipeline.chunk_size} | Overlap: {activePipeline.chunk_overlap}</span></td>
                             </tr>
                           </tbody>

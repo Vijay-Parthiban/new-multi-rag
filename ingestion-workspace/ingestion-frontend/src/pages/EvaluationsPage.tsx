@@ -50,9 +50,9 @@ export default function EvaluationsPage() {
     return (
         <div className="page">
             <PageHeader
-                title="Evaluations & Tracking"
-                description="Monitor end-to-end RAG metrics including retrieval, reranking, and generation latency and quality."
-                breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Evaluations" }]}
+                title="Live Chat Metrics"
+                description="Monitor LLM response quality metrics across chats and pipeline configurations."
+                breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Live Chat Metrics" }]}
                 actions={
                     <button type="button" className="btn btn-secondary" onClick={loadStats}>
                         Refresh

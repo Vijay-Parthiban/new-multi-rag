@@ -10,6 +10,7 @@ import PipelinesPage from "../pages/PipelinesPage";
 import TrackingPage from "../pages/TrackingPage";
 import ChatPage from "../pages/ChatPage";
 import EvaluationsPage from "../pages/EvaluationsPage";
+import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
@@ -17,7 +18,8 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/upload", label: "Upload", icon: IconUpload },
   { to: "/pipelines", label: "Pipelines", icon: IconPipeline },
   { to: "/chat", label: "Chat", icon: IconChat },
-  { to: "/evaluations", label: "Evaluations", icon: IconEvaluation },
+  { to: "/evaluations", label: "Live Chat Metrics", icon: IconEvaluation },
+  { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
   { to: "/tracking", label: "Tracking", icon: IconTracking },
 ];
 
@@ -99,6 +101,7 @@ export default function AppLayout() {
   const isPipelines = path === "/pipelines";
   const isChat = path === "/chat";
   const isEvaluations = path === "/evaluations";
+  const isGoldenEvaluations = path === "/golden-evaluations";
   const isTracking = path === "/tracking";
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
@@ -159,6 +162,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isEvaluations}>
           <EvaluationsPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isGoldenEvaluations}>
+          <GoldenEvaluationsPage />
         </PersistentPage>
 
         <PersistentPage visible={isTracking}>

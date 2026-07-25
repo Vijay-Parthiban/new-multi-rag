@@ -38,4 +38,6 @@ def map_scored_point(hit: qmodels.ScoredPoint) -> dict[str, object]:
         "scrape_job_id": str(payload.get("scrape_job_id") or source_id),
         "image_base64": payload.get("image_base64"),
         "mime_type": payload.get("mime_type"),
+        "file_name": payload.get("file_name"),
+        "page_index": payload.get("page_index"),
     }

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 class GoldenDatasetItemPayload(BaseModel):
     question: str
     ground_truth_answer: str | None = None
-    expected_sources: list[str] = Field(default_factory=list)
+    expected_sources: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("question")
@@ -42,16 +42,48 @@ class GoldenDatasetPayload(BaseModel):
         return value
 
 
+def _normalize_source_entry(entry: Any) -> dict[str, Any] | None:
+    if isinstance(entry, str):
+        name = entry.strip()
+        return {"name": name} if name else None
+    if isinstance(entry, dict):
+        name = str(entry.get("name") or entry.get("source") or "").strip()
+        if not name:
+            return None
+        out: dict[str, Any] = {"name": name}
+        page = entry.get("page")
+        if page is not None and page != "":
+            try:
+                out["page"] = int(page)
+            except (TypeError, ValueError):
+                pass
+        return out
+    return None
+
+
 def _normalize_item(raw_item: dict[str, Any]) -> dict[str, Any]:
-    if "question" in raw_item:
-        return raw_item
-    source = raw_item.get("source", "")
+    if "question" in raw_item and "query" not in raw_item:
+        # Legacy format — still normalize expected_sources to objects when possible.
+        sources = raw_item.get("expected_sources") or []
+        if sources and isinstance(sources[0], str):
+            sources = [s for s in (_normalize_source_entry(s) for s in sources) if s]
+        return {
+            "question": raw_item["question"],
+            "ground_truth_answer": raw_item.get("ground_truth_answer"),
+            "expected_sources": sources,
+            "metadata": raw_item.get("metadata") or {},
+        }
+
+    source = raw_item.get("source", [])
     if isinstance(source, str):
-        expected_sources = [source.strip()] if source.strip() else []
+        expected_sources = [s for s in [_normalize_source_entry(source)] if s]
     elif isinstance(source, list):
-        expected_sources = [str(s).strip() for s in source if str(s).strip()]
+        expected_sources = [s for s in (_normalize_source_entry(e) for e in source) if s]
+    elif isinstance(source, dict):
+        expected_sources = [s for s in [_normalize_source_entry(source)] if s]
     else:
         expected_sources = []
+
     return {
         "question": raw_item["query"],
         "ground_truth_answer": raw_item.get("response"),

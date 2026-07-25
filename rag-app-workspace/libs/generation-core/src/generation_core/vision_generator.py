@@ -46,6 +46,10 @@ class VisionGenerator:
 
         image_count = 0
         for index, chunk in enumerate(chunks, start=1):
+            if image_count >= 3:
+                logger.info("reached_image_limit limit=3 chunks=%d", len(chunks))
+                break
+
             data_uri = image_data_uri(chunk)
             if not data_uri:
                 logger.warning("skipping_image_chunk_without_uri chunk_id=%s", chunk.id)

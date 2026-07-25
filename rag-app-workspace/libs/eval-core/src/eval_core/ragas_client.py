@@ -168,8 +168,9 @@ async def calculate_generation_ragas_async(
     question: str,
     answer: str,
     contexts: list[str],
+    ground_truth: str | None = None,
 ) -> dict[str, float | None]:
-    """RAGAS generation metric: faithfulness and answer_relevancy."""
+    """RAGAS generation metrics: faithfulness, and accuracy vs expected response."""
     from ragas.metrics.collections import Faithfulness, AnswerRelevancy
 
     if not settings.ragas_enabled:
@@ -200,7 +201,26 @@ async def calculate_generation_ragas_async(
         response=answer,
     )
 
-    results = await asyncio.gather(faith_task, rel_task, return_exceptions=True)
+    tasks = [faith_task, rel_task]
+    correctness_task = None
+    reference = (ground_truth or "").strip()
+    if reference:
+        try:
+            from ragas.metrics.collections import AnswerCorrectness
+
+            correctness_scorer = AnswerCorrectness(
+                llm=llm, embeddings=build_ragas_embeddings(settings)
+            )
+            correctness_task = correctness_scorer.ascore(
+                user_input=question,
+                response=answer,
+                reference=reference,
+            )
+            tasks.append(correctness_task)
+        except Exception as exc:  # noqa: BLE001 — optional metric
+            logger.warning("AnswerCorrectness unavailable: %s", exc)
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
     output: dict[str, float | None] = {}
     f_val = _score_value(results[0], metric_name="faithfulness")
@@ -210,6 +230,12 @@ async def calculate_generation_ragas_async(
     r_val = _score_value(results[1], metric_name="answer_relevancy")
     if r_val is not None:
         output["answer_relevancy"] = r_val
+
+    if correctness_task is not None and len(results) > 2:
+        a_val = _score_value(results[2], metric_name="answer_correctness")
+        if a_val is not None:
+            output["accuracy"] = a_val
+            output["answer_correctness"] = a_val
 
     return output
 
@@ -242,6 +268,7 @@ async def calculate_eval_metrics_async(
             question=question,
             answer=answer,
             contexts=contexts,
+            ground_truth=ground_truth,
         ),
     )
     if _should_skip_precision_recall(label=label, category=category):
@@ -278,6 +305,7 @@ def compute_generation_ragas_metrics(
     question: str,
     answer: str,
     contexts: list[str],
+    ground_truth: str | None = None,
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_generation_ragas_async(
@@ -285,6 +313,7 @@ def compute_generation_ragas_metrics(
             question=question,
             answer=answer,
             contexts=contexts,
+            ground_truth=ground_truth,
         )
     )
 

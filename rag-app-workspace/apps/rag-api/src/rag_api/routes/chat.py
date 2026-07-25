@@ -159,57 +159,81 @@ def _build_metrics_response(message_id: uuid.UUID, metrics) -> MetricsResponse:
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: Request, body: ChatRequest) -> ChatResponse:
+    from rag_shared.tracing import rag_pipeline_span, set_span_attr
+
     settings = request.app.state.settings
     pipeline = request.app.state.pipeline
     queue = request.app.state.queue
 
     config, source_type, source_id = pipeline.from_request(body)
+    generation_model = body.generation_model or settings.chat_model
 
-    result = pipeline.chat(
-        body.query,
-        config=config,
-        source_type=source_type,
-        source_id=source_id,
-    )
-
-    session_factory = get_session_factory(settings)
-    with session_factory() as db:
-        repo = ChatRepository(db)
-        if body.session_id:
-            session_id = body.session_id
-        else:
-            session = repo.create_session(
-                source_type=source_type,
-                source_id=source_id,
-            )
-            session_id = session.id
-
-        repo.add_message(session_id, "user", body.query)
-        assistant_msg = repo.add_message(session_id, "assistant", result.answer)
-        trace = repo.save_pipeline_trace(
-            assistant_msg.id,
-            query=body.query,
-            retrieval_mode=config.retrieval_mode.value,
-            retrieve_limit=config.retrieve_limit,
-            rerank_enabled=config.rerank_enabled,
-            rerank_model=body.rerank_model or settings.reranker_model,
-            generation_model=body.generation_model or settings.chat_model,
-            retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
-            reranked_chunks=[c.model_dump() for c in result.reranked_chunks],
-            latency_ms=result.latency_ms,
+    with rag_pipeline_span(
+        "rag.chat",
+        session_id=str(body.session_id) if body.session_id else None,
+        query=body.query,
+        observation_type="generation",
+        model=generation_model,
+        metadata={
+            "retrieval_mode": config.retrieval_mode.value,
+            "rerank_enabled": config.rerank_enabled,
+        },
+    ) as span:
+        result = pipeline.chat(
+            body.query,
+            config=config,
+            source_type=source_type,
+            source_id=source_id,
         )
-        metrics_status = "skipped"
-        if settings.ragas_enabled and settings.chat_metrics_async:
-            repo.create_pending_metrics(assistant_msg.id)
-            queue.enqueue(
-                "eval_worker.tasks.compute_chat_metrics",
-                str(assistant_msg.id),
-            )
-            metrics_status = "pending"
+        set_span_attr(span, "langfuse.trace.output", result.answer)
+        set_span_attr(span, "langfuse.observation.output", result.answer)
+        set_span_attr(span, "output.value", result.answer)
+        set_span_attr(span, "rag.chunks_used", len(result.reranked_chunks))
+        for key, val in (result.latency_ms or {}).items():
+            if val is not None:
+                set_span_attr(span, f"latency.{key}", val)
 
-        message_id = assistant_msg.id
-        trace_id = trace.id
-        db.commit()
+        session_factory = get_session_factory(settings)
+        with session_factory() as db:
+            repo = ChatRepository(db)
+            if body.session_id:
+                session_id = body.session_id
+            else:
+                session = repo.create_session(
+                    source_type=source_type,
+                    source_id=source_id,
+                )
+                session_id = session.id
+
+            repo.add_message(session_id, "user", body.query)
+            assistant_msg = repo.add_message(session_id, "assistant", result.answer)
+            trace_db = repo.save_pipeline_trace(
+                assistant_msg.id,
+                query=body.query,
+                retrieval_mode=config.retrieval_mode.value,
+                retrieve_limit=config.retrieve_limit,
+                rerank_enabled=config.rerank_enabled,
+                rerank_model=body.rerank_model or settings.reranker_model,
+                generation_model=generation_model,
+                retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
+                reranked_chunks=[c.model_dump() for c in result.reranked_chunks],
+                latency_ms=result.latency_ms,
+            )
+            metrics_status = "skipped"
+            if settings.ragas_enabled and settings.chat_metrics_async:
+                repo.create_pending_metrics(assistant_msg.id)
+                queue.enqueue(
+                    "eval_worker.tasks.compute_chat_metrics",
+                    str(assistant_msg.id),
+                )
+                metrics_status = "pending"
+
+            message_id = assistant_msg.id
+            trace_id = trace_db.id
+            db.commit()
+
+        set_span_attr(span, "langfuse.session.id", str(session_id))
+        set_span_attr(span, "langfuse.observation.metadata.message_id", str(message_id))
 
     sources = [
         SourceCitation(

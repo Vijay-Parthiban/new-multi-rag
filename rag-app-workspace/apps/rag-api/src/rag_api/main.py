@@ -29,6 +29,9 @@ def get_redis_queue(settings: Settings | None = None) -> Queue:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from rag_shared.tracing import init_tracing
+    init_tracing()
+
     setup_logging()
     settings = _cached_settings()
     app.state.settings = settings

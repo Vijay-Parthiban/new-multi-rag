@@ -7,6 +7,9 @@ from rag_shared.logging_config import setup_logging
 
 
 def run() -> None:
+    from rag_shared.tracing import init_tracing
+    init_tracing()
+    
     setup_logging()
     settings = get_settings()
     redis_conn = Redis.from_url(settings.redis_url)

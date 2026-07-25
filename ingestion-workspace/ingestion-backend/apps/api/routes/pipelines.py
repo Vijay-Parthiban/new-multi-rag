@@ -134,15 +134,15 @@ async def pipeline_options():
     settings = get_settings()
     return {
         "rag_strategies": [
-            {"id": "naive", "label": "Naive", "description": "Dense embeddings + recursive text chunking"},
-            {"id": "sparse", "label": "Sparse", "description": "BM25 sparse vectors for keyword retrieval"},
-            {"id": "hybrid", "label": "Hybrid", "description": "Dense + sparse with RRF fusion"},
-            {"id": "multimodal", "label": "Multimodal", "description": "Text chunks or page images as base64 embeddings"},
-            {"id": "metadata", "label": "Metadata", "description": "Rich payload metadata stored in Qdrant"},
+            {"id": "naive", "label": "Standard", "description": "Standard text understanding"},
+            {"id": "sparse", "label": "Keyword", "description": "Exact keyword matching"},
+            {"id": "hybrid", "label": "Advanced Hybrid", "description": "Combines meaning and keyword search"},
+            {"id": "multimodal", "label": "Visual & Text", "description": "Processes both text and images"},
+            {"id": "metadata", "label": "Advanced Metadata", "description": "Rich data storage for filtering"},
         ],
         "modalities": [
-            {"id": "text", "label": "Text", "description": "Extract text and recursive chunk"},
-            {"id": "image", "label": "Image", "description": "Render pages to PNG, base64 URI, multimodal embed"},
+            {"id": "text", "label": "Text", "description": "Process standard text documents"},
+            {"id": "image", "label": "Visual", "description": "Capture and process visual pages"},
         ],
         "suggested_embedding_models": settings.unique_embedding_models,
         "suggested_sparse_models": [settings.sparse_embedding_model],

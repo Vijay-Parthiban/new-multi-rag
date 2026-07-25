@@ -1,0 +1,108 @@
+# OpenTelemetry Collector — exporters are driven by env vars in otel/.env
+# Langfuse OTLP (HTTP only): https://<region>.cloud.langfuse.com/api/public/otel
+#   EU:     https://cloud.langfuse.com/api/public/otel
+#   US:     https://us.cloud.langfuse.com/api/public/otel
+#   JP:     https://jp.cloud.langfuse.com/api/public/otel
+#   HIPAA:  https://hipaa.cloud.langfuse.com/api/public/otel
+# Requires x-langfuse-ingestion-version: "4" for Cloud Fast Preview.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Arize requires model_id or arize.project.name on every span resource
+  resource:
+    attributes:
+      - key: model_id
+        value: ${env:ARIZE_MODEL_ID}
+        action: upsert
+      - key: arize.project.name
+        value: ${env:ARIZE_PROJECT_NAME}
+        action: upsert
+      - key: deployment.environment
+        value: ${env:OTEL_DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+      - key: service.namespace
+        value: ${env:OTEL_SERVICE_NAMESPACE}
+        action: upsert
+
+  batch:
+    send_batch_size: 256
+    timeout: 5s
+
+exporters:
+  debug:
+    verbosity: ${env:OTEL_DEBUG_VERBOSITY}
+
+  # Langfuse — OTLP/HTTP (otlp_http is the current component name; otlphttp is deprecated)
+  otlp_http/langfuse:
+    endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+    headers:
+      Authorization: ${env:LANGFUSE_AUTH_HEADER}
+      x-langfuse-ingestion-version: "4"
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Arize AX — OTLP gRPC
+  otlp_grpc/arize:
+    endpoint: ${env:ARIZE_OTLP_ENDPOINT}
+    tls:
+      insecure: false
+    headers:
+      api_key: ${env:ARIZE_API_KEY}
+      space_id: ${env:ARIZE_SPACE_ID}
+    timeout: 20s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Grafana Cloud OTLP gateway
+  otlp_http/grafana:
+    endpoint: ${env:GRAFANA_OTLP_ENDPOINT}
+    headers:
+      Authorization: ${env:GRAFANA_AUTH_HEADER}
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  telemetry:
+    logs:
+      level: ${env:OTEL_LOG_LEVEL}
+
+  pipelines:
+    # Langfuse + Arize accept traces only
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug, otlp_http/langfuse, otlp_grpc/arize, otlp_http/grafana]
+
+    # Grafana Cloud accepts metrics; Langfuse/Arize do not
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug, otlp_http/grafana]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug, otlp_http/grafana]

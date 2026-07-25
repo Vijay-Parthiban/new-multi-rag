@@ -15,6 +15,31 @@ from rag_shared.types import SearchMode
 logger = logging.getLogger(__name__)
 
 
+def emit_otel_synthetic_trace(
+    session_id: str,
+    message_id: str,
+    query: str,
+    answer: str,
+    latency_ms: dict,
+    scores: dict,
+    retrieved_chunks: list,
+    trace_info: dict,
+) -> None:
+    from rag_shared.tracing import emit_rag_pipeline_trace
+
+    emit_rag_pipeline_trace(
+        session_id=session_id,
+        message_id=message_id,
+        query=query,
+        answer=answer,
+        latency_ms=latency_ms,
+        scores=scores,
+        retrieved_chunks=retrieved_chunks,
+        trace_info=trace_info,
+        flush=True,
+    )
+
+
 def compute_chat_metrics(message_id: str) -> None:
     settings = get_settings()
     session_factory = get_session_factory(settings)
@@ -22,23 +47,41 @@ def compute_chat_metrics(message_id: str) -> None:
 
     with session_factory() as db:
         chat_repo = ChatRepository(db)
-        trace = chat_repo.get_trace_for_message(msg_uuid)
+        db_trace = chat_repo.get_trace_for_message(msg_uuid)
         message = chat_repo.get_message(msg_uuid)
-        if not trace or not message:
+        if not db_trace or not message:
             chat_repo.update_metrics(msg_uuid, scores={}, status="failed", error_message="Trace not found")
             db.commit()
             return
-
+            
         try:
             staged = compute_chat_pipeline_metrics(
                 settings,
-                question=trace.query,
+                question=db_trace.query,
                 answer=message.content,
-                retrieved_chunks=trace.retrieved_chunks or [],
-                reranked_chunks=trace.reranked_chunks or [],
+                retrieved_chunks=db_trace.retrieved_chunks or [],
+                reranked_chunks=db_trace.reranked_chunks or [],
             )
             scores = flatten_chat_metrics(staged)
             chat_repo.update_metrics(msg_uuid, scores=scores, status="completed")
+            
+            trace_info = {
+                "retrieval_mode": db_trace.retrieval_mode,
+                "rerank_enabled": db_trace.rerank_enabled,
+                "generation_model": db_trace.generation_model,
+            }
+            
+            emit_otel_synthetic_trace(
+                session_id=str(message.session_id),
+                message_id=str(message.id),
+                query=db_trace.query,
+                answer=message.content,
+                latency_ms=db_trace.latency_ms or {},
+                scores=scores,
+                retrieved_chunks=db_trace.retrieved_chunks or [],
+                trace_info=trace_info
+            )
+            
         except Exception as exc:
             logger.exception("compute_chat_metrics failed: %s", exc)
             chat_repo.update_metrics(
@@ -133,6 +176,33 @@ def run_evaluation(run_id: str) -> None:
                     )
                     progress = eval_repo.get_run_progress(run_uuid)
                     db.commit()
+                    
+                    # Combine all metrics for OTel tracing
+                    combined_scores = {}
+                    if result.retrieval_metrics:
+                        combined_scores.update(result.retrieval_metrics)
+                    if result.rerank_metrics:
+                        combined_scores.update(result.rerank_metrics)
+                    if result.generation_metrics:
+                        combined_scores.update(result.generation_metrics)
+
+                    trace_info = {
+                        "retrieval_mode": config.retrieval_mode.value,
+                        "rerank_enabled": config.rerank_enabled,
+                        "generation_model": config.generation_model,
+                    }
+                    
+                    emit_otel_synthetic_trace(
+                        session_id=f"eval_run_{run_uuid}",
+                        message_id=str(run_item_id),
+                        query=item["question"],
+                        answer=result.generated_answer,
+                        latency_ms={}, # Real latency could be added here if evaluator captures it
+                        scores=combined_scores,
+                        retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
+                        trace_info=trace_info
+                    )
+
                     logger.info(
                         "Completed run=%s progress %d/%d (failed=%d)",
                         run_uuid,

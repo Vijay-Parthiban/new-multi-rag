@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from generation_core import Generator
 from rag_core import PipelineConfig, RAGPipeline
@@ -10,18 +11,22 @@ from rag_shared.types import RerankedChunk, RetrievedChunk
 from reranker_core import build_reranker
 from retrieval_core import Retriever
 
-from eval_core.ragas_client import compute_generation_ragas_metrics, compute_retrieval_ragas_metrics
+from eval_core.ragas_client import compute_generation_ragas_metrics
 from eval_core.rerank_metrics import compute_rerank_metrics
 from eval_core.retrieval_metrics import compute_retrieval_metrics
+from eval_core.source_match import ExpectedSource, parse_expected_sources
 
 
 @dataclass
 class GoldenItem:
     question: str
     ground_truth_answer: str | None
-    expected_sources: list[str]
+    expected_sources: list[Any]
     label: str | None = None
     category: str | None = None
+
+    def parsed_sources(self) -> list[ExpectedSource]:
+        return parse_expected_sources(self.expected_sources)
 
 
 @dataclass
@@ -48,6 +53,7 @@ class GoldenItemEvaluator:
         k_values: list[int] | None = None,
     ) -> EvalItemResult:
         k_values = k_values or [1, 3, 5, 10]
+        expected = item.parsed_sources()
 
         retrieved = self._retriever.retrieve(
             item.question,
@@ -57,24 +63,8 @@ class GoldenItemEvaluator:
             embedding_model=config.embedding_model,
             sparse_embedding_model=config.sparse_embedding_model,
         )
-        retrieval_metrics = compute_retrieval_metrics(
-            retrieved, item.expected_sources, k_values
-        )
-        reference = (item.ground_truth_answer or "").strip()
-        if reference:
-            retrieval_metrics.update(
-                compute_retrieval_ragas_metrics(
-                    self._settings,
-                    question=item.question,
-                    contexts=[
-                        passage_text_for_chunk(c) if is_image_chunk(c) else c.content
-                        for c in retrieved
-                    ],
-                    reference=reference,
-                    label=item.label,
-                    category=item.category,
-                )
-            )
+        # Formula-based retrieval metrics only (no LLM-as-judge for IRS).
+        retrieval_metrics = compute_retrieval_metrics(retrieved, expected, k_values)
 
         reranker = build_reranker(
             self._settings,
@@ -83,7 +73,7 @@ class GoldenItemEvaluator:
         )
         reranked = reranker.rerank(item.question, retrieved, config.top_k)
         rerank_metrics = compute_rerank_metrics(
-            retrieved, reranked, item.expected_sources, k_values
+            retrieved, reranked, expected, k_values
         )
 
         generation = self._generator.generate(
@@ -102,6 +92,7 @@ class GoldenItemEvaluator:
             question=item.question,
             answer=generation.answer,
             contexts=contexts,
+            ground_truth=item.ground_truth_answer,
         )
 
         return EvalItemResult(

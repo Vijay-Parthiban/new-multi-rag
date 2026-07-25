@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from eval_core.dataset_schema import GoldenDatasetPayload, parse_golden_dataset_json
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
 from rag_shared.config import Settings, get_settings
@@ -206,6 +206,107 @@ def get_dataset(dataset_id: uuid.UUID, settings: Settings = Depends(get_settings
             item_count=repo.count_dataset_items(dataset.id),
             created_at=_dt_iso(dataset.created_at),
         )
+
+
+@router.delete("/datasets/{dataset_id}", status_code=204)
+def delete_dataset(dataset_id: uuid.UUID, settings: Settings = Depends(get_settings)) -> None:
+    from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.services.database import get_session_factory
+
+    session_factory = get_session_factory(settings)
+    with session_factory() as db:
+        repo = EvaluationRepository(db)
+        dataset = repo.get_dataset(dataset_id)
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        repo.delete_dataset(dataset_id)
+        db.commit()
+
+
+class DatasetRunsResponse(BaseModel):
+    items: list[EvaluationRunStatItem]
+    count: int
+
+
+class EvalRunItemResponse(BaseModel):
+    item_id: uuid.UUID
+    dataset_item_id: uuid.UUID
+    status: str
+    question: str | None = None
+    expected_sources: list = Field(default_factory=list)
+    ground_truth_answer: str | None = None
+    generated_answer: str | None = None
+    retrieval_metrics: dict | None = None
+    rerank_metrics: dict | None = None
+    generation_metrics: dict | None = None
+    error_message: str | None = None
+
+
+class EvalRunItemsResponse(BaseModel):
+    run_id: uuid.UUID
+    count: int
+    items: list[EvalRunItemResponse]
+
+
+@router.get("/datasets/{dataset_id}/runs", response_model=DatasetRunsResponse)
+def list_dataset_runs(
+    dataset_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    settings: Settings = Depends(get_settings),
+) -> DatasetRunsResponse:
+    from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.services.database import get_session_factory
+
+    session_factory = get_session_factory(settings)
+    with session_factory() as db:
+        repo = EvaluationRepository(db)
+        dataset = repo.get_dataset(dataset_id)
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        count = repo.count_runs_for_dataset(dataset_id)
+        runs = repo.list_runs_for_dataset(dataset_id, skip=skip, limit=limit)
+        items = [
+            _build_run_stat_item(run, repo.get_run_progress(run.id))
+            for run in runs
+        ]
+    return DatasetRunsResponse(items=items, count=count)
+
+
+@router.get("/runs/{run_id}/items", response_model=EvalRunItemsResponse)
+def list_eval_run_items(
+    run_id: uuid.UUID,
+    settings: Settings = Depends(get_settings),
+) -> EvalRunItemsResponse:
+    from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.services.database import get_session_factory
+
+    session_factory = get_session_factory(settings)
+    with session_factory() as db:
+        repo = EvaluationRepository(db)
+        run = repo.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        run_items = repo.list_run_items(run_id)
+        items: list[EvalRunItemResponse] = []
+        for ri in run_items:
+            di = ri.dataset_item
+            items.append(
+                EvalRunItemResponse(
+                    item_id=ri.id,
+                    dataset_item_id=ri.dataset_item_id,
+                    status=ri.status,
+                    question=di.question if di else None,
+                    expected_sources=list(di.expected_sources or []) if di else [],
+                    ground_truth_answer=di.ground_truth_answer if di else None,
+                    generated_answer=ri.generated_answer,
+                    retrieval_metrics=ri.retrieval_metrics,
+                    rerank_metrics=ri.rerank_metrics,
+                    generation_metrics=ri.generation_metrics,
+                    error_message=ri.error_message,
+                )
+            )
+    return EvalRunItemsResponse(run_id=run_id, count=len(items), items=items)
 
 
 @router.post("/runs", response_model=CreateEvalRunResponse)

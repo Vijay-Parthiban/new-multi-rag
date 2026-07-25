@@ -1,0 +1,25 @@
+{
+    "name": "sample-golden-dataset",
+    "items": [
+        {
+            "query": "What is formula for Scaled Dot-Product Attention?",
+            "source": [
+                {
+                    "name": "transformer.pdf",
+                    "page": 4
+                }
+            ],
+            "response": "The formula for Scaled Dot-Product Attention is: \n\nAttention(Q, K, V) = softmax(QK^T / sqrt(d_k))V"
+        },
+        {
+            "query": "What is the Time complexity for Linked List for insertion, deletion, searching?",
+            "source": [
+                {
+                    "name": "Dsa.pdf",
+                    "page": 20
+                }
+            ],
+            "response": "The time complexity for Linked List for insertion is O(1), and for deletion and searching is O(n)."
+        }
+    ]
+}
