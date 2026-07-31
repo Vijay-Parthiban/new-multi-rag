@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.file_manager.utils.paths import storage_root
+from src.file_manager.utils.paths import s3_download_to_temp
 from src.ingestion_service.clients.scraper import start_crawl_scrape_pipeline
 from src.ingestion_service.core.indexer import FileIndexer, IndexContext, validate_pipeline_config
 from src.ingestion_service.core.page_yielder import iter_file_pages
@@ -77,30 +77,37 @@ async def run_pipeline_job(db: AsyncSession, run_id: uuid.UUID) -> None:
         run.files_total = len(truly_new_files)
         await db.commit()
 
+        settings = get_settings()
         indexer = FileIndexer(ctx)
         for file_record in truly_new_files:
-            path = storage_root() / (file_record.relative_path or "")
-            if not path.exists():
-                logger.warning("File missing on disk: %s", path)
+            directory_name = file_record.directory.name if file_record.directory else "unknown"
+            bucket = f"{settings.minio_bucket_prefix}-{directory_name}"
+            rel_path = file_record.relative_path or ""
+
+            # Download from S3 to temp file for processing
+            local_path = await s3_download_to_temp(bucket, rel_path)
+            if not local_path:
+                logger.warning("File missing in S3: bucket=%s key=%s", bucket, rel_path)
                 run.files_processed += 1
                 await db.commit()
                 continue
 
-            directory_name = file_record.directory.name if file_record.directory else "unknown"
+            try:
+                def _process_file() -> tuple[int, int]:
+                    pages = iter_file_pages(local_path, file_record.mime_type, file_record.original_name)
+                    return indexer.index_file(
+                        file_path=local_path,
+                        file_id=file_record.id,
+                        file_name=file_record.original_name,
+                        directory_name=directory_name,
+                        mime_type=file_record.mime_type,
+                        relative_path=rel_path,
+                        pages=pages,
+                    )
 
-            def _process_file() -> tuple[int, int]:
-                pages = iter_file_pages(path, file_record.mime_type, file_record.original_name)
-                return indexer.index_file(
-                    file_path=path,
-                    file_id=file_record.id,
-                    file_name=file_record.original_name,
-                    directory_name=directory_name,
-                    mime_type=file_record.mime_type,
-                    relative_path=file_record.relative_path,
-                    pages=pages,
-                )
-
-            pages_indexed, points = await asyncio.to_thread(_process_file)
+                pages_indexed, points = await asyncio.to_thread(_process_file)
+            finally:
+                local_path.unlink(missing_ok=True)
             
             # Record it so the cronjob knows it's already indexed
             if file_record.content_hash:

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"ls -la ingestion-workspace/ingestion-backend/\",\"description\":\"Check contents of ingestion-backend directory\"}",
+  "error": "Exit code 2\nls: cannot access 'ingestion-workspace/ingestion-backend/': No such file or directory",
+  "timestamp": "2026-07-30T11:44:32.564Z",
+  "retry_count": 2
+}

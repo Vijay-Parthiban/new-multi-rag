@@ -1,10 +1,12 @@
 # RAG Full Pipeline — Project Overview
 
-**Last reviewed:** 2026-07-17
+**Last reviewed:** 2026-07-31
 
 This repository is a **loose monorepo** of three independently packaged products that together form an end-to-end RAG (Retrieval-Augmented Generation) platform: ingest documents and web content → embed into Qdrant → retrieve / rerank / generate → evaluate.
 
-There is **no root shared Python package historically**. As of 2026-07-17, shared Qdrant/auth primitives live in `shared-libs/platform-common/` and are re-exported from each workspace. Remaining integration is still Docker, HTTP APIs, environment contracts, and the shared Qdrant payload schema.
+There is **no root shared Python package historically**. As of 2026-07-31, shared Qdrant/auth primitives live in `shared-libs/platform-common/` and are re-exported from each workspace. Remaining integration is still Docker, HTTP APIs, environment contracts, and the shared Qdrant payload schema.
+
+**Key Update:** Sources page implementation completed in ingestion-workspace (see below).
 
 ---
 
@@ -75,17 +77,26 @@ rag-full-pipeline/
 
 | Component | Path | Notes |
 |-----------|------|-------|
-| Backend API | `ingestion-backend/apps/api/` | FastAPI: uploads, directories, files, pipelines |
+| Backend API | `ingestion-backend/apps/api/` | FastAPI: uploads, directories, files, pipelines, **sources** |
 | Worker | `ingestion-backend/apps/worker/` | Redis queues + cron sync scheduler |
 | File manager | `ingestion-backend/src/file_manager/` | Chunked upload, hashing, duplicate detection, storage |
 | Ingestion service | `ingestion-backend/src/ingestion_service/` | Pipeline/sync runners, indexer, Qdrant write |
 | Shared | `ingestion-backend/src/shared/` | Settings, DB models/session, Redis, auth |
-| Frontend | `ingestion-frontend/` | React pages for upload, browse, pipelines, tracking, chat, eval |
+| Frontend | `ingestion-frontend/` | React pages for upload, browse, pipelines, tracking, chat, eval, **sources** |
 | Compose | `docker-compose.yaml` | **Unified stack**: Postgres, Redis, Qdrant, scraper image, RAG build, ingestion |
 
 **Key env:** `DATABASE_URL`, `REDIS_URL`, `STORAGE_PATH`, `QDRANT_*`, `LITELLM_BASE_URL`, `OPENAI_API_KEY`, `SCRAPER_API_URL`, `API_KEY`, `VITE_API_URL`, `VITE_SCRAPER_URL`, `VITE_RAG_API_URL`.
 
 **Queues:** `file_manager:jobs`, `ingestion:pipeline:jobs`, `ingestion:sync:jobs`.
+
+#### Sources Page (New Feature)
+As of 2026-07-31, the ingestion-workspace includes a **Sources** page for managing external data sources via Airbyte connectors:
+- Create, read, update, delete sources with configurable connectors (Google Drive, GCS, S3, Azure Blob, SharePoint, etc.)
+- Each source gets a dedicated MinIO bucket for storage
+- Live (continuous) or scheduled monitoring modes
+- Pipeline linking: sources can be linked to one or more RAG pipelines for automatic re-indexing
+- File-level CRUD operations trigger incremental pipeline re-indexing of only changed files
+- Backend API fixes applied to resolve MissingGreenlet errors and S3 bucket handling
 
 ---
 

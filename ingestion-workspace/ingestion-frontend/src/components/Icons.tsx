@@ -86,6 +86,15 @@ export function IconChat({ className, size = 16 }: IconProps) {
   );
 }
 
+export function IconSources({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M2 2.75A2.75 2.75 0 0 1 4.75 0h6.5A2.75 2.75 0 0 1 14 2.75v2.5A2.75 2.75 0 0 1 11.25 8h-6.5A2.75 2.75 0 0 1 2 5.25v-2.5ZM4.75 1.5c-.69 0-1.25.56-1.25 1.25v2.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25v-2.5c0-.69-.56-1.25-1.25-1.25h-6.5Z" />
+      <path d="M4.75 9A2.75 2.75 0 0 0 2 11.75v2.5A2.75 2.75 0 0 0 4.75 17h2.5A2.75 2.75 0 0 0 10 14.25v-2.5A2.75 2.75 0 0 0 7.25 9h-2.5ZM3.5 11.75c0-.69.56-1.25 1.25-1.25h2.5c.69 0 1.25.56 1.25 1.25v2.5c0 .69-.56 1.25-1.25 1.25h-2.5c-.69 0-1.25-.56-1.25-1.25v-2.5ZM9.22 10.22a.75.75 0 0 1 1.06 0L12 11.94l1.72-1.72a.75.75 0 1 1 1.06 1.06L13.06 13l1.72 1.72a.75.75 0 1 1-1.06 1.06L12 14.06l-1.72 1.72a.75.75 0 0 1-1.06-1.06L10.94 13l-1.72-1.72a.75.75 0 0 1 0-1.06Z" />
+    </svg>
+  );
+}
+
 export function IconEvaluation({ className, size = 16 }: IconProps) {
   return (
     <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>

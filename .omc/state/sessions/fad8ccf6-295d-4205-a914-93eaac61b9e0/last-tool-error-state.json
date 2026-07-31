@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"ls \\\"C:\\\\Users\\\\2782234\\\\omp-projects\\\\new-multi-rag\\\\ingestion-workspace\\\\ingestion-frontend\\\\src\\\\pages\\\\\\\"\",\"description\":\"List existing frontend pages\"}",
+  "error": "Exit code 2\n/usr/bin/bash: eval: line 1: unexpected EOF while looking for matching `\"'",
+  "timestamp": "2026-07-29T09:38:23.266Z",
+  "retry_count": 1
+}

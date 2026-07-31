@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd \\\"C:/Users/2782234/omp-projects/new-multi-rag/ingestion-workspace/ingestion-backend\\\" && grep -n \\\"run-pathway-worker\\\\|Dockerfile\\\" docker-compose.yaml | head -5 && grep -A1 \\\"pathway-...",
+  "error": "Exit code 2\ngrep: docker-compose.yaml: No such file or directory\ngrep: docker-compose.yaml: No such file or directory\ngrep: docker-compose.yaml: No such file or directory",
+  "timestamp": "2026-07-28T23:57:57.837Z",
+  "retry_count": 2
+}

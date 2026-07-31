@@ -4,10 +4,11 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
-class Base(DeclarativeBase):
+class Base(AsyncAttrs, DeclarativeBase):
     pass
 
 
@@ -44,6 +45,11 @@ class RagStrategy(str, enum.Enum):
 class IndexModality(str, enum.Enum):
     TEXT = "text"
     IMAGE = "image"
+
+
+class SourceMonitorMode(str, enum.Enum):
+    LIVE = "live"
+    SCHEDULED = "scheduled"
 
 
 def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
@@ -135,6 +141,60 @@ class ChunkUpload(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+directory: Mapped["Directory"] = relationship(back_populates="jobs")
+
+
+class Source(Base):
+    """External data source backed by an Airbyte connector via Pathway.
+
+    Each source gets its own dedicated MinIO bucket where connector output lands.
+    """
+
+    __tablename__ = "sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    connector_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
+        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values),
+        default=SourceMonitorMode.LIVE,
+    )
+    minio_bucket: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    pipelines: Mapped[list["PipelineSource"]] = relationship(back_populates="source", lazy="selectin")
+
+
+class PipelineSource(Base):
+    """M2M join between Pipeline and Source."""
+
+    __tablename__ = "pipeline_sources"
+    __table_args__ = (
+        Index("ix_pipeline_sources_unique", "pipeline_id", "source_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pipeline_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    source: Mapped["Source"] = relationship(back_populates="pipelines", lazy="selectin")
+    pipeline: Mapped["Pipeline"] = relationship(back_populates="sources", lazy="selectin")
+
+
 class Pipeline(Base):
     __tablename__ = "pipelines"
 
@@ -165,6 +225,7 @@ class Pipeline(Base):
     )
 
     runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline")
+    sources: Mapped[list["PipelineSource"]] = relationship(back_populates="pipeline", lazy="selectin")
 
 
 class PipelineRun(Base):

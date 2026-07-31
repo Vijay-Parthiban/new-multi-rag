@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     file_manager_queue: str = "file_manager:jobs"
     pipeline_queue: str = "ingestion:pipeline:jobs"
     sync_queue: str = "ingestion:sync:jobs"
+    pathway_queue: str = "pathway:sync:jobs"
     chunk_size_bytes: int = 5 * 1024 * 1024  # 5 MB reference for clients
 
     # Vector / embedding (shared with web-scrapper RAG stack)
@@ -34,6 +35,13 @@ class Settings(BaseSettings):
     sync_cron_hour: str = "*"
     sync_cron_minute: str = "*/10"
     sync_cron_second: str = "0"
+
+    # MinIO Object Storage
+    minio_endpoint: str = "minio:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_use_ssl: str = "false"
+    minio_bucket_prefix: str = "source"
 
     # Web scrapper API (crawl-scrape pipeline)
     scraper_api_url: str = "http://localhost:8000"

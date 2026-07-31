@@ -642,3 +642,116 @@ export async function createEvaluationRun(
 export async function getEvaluationRun(runId: string): Promise<EvalRunResponse> {
   return ragFetch<EvalRunResponse>(`/evaluate/runs/${runId}`);
 }
+
+// --- Sources ---
+
+export interface ConnectorOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface SourceRecord {
+  id: string;
+  name: string;
+  connector_type: string;
+  config: Record<string, unknown>;
+  monitor_mode: "live" | "scheduled";
+  minio_bucket: string;
+  sync_interval_minutes: number | null;
+  enabled: boolean;
+  last_sync_at: string | null;
+  status: string;
+  error_message: string | null;
+  pipeline_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SourceCreateRequest {
+  name: string;
+  connector_type: string;
+  config?: Record<string, unknown>;
+  monitor_mode?: "live" | "scheduled";
+  sync_interval_minutes?: number | null;
+}
+
+export interface SourceUpdateRequest {
+  name?: string;
+  config?: Record<string, unknown>;
+  monitor_mode?: "live" | "scheduled";
+  sync_interval_minutes?: number | null;
+  enabled?: boolean;
+}
+
+export interface SourceFileEntry {
+  key: string;
+  size: number;
+  last_modified: string;
+}
+
+export interface SourceFilesResponse {
+  source_id: string;
+  bucket: string;
+  files: SourceFileEntry[];
+}
+
+export async function listConnectors(): Promise<ConnectorOption[]> {
+  const res = await apiFetch<{ connectors: ConnectorOption[] }>("/api/sources/connectors");
+  return res.connectors;
+}
+
+export async function listSources(): Promise<SourceRecord[]> {
+  return apiFetch<SourceRecord[]>("/api/sources");
+}
+
+export async function createSource(body: SourceCreateRequest): Promise<SourceRecord> {
+  return apiFetch<SourceRecord>("/api/sources", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getSource(sourceId: string): Promise<SourceRecord> {
+  return apiFetch<SourceRecord>(`/api/sources/${sourceId}`);
+}
+
+export async function updateSource(sourceId: string, body: SourceUpdateRequest): Promise<SourceRecord> {
+  return apiFetch<SourceRecord>(`/api/sources/${sourceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteSource(sourceId: string): Promise<void> {
+  await apiFetch(`/api/sources/${sourceId}`, { method: "DELETE" });
+}
+
+export async function linkSourceToPipeline(sourceId: string, pipelineId: string): Promise<void> {
+  await apiFetch(`/api/sources/${sourceId}/pipeline/${pipelineId}`, { method: "POST" });
+}
+
+export async function unlinkSourceFromPipeline(sourceId: string, pipelineId: string): Promise<void> {
+  await apiFetch(`/api/sources/${sourceId}/pipeline/${pipelineId}`, { method: "DELETE" });
+}
+
+export async function listSourceFiles(sourceId: string, prefix = ""): Promise<SourceFilesResponse> {
+  const params = new URLSearchParams();
+  if (prefix) params.set("prefix", prefix);
+  const qs = params.toString();
+  return apiFetch<SourceFilesResponse>(`/api/sources/${sourceId}/files${qs ? `?${qs}` : ""}`);
+}
+
+export interface TriggerSyncResponse {
+  status: string;
+  source_id?: string;
+  connector_type?: string;
+  minio_bucket?: string;
+  message?: string;
+}
+
+export async function triggerSourceSync(sourceId: string): Promise<TriggerSyncResponse> {
+  return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
+}

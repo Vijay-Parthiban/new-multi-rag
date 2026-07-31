@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "entries": {
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1785283580704,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "459c54e5f35d6a58dcd90d2aecc21fa6d1f35d241bc5b134c506f87dc7b6d67b": {
+      "last_emitted_at_ms": 1785283574220,
+      "message": "Combine searches in parallel when investigating multiple patterns."
+    },
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1785283513016,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1785283365774,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "b47dcab2ff039476eaf13f2683fb5891e4a32f60d7b93bae9246834bc5bbbf81": {
+      "last_emitted_at_ms": 1785282321859,
+      "message": "Spawning agent: verification (inherit) | Task: Verify pathway-worker implementation"
+    },
+    "0a5b59e2a1509289137298b07f1562fcf5fd6c4718c80d25f2caa1b09cf01e96": {
+      "last_emitted_at_ms": 1785281372570,
+      "message": "Spawning agent: verification (inherit) | Task: Verify pathway worker implementation"
+    },
+    "709421e08f509356a7377df610d5efeacd62da30e9dcf98950b6ec8118fab6b2": {
+      "last_emitted_at_ms": 1785280407209,
+      "message": "Spawning agent: unknown (inherit) | Task: Read Source model and scraper"
+    },
+    "06ce2108ede411ecbb98260a4c97d66dfde756f32a918c11bdc0cd6d4a0ffce7": {
+      "last_emitted_at_ms": 1785280378664,
+      "message": "Spawning agent: Explore (inherit) | Task: Explore Pathway worker setup"
+    }
+  },
+  "updated_at": "2026-07-29T00:06:20.704Z"
+}

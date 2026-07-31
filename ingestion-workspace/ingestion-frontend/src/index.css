@@ -2375,6 +2375,339 @@ select.input option {
 }
 
 /* ═══════════════════════════════════
+   Sources Page
+   ═══════════════════════════════════ */
+
+.sources-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.sources-list-panel {
+  min-height: 0;
+}
+
+.source-detail-panel {
+  min-height: 0;
+}
+
+.sources-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sources-list li {
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.sources-list li:last-child {
+  border-bottom: none;
+}
+
+.sources-list li.active {
+  background: var(--accent-subtle);
+}
+
+.sources-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--text-primary);
+  transition: background 0.2s ease;
+}
+
+.sources-list-item:hover {
+  background: var(--bg-glass-hover);
+}
+
+.sources-list-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.sources-list-item-info strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.sources-list-item-info .muted {
+  font-size: 0.75rem;
+}
+
+.sources-list-item-actions {
+  flex-shrink: 0;
+}
+
+.source-detail-panel .form-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.source-detail-panel .form-row.actions {
+  margin-top: 0.5rem;
+}
+
+.source-files-panel {
+  margin-top: 1.25rem;
+}
+
+.source-files-panel .panel-header {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* ── Source detail header actions ── */
+.source-header-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* ── Connector configuration section ── */
+.source-config-section {
+  margin-top: 1rem;
+  padding: 0.875rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-muted);
+}
+
+.source-config-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.required-mark {
+  color: var(--danger);
+  margin-left: 2px;
+}
+
+/* ── Source pipeline links ── */
+.source-pipelines-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.source-pipelines-header .source-config-title {
+  margin: 0;
+}
+
+.source-pipeline-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.source-pipeline-links li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--border-muted);
+  transition: background 0.15s ease;
+}
+
+.source-pipeline-links li:last-child {
+  border-bottom: none;
+}
+
+.source-pipeline-links li:hover {
+  background: var(--bg-glass-hover);
+}
+
+.source-pipeline-link-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.source-files-toolbar {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+/* ═══════════════════════════════════
+   Modal System
+   ═══════════════════════════════════ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s ease-out;
+  overflow-y: auto;
+}
+
+.modal {
+  background: var(--bg-default);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg), 0 0 60px rgba(56, 139, 253, 0.08);
+  width: 100%;
+  max-width: 640px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.25s ease-out;
+}
+
+.modal-sm {
+  max-width: 480px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.125rem 1.25rem;
+  border-bottom: 1px solid var(--border-muted);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  transition: color 0.2s ease;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.25rem;
+  border-top: 1px solid var(--border-muted);
+  flex-shrink: 0;
+}
+
+/* ── Connector Grid ── */
+.connector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.connector-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.875rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--text-primary);
+  transition: all 0.25s ease;
+  position: relative;
+}
+
+.connector-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  transform: translateY(-2px);
+}
+
+.connector-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.connector-card--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.connector-card-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.connector-card-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.connector-card-badge {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 999px;
+}
+
+@media (max-width: 600px) {
+  .connector-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .sources-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ═══════════════════════════════════
    Scrollbar Styling
    ═══════════════════════════════════ */
 

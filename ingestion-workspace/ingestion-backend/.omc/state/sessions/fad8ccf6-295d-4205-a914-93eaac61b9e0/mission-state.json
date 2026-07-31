@@ -1,0 +1,69 @@
+{
+  "updatedAt": "2026-07-28T23:58:21.321Z",
+  "missions": [
+    {
+      "id": "session:fad8ccf6-295d-4205-a914-93eaac61b9e0:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-07-28T23:45:23.761Z",
+      "updatedAt": "2026-07-28T23:58:21.321Z",
+      "status": "done",
+      "workerCount": 1,
+      "taskCounts": {
+        "total": 1,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 1,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "verification:af7227a",
+          "role": "verification",
+          "ownership": "af7227a21d5a788e1",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-07-28T23:58:21.321Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:af7227a21d5a788e1:2026-07-28T23:45:23.761Z",
+          "at": "2026-07-28T23:45:23.761Z",
+          "kind": "update",
+          "agent": "verification:af7227a",
+          "detail": "started verification:af7227a",
+          "sourceKey": "session-start:af7227a21d5a788e1"
+        },
+        {
+          "id": "session-stop:a44bcace5aefda803:2026-07-28T23:45:27.584Z",
+          "at": "2026-07-28T23:45:27.584Z",
+          "kind": "completion",
+          "agent": "verification:af7227a",
+          "detail": "completed",
+          "sourceKey": "session-stop:a44bcace5aefda803"
+        },
+        {
+          "id": "session-stop:a84cecc8e01de02b4:2026-07-28T23:56:55.050Z",
+          "at": "2026-07-28T23:56:55.050Z",
+          "kind": "completion",
+          "agent": "verification:af7227a",
+          "detail": "completed",
+          "sourceKey": "session-stop:a84cecc8e01de02b4"
+        },
+        {
+          "id": "session-stop:af7227a21d5a788e1:2026-07-28T23:58:21.321Z",
+          "at": "2026-07-28T23:58:21.321Z",
+          "kind": "completion",
+          "agent": "verification:af7227a",
+          "detail": "completed",
+          "sourceKey": "session-stop:af7227a21d5a788e1"
+        }
+      ]
+    }
+  ]
+}

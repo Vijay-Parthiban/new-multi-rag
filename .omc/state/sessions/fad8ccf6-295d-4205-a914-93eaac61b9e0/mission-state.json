@@ -1,0 +1,127 @@
+{
+  "updatedAt": "2026-07-28T21:42:35.479Z",
+  "missions": [
+    {
+      "id": "session:fad8ccf6-295d-4205-a914-93eaac61b9e0:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-07-28T21:32:02.126Z",
+      "updatedAt": "2026-07-28T21:42:35.479Z",
+      "status": "running",
+      "workerCount": 2,
+      "taskCounts": {
+        "total": 2,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 1,
+        "completed": 1,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "general-purpose:ae48559",
+          "role": "general-purpose",
+          "ownership": "ae48559e6d9cb4736",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-07-28T21:42:35.479Z"
+        },
+        {
+          "name": "general-purpose:acb935b",
+          "role": "general-purpose",
+          "ownership": "acb935b743a649440",
+          "status": "running",
+          "currentStep": null,
+          "latestUpdate": null,
+          "completedSummary": null,
+          "updatedAt": "2026-07-28T21:34:02.538Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-stop:a264c0c2fc8c141ba:2026-07-28T21:32:36.115Z",
+          "at": "2026-07-28T21:32:36.115Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a264c0c2fc8c141ba"
+        },
+        {
+          "id": "session-stop:ad4082c010da4092b:2026-07-28T21:32:36.177Z",
+          "at": "2026-07-28T21:32:36.177Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:ad4082c010da4092b"
+        },
+        {
+          "id": "session-start:acb935b743a649440:2026-07-28T21:34:02.538Z",
+          "at": "2026-07-28T21:34:02.538Z",
+          "kind": "update",
+          "agent": "general-purpose:acb935b",
+          "detail": "started general-purpose:acb935b",
+          "sourceKey": "session-start:acb935b743a649440"
+        },
+        {
+          "id": "session-stop:a9e1f3563d99de913:2026-07-28T21:37:40.762Z",
+          "at": "2026-07-28T21:37:40.762Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a9e1f3563d99de913"
+        },
+        {
+          "id": "session-stop:af233f25fe87423e0:2026-07-28T21:38:17.846Z",
+          "at": "2026-07-28T21:38:17.846Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:af233f25fe87423e0"
+        },
+        {
+          "id": "session-stop:a7d72ef38f5cf9e64:2026-07-28T21:38:55.661Z",
+          "at": "2026-07-28T21:38:55.661Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a7d72ef38f5cf9e64"
+        },
+        {
+          "id": "session-stop:aaa9621da3e3aa26b:2026-07-28T21:41:18.334Z",
+          "at": "2026-07-28T21:41:18.334Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:aaa9621da3e3aa26b"
+        },
+        {
+          "id": "session-stop:a4af2fb3d17a1e00a:2026-07-28T21:41:58.216Z",
+          "at": "2026-07-28T21:41:58.216Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a4af2fb3d17a1e00a"
+        },
+        {
+          "id": "session-stop:a50b4e27d8db1e52c:2026-07-28T21:42:31.587Z",
+          "at": "2026-07-28T21:42:31.587Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a50b4e27d8db1e52c"
+        },
+        {
+          "id": "session-stop:a44afdf64d9835cda:2026-07-28T21:42:35.479Z",
+          "at": "2026-07-28T21:42:35.479Z",
+          "kind": "completion",
+          "agent": "general-purpose:ae48559",
+          "detail": "completed",
+          "sourceKey": "session-stop:a44afdf64d9835cda"
+        }
+      ]
+    }
+  ]
+}

@@ -13,7 +13,13 @@ def _get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        _engine = create_async_engine(settings.async_database_url, pool_pre_ping=True)
+        _engine = create_async_engine(
+            settings.async_database_url,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=False,
+            pool_recycle=3600,
+        )
     return _engine
 
 

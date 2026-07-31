@@ -1,0 +1,176 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1785281611014,
+  "projectRoot": "C:\\Users\\2782234\\omp-projects\\new-multi-rag\\ingestion-workspace\\ingestion-backend",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "fastapi",
+        "version": null,
+        "category": "backend"
+      },
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cd \"C:/Users/2782234/omp-projects/new-multi-rag/ingestion-workspace/ingestion-frontend\" && npx tsc --noEmit 2>&1 | head -50",
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "scripts",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "new-multirag-ngrokrunning-July21",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "alembic": {
+      "path": "alembic",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1785281610728,
+      "keyFiles": [
+        "env.py",
+        "script.py.mako"
+      ]
+    },
+    "apps": {
+      "path": "apps",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1785281610729,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1785281610730,
+      "keyFiles": [
+        "run-api.sh",
+        "run-migrate.sh",
+        "run-worker.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1785281610731,
+      "keyFiles": []
+    },
+    "apps\\api": {
+      "path": "apps\\api",
+      "purpose": "API routes",
+      "fileCount": 3,
+      "lastAccessed": 1785281610732,
+      "keyFiles": [
+        "exceptions.py",
+        "main.py",
+        "__init__.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src\\ingestion_service\\clients\\source_sync.py",
+      "accessCount": 7,
+      "lastAccessed": 1785282441524,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 6,
+      "lastAccessed": 1785283576144,
+      "type": "directory"
+    },
+    {
+      "path": "apps\\api\\routes\\sources.py",
+      "accessCount": 3,
+      "lastAccessed": 1785282443252,
+      "type": "file"
+    },
+    {
+      "path": "src\\ingestion_service\\core\\pathway_sync.py",
+      "accessCount": 2,
+      "lastAccessed": 1785282692240,
+      "type": "file"
+    },
+    {
+      "path": "Dockerfile",
+      "accessCount": 1,
+      "lastAccessed": 1785282366857,
+      "type": "file"
+    },
+    {
+      "path": "src\\shared\\queue\\client.py",
+      "accessCount": 1,
+      "lastAccessed": 1785282490073,
+      "type": "file"
+    },
+    {
+      "path": "src\\shared\\db\\models.py",
+      "accessCount": 1,
+      "lastAccessed": 1785282502948,
+      "type": "file"
+    },
+    {
+      "path": "apps\\worker\\scheduler.py",
+      "accessCount": 1,
+      "lastAccessed": 1785282655321,
+      "type": "file"
+    },
+    {
+      "path": "pyproject.toml",
+      "accessCount": 1,
+      "lastAccessed": 1785282823491,
+      "type": "file"
+    },
+    {
+      "path": "scripts\\run-migrate.sh",
+      "accessCount": 1,
+      "lastAccessed": 1785283459558,
+      "type": "file"
+    },
+    {
+      "path": "ARCHITECTURE.md",
+      "accessCount": 1,
+      "lastAccessed": 1785283515161,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

@@ -1,9 +1,10 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconBrowse, IconChat, IconHome, IconIngestion, IconPipeline, IconTracking, IconUpload, IconEvaluation } from "./Icons";
+import { IconBrowse, IconChat, IconHome, IconIngestion, IconPipeline, IconSources, IconTracking, IconUpload, IconEvaluation } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
+import SourcesPage from "../pages/SourcesPage";
 import DirectoryPage from "../pages/DirectoryPage";
 import FileViewerPage from "../pages/FileViewerPage";
 import PipelinesPage from "../pages/PipelinesPage";
@@ -16,6 +17,7 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/", label: "Overview", icon: IconHome, end: true },
   { to: "/browse", label: "Folders", icon: IconBrowse },
   { to: "/upload", label: "Upload", icon: IconUpload },
+  { to: "/sources", label: "Sources", icon: IconSources },
   { to: "/pipelines", label: "Pipelines", icon: IconPipeline },
   { to: "/chat", label: "Chat", icon: IconChat },
   { to: "/evaluations", label: "Live Chat Metrics", icon: IconEvaluation },
@@ -98,6 +100,7 @@ export default function AppLayout() {
   const isHome = path === "/";
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isUpload = path === "/upload";
+  const isSources = path === "/sources";
   const isPipelines = path === "/pipelines";
   const isChat = path === "/chat";
   const isEvaluations = path === "/evaluations";
@@ -150,6 +153,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isUpload}>
           <UploadPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isSources}>
+          <SourcesPage />
         </PersistentPage>
 
         <PersistentPage visible={isPipelines}>
