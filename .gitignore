@@ -1,0 +1,8 @@
+# Secrets — never commit service account / credential files
+sanguine-robot-*.json
+*.service-account.json
+.omc/
+dist/
+node_modules/
+__pycache__/
+.venv/
