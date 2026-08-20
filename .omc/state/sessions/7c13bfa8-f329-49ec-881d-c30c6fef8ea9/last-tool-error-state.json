@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"slack auth list 2>/dev/null || slack.exe auth list 2>/dev/null\",\"description\":\"Check Slack CLI auth status\"}",
-  "error": "Exit code 127",
-  "timestamp": "2026-07-30T11:16:56.550Z",
-  "retry_count": 2
-}

@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"ls ~/.whatsapp-channel/.baileys_auth/ 2>&1\",\"description\":\"Check auth directory\"}",
-  "error": "Exit code 2\nls: cannot access '/c/Users/2782234/.whatsapp-channel/.baileys_auth/': No such file or directory",
-  "timestamp": "2026-07-29T20:31:23.540Z",
-  "retry_count": 2
-}
