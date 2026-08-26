@@ -1,7 +1,7 @@
 # Multi-RAG Ingestion System: Comprehensive Project Implementation & Environment Replication Guide
 
 **Last Updated**: 2026-08-26  
-**Version**: 2.1.0  
+**Version**: 2.2.0  
 **Status**: Fully Operational & Verified (12 Containers Healthy)
 
 ---
@@ -13,114 +13,105 @@ The **Multi-RAG Ingestion System** is an enterprise-grade data ingestion, Change
 ### Key Capabilities & Architectural Features
 1. **Pathway & Airbyte Connector Integration**: Standardized configuration transformation and stream ingestion supporting 12 connector types, allowing multiple connectors per source.
 2. **Multi-Connector Storage Isolation**: Dedicated S3-compatible MinIO object storage bucket per source with connector-isolated namespaces (`connectors/{connector_id}/...`).
-3. **Differential State CRUD Sync Engine**: Real-time Change Data Capture (CDC) state reflection. File additions, updates/modifications, and deletions in external sources are automatically mirrored to MinIO storage.
+3. **Differential State CRUD Sync Engine**: Real-time Change Data Capture (CDC) state reflection. File additions, updates/modifications, obsolete key cleanups, and deletions in external sources are automatically mirrored to MinIO storage.
 4. **Sub-5-Second Real-Time Live Sync**: Continuous background poller (`poll_interval_seconds=3`) automatically initialized via FastAPI `lifespan` lifecycle management (`apps/api/main.py`).
 5. **Poller Concurrency Control**: Thread-safe `_SYNCING_SOURCES` execution guard preventing overlapping concurrent sync jobs for a single source.
-6. **Flat & Tree File Browser Modes**: React frontend `FileBrowser.tsx` featuring instant switching between flat file views (displaying readable filenames alongside full object keys) and hierarchical folder trees.
-7. **Container Live Code Reload**: Docker Compose volume mounts (`./ingestion-backend/src:/app/src`, `./ingestion-backend/apps:/app/apps`) enabling immediate host-to-container code execution.
-8. **Native Dark Premium Design System**: Modern React UI styling driven by native CSS custom variables, glassmorphic card overlays, responsive grid/flex layouts, and full keyboard accessibility without Tailwind dependencies.
-9. **ngrok Tunnel Reverse Proxy Setup**: Vite API proxy (`127.0.0.1:8007` host header override) and ngrok browser warning bypass header (`ngrok-skip-browser-warning: true`), delivering seamless operation across `http://localhost:5173` and `https://semiwildly-superadaptable-vernice.ngrok-free.dev`.
-10. **High-Performance Architecture**: Optimized SQLAlchemy connection pool (`pool_size=30`, `max_overflow=50`, `pool_pre_ping=True`), SQL eager loading (`selectinload`), and API response memoization achieving **< 80 ms** page loads and **~566 ms** client navigation.
+6. **Flat & Tree File Browser Modes**: React frontend `FileBrowser.tsx` featuring instant switching between flat file views (displaying readable filenames alongside full MinIO object keys) and tree directory hierarchy views.
+7. **Robust S3 Storage & Settings Configuration**: Fallback `minio_region` configuration handling and Google Drive API credentials integration.
 
 ---
 
-## 2. System Architecture & Topology
+## 2. Recent Issues Resolved & Root Cause Fixes
+
+### 1. MinIO S3 Region Attribute Error Fix (`minio_region`)
+- **Issue**: Calls to `_s3_client()` raised `AttributeError: 'Settings' object has no attribute 'minio_region'` during background bucket operations and polling checks.
+- **Fix**: Added `minio_region: str = "us-east-1"` to `Settings` in `src/shared/config/settings.py` and updated `_s3_client()` in `src/shared/storage/s3_client.py` to use `getattr(settings, "minio_region", "us-east-1")`.
+
+### 2. Missing Google API Python Client Dependencies
+- **Issue**: Google Drive connector sync execution raised `ModuleNotFoundError: No module named 'google.oauth2'`.
+- **Fix**: Added `google-api-python-client>=2.100.0` and `google-auth>=2.20.0` to `pyproject.toml` dependencies and installed them into container runtimes (`api`, `worker`, `pathway-worker`).
+
+### 3. Frontend Files Tab Loading Fix
+- **Issue**: Opening the source details page (`/sources/{source_id}`) initially displayed `Bucket Files 0` until manual tab clicks.
+- **Fix**: Updated `useEffect` in `SourceDetailPage.tsx` to automatically trigger `loadFiles()` on component mount and tab selection.
+
+---
+
+## 3. System Architecture & Topology
 
 ```
-                                 ┌─────────────────────────────────────────────────┐
-                                 │                 USER INTERFACE                  │
-                                 │    Localhost: http://localhost:5173             │
-                                 │    ngrok: https://...ngrok-free.dev             │
-                                 └────────────────────────┬────────────────────────┘
-                                                          │
-                                         ┌────────────────┴────────────────┐
-                                         ▼                                 ▼
-                             ┌───────────────────────┐         ┌───────────────────────┐
-                             │ Vite Dev Server Proxy │         │ ngrok Tunnel Agent    │
-                             │ (Port 5173)           │         │ (Port 4040)           │
-                             └───────────┬───────────┘         └───────────┬───────────┘
-                                         │                                 │
-                                         └────────────────┬────────────────┘
-                                                          │
-                                                          ▼
-                                       ┌──────────────────────────────────────┐
-                                       │ FastAPI Backend Ingestion API        │
-                                       │ (Port 8007 -> Container 8000)        │
-                                       └──────────────────┬───────────────────┘
-                                                          │
-                    ┌─────────────────────────────────────┼─────────────────────────────────────┐
-                    ▼                                     ▼                                     ▼
-        ┌───────────────────────┐             ┌───────────────────────┐             ┌───────────────────────┐
-        │ PostgreSQL Database   │             │ Redis Task Queue      │             │ MinIO Object Storage  │
-        │ (Port 5433 -> 5432)   │             │ (Port 6379)           │             │ (Ports 9000 / 9001)   │
-        └───────────────────────┘             └───────────────────────┘             └───────────┬───────────┘
-                                                          │                                     │
-                                                          ▼                                     │
-                                              ┌───────────────────────┐                         │
-                                              │ Pathway Sync Worker   │◄────────────────────────┘
-                                              │ (Differential Engine) │
-                                              └───────────┬───────────┘
-                                                          │
-                                                          ▼
-                                              ┌───────────────────────┐
-                                              │ Qdrant Vector Engine  │
-                                              │ (Port 6333)           │
-                                              └───────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    Frontend UI (React)                                 │
+│                                  http://localhost:5173                                 │
+└───────────────────────────┬───────────────────────────────────┬────────────────────────┘
+                            │                                   │
+                            ▼                                   ▼
+┌───────────────────────────────────────┐   ┌───────────────────────────────────────────┐
+│        Ingestion API (:8007)          │   │           RAG Query API (:8001)           │
+│   FastAPI Lifespan Background Pollers │   │        Vector Retrieval & Generation      │
+└───────────┬───────────────┬───────────┘   └───────────────────┬───────────────────────┘
+            │               │                                   │
+            ▼               ▼                                   ▼
+┌──────────────────┐  ┌──────────────────┐             ┌────────────────────────────────┐
+│ Postgres (:5433) │  │   Redis (:6379)  │             │     Qdrant Vector DB (:6333)   │
+│ Sources/Connectors│  │ Job Queue & Lock │             │  Collection: scrape_embeddings │
+└──────────────────┘  └────────┬─────────┘             └────────────────────────────────┘
+                               │
+                               ▼
+                   ┌───────────────────────┐
+                   │ Pathway Sync Worker   │
+                   │ (Differential Engine) │
+                   └───────────┬───────────┘
+                               │
+                               ▼
+                   ┌───────────────────────┐
+                   │ MinIO Storage (:9000) │
+                   │ Bucket: source-my-gd  │
+                   └───────────────────────┘
 ```
 
 ---
 
-## 3. Microservice Inventory & Docker Container Specs
+## 4. Microservice Inventory & Docker Container Specs
 
 All 12 microservices run as Docker containers managed by `ingestion-workspace/docker-compose.yaml`:
 
-| Container Name | Service | Internal Port | Host Port | Volume Mounts / Notes |
+| Container Name | Service | Internal Port | Host Port | Volume Mounts / Purpose |
 | :--- | :--- | :--- | :--- | :--- |
 | `ingestion-workspace-api-1` | FastAPI Ingestion API | 8000 | **8007** | `./ingestion-backend/src:/app/src`, `./ingestion-backend/apps:/app/apps` |
-| `ingestion-workspace-pathway-worker-1` | Pathway Worker | 8000 | N/A | `./ingestion-backend/src:/app/src`, `./ingestion-backend/apps:/app/apps` |
-| `ingestion-workspace-worker-1` | Ingestion Queue Worker | 8000 | N/A | `./ingestion-backend/src:/app/src`, `./ingestion-backend/apps:/app/apps` |
-| `ingestion-workspace-frontend-1` | React + Vite Frontend | 5173 | **5173** | Native Dark Premium UI |
-| `ingestion-workspace-rag-api-1` | RAG Query API | 8001 | **8001** | Handles vector retrieval and context generation |
-| `ingestion-workspace-scraper-api-1` | Scraper API | 8000 | **8000** | Web scraper crawling service |
-| `ingestion-workspace-scraper-worker-1` | Scraper Worker | 8000 | N/A | Background scraper task processing |
-| `ingestion-workspace-postgres-1` | PostgreSQL 16 | 5432 | **5433** | Primary relational DB (`ingestion` + `crawler` DBs) |
-| `ingestion-workspace-redis-1` | Redis 7 | 6379 | **6379** | Task queue broker and caching layer |
-| `ingestion-workspace-minio-1` | MinIO Storage | 9000 / 9001 | **9000 / 9001** | S3-compatible object storage (`minioadmin` / `minioadmin`) |
-| `ingestion-workspace-qdrant-1` | Qdrant Vector DB | 6333 | **6333** | Document vector storage and similarity search |
-| `ngrok-frontend` | ngrok Tunnel Agent | 4040 | **4040** | Secure public HTTP/HTTPS tunnel wrapper |
+| `ingestion-workspace-pathway-worker-1` | Pathway Worker | 8000 | N/A | Stream processing & CDC differential engine |
+| `ingestion-workspace-worker-1` | Ingestion Queue Worker | 8000 | N/A | Async background jobs & file processing |
+| `ingestion-workspace-frontend-1` | React + Vite Frontend | 5173 | **5173** | React UI with source & bucket management |
+| `ingestion-workspace-rag-api-1` | RAG Query API | 8001 | **8001** | Vector retrieval & context generation |
+| `ingestion-workspace-scraper-api-1` | Scraper API | 8000 | **8000** | Web crawl & scrape service |
+| `ingestion-workspace-minio-1` | MinIO Storage | 9000 / 9001 | **9000 / 9001** | S3 object storage & MinIO Console |
+| `ingestion-workspace-postgres-1` | PostgreSQL DB | 5432 | **5433** | Persistent database storage |
+| `ingestion-workspace-qdrant-1` | Qdrant Vector DB | 6333 | **6333** | Vector collection storage & search |
+| `ingestion-workspace-redis-1` | Redis | 6379 | **6379** | Queue broker & caching |
+| `ingestion-workspace-eval-worker-1` | Evaluation Worker | 8001 | N/A | Offline evaluation pipeline |
+| `ingestion-workspace-migrate-1` | Alembic Migration | N/A | N/A | Automatic database schema migration |
 
 ---
 
-## 4. Differential State CRUD Sync Engine Architecture
+## 5. Differential State CRUD Sync Engine Architecture
 
-### 4.1 Change Data Capture (CDC) Model
-Pathway treats external connector data streams as CDC tables with dynamic tuple retractions:
-- **ADD (`+1`)**: Emitted when a file is created.
-- **REPLACE / UPDATE (`-1` then `+1`)**: Emitted when a file is modified (retracts previous record and emits updated content).
-- **DELETE / RETRACTION (`-1`)**: Emitted when a file is deleted in the external source.
+### 5.1 Overview
+The sync engine (`gdrive_sync.py` & `pathway_sync.py`) indexes objects in MinIO using metadata tags (`gdrive-file-id`, `remote-modified-at`, `source-id`, `connector-id`).
 
-### 4.2 Multi-Connector Bucket Isolation
-Each source owns a dedicated MinIO bucket (`source-{slug}-{short_id}`). Connectors store objects under connector-isolated prefixes:
+### 5.2 Storage Namespace Convention
+Objects in source MinIO buckets are stored under connector-isolated namespaces:
 ```
-MinIO Bucket: source-my-gd-b222342d
-├── connectors/4f8ae27a-f22d-4792-8e3f-7e7be12dda8a/
-│   ├── 11mxBT-X1WMGVVgZG-Pd-bsgRHv-zco7V/resume3.pdf
-│   ├── 12HflUsQTJ5tp1bfdjSSAA-YefrCd6yNC/resume 5.pdf
-│   ├── 1coUb5zF2jryalRF-lnDdpcBlL_K7Z5Ng/Resume-1.pdf
-│   ├── 1dHrktgNKAWWURuVqVJQkufJfnr4Ad2jU/resume4.pdf
-│   └── 1df_Jg5ltDsq_JccKFe4PSIKLrHT5HGmu/Resume6.pdf
-└── connectors/second-connector-id/
-    └── report.pdf
+connectors/{connector_id}/{gdrive_file_id}/{filename}
 ```
 
-### 4.3 Differential CRUD Logic (`gdrive_sync.py` & `pathway_sync.py`)
+### 5.3 Differential CRUD Logic
 1. **Remote Inventory Query**: Fetches active file list and metadata (`modifiedTime`, `size`, `id`) from external connector API.
-2. **MinIO Inventory & Metadata Lookup**: Lists objects in MinIO bucket, indexing keys by both key structure (`connectors/{connector_id}/{drive_id}/...`) and S3 object metadata (`gdrive-file-id`).
-3. **Differential Sets Evaluation**:
-   - **ADD**: Uploads newly created files to MinIO.
-   - **UPDATE / REPLACE**: Overwrites MinIO objects if `remote-modified-at` timestamp or `ContentLength` file size differs.
+2. **MinIO Inventory Query**: Lists current objects in MinIO bucket (`list_objects`) and parses metadata tags.
+3. **Differential Operations**:
+   - **ADD**: Downloads new remote files and uploads them to MinIO.
+   - **REPLACE / UPDATE**: Overwrites MinIO objects when `remote-modified-at` timestamp differs.
    - **OBSOLETE CLEANUP**: Deletes obsolete object keys matching previous file names or legacy prefixes.
-   - **DELETE**: Deletes objects from MinIO when remote file IDs no longer exist in external source folder.
+   - **DELETE**: Removes objects from MinIO when external file IDs no longer exist in the remote source folder.
 4. **Poller Concurrency Guard**:
    ```python
    _SYNCING_SOURCES: set[uuid.UUID] = set()
@@ -138,21 +129,21 @@ MinIO Bucket: source-my-gd-b222342d
 
 ---
 
-## 5. Live vs Scheduled Synchronization
+## 6. Live vs Scheduled Synchronization Modes
 
 | Feature | LIVE Mode | SCHEDULED Mode |
 | :--- | :--- | :--- |
 | **Polling Interval** | **3 seconds** (< 5s latency) | Configurable (`sync_interval_minutes`) |
 | **Lifecycle Hook** | Automatically initialized via FastAPI `lifespan` (`apps/api/main.py`) | Managed by APScheduler background worker |
-| **Use Case** | Real-time file reflection (Google Drive, Local Folders) | Periodic/batch connector synchronization |
+| **Use Case** | Real-time file reflection (Google Drive, Local Folders) | Periodic batch connector synchronization |
 
 ---
 
-## 6. Complete Environment Setup & Replication Guide
+## 7. Complete Environment Setup & Replication Guide
 
-Follow these instructions to replicate and execute the entire project in any environment (Linux, macOS, Windows WSL2/Native).
+Follow these steps to replicate and run the complete project in any environment (Linux, macOS, Windows WSL2/Native).
 
-### Step 1: Prerequisites
+### Step 1: System Prerequisites
 - **Docker Desktop / Docker Engine**: v20.10+ with Docker Compose v2.x
 - **Node.js**: v18.0.0+ and `npm` v9.0.0+
 - **Python**: 3.11+
@@ -163,7 +154,7 @@ git clone https://github.com/Vijay-Parthiban/new-multi-rag.git
 cd new-multi-rag/ingestion-workspace
 ```
 
-Verify environment file in `ingestion-workspace/.env`:
+Verify environment configuration file (`ingestion-workspace/.env`):
 ```env
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
@@ -183,39 +174,55 @@ QDRANT_HOST=qdrant
 QDRANT_PORT=6333
 ```
 
-### Step 3: Launch Docker Infrastructure
+### Step 3: Launch Container Infrastructure
 ```bash
-# Spin up all 12 containers in detached mode
-docker compose up -d --build
+# Spin up all containers in detached mode
+docker compose up -d
 
-# Verify container health
+# Verify container health status
 docker compose ps
 ```
 
-### Step 4: Start Frontend Dev Server
+### Step 4: Verify Python Dependencies in Containers
+If installing or updating dependencies inside containers:
+```bash
+docker compose exec api pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+docker compose exec worker pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+docker compose exec pathway-worker pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+```
+
+### Step 5: Start Frontend Application
 ```bash
 cd ingestion-workspace/ingestion-frontend
 npm install
 npm run dev
 ```
 
-### Step 5: Verify Service Health
+### Step 6: Access & Verify Application Endpoints
 - **Frontend UI**: `http://localhost:5173`
-- **Backend API**: `http://localhost:8007/health` $\rightarrow$ `{"status": "ok"}`
+- **Backend Ingestion API**: `http://localhost:8007/health` -> `{"status": "ok"}`
 - **MinIO Console**: `http://localhost:9001` (`minioadmin` / `minioadmin`)
-- **Qdrant Dashboard**: `http://localhost:6333/dashboard`
-
-### Step 6: Public ngrok Access (Optional)
-```bash
-ngrok http --url=semiwildly-superadaptable-vernice.ngrok-free.dev 5173
-```
-Access public link at `https://semiwildly-superadaptable-vernice.ngrok-free.dev/sources`.
+- **Qdrant Vector Dashboard**: `http://localhost:6333/dashboard`
 
 ---
 
-## 7. Performance Latency Benchmarks
+## 8. Verification & Testing Commands
 
-| Metric / Endpoint | Baseline | Current Optimized State | Improvement |
+### 1. Test Google Drive Differential Sync Engine via Container Exec
+```bash
+docker compose exec api python -c "import asyncio, uuid; from src.shared.db.session import AsyncSessionLocal; from src.ingestion_service.core.pathway_sync import _do_sync_source_from_pathway; asyncio.run(_do_sync_source_from_pathway(AsyncSessionLocal(), uuid.UUID('b222342d-c768-4a98-aaf6-fb7e1652b90d')))"
+```
+
+### 2. Verify MinIO Bucket Object Inventory
+```bash
+docker compose exec api python -c "import asyncio; from src.shared.storage.s3_client import list_objects; asyncio.run(list_objects('source-my-gd-b222342d'))"
+```
+
+---
+
+## 9. Performance & Latency Benchmarks
+
+| Metric / Endpoint | Baseline | Optimized State | Improvement |
 | :--- | :--- | :--- | :--- |
 | **HTML Page Server Response** | ~2,500 ms | **56.24 ms** | **44x faster** |
 | **Source Detail Page Load** | ~3,200 ms | **79.13 ms** | **40x faster** |

@@ -141,25 +141,33 @@ class ChunkUpload(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-directory: Mapped["Directory"] = relationship(back_populates="jobs")
-
-
 class Source(Base):
-    """External data source backed by an Airbyte connector via Pathway.
+    """External data source backed by one or more Airbyte connectors via Pathway.
 
     Each source gets its own dedicated MinIO bucket where connector output lands.
+    Multiple connectors can feed into the same source bucket.
     """
 
     __tablename__ = "sources"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    connector_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Legacy single-connector fields — kept for backward compat with existing rows.
+    # New sources should use the source_connectors relation instead.
+    connector_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
-    monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
-        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values),
+    # Connector→Source monitoring mode
+    connector_monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
+        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values, create_constraint=False),
         default=SourceMonitorMode.LIVE,
     )
+    connector_sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Source→Pipeline monitoring mode (default for all linked pipelines)
+    pipeline_monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
+        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values, create_constraint=False),
+        default=SourceMonitorMode.LIVE,
+    )
+    pipeline_sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     minio_bucket: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
@@ -172,10 +180,49 @@ class Source(Base):
     )
 
     pipelines: Mapped[list["PipelineSource"]] = relationship(back_populates="source", lazy="selectin")
+    connectors: Mapped[list["SourceConnector"]] = relationship(
+        back_populates="source", lazy="selectin", cascade="all, delete-orphan"
+    )
+
+
+class SourceConnector(Base):
+    """Individual connector attached to a source.
+
+    Each source can have multiple connectors (e.g. Google Drive + Slack feeding
+    the same MinIO bucket). Each connector has its own type, config, monitoring
+    mode, and sync schedule.
+    """
+
+    __tablename__ = "source_connectors"
+    __table_args__ = (
+        Index("ix_source_connectors_source_id", "source_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    connector_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
+        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values, create_constraint=False),
+        default=SourceMonitorMode.LIVE,
+    )
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    source: Mapped["Source"] = relationship(back_populates="connectors", lazy="selectin")
 
 
 class PipelineSource(Base):
-    """M2M join between Pipeline and Source."""
+    """M2M join between Pipeline and Source with per-link monitoring config."""
 
     __tablename__ = "pipeline_sources"
     __table_args__ = (
@@ -189,6 +236,12 @@ class PipelineSource(Base):
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
     )
+    # Per-link source→pipeline monitoring (overrides source default if set)
+    monitor_mode: Mapped[SourceMonitorMode | None] = mapped_column(
+        Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values, create_constraint=False),
+        nullable=True,
+    )
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     source: Mapped["Source"] = relationship(back_populates="pipelines", lazy="selectin")
@@ -252,21 +305,31 @@ class PipelineRun(Base):
 
 
 class IndexedFile(Base):
-    """Tracks which files have been indexed for each pipeline (by content_hash)."""
+    """Tracks which files have been indexed for each pipeline (by content_hash).
+
+    Directory-backed files reference ``files.id`` via ``file_id``. Source-backed
+    files (Airbyte connectors dumping into a source MinIO bucket) have no row in
+    ``files``; they are identified by ``source_id`` + ``file_key`` instead.
+    """
 
     __tablename__ = "indexed_files"
     __table_args__ = (
         Index("ix_indexed_files_pipeline_content_hash", "pipeline_id", "content_hash", unique=True),
         Index("ix_indexed_files_pipeline_file", "pipeline_id", "file_id"),
+        Index("ix_indexed_files_pipeline_source_key", "pipeline_id", "source_id", "file_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     pipeline_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("pipelines.id", ondelete="CASCADE"), nullable=False
     )
-    file_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("files.id", ondelete="CASCADE"), nullable=False
+    file_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), nullable=True
     )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=True
+    )
+    file_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     indexed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

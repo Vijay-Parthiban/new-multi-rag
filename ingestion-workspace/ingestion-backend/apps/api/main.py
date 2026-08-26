@@ -14,11 +14,13 @@ from src.shared.auth import verify_api_key
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import asyncio
     ensure_storage_layout()
+    from src.ingestion_service.core.pathway_sync import init_all_live_sync_pollers
+    asyncio.create_task(init_all_live_sync_pollers())
     yield
     await close_redis()
     await close_db()
-
 
 app = FastAPI(
     title="Ingestion API",

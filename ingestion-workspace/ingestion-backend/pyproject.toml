@@ -21,6 +21,8 @@ dependencies = [
     "pymupdf>=1.24.0",
     "apscheduler>=3.10.0",
     "aioboto3>=13.0.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.20.0",
     "platform-common",
 ]
 

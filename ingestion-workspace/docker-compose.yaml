@@ -21,6 +21,9 @@ services:
       - "8007:8000"
     env_file:
       - .env
+    volumes:
+      - ./ingestion-backend/src:/app/src
+      - ./ingestion-backend/apps:/app/apps
     depends_on:
       redis:
         condition: service_started
@@ -35,7 +38,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
   worker:
     build:
       context: ..
@@ -44,6 +46,8 @@ services:
     env_file:
       - .env
     volumes:
+      - ./ingestion-backend/src:/app/src
+      - ./ingestion-backend/apps:/app/apps
       - hf-cache:/root/.cache/huggingface
     depends_on:
       redis:
@@ -59,7 +63,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
   pathway-worker:
     build:
       context: ..
@@ -67,6 +70,9 @@ services:
     command: ["sh", "/app/scripts/run-pathway-worker.sh"]
     env_file:
       - .env
+    volumes:
+      - ./ingestion-backend/src:/app/src
+      - ./ingestion-backend/apps:/app/apps
     depends_on:
       redis:
         condition: service_started
@@ -79,21 +85,52 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-  web:
+  # --- Frontend (Vite dev server bound to all interfaces) ---
+  frontend:
     build:
       context: ./ingestion-frontend
       dockerfile: Dockerfile
+    command: npm run dev -- --host 0.0.0.0
     ports:
       - "5173:5173"
+    volumes:
+      - ./ingestion-frontend:/app
+      - /app/node_modules
     environment:
-      - VITE_API_URL=http://localhost:8007
+      - VITE_API_URL=http://host.docker.internal:8007
       - VITE_SCRAPER_URL=http://localhost:8000
       - VITE_RAG_API_URL=http://localhost:8001
+    networks:
+      - ingestion_backend
+    restart: unless-stopped
     depends_on:
       - api
 
-  # --- Web scrapper (pre-built image — no sibling repo required) ---
+  # --- ngrok tunnel (public URL to frontend) ---
+  ngrok:
+    image: ngrok/ngrok:alpine
+    container_name: ngrok-frontend
+    restart: unless-stopped
+    command:
+      - http
+      - host.docker.internal:5173
+      - --url
+      - ${NGROK_DOMAIN:-https://semiwildly-superadaptable-vernice.ngrok-free.dev}
+      - --config
+      - /etc/ngrok.yml
+      - --log
+      - stdout
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./ngrok-auth.yml:/etc/ngrok.yml:ro
+    ports:
+      - "4040:4040"
+    networks:
+      - ingestion_backend
+  # --- Web scrapper ---
   scraper-api:
     image: tharun0511/web-scrapper-wokspace:latest
     command: ["sh", "/app/scripts/run-api.sh"]
@@ -155,8 +192,8 @@ services:
     container_name: otel
     restart: unless-stopped
     ports:
-      - 4317:4317 # OTLP gRPC receiver
-      - 4318:4318 # OTLP http receiver
+      - 4317:4317
+      - 4318:4318
     env_file:
       - ../otel/.env
     volumes:
@@ -167,8 +204,8 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -276,6 +313,10 @@ services:
     volumes:
       - hf-cache:/root/.cache/huggingface
     restart: unless-stopped
+
+networks:
+  ingestion_backend:
+    driver: bridge
 
 volumes:
   minio_data:

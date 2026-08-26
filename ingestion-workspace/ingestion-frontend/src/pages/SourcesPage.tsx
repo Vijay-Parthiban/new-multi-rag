@@ -1,1028 +1,831 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import {
+  IconArrowRight,
+  IconBucket,
+  IconCheck,
+  IconCheckCircle,
+  IconCopy,
+  IconGrid,
+  IconList,
+  IconPlus,
+  IconRadio,
+  IconSearch,
+  IconSources,
+  IconSync,
+  IconTrash,
+  IconZap,
+} from "../components/Icons";
+import { formatRelativeTime } from "../utils/format";
+import {
   ApiError,
-  ConnectorOption,
+  SourceConnectorRecord,
   SourceRecord,
-  SourceCreateRequest,
-  SourceUpdateRequest,
-  SourceFileEntry,
-  PipelineRecord,
   createSource,
   deleteSource,
-  getSource,
-  listConnectors,
-  listSourceFiles,
   listSources,
-  listPipelines,
-  updateSource,
   triggerSourceSync,
-  linkSourceToPipeline,
-  unlinkSourceFromPipeline,
 } from "../api";
 
-/* ── Connector-specific config field definitions ── */
+function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
+  if (err instanceof ApiError) return err;
+  return new ApiError(500, {
+    error: { code, message: err instanceof Error ? err.message : String(err) },
+  });
+}
 
-const CONNECTOR_CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: string; type?: string; multiline?: boolean; required?: boolean }[]> = {
-  google_drive: [
-    { key: "folder_id", label: "Folder ID", placeholder: "1ABCxyz...", required: true },
-    { key: "drive_id", label: "Shared Drive ID", placeholder: "0A... (optional)" },
-    { key: "client_id", label: "Client ID", placeholder: "123456-xxx.apps.googleusercontent.com", required: true },
-    { key: "client_secret", label: "Client Secret", placeholder: "GOCSPX-...", type: "password", required: true },
-    { key: "refresh_token", label: "Refresh Token", placeholder: "1//0g...", type: "password", required: true },
-    { key: "file_types", label: "File Types", placeholder: "pdf,docx,txt (comma-separated, leave empty for all)" },
-  ],
-  gcs: [
-    { key: "bucket_name", label: "GCS Bucket Name", placeholder: "my-data-bucket", required: true },
-    { key: "project_id", label: "Project ID", placeholder: "my-gcp-project", required: true },
-    { key: "service_account_json", label: "Service Account JSON", placeholder: '{"type": "service_account", ...}', multiline: true, required: true },
-    { key: "prefix", label: "Prefix Filter", placeholder: "folder/subfolder/ (optional)" },
-  ],
-  s3: [
-    { key: "bucket_name", label: "S3 Bucket Name", placeholder: "my-s3-bucket", required: true },
-    { key: "aws_access_key_id", label: "AWS Access Key ID", placeholder: "AKIA...", required: true },
-    { key: "aws_secret_access_key", label: "AWS Secret Access Key", placeholder: "wJalr...", type: "password", required: true },
-    { key: "region", label: "AWS Region", placeholder: "us-east-1", required: true },
-    { key: "prefix", label: "Prefix Filter", placeholder: "path/to/files (optional)" },
-  ],
-  azure_blob: [
-    { key: "container_name", label: "Container Name", placeholder: "my-container", required: true },
-    { key: "connection_string", label: "Connection String", placeholder: "DefaultEndpointsProtocol=...", multiline: true, required: true },
-    { key: "prefix", label: "Prefix Filter", placeholder: "folder/ (optional)" },
-  ],
-  sharepoint: [
-    { key: "site_url", label: "SharePoint Site URL", placeholder: "https://yourorg.sharepoint.com/sites/MySite", required: true },
-    { key: "drive_id", label: "Drive ID", placeholder: "b!...", required: true },
-    { key: "client_id", label: "Client ID", placeholder: "xxx-xxx", required: true },
-    { key: "client_secret", label: "Client Secret", placeholder: "...", type: "password", required: true },
-    { key: "tenant_id", label: "Tenant ID", placeholder: "xxx-xxx-xxx", required: true },
-  ],
-};
+/* ── Connector status summary ── */
 
-/* ── Component ── */
+interface StatusSummary {
+  connected: number;
+  syncing: number;
+  errored: number;
+  disabled: number;
+  other: number;
+}
+
+function summarizeConnectors(connectors: SourceConnectorRecord[]): StatusSummary {
+  const summary: StatusSummary = { connected: 0, syncing: 0, errored: 0, disabled: 0, other: 0 };
+  if (!connectors) return summary;
+  for (const c of connectors) {
+    if (!c.enabled) {
+      summary.disabled += 1;
+      continue;
+    }
+    const s = c.status;
+    if (s === "synced" || s === "connected" || s === "success" || s === "completed") {
+      summary.connected += 1;
+    } else if (s === "processing" || s === "syncing" || s === "running" || s === "pending") {
+      summary.syncing += 1;
+    } else if (s === "failed" || s === "error") {
+      summary.errored += 1;
+    } else {
+      summary.other += 1;
+    }
+  }
+  return summary;
+}
+
+function StatusPill({ label, count, variant }: { label: string; count: number; variant: string }) {
+  if (count === 0) return null;
+  return (
+    <span className={`status-pill ${variant}`}>
+      <span className="status-pill-dot" />
+      {count} {label}
+    </span>
+  );
+}
+
+function ConnectorStatusSummary({ connectors }: { connectors: SourceConnectorRecord[] }) {
+  const summary = summarizeConnectors(connectors);
+  const total = connectors?.length ?? 0;
+
+  if (total === 0) {
+    return (
+      <div className="source-card-empty-connectors">
+        <span>+ No connectors attached</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="status-pill-group">
+      <StatusPill label="connected" count={summary.connected} variant="status-pill--connected" />
+      <StatusPill label="syncing" count={summary.syncing} variant="status-pill--syncing" />
+      <StatusPill label="error" count={summary.errored} variant="status-pill--error" />
+      <StatusPill label="disabled" count={summary.disabled} variant="status-pill--disabled" />
+      <StatusPill label="other" count={summary.other} variant="status-pill--other" />
+    </div>
+  );
+}
+
+/* ── Source card ── */
+
+function SourceCard({
+  source,
+  onNavigate,
+  onSync,
+  onDelete,
+  syncing,
+  deleting,
+}: {
+  source: SourceRecord;
+  onNavigate: (id: string) => void;
+  onSync: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  syncing: boolean;
+  deleting: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const connectorCount = source.connector_count ?? source.connectors?.length ?? 0;
+
+  const handleCopyBucket = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(source.minio_bucket);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onNavigate(source.id);
+    }
+  };
+
+  return (
+    <article
+      className="source-card"
+      role="button"
+      tabIndex={0}
+      aria-label={`Open source ${source.name}`}
+      onClick={() => onNavigate(source.id)}
+      onKeyDown={handleKeyDown}
+    >
+      {/* Header */}
+      <div className="source-card-header">
+        <div className="source-card-title">
+          <div className="source-card-icon">
+            <IconSources size={18} />
+          </div>
+          <div>
+            <h3 className="source-card-name">{source.name}</h3>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <StatusBadge status={source.status || "idle"} />
+          <IconArrowRight className="source-card-arrow" size={16} />
+        </div>
+      </div>
+
+      {/* Meta Stats & Bucket Badge */}
+      <div className="source-card-meta">
+        <div className="source-card-stat">
+          <span className="source-card-stat-value">{connectorCount}</span>
+          <span className="source-card-stat-label">{connectorCount === 1 ? "connector" : "connectors"}</span>
+        </div>
+        <div className="source-card-divider" />
+        <div className="source-card-bucket" title={`MinIO Bucket: ${source.minio_bucket}`}>
+          <IconBucket size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <span className="source-card-bucket-code">{source.minio_bucket}</span>
+          <button
+            type="button"
+            onClick={handleCopyBucket}
+            className="btn btn-ghost btn-sm"
+            style={{ padding: "0.125rem 0.25rem", height: "auto", minHeight: 0 }}
+            title="Copy Bucket Name"
+          >
+            {copied ? <IconCheck size={12} style={{ color: "var(--success-text)" }} /> : <IconCopy size={12} />}
+          </button>
+        </div>
+      </div>
+
+      {/* Connector Status Summary */}
+      <div className="source-card-connectors">
+        <ConnectorStatusSummary connectors={source.connectors || []} />
+      </div>
+
+      {/* Error Message if present */}
+      {source.error_message && (
+        <div className="source-card-error" title={source.error_message}>
+          <span>⚠️</span> {source.error_message}
+        </div>
+      )}
+
+      {/* Footer Timestamp & Actions */}
+      <div className="source-card-footer">
+        <span className="muted" style={{ fontSize: "0.75rem" }}>
+          {source.last_sync_at ? `Synced ${formatRelativeTime(source.last_sync_at)}` : "Never synced"}
+        </span>
+
+        <div className="source-card-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onSync(source.id)}
+            disabled={syncing || source.status === "syncing"}
+            aria-label={`Sync ${source.name}`}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+          >
+            <IconSync size={13} className={syncing || source.status === "syncing" ? "spin" : ""} />
+            {syncing || source.status === "syncing" ? "Syncing" : "Sync"}
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onNavigate(source.id)}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+          >
+            Manage →
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            onClick={() => onDelete(source.id, source.name)}
+            disabled={deleting}
+            aria-label={`Delete ${source.name}`}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+          >
+            <IconTrash size={13} />
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+/* ── Source Table View ── */
+
+function SourceTable({
+  sources,
+  onNavigate,
+  onSync,
+  onDelete,
+  syncingId,
+  deletingId,
+}: {
+  sources: SourceRecord[];
+  onNavigate: (id: string) => void;
+  onSync: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  syncingId: string | null;
+  deletingId: string | null;
+}) {
+  return (
+    <div className="repo-table-wrap">
+      <table className="repo-table">
+        <thead>
+          <tr>
+            <th>Source Name</th>
+            <th>Status</th>
+            <th>MinIO S3 Bucket</th>
+            <th>Connectors</th>
+            <th>Last Synced</th>
+            <th style={{ textAlign: "right" }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sources.map((s) => {
+            const count = s.connector_count ?? s.connectors?.length ?? 0;
+            return (
+              <tr key={s.id} onClick={() => onNavigate(s.id)} style={{ cursor: "pointer" }}>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <IconSources size={16} style={{ color: "var(--accent)" }} />
+                    <span style={{ fontWeight: 600 }}>{s.name}</span>
+                  </div>
+                </td>
+                <td>
+                  <StatusBadge status={s.status || "idle"} />
+                </td>
+                <td>
+                  <code className="source-card-bucket-code">{s.minio_bucket}</code>
+                </td>
+                <td>
+                  <span className="sources-filter-count">{count} attached</span>
+                </td>
+                <td>
+                  <span className="muted" style={{ fontSize: "0.8125rem" }}>
+                    {s.last_sync_at ? formatRelativeTime(s.last_sync_at) : "Never"}
+                  </span>
+                </td>
+                <td style={{ textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+                  <div style={{ display: "inline-flex", gap: "0.375rem" }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => onSync(s.id)}
+                      disabled={syncingId === s.id || s.status === "syncing"}
+                    >
+                      <IconSync size={13} className={syncingId === s.id ? "spin" : ""} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => onNavigate(s.id)}
+                    >
+                      Manage
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      onClick={() => onDelete(s.id, s.name)}
+                      disabled={deletingId === s.id}
+                    >
+                      <IconTrash size={13} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ── Stats overview dashboard ── */
+
+function StatsOverview({
+  sources,
+  activeFilter,
+  onSelectFilter,
+}: {
+  sources: SourceRecord[];
+  activeFilter: string;
+  onSelectFilter: (filter: "all" | "active" | "syncing" | "error") => void;
+}) {
+  const totalSources = sources.length;
+  const activeSources = sources.filter((s) => s.enabled !== false).length;
+  const totalConnectors = sources.reduce(
+    (sum, s) => sum + (s.connector_count ?? s.connectors?.length ?? 0),
+    0
+  );
+  const syncingSources = sources.filter((s) => s.status === "syncing" || s.status === "processing").length;
+
+  return (
+    <div className="stats-overview-grid">
+      <div
+        className={`stats-overview-card${activeFilter === "all" ? " active" : ""}`}
+        onClick={() => onSelectFilter("all")}
+        style={{ cursor: "pointer" }}
+      >
+        <div>
+          <div className="stats-overview-label">Total Sources</div>
+          <div className="stats-overview-value">{totalSources}</div>
+          <div className="stats-overview-subtext">Configured storage buckets</div>
+        </div>
+        <div className="stats-overview-icon stats-icon--blue">
+          <IconSources size={20} />
+        </div>
+      </div>
+
+      <div
+        className={`stats-overview-card${activeFilter === "active" ? " active" : ""}`}
+        onClick={() => onSelectFilter("active")}
+        style={{ cursor: "pointer" }}
+      >
+        <div>
+          <div className="stats-overview-label">Active Sources</div>
+          <div className="stats-overview-value">{activeSources}</div>
+          <div className="stats-overview-subtext">Ready for ingestion</div>
+        </div>
+        <div className="stats-overview-icon stats-icon--green">
+          <IconCheckCircle size={20} />
+        </div>
+      </div>
+
+      <div className="stats-overview-card">
+        <div>
+          <div className="stats-overview-label">Total Connectors</div>
+          <div className="stats-overview-value">{totalConnectors}</div>
+          <div className="stats-overview-subtext">External integrations</div>
+        </div>
+        <div className="stats-overview-icon stats-icon--purple">
+          <IconZap size={20} />
+        </div>
+      </div>
+
+      <div
+        className={`stats-overview-card${activeFilter === "syncing" ? " active" : ""}`}
+        onClick={() => onSelectFilter("syncing")}
+        style={{ cursor: "pointer" }}
+      >
+        <div>
+          <div className="stats-overview-label">Syncing Sources</div>
+          <div className="stats-overview-value">{syncingSources}</div>
+          <div className="stats-overview-subtext">Active background sync</div>
+        </div>
+        <div className="stats-overview-icon stats-icon--amber">
+          <IconRadio size={20} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main SourcesPage component ── */
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<SourceRecord[]>([]);
-  const [connectors, setConnectors] = useState<ConnectorOption[]>([]);
-  const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  const [selectedSource, setSelectedSource] = useState<SourceRecord | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [sourceFiles, setSourceFiles] = useState<SourceFileEntry[]>([]);
-  const [currentPrefix, setCurrentPrefix] = useState<string>("");
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newSourceName, setNewSourceName] = useState("");
+  const [creating, setCreating] = useState(false);
 
-  // Create modal state
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createStep, setCreateStep] = useState<"select" | "configure">("select");
-  const [newName, setNewName] = useState("");
-  const [newConnectorType, setNewConnectorType] = useState<string>("");
-  const [newMonitorMode, setNewMonitorMode] = useState<"live" | "scheduled">("scheduled");
-  const [newSyncInterval, setNewSyncInterval] = useState<number>(10);
-  const [newConfig, setNewConfig] = useState<Record<string, unknown>>({});
+  // Search & Filter controls state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "syncing" | "error">("all");
+  const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
 
-  // Edit source state
-  const [editName, setEditName] = useState("");
-  const [editConnectorType, setEditConnectorType] = useState<string>("");
-  const [editMonitorMode, setEditMonitorMode] = useState<"live" | "scheduled">("scheduled");
-  const [editSyncInterval, setEditSyncInterval] = useState<number | null>(null);
-  const [editEnabled, setEditEnabled] = useState(true);
-  const [editConfig, setEditConfig] = useState<Record<string, unknown>>({});
-
-  // Pipeline linking
-  const [showLinkModal, setShowLinkModal] = useState(false);
-  const [linkPipelineId, setLinkPipelineId] = useState<string>("");
-  const [linkedPipelineIds, setLinkedPipelineIds] = useState<string[]>([]);
-
-  // No auto-refresh needed — user triggers sync manually
-
-  /* ── Loaders ── */
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isVisible = location.pathname === "/sources";
 
   const load = useCallback(async () => {
     try {
-      setLoading(true);
-      const [srcs, conns, pipes] = await Promise.all([
-        listSources(),
-        listConnectors(),
-        listPipelines(),
-      ]);
-      setSources(srcs);
-      setConnectors(conns);
-      setPipelines(pipes);
+      const data = await listSources();
+      setSources(data);
       setError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err : null);
+      setError(toApiError(err));
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const loadSourceDetails = useCallback(async (sourceId: string) => {
-    try {
-      const source = await getSource(sourceId);
-      setSelectedSource(source);
-      setSelectedSourceId(sourceId);
-      setEditName(source.name);
-      setEditConnectorType(source.connector_type);
-      setEditMonitorMode(source.monitor_mode);
-      setEditSyncInterval(source.sync_interval_minutes ?? null);
-      setEditEnabled(source.enabled);
-      setEditConfig(source.config ?? {});
-      setLinkedPipelineIds(source.pipeline_ids || []);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    }
-  }, []);
-
-  const loadSourceFiles = useCallback(async (sourceId: string, prefix?: string) => {
-    try {
-      const res = await listSourceFiles(sourceId, prefix ?? currentPrefix);
-      setSourceFiles(res.files);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    }
-  }, [currentPrefix]);
-
-  /* ── Initial load ── */
-
   useEffect(() => {
+    if (!isVisible) return;
     load();
-  }, [load]);
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, [isVisible, load]);
 
-  /* ── Select source handler ── */
-
-  const handleSelectSource = useCallback(async (sourceId: string) => {
-    setSelectedSourceId(sourceId);
-    await Promise.all([
-      loadSourceDetails(sourceId),
-      loadSourceFiles(sourceId),
-    ]);
-  }, [loadSourceDetails, loadSourceFiles]);
-
-  /* ── Create source flow ── */
-
-  const openCreateModal = () => {
-    setShowCreateModal(true);
-    setCreateStep("select");
-    setNewName("");
-    setNewConnectorType("");
-    setNewMonitorMode("scheduled");
-    setNewSyncInterval(10);
-    setNewConfig({});
-    setError(null);
-  };
-
-  const closeCreateModal = () => {
-    setShowCreateModal(false);
-    setCreateStep("select");
-  };
-
-  const selectConnectorForCreate = (connectorId: string) => {
-    setNewConnectorType(connectorId);
-    setNewConfig({});
-    setCreateStep("configure");
-  };
-
-  const handleNewConfigField = (key: string, value: string) => {
-    setNewConfig((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const handleCreateSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
-    const body: SourceCreateRequest = {
-      name: newName.trim(),
-      connector_type: newConnectorType,
-      monitor_mode: newMonitorMode,
-      sync_interval_minutes: newMonitorMode === "scheduled" ? newSyncInterval : undefined,
-      config: newConfig,
-    };
-
-    try {
-      const created = await createSource(body);
-      setInfo(`Source "${created.name}" created successfully.`);
-      closeCreateModal();
-      await load();
-      setSelectedSourceId(created.id);
-      await loadSourceDetails(created.id);
-      await loadSourceFiles(created.id);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /* ── Update source ── */
-
-  const handleUpdate = async () => {
-    if (!selectedSourceId) return;
-    setSubmitting(true);
-    setError(null);
-
-    const body: SourceUpdateRequest = {
-      name: editName.trim() || undefined,
-      monitor_mode: editMonitorMode,
-      sync_interval_minutes: editMonitorMode === "scheduled" ? editSyncInterval : undefined,
-      enabled: editEnabled,
-      config: Object.keys(editConfig).length > 0 ? editConfig : undefined,
-    };
-
-    try {
-      await updateSource(selectedSourceId, body);
-      setInfo("Source updated.");
-      await load();
-      await loadSourceDetails(selectedSourceId);
-      await loadSourceFiles(selectedSourceId);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /* ── Delete source ── */
-
-  const handleDelete = async () => {
-    if (!selectedSourceId) return;
-    if (!window.confirm("Delete this source? This action cannot be undone.")) return;
-
-    try {
-      await deleteSource(selectedSourceId);
-      setInfo("Source deleted.");
-      setSelectedSourceId(null);
-      setSelectedSource(null);
-      setSourceFiles([]);
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    }
-  };
-
-  /* ── Sync ── */
-
-  const handleTriggerSync = async () => {
-    if (!selectedSourceId) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await triggerSourceSync(selectedSourceId);
-      setInfo(`Sync triggered (${res.status}).`);
-      await load();
-      await loadSourceDetails(selectedSourceId);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /* ── Pipeline linking ── */
-
-  const openLinkModal = () => {
-    setShowLinkModal(true);
-    setLinkPipelineId("");
-  };
-
-  const handleLinkPipeline = async () => {
-    if (!selectedSourceId || !linkPipelineId) return;
-    try {
-      await linkSourceToPipeline(selectedSourceId, linkPipelineId);
-      setInfo("Pipeline linked to source.");
-      setShowLinkModal(false);
-      await loadSourceDetails(selectedSourceId);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    }
-  };
-
-  const handleUnlinkPipeline = async (pipelineId: string) => {
-    if (!selectedSourceId) return;
-    if (!window.confirm("Unlink this pipeline from the source?")) return;
-    try {
-      await unlinkSourceFromPipeline(selectedSourceId, pipelineId);
-      setInfo("Pipeline unlinked.");
-      await loadSourceDetails(selectedSourceId);
-    } catch (err) {
-      setError(err instanceof ApiError ? err : null);
-    }
-  };
-
-  /* ── File browsing ── */
-
-  const handlePrefixChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const prefix = e.target.value;
-    setCurrentPrefix(prefix);
-    if (selectedSourceId) {
-      await loadSourceFiles(selectedSourceId, prefix);
-    }
-  };
-
-  const handleClearPrefix = async () => {
-    setCurrentPrefix("");
-    if (selectedSourceId) {
-      await loadSourceFiles(selectedSourceId, "");
-    }
-  };
-
-  /* ── Config field helpers ── */
-
-  const handleEditConfigField = (key: string, value: string) => {
-    setEditConfig((prev) => ({ ...prev, [key]: value }));
-  };
-
-  /* ── Find pipeline name helper ── */
-
-  const getPipelineName = (pipelineId: string): string => {
-    const p = pipelines.find((p) => p.id === pipelineId);
-    return p ? p.name : pipelineId.slice(0, 8);
-  };
-
-  const getConnectorLabel = (type: string): string => {
-    const c = connectors.find((c) => c.id === type);
-    return c ? c.label : type;
-  };
-
-  /* ── Unlinked pipelines (for link modal) ── */
-  const unlinkedPipelines = pipelines.filter(
-    (p) => !linkedPipelineIds.includes(p.id)
+  const handleNavigate = useCallback(
+    (sourceId: string) => {
+      navigate(`/sources/${sourceId}`);
+    },
+    [navigate]
   );
 
-  /* ── Render ── */
+  const handleSync = useCallback(
+    async (sourceId: string) => {
+      setSyncingId(sourceId);
+      try {
+        const res = await triggerSourceSync(sourceId);
+        setInfo(res.message ?? "Sync triggered successfully.");
+        await load();
+      } catch (err) {
+        setError(toApiError(err, "SYNC_FAILED"));
+      } finally {
+        setSyncingId(null);
+      }
+    },
+    [load]
+  );
+
+  const handleDelete = useCallback(
+    async (sourceId: string, name: string) => {
+      if (!window.confirm(`Are you sure you want to delete source "${name}"?`)) return;
+      setDeletingId(sourceId);
+      try {
+        await deleteSource(sourceId);
+        setInfo(`Source "${name}" deleted.`);
+        await load();
+      } catch (err) {
+        setError(toApiError(err, "DELETE_FAILED"));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [load]
+  );
+
+  const handleCreate = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (!newSourceName.trim()) return;
+      setCreating(true);
+      try {
+        const created = await createSource({ name: newSourceName.trim() });
+        setInfo(`Source "${created.name}" created successfully.`);
+        setNewSourceName("");
+        setShowCreateForm(false);
+        await load();
+        navigate(`/sources/${created.id}`);
+      } catch (err) {
+        setError(toApiError(err, "CREATE_FAILED"));
+      } finally {
+        setCreating(false);
+      }
+    },
+    [newSourceName, load, navigate]
+  );
+
+  // Filtered sources
+  const filteredSources = sources.filter((s) => {
+    const matchesSearch =
+      !searchQuery.trim() ||
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      s.minio_bucket.toLowerCase().includes(searchQuery.toLowerCase());
+
+    if (!matchesSearch) return false;
+
+    if (statusFilter === "active") return s.enabled !== false;
+    if (statusFilter === "syncing") return s.status === "syncing" || s.status === "processing";
+    if (statusFilter === "error") return s.status === "error" || s.status === "failed" || !!s.error_message;
+
+    return true;
+  });
+
+  const activeCount = sources.filter((s) => s.enabled !== false).length;
+  const syncingCount = sources.filter((s) => s.status === "syncing" || s.status === "processing").length;
+  const errorCount = sources.filter((s) => s.status === "error" || s.status === "failed" || !!s.error_message).length;
+
   return (
     <div className="page">
       <PageHeader
         title="Sources"
-        description="Connect external data sources via Airbyte connectors to ingest files into your RAG pipelines"
-        breadcrumbs={[
-          { label: "Overview", to: "/" },
-          { label: "Sources" },
-        ]}
+        description="Connect multiple data sources — each source manages its own connectors, MinIO bucket, and pipeline links."
+        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Sources" }]}
         actions={
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={openCreateModal}
-            >
-              + Create New Source
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => load()}
-              disabled={loading}
-            >
-              {loading ? "Refreshing…" : "Refresh"}
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setShowCreateForm(!showCreateForm)}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
+          >
+            <IconPlus size={16} />
+            {showCreateForm ? "Cancel" : "New Source"}
+          </button>
         }
       />
 
       {error && (
-        <div className="alert alert-error">
-          <strong>{error.code}</strong>: {error.message}
+        <div className="alert alert-error" role="alert">
+          <strong>{error.code}:</strong> {error.message}
         </div>
       )}
-      {info && <div className="alert alert-info">{info}</div>}
 
-      <div className="sources-layout">
-        {/* ── Sources list (left panel) ── */}
-        <section className="panel sources-list-panel">
-          <div className="panel-header">
-            <h2 className="panel-title">All Sources</h2>
-            <span className="panel-toolbar-label">{sources.length} source{sources.length !== 1 ? "s" : ""}</span>
+      {info && (
+        <div className="alert alert-info" role="status">
+          {info}
+        </div>
+      )}
+
+      {/* Styled Create Source Form Card */}
+      {showCreateForm && (
+        <div className="source-create-card">
+          <div className="source-create-header">
+            <h2 className="source-create-title">
+              <IconSources size={20} style={{ color: "var(--accent)" }} />
+              Create New Data Source
+            </h2>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowCreateForm(false)}
+            >
+              ✕
+            </button>
           </div>
 
-          {loading && sources.length === 0 ? (
-            <p className="muted" style={{ padding: "1rem" }}>Loading sources…</p>
-          ) : sources.length === 0 ? (
-            <div className="panel-empty">
-              <div className="empty-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-              </div>
-              <p className="muted">No sources configured yet.</p>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={openCreateModal}
-              >
-                + Create Your First Source
-              </button>
-            </div>
-          ) : (
-            <ul className="sources-list">
-              {sources.map((source) => (
-                <li
-                  key={source.id}
-                  className={selectedSourceId === source.id ? "active" : ""}
-                >
-                  <button
-                    type="button"
-                    className="sources-list-item"
-                    onClick={() => handleSelectSource(source.id)}
-                  >
-                    <div className="sources-list-item-info">
-                      <strong>{source.name}</strong>
-                      <span className="muted">
-                        {getConnectorLabel(source.connector_type)} · {source.monitor_mode === "live" ? "Live" : "Scheduled"}
-                      </span>
-                      <span className="muted mono" style={{ fontSize: "0.7rem" }}>
-                        {source.minio_bucket}
-                      </span>
-                    </div>
-                    <div className="sources-list-item-actions">
-                      <StatusBadge
-                        status={
-                          !source.enabled
-                            ? "disabled"
-                            : source.status === "connected"
-                            ? "synced"
-                            : source.status === "syncing"
-                            ? "running"
-                            : source.status === "error"
-                            ? "failed"
-                            : "pending"
-                        }
-                      />
-                    </div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+          <p className="muted" style={{ fontSize: "0.875rem", marginBottom: "1rem" }}>
+            Each source gets a dedicated, isolated MinIO bucket to store and sync your external data documents into RAG vector pipelines.
+          </p>
 
-        {/* ── Source detail / editor (right panel) ── */}
-        {selectedSource && selectedSourceId ? (
-          <section className="panel source-detail-panel">
-            <div className="panel-header">
-              <h2 className="panel-title">{selectedSource.name}</h2>
-              <div className="source-header-actions">
-                <button
-                  type="button"
-                  className="btn btn-sm btn-secondary"
-                  onClick={handleTriggerSync}
-                  disabled={submitting || !editEnabled}
-                  title="Trigger sync now"
-                >
-                  Sync Now
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-danger-ghost"
-                  onClick={handleDelete}
-                  disabled={submitting}
-                  title="Delete source"
-                >
-                  Delete
-                </button>
+          <div style={{ marginBottom: "1rem" }}>
+            <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Available Connector Types
+            </span>
+            <div className="source-presets-grid">
+              <div className="source-preset-item active">
+                <span className="source-preset-icon">📁</span>
+                <span className="source-preset-name">Google Drive</span>
+              </div>
+              <div className="source-preset-item active">
+                <span className="source-preset-icon">🪣</span>
+                <span className="source-preset-name">Amazon S3</span>
+              </div>
+              <div className="source-preset-item active">
+                <span className="source-preset-icon">☁️</span>
+                <span className="source-preset-name">Azure Blob</span>
+              </div>
+              <div className="source-preset-item active">
+                <span className="source-preset-icon">📂</span>
+                <span className="source-preset-name">Local Directory</span>
+              </div>
+              <div className="source-preset-item active">
+                <span className="source-preset-icon">🌐</span>
+                <span className="source-preset-name">Web Scraper</span>
               </div>
             </div>
+          </div>
 
-            <div className="form-body">
-              {/* ── Basic info ── */}
-              <div className="form-row">
-                <div>
-                  <label className="field-label" htmlFor="source-name">Name</label>
-                  <input
-                    id="source-name"
-                    className="input"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    disabled={submitting}
-                  />
-                </div>
-                <div>
-                  <label className="field-label">Connector Type</label>
-                  <div className="input" style={{ opacity: 0.7, cursor: "default" }}>
-                    {getConnectorLabel(editConnectorType)}
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Enabled toggle + Monitor Mode ── */}
-              <div className="form-row">
-                <div>
-                  <label className="field-label">Status</label>
-                  <label className="check-row" style={{ marginTop: "0.375rem" }}>
-                    <input
-                      type="checkbox"
-                      checked={editEnabled}
-                      onChange={(e) => setEditEnabled(e.target.checked)}
-                      disabled={submitting}
-                    />
-                    <span>Source enabled (syncs active)</span>
-                  </label>
-                </div>
-                <div>
-                  <label className="field-label" htmlFor="source-monitor-mode">
-                    Monitoring Mode
-                  </label>
-                  <select
-                    id="source-monitor-mode"
-                    className="input"
-                    value={editMonitorMode}
-                    onChange={(e) => setEditMonitorMode(e.target.value as "live" | "scheduled")}
-                    disabled={submitting}
-                  >
-                    <option value="live">Live (Continuous — poll for changes)</option>
-                    <option value="scheduled">Scheduled (cron-based interval)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* ── Sync interval (scheduled only) ── */}
-              {editMonitorMode === "scheduled" && (
-                <div className="form-row">
-                  <div>
-                    <label className="field-label" htmlFor="source-sync-interval">
-                      Sync Interval (minutes)
-                    </label>
-                    <input
-                      id="source-sync-interval"
-                      type="number"
-                      className="input"
-                      value={editSyncInterval ?? ""}
-                      onChange={(e) => setEditSyncInterval(e.target.value ? Number(e.target.value) : null)}
-                      disabled={submitting || editMonitorMode !== "scheduled"}
-                      min={1}
-                      placeholder="Required for scheduled"
-                    />
-                    <p className="field-hint">How often to poll the connector for new/changed files</p>
-                  </div>
-                  <div>
-                    <label className="field-label">MinIO Bucket</label>
-                    <div className="input mono" style={{ opacity: 0.7, cursor: "default", fontSize: "0.8rem" }}>
-                      {selectedSource.minio_bucket}
-                    </div>
-                    <p className="field-hint">Auto-created per-source storage bucket</p>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Connector-specific config ── */}
-              {CONNECTOR_CONFIG_FIELDS[editConnectorType] && (
-                <div className="source-config-section">
-                  <h3 className="source-config-title">Connector Configuration</h3>
-                  {CONNECTOR_CONFIG_FIELDS[editConnectorType].map((field) => (
-                    <div key={field.key} style={{ marginBottom: "0.5rem" }}>
-                      <label className="field-label" htmlFor={`edit-cfg-${field.key}`}>
-                        {field.label}
-                      </label>
-                      {field.multiline ? (
-                        <textarea
-                          id={`edit-cfg-${field.key}`}
-                          className="input"
-                          rows={3}
-                          value={(editConfig[field.key] as string) ?? ""}
-                          onChange={(e) => handleEditConfigField(field.key, e.target.value)}
-                          placeholder={field.placeholder}
-                          disabled={submitting}
-                        />
-                      ) : (
-                        <input
-                          id={`edit-cfg-${field.key}`}
-                          className="input"
-                          type={field.type ?? "text"}
-                          value={(editConfig[field.key] as string) ?? ""}
-                          onChange={(e) => handleEditConfigField(field.key, e.target.value)}
-                          placeholder={field.placeholder}
-                          disabled={submitting}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* ── General JSON fallback for unsupported connectors ── */}
-              {!CONNECTOR_CONFIG_FIELDS[editConnectorType] && (
-                <div className="form-row">
-                  <div>
-                    <label className="field-label" htmlFor="edit-source-config">
-                      Configuration (JSON)
-                    </label>
-                    <textarea
-                      id="edit-source-config"
-                      className="input"
-                      rows={4}
-                      value={JSON.stringify(editConfig, null, 2)}
-                      onChange={(e) => {
-                        try { setEditConfig(JSON.parse(e.target.value)); }
-                        catch { /* ignore */ }
-                      }}
-                      disabled={submitting}
-                      placeholder='{"key": "value"}'
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* ── Linked pipelines ── */}
-              <div className="source-config-section">
-                <div className="source-pipelines-header">
-                  <h3 className="source-config-title">Linked Pipelines</h3>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary"
-                    onClick={openLinkModal}
-                    disabled={unlinkedPipelines.length === 0}
-                  >
-                    + Link Pipeline
-                  </button>
-                </div>
-                {linkedPipelineIds.length === 0 ? (
-                  <p className="field-hint">
-                    No pipelines linked. Link a pipeline to trigger RAG indexing when files change in this source.
-                  </p>
-                ) : (
-                  <ul className="source-pipeline-links">
-                    {linkedPipelineIds.map((pid) => (
-                      <li key={pid}>
-                        <div className="source-pipeline-link-info">
-                          <span className="mono">{getPipelineName(pid)}</span>
-                          <span className="muted" style={{ fontSize: "0.75rem" }}>{pid.slice(0, 8)}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger-ghost"
-                          onClick={() => handleUnlinkPipeline(pid)}
-                        >
-                          Unlink
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
-              {/* ── Save / Cancel ── */}
-              <div className="form-row actions" style={{ marginTop: "1rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleUpdate}
-                  disabled={submitting || !editName.trim()}
-                >
-                  {submitting ? "Saving…" : "Save Changes"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    if (selectedSource) {
-                      loadSourceDetails(selectedSource.id);
-                    }
-                  }}
-                  disabled={submitting}
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          </section>
-        ) : !loading ? (
-          <section className="panel source-detail-panel">
-            <div className="panel-empty">
-              <p className="muted">Select a source from the list to view and edit its configuration.</p>
-            </div>
-          </section>
-        ) : null}
-      </div>
-
-      {/* ── Source files panel ── */}
-      {selectedSource && (
-        <section className="panel source-files-panel">
-          <div className="panel-header">
-            <div>
-              <h2 className="panel-title">Files in <span className="mono">{selectedSource.minio_bucket}</span></h2>
-              <p className="field-hint" style={{ margin: "0.2rem 0 0" }}>
-                Files synced from the {getConnectorLabel(selectedSource.connector_type)} connector
-              </p>
-            </div>
-            <div className="source-files-toolbar">
+          <form onSubmit={handleCreate}>
+            <div style={{ marginBottom: "1.25rem" }}>
+              <label htmlFor="source-name-input" className="field-label" style={{ fontWeight: 600 }}>
+                Source Identifier Name
+              </label>
               <input
+                id="source-name-input"
                 type="text"
-                className="input input-sm"
-                placeholder="Filter by prefix..."
-                value={currentPrefix}
-                onChange={handlePrefixChange}
-                disabled={submitting}
+                className="input"
+                placeholder="e.g. customer-support-docs, engineering-specs..."
+                value={newSourceName}
+                onChange={(e) => setNewSourceName(e.target.value)}
+                autoFocus
+                required
+                style={{ fontSize: "0.9375rem" }}
               />
-              <button
-                type="button"
-                className="btn btn-sm btn-secondary"
-                onClick={handleClearPrefix}
-                disabled={currentPrefix === ""}
-              >
-                Clear
-              </button>
+              <span className="muted" style={{ fontSize: "0.75rem", marginTop: "0.375rem", display: "block" }}>
+                Bucket will be auto-slugified: <code>source-&lt;name&gt;-&lt;id&gt;</code>
+              </span>
             </div>
-          </div>
-          {sourceFiles.length === 0 ? (
-            <div className="panel-empty">
-              <p className="muted">No files found in this source's MinIO bucket.</p>
+
+            <div className="form-actions" style={{ justifyContent: "flex-end", gap: "0.75rem" }}>
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={handleTriggerSync}
-                disabled={submitting || !editEnabled}
+                onClick={() => setShowCreateForm(false)}
               >
-                Trigger Sync to Fetch Files
-              </button>
-            </div>
-          ) : (
-            <div className="repo-table-wrap">
-              <table className="repo-table">
-                <thead>
-                  <tr>
-                    <th>File Key</th>
-                    <th>Size</th>
-                    <th>Last Modified</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sourceFiles.map((file) => (
-                    <tr key={file.key}>
-                      <td>
-                        <span className="mono" style={{ fontSize: "0.8rem" }}>{file.key}</span>
-                      </td>
-                      <td className="muted mono">
-                        {file.size >= 1024 * 1024
-                          ? (file.size / (1024 * 1024)).toFixed(2) + " MB"
-                          : file.size >= 1024
-                          ? (file.size / 1024).toFixed(2) + " KB"
-                          : file.size + " B"}
-                      </td>
-                      <td className="muted mono">
-                        {new Date(file.last_modified).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ════════════════════════════════════════
-          CREATE SOURCE MODAL
-         ════════════════════════════════════════ */}
-      {showCreateModal && (
-        <div className="modal-overlay" onClick={closeCreateModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">
-                {createStep === "select" ? "Select Connector Type" : "Configure Source"}
-              </h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={closeCreateModal}
-                aria-label="Close"
-              >
-                &times;
-              </button>
-            </div>
-
-            {createStep === "select" ? (
-              <div className="modal-body">
-                <p className="muted" style={{ marginBottom: "1rem" }}>
-                  Choose an Airbyte connector to use as your data source. Each source gets its own MinIO bucket.
-                </p>
-                <div className="connector-grid">
-                  {connectors.map((conn) => {
-                    const configFields = CONNECTOR_CONFIG_FIELDS[conn.id];
-                    const isAvailable = !!configFields || conn.id === "http_api";
-                    return (
-                      <button
-                        key={conn.id}
-                        type="button"
-                        className={`connector-card${!isAvailable ? " connector-card--disabled" : ""}`}
-                        onClick={() => isAvailable && selectConnectorForCreate(conn.id)}
-                        disabled={!isAvailable}
-                        title={!isAvailable ? "Configuration form not yet implemented" : conn.description}
-                      >
-                        <span className="connector-card-name">{conn.label}</span>
-                        <span className="connector-card-desc">{conn.description}</span>
-                        {!isAvailable && (
-                          <span className="connector-card-badge">Coming Soon</span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleCreateSubmit}>
-                <div className="modal-body">
-                  <p className="muted" style={{ marginBottom: "1rem" }}>
-                    Configure your {getConnectorLabel(newConnectorType)} source
-                  </p>
-
-                  {/* Source Name */}
-                  <label className="field-label" htmlFor="new-source-name">Source Name</label>
-                  <input
-                    id="new-source-name"
-                    className="input"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    placeholder="e.g., legal-google-drive"
-                    required
-                    disabled={submitting}
-                    autoFocus
-                  />
-                  <p className="field-hint">A unique name for this source. Used to create the MinIO bucket.</p>
-
-                  {/* Connector config fields */}
-                  {CONNECTOR_CONFIG_FIELDS[newConnectorType] && (
-                    <div className="source-config-section">
-                      <h3 className="source-config-title">{getConnectorLabel(newConnectorType)} Settings</h3>
-                      {CONNECTOR_CONFIG_FIELDS[newConnectorType].filter(f => f.required).length > 0 && (
-                        <p className="field-hint">All required fields must be filled</p>
-                      )}
-                      {CONNECTOR_CONFIG_FIELDS[newConnectorType].map((field) => (
-                        <div key={field.key} style={{ marginBottom: "0.5rem" }}>
-                          <label className="field-label" htmlFor={`new-cfg-${field.key}`}>
-                            {field.label}
-                            {field.required && <span className="required-mark">*</span>}
-                          </label>
-                          {field.multiline ? (
-                            <textarea
-                              id={`new-cfg-${field.key}`}
-                              className="input"
-                              rows={3}
-                              value={(newConfig[field.key] as string) ?? ""}
-                              onChange={(e) => handleNewConfigField(field.key, e.target.value)}
-                              placeholder={field.placeholder}
-                              required={field.required}
-                              disabled={submitting}
-                            />
-                          ) : (
-                            <input
-                              id={`new-cfg-${field.key}`}
-                              className="input"
-                              type={field.type ?? "text"}
-                              value={(newConfig[field.key] as string) ?? ""}
-                              onChange={(e) => handleNewConfigField(field.key, e.target.value)}
-                              placeholder={field.placeholder}
-                              required={field.required}
-                              disabled={submitting}
-                            />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* General JSON fallback */}
-                  {!CONNECTOR_CONFIG_FIELDS[newConnectorType] && (
-                    <div className="form-row">
-                      <div>
-                        <label className="field-label" htmlFor="new-source-config">Configuration (JSON)</label>
-                        <textarea
-                          id="new-source-config"
-                          className="input"
-                          rows={4}
-                          value={JSON.stringify(newConfig, null, 2)}
-                          onChange={(e) => {
-                            try { setNewConfig(JSON.parse(e.target.value)); }
-                            catch { /* ignore */ }
-                          }}
-                          disabled={submitting}
-                          placeholder='{"key": "value"}'
-                        />
-                        <p className="field-hint">Connector-specific config as JSON</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Monitor Mode */}
-                  <div className="form-row" style={{ marginTop: "1rem" }}>
-                    <div>
-                      <label className="field-label" htmlFor="new-monitor-mode">Monitoring Mode</label>
-                      <select
-                        id="new-monitor-mode"
-                        className="input"
-                        value={newMonitorMode}
-                        onChange={(e) => setNewMonitorMode(e.target.value as "live" | "scheduled")}
-                        disabled={submitting}
-                      >
-                        <option value="live">Live (Continuous)</option>
-                        <option value="scheduled">Scheduled (Interval)</option>
-                      </select>
-                    </div>
-                    {newMonitorMode === "scheduled" && (
-                      <div>
-                        <label className="field-label" htmlFor="new-sync-interval">Sync Interval (minutes)</label>
-                        <input
-                          id="new-sync-interval"
-                          type="number"
-                          className="input"
-                          value={newSyncInterval}
-                          onChange={(e) => setNewSyncInterval(Number(e.target.value))}
-                          min={1}
-                          required
-                          disabled={submitting}
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="modal-footer">
-                  <button type="button" className="btn btn-secondary" onClick={() => setCreateStep("select")} disabled={submitting}>
-                    Back
-                  </button>
-                  <div>
-                    <button type="button" className="btn btn-secondary" onClick={closeCreateModal} disabled={submitting} style={{ marginRight: "0.5rem" }}>
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="btn btn-primary"
-                      disabled={
-                        submitting ||
-                        !newName.trim() ||
-                        !newConnectorType
-                      }
-                    >
-                      {submitting ? "Creating…" : "Create Source"}
-                    </button>
-                  </div>
-                </div>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════
-          LINK PIPELINE MODAL
-         ════════════════════════════════════════ */}
-      {showLinkModal && (
-        <div className="modal-overlay" onClick={() => setShowLinkModal(false)}>
-          <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">Link Pipeline to Source</h2>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={() => setShowLinkModal(false)}
-                aria-label="Close"
-              >
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              <p className="muted" style={{ marginBottom: "1rem" }}>
-                When files change in this source, linked pipelines will automatically re-index the affected files.
-              </p>
-              {unlinkedPipelines.length === 0 ? (
-                <p className="field-hint">All pipelines are already linked to this source.</p>
-              ) : (
-                <>
-                  <label className="field-label" htmlFor="link-pipeline-select">Select Pipeline</label>
-                  <select
-                    id="link-pipeline-select"
-                    className="input"
-                    value={linkPipelineId}
-                    onChange={(e) => setLinkPipelineId(e.target.value)}
-                  >
-                    <option value="">Choose a pipeline…</option>
-                    {unlinkedPipelines.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} — {p.description}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button type="button" className="btn btn-secondary" onClick={() => setShowLinkModal(false)}>
                 Cancel
               </button>
               <button
-                type="button"
+                type="submit"
                 className="btn btn-primary"
-                onClick={handleLinkPipeline}
-                disabled={!linkPipelineId}
+                disabled={creating}
+                style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
               >
-                Link Pipeline
+                <IconPlus size={16} />
+                {creating ? "Creating Source..." : "Create Data Source"}
               </button>
             </div>
+          </form>
+        </div>
+      )}
+
+      {/* Stats Dashboard */}
+      {!loading && sources.length > 0 && (
+        <StatsOverview
+          sources={sources}
+          activeFilter={statusFilter}
+          onSelectFilter={(f) => setStatusFilter(f)}
+        />
+      )}
+
+      {/* Toolbar — Search, Filters & View Mode Toggle */}
+      {!loading && sources.length > 0 && (
+        <div className="sources-toolbar">
+          <div className="sources-toolbar-group">
+            <div className="sources-search-box">
+              <IconSearch size={14} className="sources-search-icon" />
+              <input
+                type="text"
+                className="sources-search-input"
+                placeholder="Search sources or buckets..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  style={{
+                    position: "absolute",
+                    right: "0.5rem",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-secondary)",
+                    cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="sources-filter-pills">
+              <button
+                type="button"
+                className={`sources-filter-btn${statusFilter === "all" ? " active" : ""}`}
+                onClick={() => setStatusFilter("all")}
+              >
+                All <span className="sources-filter-count">{sources.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`sources-filter-btn${statusFilter === "active" ? " active" : ""}`}
+                onClick={() => setStatusFilter("active")}
+              >
+                Active <span className="sources-filter-count">{activeCount}</span>
+              </button>
+              <button
+                type="button"
+                className={`sources-filter-btn${statusFilter === "syncing" ? " active" : ""}`}
+                onClick={() => setStatusFilter("syncing")}
+              >
+                Syncing <span className="sources-filter-count">{syncingCount}</span>
+              </button>
+              {errorCount > 0 && (
+                <button
+                  type="button"
+                  className={`sources-filter-btn${statusFilter === "error" ? " active" : ""}`}
+                  onClick={() => setStatusFilter("error")}
+                >
+                  Errors <span className="sources-filter-count" style={{ color: "var(--danger)" }}>{errorCount}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="sources-view-toggle">
+            <button
+              type="button"
+              className={`sources-view-btn${viewMode === "grid" ? " active" : ""}`}
+              onClick={() => setViewMode("grid")}
+              title="Grid View"
+            >
+              <IconGrid size={16} />
+            </button>
+            <button
+              type="button"
+              className={`sources-view-btn${viewMode === "table" ? " active" : ""}`}
+              onClick={() => setViewMode("table")}
+              title="Table View"
+            >
+              <IconList size={16} />
+            </button>
           </div>
         </div>
+      )}
+
+      {/* Loading state */}
+      {loading && (
+        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
+          <p className="muted">Loading sources...</p>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && sources.length === 0 && (
+        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
+          <div style={{ fontSize: "2.5rem", marginBottom: "0.5rem" }}>📁</div>
+          <h3 style={{ margin: "0 0 0.5rem" }}>No data sources created yet</h3>
+          <p className="muted" style={{ margin: "0 0 1.5rem", maxWidth: "480px", marginLeft: "auto", marginRight: "auto" }}>
+            Create your first data source to begin connecting external files (Google Drive, S3, Azure Blob, Local Dir, Web Scraper).
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setShowCreateForm(true)}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
+          >
+            <IconPlus size={16} />
+            Create First Source
+          </button>
+        </div>
+      )}
+
+      {/* Filtered Empty State */}
+      {!loading && sources.length > 0 && filteredSources.length === 0 && (
+        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
+          <h3 style={{ margin: "0 0 0.5rem" }}>No matching sources found</h3>
+          <p className="muted" style={{ margin: "0 0 1.5rem" }}>
+            No sources matched your search "{searchQuery}" or selected status filter.
+          </p>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              setSearchQuery("");
+              setStatusFilter("all");
+            }}
+          >
+            Clear Filters
+          </button>
+        </div>
+      )}
+
+      {/* Sources Display View (Grid or Table) */}
+      {!loading && filteredSources.length > 0 && (
+        <>
+          {viewMode === "grid" ? (
+            <div className="source-grid">
+              {filteredSources.map((source) => (
+                <SourceCard
+                  key={source.id}
+                  source={source}
+                  onNavigate={handleNavigate}
+                  onSync={handleSync}
+                  onDelete={handleDelete}
+                  syncing={syncingId === source.id}
+                  deleting={deletingId === source.id}
+                />
+              ))}
+            </div>
+          ) : (
+            <SourceTable
+              sources={filteredSources}
+              onNavigate={handleNavigate}
+              onSync={handleSync}
+              onDelete={handleDelete}
+              syncingId={syncingId}
+              deletingId={deletingId}
+            />
+          )}
+        </>
       )}
     </div>
   );

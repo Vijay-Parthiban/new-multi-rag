@@ -55,34 +55,37 @@ async def trigger_source_sync(db: AsyncSession, source_id: uuid.UUID) -> dict[st
     }
 
 
-async def sync_all_enabled_sources(db: AsyncSession) -> list[dict[str, Any]]:
+async def sync_all_enabled_sources() -> list[dict[str, Any]]:
     """Trigger syncs for all enabled sources.
 
     This is intended for the cron scheduler pathway.
     Returns summary results.
     """
-    from src.shared.db.models import Source
+    from src.shared.db.session import AsyncSessionLocal
 
-    result = await db.execute(
-        select(Source).where(
-            Source.enabled.is_(True),
-            Source.status.in_(["disconnected", "connected"]),
+    async with AsyncSessionLocal() as db:
+        from src.shared.db.models import Source
+
+        result = await db.execute(
+            select(Source).where(
+                Source.enabled.is_(True),
+                Source.status.in_(["disconnected", "connected", "idle"]),
+            )
         )
-    )
-    sources = result.scalars().all()
+        sources = result.scalars().all()
 
-    results: list[dict[str, Any]] = []
-    for source in sources:
-        try:
-            res = await trigger_source_sync(db, source.id)
-            results.append(res)
-        except Exception as exc:
-            logger.exception("source_sync_one_failed id=%s", source.id)
-            results.append({
-                "status": "error",
-                "source_id": str(source.id),
-                "message": str(exc),
-            })
+        results: list[dict[str, Any]] = []
+        for source in sources:
+            try:
+                res = await trigger_source_sync(db, source.id)
+                results.append(res)
+            except Exception as exc:
+                logger.exception("source_sync_one_failed id=%s", source.id)
+                results.append({
+                    "status": "error",
+                    "source_id": str(source.id),
+                    "message": str(exc),
+                })
 
     logger.info("source_sync_all_complete count=%d", len(results))
     return results

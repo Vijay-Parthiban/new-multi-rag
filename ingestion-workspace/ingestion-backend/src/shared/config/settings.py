@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_use_ssl: str = "false"
     minio_bucket_prefix: str = "source"
-
+    minio_region: str = "us-east-1"
     # Web scrapper API (crawl-scrape pipeline)
     scraper_api_url: str = "http://localhost:8000"
     scraper_api_key: str = ""
