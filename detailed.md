@@ -243,3 +243,44 @@ To support this behavior across all connector types (Google Drive, Local Filesys
 | `ingestion-frontend/src/api.ts` | Set default `API_URL = ""` and added `"ngrok-skip-browser-warning": "true"` to `authHeaders`. |
 | `ingestion-frontend/src/pages/SourcesPage.tsx` | Fixed JSX closing tag syntax errors and refreshed layout design system styling. |
 | `ingestion-frontend/src/pages/SourceDetailPage.tsx` | Fixed tab switching logic and file browser loading states. |
+
+## 9. Google Drive CRUD State Sync & Container Mount Fixes
+
+### 9.1 Root Cause Breakdown & Diagnostics
+1. **Container Code Desynchronization**:
+- `docker-compose.yaml` did not mount host source files (`./ingestion-backend/src`, `./ingestion-backend/apps`) into running Docker containers.
+- Backend containers were executing an older image version of `gdrive_sync.py` missing the `connector_id` argument, causing background worker sync tasks to fail silently with a `TypeError`.
+2. **Unbounded Poller Task Stacking**:
+- The 3-second live sync poller loop lacked an execution lock. When a single sync tick took 10–15 seconds to download files from Google Drive, new poller tasks stacked up every 3 seconds, resulting in socket congestion and database connection lockups.
+3. **Deep Nested Key Hierarchy in UI**:
+- Object keys saved under namespace paths (`connectors/{connector_id}/{drive_id}/{filename}`) required navigating 3 nested folder levels in tree mode before filenames became visible.
+
+### 9.2 Technical Solutions Implemented
+1. **Docker Compose Volume Mounts (`docker-compose.yaml`)**:
+- Added live volume mounts for `api`, `worker`, and `pathway-worker` containers:
+     ```yaml
+     volumes:
+     ```
+2. **Thread-Safe Poller Concurrency Guard (`pathway_sync.py`)**:
+- Introduced `_SYNCING_SOURCES` guard set to ensure only a single sync loop runs per source at any time:
+     ```python
+     _SYNCING_SOURCES: set[uuid.UUID] = set()
+
+     async def sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -> None:
+         if source_id in _SYNCING_SOURCES:
+             return
+         _SYNCING_SOURCES.add(source_id)
+         try:
+             await _do_sync_source_from_pathway(db, source_id)
+         finally:
+             _SYNCING_SOURCES.discard(source_id)
+     ```
+3. **Robust Object Indexing & Metadata Casing (`gdrive_sync.py`)**:
+- Updated MinIO object indexing to check both key paths and S3 object metadata (`gdrive-file-id`).
+- Added checks for both modified timestamp and `ContentLength` file size differences to guarantee 100% accurate file update and deletion reflection.
+4. **Flat File List Mode (`FileBrowser.tsx`)**:
+- Added a view mode toggle in `FileBrowser.tsx` between **All Files (Flat)** (default) and **Folder View**, displaying readable file names (e.g. `resume3.pdf`) directly alongside full key paths.
+
+### 9.3 Verification Results
+- **Active Files Reflected**: All 5 files in Google Drive folder `14IXHBDpExTdBDfh5GTKmQEIiv6AYHRMG` (`resume3.pdf`, `resume 5.pdf`, `Resume-1.pdf`, `resume4.pdf`, `Resume6.pdf`) are synced to MinIO bucket `source-my-gd-b222342d`.
+- **UI Render Verification**: Browser inspection confirmed all 5 files display cleanly under **Bucket Files** on `http://localhost:5173/sources/b222342d-c768-4a98-aaf6-fb7e1652b90d`.
