@@ -55,20 +55,23 @@ def compute_chat_metrics(message_id: str) -> None:
             return
             
         try:
+            parsed_latency = db_trace.latency_ms or {}
             staged = compute_chat_pipeline_metrics(
                 settings,
                 question=db_trace.query,
                 answer=message.content,
                 retrieved_chunks=db_trace.retrieved_chunks or [],
                 reranked_chunks=db_trace.reranked_chunks or [],
+                sc_iterations=parsed_latency.get("sc_iterations", [])
             )
             scores = flatten_chat_metrics(staged)
             chat_repo.update_metrics(msg_uuid, scores=scores, status="completed")
-            
             trace_info = {
                 "retrieval_mode": db_trace.retrieval_mode,
                 "rerank_enabled": db_trace.rerank_enabled,
                 "generation_model": db_trace.generation_model,
+                "prompt_tokens": parsed_latency.pop("prompt_tokens", None),
+                "completion_tokens": parsed_latency.pop("completion_tokens", None),
             }
             
             emit_otel_synthetic_trace(
@@ -76,7 +79,7 @@ def compute_chat_metrics(message_id: str) -> None:
                 message_id=str(message.id),
                 query=db_trace.query,
                 answer=message.content,
-                latency_ms=db_trace.latency_ms or {},
+                latency_ms=parsed_latency,
                 scores=scores,
                 retrieved_chunks=db_trace.retrieved_chunks or [],
                 trace_info=trace_info
@@ -116,8 +119,16 @@ def run_evaluation(run_id: str) -> None:
         collection=config_data.get("collection"),
         embedding_model=config_data.get("embedding_model"),
         sparse_embedding_model=config_data.get("sparse_embedding_model"),
+        rag_mode=config_data.get("rag_mode", "normal"),
+        self_corrective_max_loops=int(config_data.get("self_corrective_max_loops", 3)),
     )
     k_values = config_data.get("k_values", [1, 3, 5, 10])
+    router_enabled = bool(config_data.get("router_enabled", False))
+    router_mode = config_data.get("router_mode")
+    if isinstance(router_mode, str):
+        router_mode = router_mode.strip() or None
+    else:
+        router_mode = None
 
     with session_factory() as db:
         eval_repo = EvaluationRepository(db)
@@ -161,7 +172,13 @@ def run_evaluation(run_id: str) -> None:
                     label=item["metadata"].get("label"),
                     category=item["metadata"].get("category"),
                 )
-                result = evaluator.evaluate_item(golden, config, k_values)
+                result = evaluator.evaluate_item(
+                    golden,
+                    config,
+                    k_values,
+                    router_enabled=router_enabled,
+                    router_mode=router_mode,
+                )
 
                 with session_factory() as db:
                     eval_repo = EvaluationRepository(db)
@@ -190,6 +207,9 @@ def run_evaluation(run_id: str) -> None:
                         "retrieval_mode": config.retrieval_mode.value,
                         "rerank_enabled": config.rerank_enabled,
                         "generation_model": config.generation_model,
+                        "route": result.generation_metrics.get("route", "normal"),
+                        "prompt_tokens": result.latency_ms.pop("prompt_tokens", None),
+                        "completion_tokens": result.latency_ms.pop("completion_tokens", None),
                     }
                     
                     emit_otel_synthetic_trace(
@@ -197,7 +217,7 @@ def run_evaluation(run_id: str) -> None:
                         message_id=str(run_item_id),
                         query=item["question"],
                         answer=result.generated_answer,
-                        latency_ms={}, # Real latency could be added here if evaluator captures it
+                        latency_ms=result.latency_ms,
                         scores=combined_scores,
                         retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
                         trace_info=trace_info

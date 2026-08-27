@@ -67,6 +67,16 @@ class LinkExtractor:
             return None, None
 
     def _fetch_with_playwright(self, url: str) -> tuple[str | None, int | None]:
+        """
+        Executes a headless Playwright context to let JavaScript heavily-rendered pages 
+        fully execute before extracting the ultimate DOM string.
+
+        Args:
+            url: The target web page.
+
+        Returns:
+            Tuple containing the rendered HTML string and the response status code.
+        """
         try:
             return fetch_html_sync(
                 url,
@@ -93,6 +103,16 @@ class LinkExtractor:
 
     @staticmethod
     def _looks_like_js_shell(html: str) -> bool:
+        """
+        Heuristic check to determine if the HTML returned gracefully by simple HTTP GET
+        is actually an empty SPA (Single Page Application) shell needing headless JS rendering.
+
+        Args:
+            html: Raw text from HTTP GET.
+
+        Returns:
+            True if it matches React/Vue/Angular empty mounting markers with minimal anchors.
+        """
         lowered = html.lower()
         has_script = "<script" in lowered
         has_anchor = "<a " in lowered

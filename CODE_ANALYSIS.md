@@ -38,7 +38,7 @@ The platform is functionally coherent (ingest → Qdrant → RAG → eval) but s
 |----|----------|-------|-------|
 | S1 | **High** | **Auth disabled by default** | Empty `API_KEY` → `verify_api_key` allows all traffic on ingestion, scraper, and RAG APIs. |
 | S2 | **High** | **`.env` not gitignored** | All three workspace `.gitignore` files omit `.env`. Live `.env` / `.env.rag` / `.env.scraper` exist on disk and are commit risks. |
-| S3 | **High** | **Weak default secrets** | Examples: Postgres `crawler:crawler`, Qdrant key `qdrant`, LiteLLM `sk-bot` / `OPENAI_API_KEY=sk-bot`. Fine for local demos only. |
+| S3 | **High** | **Weak default secrets** | Examples: Postgres `crawler:crawler`, Qdrant key `qdrant`, LiteLLM `dummy-bot-key` / `OPENAI_API_KEY=dummy-bot-key`. Fine for local demos only. |
 | S4 | **High** | **SSRF / open crawl** | Scraper accepts arbitrary seed URLs with no allowlist, private-IP block, or robots policy. Callers can target metadata endpoints / internal Docker DNS. |
 | S5 | **Medium** | **CORS `allow_origins=["*"]`** | Present on all APIs. Ingestion also sets `allow_credentials=True` with `*` (invalid/insecure combination). |
 | S6 | **Medium** | **Auth incomplete when enabled** | Frontend `api.ts` does not send `X-API-Key`. Scraper worker link-fetch client and ingestion→scraper client also omit the header. Enabling `API_KEY` breaks the stack. |

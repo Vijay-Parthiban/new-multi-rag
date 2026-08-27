@@ -19,7 +19,22 @@ def enqueue_scrape_pages(
     crawl_job_id: uuid.UUID,
     embedding_source: EmbeddingSource,
 ) -> int:
-    """Push one queue item per crawl URL. Returns number of pages enqueued."""
+    """
+    Distributes discrete page scraping tasks to Redis queues by fetching all discovered 
+    links from the original crawl job. 
+    
+    This splits a monolithic scrape sweep into granular, retryable worker tasks for 
+    parallel processing.
+
+    Args:
+        settings: Application settings.
+        scrape_job_id: ID of the overarching scrape job tracking the batch.
+        crawl_job_id: ID of the antecedent crawl job that discovered the links.
+        embedding_source: Modality target (e.g., 'markdown' or 'image').
+
+    Returns:
+        The total number of page-level tasks enqueued.
+    """
     links = fetch_crawl_links(
         settings.api_base_url,
         crawl_job_id,

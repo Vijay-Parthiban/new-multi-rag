@@ -20,12 +20,26 @@ class PlaywrightScrapeResult:
 
 
 class PlaywrightPageScraper:
-    """Scrape one page inside a short-lived stealth browser (full cleanup after each URL)."""
+    """
+    Scrape one page inside a short-lived stealth browser. 
+    It ensures full cleanup after each URL to prevent memory leaks and maintain session isolation.
+    Uses Playwright to capture both the page HTML and a high-fidelity full-page visual screenshot.
+    """
 
     def __init__(self, *, timeout_ms: int = 30000) -> None:
         self._timeout_ms = timeout_ms
 
     async def scrape(self, url: str) -> PlaywrightScrapeResult:
+        """
+        Loads the URL inside a secure stealth browser, waits for the DOM body to attach, 
+        and extracts the page title, HTML content, markdown text, and PNG screenshot.
+
+        Args:
+            url (str): The target web page URL to scrape.
+
+        Returns:
+            PlaywrightScrapeResult: A dataclass bundling extracted page assets.
+        """
         try:
             async with safe_browser_page() as page:
                 response = await page.goto(

@@ -177,6 +177,16 @@ class CrawlScrapePipelineRequest(BaseModel):
 
 
 def _vector_config_from_payload(payload: CrawlScrapePipelineRequest) -> dict:
+    """
+    Extracts Qdrant vector-related configuration from the pipeline request payload.
+    These config values determine which collection is used and which models compute embeddings.
+
+    Args:
+        payload: The incoming request containing pipeline parameters.
+
+    Returns:
+        A dictionary of vector configuration parameters safe for unpacking.
+    """
     return {
         "qdrant_collection": payload.qdrant_collection,
         "embedding_model": payload.embedding_model,
@@ -540,7 +550,17 @@ def get_scrape(job_id: UUID, db: Session = Depends(get_db)) -> ScrapeJobResponse
 # --- NEW ENDPOINT 2: RETRIEVE CROSS-MODAL CHUNKS FROM QDRANT ---
 @app.post("/scrapes/query", response_model=list[RAGChunkItem])
 async def query_vector_chunks(payload: RAGQueryRequest) -> list[RAGChunkItem]:
-    """Search stored chunks with dense, sparse, or hybrid retrieval."""
+    """
+    Search stored chunks in Qdrant with dense, sparse, or hybrid retrieval.
+    This endpoint supports multimodal RAG by resolving text queries against the shared Qdrant collection,
+    retrieving either markdown excerpts or metadata to image screenshots based on the source_type.
+
+    Args:
+        payload: RAGQueryRequest containing query parameters, strategy limits, and optional filters.
+
+    Returns:
+        A list of mapped RAGChunkItem objects combining semantic hits and their relevant source metadata.
+    """
     settings = get_settings()
 
     try:

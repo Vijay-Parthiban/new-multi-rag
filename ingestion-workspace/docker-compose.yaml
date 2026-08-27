@@ -22,8 +22,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./ingestion-backend/src:/app/src
-      - ./ingestion-backend/apps:/app/apps
+      - file_storage:/app/storage
     depends_on:
       redis:
         condition: service_started
@@ -38,6 +37,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
   worker:
     build:
       context: ..
@@ -46,8 +46,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./ingestion-backend/src:/app/src
-      - ./ingestion-backend/apps:/app/apps
+      - file_storage:/app/storage
       - hf-cache:/root/.cache/huggingface
     depends_on:
       redis:
@@ -63,74 +62,25 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-  pathway-worker:
-    build:
-      context: ..
-      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
-    command: ["sh", "/app/scripts/run-pathway-worker.sh"]
-    env_file:
-      - .env
-    volumes:
-      - ./ingestion-backend/src:/app/src
-      - ./ingestion-backend/apps:/app/apps
-    depends_on:
-      redis:
-        condition: service_started
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_started
-      migrate:
-        condition: service_completed_successfully
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-  # --- Frontend (Vite dev server bound to all interfaces) ---
-  frontend:
+
+  web:
     build:
       context: ./ingestion-frontend
       dockerfile: Dockerfile
-    command: npm run dev -- --host 0.0.0.0
     ports:
       - "5173:5173"
     volumes:
-      - ./ingestion-frontend:/app
-      - /app/node_modules
+      - ./ingestion-frontend/src:/app/src
     environment:
-      - VITE_API_URL=http://host.docker.internal:8007
+      - VITE_API_URL=http://localhost:8007
       - VITE_SCRAPER_URL=http://localhost:8000
       - VITE_RAG_API_URL=http://localhost:8001
-    networks:
-      - ingestion_backend
-    restart: unless-stopped
+      # Set to your Langfuse project traces URL, e.g. https://cloud.langfuse.com/project/<id>/traces
+      - VITE_LANGFUSE_TRACES_URL=${VITE_LANGFUSE_TRACES_URL:-https://us.cloud.langfuse.com/project/cmrzqh3h90mwlad0ci107tb7j/traces}
     depends_on:
       - api
 
-  # --- ngrok tunnel (public URL to frontend) ---
-  ngrok:
-    image: ngrok/ngrok:alpine
-    container_name: ngrok-frontend
-    restart: unless-stopped
-    command:
-      - http
-      - host.docker.internal:5173
-      - --url
-      - ${NGROK_DOMAIN:-https://semiwildly-superadaptable-vernice.ngrok-free.dev}
-      - --config
-      - /etc/ngrok.yml
-      - --log
-      - stdout
-    env_file:
-      - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./ngrok-auth.yml:/etc/ngrok.yml:ro
-    ports:
-      - "4040:4040"
-    networks:
-      - ingestion_backend
-  # --- Web scrapper ---
+  # --- Web scrapper (pre-built image — no sibling repo required) ---
   scraper-api:
     image: tharun0511/web-scrapper-wokspace:latest
     command: ["sh", "/app/scripts/run-api.sh"]
@@ -192,31 +142,13 @@ services:
     container_name: otel
     restart: unless-stopped
     ports:
-      - 4317:4317
-      - 4318:4318
+      - 4317:4317 # OTLP gRPC receiver
+      - 4318:4318 # OTLP http receiver
     env_file:
       - ../otel/.env
     volumes:
       - ../otel/otel-collector-config.yaml:/etc/otelcol/config.yaml
     command: ["--config=/etc/otelcol/config.yaml"]
-
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:v1.18.0
@@ -246,7 +178,7 @@ services:
       POSTGRES_PASSWORD: ingestion
       POSTGRES_DB: ingestion
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init-crawler-db.sql:/docker-entrypoint-initdb.d/02-crawler.sql:ro
@@ -314,13 +246,26 @@ services:
       - hf-cache:/root/.cache/huggingface
     restart: unless-stopped
 
-networks:
-  ingestion_backend:
-    driver: bridge
+  # --- Guardrails AI validation service ---
+  guardrails-service:
+    build:
+      context: ../guardrails-service
+      secrets:
+        - guardrails_env
+    container_name: guardrails
+    restart: unless-stopped
+    ports:
+      - "18000:8000"
+    env_file:
+      - .env.guardrails
 
 volumes:
-  minio_data:
+  file_storage:
   pg_data:
   qdrant_data:
   scraper_data:
   hf-cache:
+
+secrets:
+  guardrails_env:
+    file: .env.guardrails

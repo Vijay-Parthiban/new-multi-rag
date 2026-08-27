@@ -22,6 +22,10 @@ class EvalRunConfig(BaseModel):
     collection: str | None = None
     embedding_model: str | None = None
     sparse_embedding_model: str | None = None
+    # RAG execution strategy
+    rag_mode: str = "normal"  # "normal" | "self_corrective"
+    self_corrective_max_loops: int = 3
+    router_enabled: bool = False  # False by default for deterministic offline eval
 
 
 class CreateEvalRunRequest(BaseModel):
@@ -239,6 +243,7 @@ class EvalRunItemResponse(BaseModel):
     retrieval_metrics: dict | None = None
     rerank_metrics: dict | None = None
     generation_metrics: dict | None = None
+    category: str | None = None
     error_message: str | None = None
 
 
@@ -291,6 +296,7 @@ def list_eval_run_items(
         items: list[EvalRunItemResponse] = []
         for ri in run_items:
             di = ri.dataset_item
+            meta = (di.metadata_ or {}) if di else {}
             items.append(
                 EvalRunItemResponse(
                     item_id=ri.id,
@@ -303,6 +309,7 @@ def list_eval_run_items(
                     retrieval_metrics=ri.retrieval_metrics,
                     rerank_metrics=ri.rerank_metrics,
                     generation_metrics=ri.generation_metrics,
+                    category=meta.get("category"),
                     error_message=ri.error_message,
                 )
             )

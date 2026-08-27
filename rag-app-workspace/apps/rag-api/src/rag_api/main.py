@@ -13,7 +13,18 @@ from redis import Redis
 from rq import Queue
 from retrieval_core import Retriever
 from generation_core import Generator
-from rag_api.routes import chat, evaluate, generate, health, rerank, retrieve, search
+from rag_api.routes import (
+    chat,
+    evaluate,
+    generate,
+    guardrails,
+    guardrails_evaluate,
+    health,
+    prompts,
+    rerank,
+    retrieve,
+    search,
+)
 
 
 @lru_cache
@@ -63,6 +74,9 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(chat.router)
     app.include_router(evaluate.router)
+    app.include_router(prompts.router)
+    app.include_router(guardrails.router)
+    app.include_router(guardrails_evaluate.router)
     return app
 
 
