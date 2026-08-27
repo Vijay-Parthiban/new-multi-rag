@@ -2,24 +2,112 @@
     "name": "sample-golden-dataset",
     "items": [
         {
-            "query": "What is formula for Scaled Dot-Product Attention?",
+            "query": "What is the formula for Scaled Dot-Product Attention?",
             "source": [
                 {
                     "name": "transformer.pdf",
                     "page": 4
                 }
             ],
-            "response": "The formula for Scaled Dot-Product Attention is: \n\nAttention(Q, K, V) = softmax(QK^T / sqrt(d_k))V"
+            "response": "The formula for Scaled Dot-Product Attention is:\n\n$$Attention(Q, K, V) = softmax\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V$$[cite: 1]",
+            "category": "Direct Answer"
         },
         {
-            "query": "What is the Time complexity for Linked List for insertion, deletion, searching?",
+            "query": "Does the Transformer architecture rely on recurrent layers to process input sequences?",
+            "source": [
+                {
+                    "name": "transformer.pdf",
+                    "page": 2
+                }
+            ],
+            "response": "No, the Transformer model eschews recurrence entirely and relies solely on self-attention mechanisms to draw global dependencies between inputs and outputs[cite: 1].",
+            "category": "Indirect Answer"
+        },
+        {
+            "query": "What are the key differences in layer dimensions, head count, and training duration between the Transformer base model and the big model?",
+            "source": [
+                {
+                    "name": "transformer.pdf",
+                    "page": 7
+                },
+                {
+                    "name": "transformer.pdf",
+                    "page": 8
+                }
+            ],
+            "response": "The base model uses $d_{model}=512$, $d_{ff}=2048$, and $h=8$ attention heads, and was trained for 100,000 steps (12 hours)[cite: 1]. In contrast, the big model increases the dimensions to $d_{model}=1024$, $d_{ff}=4096$, and uses $h=16$ attention heads, requiring 300,000 steps (3.5 days) of training[cite: 1].",
+            "category": "Multi-hop Reasoning"
+        },
+        {
+            "query": "In what manner does the model calculate positional vectors to retain token order without recurrent loops?",
+            "source": [
+                {
+                    "name": "transformer.pdf",
+                    "page": 6
+                }
+            ],
+            "response": "The model adds sinusoidal positional encodings to the input embeddings using sine and cosine functions of varying frequencies:\n\n$$PE_{(pos,2i)} = \\sin\\left(\\frac{pos}{10000^{2i/d_{model}}}\\right)$$\n$$PE_{(pos,2i+1)} = \\cos\\left(\\frac{pos}{10000^{2i/d_{model}}}\\right)$$[cite: 1]",
+            "category": "Paraphrased Query"
+        },
+        {
+            "query": "What are the time complexities for insertion, deletion, and searching in a singly linked list?",
             "source": [
                 {
                     "name": "Dsa.pdf",
-                    "page": 20
+                    "page": 9
                 }
             ],
-            "response": "The time complexity for Linked List for insertion is O(1), and for deletion and searching is O(n)."
+            "response": "In a singly linked list maintaining head and tail pointers, insertion at the head or tail is $O(1)$, while deletion and searching are $O(n)$[cite: 2].",
+            "category": "Direct Answer"
+        },
+        {
+            "query": "Is a singly linked list an ideal data structure choice when frequent random element access by index is required?",
+            "source": [
+                {
+                    "name": "Dsa.pdf",
+                    "page": 9
+                }
+            ],
+            "response": "No, linked lists are not well-suited for accessing nodes by index or random insertion, as accessing an arbitrary node requires linear traversal with $O(n)$ time complexity[cite: 2].",
+            "category": "Indirect Answer"
+        },
+        {
+            "query": "Why does an unbalanced Binary Search Tree degrade in performance to $O(n)$, and how does an AVL tree prevent this degradation?",
+            "source": [
+                {
+                    "name": "Dsa.pdf",
+                    "page": 19
+                },
+                {
+                    "name": "Dsa.pdf",
+                    "page": 54
+                }
+            ],
+            "response": "An unbalanced Binary Search Tree degrades to $O(n)$ search time because sequentially inserted sorted items turn the tree into a linear chain[cite: 2]. An AVL tree prevents this by enforcing a balance condition where the heights of left and right subtrees differ by at most 1, applying tree rotations to preserve a $O(\\log n)$ runtime for search, insertion, and deletion[cite: 2].",
+            "category": "Multi-hop Reasoning"
+        },
+        {
+            "query": "What algorithmic procedure can be executed to compute the greatest common divisor of two integers?",
+            "source": [
+                {
+                    "name": "Dsa.pdf",
+                    "page": 73
+                }
+            ],
+            "response": "Euclid's algorithm can be used to calculate the greatest common denominator of two integers $m$ and $n$ with a time complexity of $O(n^2)$[cite: 2].",
+            "category": "Paraphrased Query"
+        },
+        {
+            "query": "What key ingredients and fermentation steps are required to bake a traditional sourdough bread?",
+            "source": [],
+            "response": "The provided documents do not contain information regarding culinary recipes or baking sourdough bread. The document corpus covers data structures, algorithm design, and deep learning architectures.",
+            "category": "Out of Context"
+        },
+        {
+            "query": "What are the primary chemical reactions involved in light-dependent plant photosynthesis?",
+            "source": [],
+            "response": "The provided documents do not contain information about biological processes or plant photosynthesis. The available files pertain strictly to computer science topics such as Transformer models and data structures.",
+            "category": "Out of Context"
         }
     ]
 }

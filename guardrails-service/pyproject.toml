@@ -1,0 +1,11 @@
+[project]
+name = "guardrails-service"
+version = "0.1.0"
+description = "Guardrails AI validation service for RAG pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "guardrails-ai>=0.5.0",
+    "guardrails-api",
+    "nltk>=3.8",
+    "uvicorn[standard]"
+]
