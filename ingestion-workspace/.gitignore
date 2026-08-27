@@ -13,6 +13,8 @@ venv/
 !.env.example
 
 # Node
+docker_logs*
+*.txt.log
 node_modules/
 dist/
 *.local
