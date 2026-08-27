@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import { IconUpload } from "../components/Icons";
-import { ApiError, uploadFileChunked } from "../api";
+import { ApiError, SourceRecord, listSources, uploadFileChunked, uploadSourceFile } from "../api";
 
 const BLOCKED_EXTENSIONS = new Set([
   "mp4", "mov", "avi", "mkv", "webm", "wmv", "flv",
@@ -29,6 +29,11 @@ export default function UploadPage() {
   const location = useLocation();
   const presetDir = (location.state as { directory?: string } | null)?.directory ?? "";
 
+  const [targetType, setTargetType] = useState<"source" | "folder">("source");
+  const [sources, setSources] = useState<SourceRecord[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [loadingSources, setLoadingSources] = useState(true);
+
   const [directoryName, setDirectoryName] = useState(presetDir);
   const [usePreset, setUsePreset] = useState(!!presetDir);
   const [newFolderName, setNewFolderName] = useState("");
@@ -38,6 +43,18 @@ export default function UploadPage() {
   const [error, setError] = useState<ApiError | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    listSources()
+      .then((res) => {
+        setSources(res);
+        if (res.length > 0) {
+          setSelectedSourceId(res[0].id);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingSources(false));
+  }, []);
 
   const effectiveDir = usePreset ? presetDir : (newFolderName || directoryName);
   const selectedContentType = CONTENT_TYPES.find((c) => c.id === contentType)!;
@@ -63,8 +80,41 @@ export default function UploadPage() {
   }
 
   async function handleUpload() {
+    if (files.length === 0) return;
+
+    if (targetType === "source") {
+      if (!selectedSourceId) {
+        setError(new ApiError(400, { error: { code: "SOURCE_REQUIRED", message: "Please select a target MinIO Source bucket." } }));
+        return;
+      }
+
+      setSubmitting(true);
+      setError(null);
+      setInfo("Uploading files directly to selected MinIO source bucket...");
+
+      let uploaded = 0;
+      try {
+        for (const file of files) {
+          await uploadSourceFile(selectedSourceId, file);
+          uploaded += 1;
+        }
+
+        const activeSource = sources.find((s) => s.id === selectedSourceId);
+        setInfo(`Successfully uploaded ${uploaded} file(s) to MinIO source bucket '${activeSource?.name || selectedSourceId}'.`);
+        setTimeout(() => {
+          navigate(`/sources/${selectedSourceId}`);
+        }, 1200);
+      } catch (err) {
+        setError(err instanceof ApiError ? err : new ApiError(500, { error: { code: "UPLOAD_FAILED", message: String(err) } }));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // Legacy folder mode
     const dir = effectiveDir.trim().toLowerCase();
-    if (!dir || files.length === 0) return;
+    if (!dir) return;
 
     setSubmitting(true);
     setError(null);
@@ -91,30 +141,25 @@ export default function UploadPage() {
 
       const parts: string[] = [];
       if (queued > 0) parts.push(`${queued} queued for sync`);
-      if (duplicates > 0) parts.push(`${duplicates} duplicate(s) recorded`);
-      if (corrupted.length > 0) parts.push(`${corrupted.length} corrupted (hash mismatch)`);
-      setInfo(parts.join(" · ") || "Upload finished.");
+      if (duplicates > 0) parts.push(`${duplicates} duplicates skipped`);
+      if (corrupted.length > 0) parts.push(`${corrupted.length} corrupted file(s) failed integrity check`);
 
-      navigate(`/browse/${dir}`);
+      setInfo(parts.join(", "));
+      setTimeout(() => {
+        navigate(`/browse/${encodeURIComponent(dir)}`);
+      }, 1500);
     } catch (err) {
-      setInfo(null);
-      setError(
-        err instanceof ApiError
-          ? err
-          : new ApiError(500, {
-              error: { code: "UPLOAD_FAILED", message: err instanceof Error ? err.message : "Upload failed" },
-            }),
-      );
+      setError(err instanceof ApiError ? err : null);
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="page page-narrow">
+    <div className="page">
       <PageHeader
-        title="Upload"
-        description="Documents only — no video or audio. Duplicates are recorded without saving to disk."
+        title="Upload Documents"
+        description="Add files manually to an existing MinIO Source bucket or folder target."
         breadcrumbs={[
           { label: "Overview", to: "/" },
           ...(presetDir ? [{ label: "Folders", to: "/browse" }, { label: presetDir, to: `/browse/${presetDir}` }] : []),
@@ -130,6 +175,83 @@ export default function UploadPage() {
       {info && <div className="alert alert-info">{info}</div>}
 
       <div className="panel upload-panel">
+        {/* Upload Destination Target Selector */}
+        <label className="field-label">Target Destination</label>
+        <div className="content-type-group" style={{ marginBottom: "1rem" }}>
+          <label className={`content-type-option${targetType === "source" ? " selected" : ""}`}>
+            <input
+              type="radio"
+              name="target-type"
+              value="source"
+              checked={targetType === "source"}
+              onChange={() => setTargetType("source")}
+              className="sr-only"
+            />
+            <span className="content-type-label">MinIO Source Bucket</span>
+            <span className="content-type-hint">Upload directly into an existing Source bucket created in Sources page</span>
+          </label>
+
+          <label className={`content-type-option${targetType === "folder" ? " selected" : ""}`}>
+            <input
+              type="radio"
+              name="target-type"
+              value="folder"
+              checked={targetType === "folder"}
+              onChange={() => setTargetType("folder")}
+              className="sr-only"
+            />
+            <span className="content-type-label">Folder Directory</span>
+            <span className="content-type-hint">Upload to a local document folder</span>
+          </label>
+        </div>
+
+        {targetType === "source" ? (
+          <div style={{ marginBottom: "1.5rem" }}>
+            <label className="field-label">Select MinIO Source</label>
+            {loadingSources ? (
+              <div style={{ color: "var(--muted)" }}>Loading available sources...</div>
+            ) : sources.length === 0 ? (
+              <div className="alert alert-info" style={{ marginTop: "0.5rem" }}>
+                No sources configured yet. <Link to="/sources">Create a source first</Link> in the Sources page.
+              </div>
+            ) : (
+              <select
+                className="select-input"
+                style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", border: "1px solid var(--border)" }}
+                value={selectedSourceId}
+                onChange={(e) => setSelectedSourceId(e.target.value)}
+              >
+                {sources.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.minio_bucket}) — {s.connectors?.length || 0} connector(s)
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        ) : (
+          <div style={{ marginBottom: "1.5rem" }}>
+            <label className="field-label">Target folder</label>
+            {presetDir ? (
+              <div className="folder-preset-block">
+                <div className="folder-preset-badge">
+                  <span className="folder-preset-name mono">{presetDir}</span>
+                  <span className="folder-preset-tag">current folder</span>
+                </div>
+              </div>
+            ) : (
+              <input
+                type="text"
+                placeholder="Folder name (e.g. invoices, research)"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                className="text-input"
+                style={{ width: "100%", padding: "0.6rem" }}
+              />
+            )}
+          </div>
+        )}
+
         {/* Content type selector */}
         <label className="field-label">Content type</label>
         <div className="content-type-group">
@@ -152,57 +274,9 @@ export default function UploadPage() {
           ))}
         </div>
 
-        {/* Folder selection */}
-        <label className="field-label" style={{ marginTop: "1rem" }}>
-          Target folder
-        </label>
-
-        {presetDir ? (
-          <div className="folder-preset-block">
-            <div className="folder-preset-row">
-              <div className="folder-preset-badge">
-                <span className="folder-preset-name mono">{presetDir}</span>
-                <span className="folder-preset-tag">current folder</span>
-              </div>
-              <label className="check-row folder-preset-toggle">
-                <input
-                  type="checkbox"
-                  checked={!usePreset}
-                  onChange={(e) => setUsePreset(!e.target.checked)}
-                />
-                <span>Use a different folder</span>
-              </label>
-            </div>
-            {!usePreset && (
-              <div style={{ marginTop: "0.625rem" }}>
-                <input
-                  type="text"
-                  className="input"
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  placeholder="new-folder-name"
-                />
-                <p className="field-hint">Lowercase. Created automatically on first upload.</p>
-              </div>
-            )}
-          </div>
-        ) : (
-          <>
-            <input
-              id="directory-name"
-              type="text"
-              className="input"
-              value={directoryName}
-              onChange={(e) => setDirectoryName(e.target.value)}
-              placeholder="project-alpha"
-            />
-            <p className="field-hint">Lowercase folder name. Created automatically on first upload.</p>
-          </>
-        )}
-
+        {/* Drop zone */}
         <div
-          className={`dropzone${dragOver ? " dropzone-active" : ""}`}
-          style={{ marginTop: "1rem" }}
+          className={`drop-zone${dragOver ? " drag-over" : ""}`}
           onDragOver={(e) => {
             e.preventDefault();
             setDragOver(true);
@@ -213,57 +287,53 @@ export default function UploadPage() {
             setDragOver(false);
             onFileChange(e.dataTransfer.files);
           }}
-          onClick={() => document.getElementById("file-input")?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") document.getElementById("file-input")?.click();
+          onClick={() => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.multiple = true;
+            input.accept = selectedContentType.accept;
+            input.onchange = () => onFileChange(input.files);
+            input.click();
           }}
+          style={{ cursor: "pointer", marginTop: "1.5rem" }}
         >
-          <IconUpload className="dropzone-icon" size={28} />
-          <p className="dropzone-title">Drag & drop {selectedContentType.label.toLowerCase()} here</p>
-          <p className="dropzone-sub">or click to browse · {selectedContentType.hint}</p>
-          <input
-            id="file-input"
-            type="file"
-            multiple
-            hidden
-            accept={selectedContentType.accept}
-            onChange={(e) => onFileChange(e.target.files)}
-          />
+          <IconUpload className="drop-zone-icon" />
+          <p className="drop-zone-text">
+            Drag & drop files here, or <span className="link-like">browse</span>
+          </p>
+          <p className="drop-zone-sub">
+            Accepted: {selectedContentType.accept}. Max size 100MB per file.
+          </p>
         </div>
 
+        {/* File list */}
         {files.length > 0 && (
-          <div className="upload-queue">
-            <div className="panel-toolbar">
-              <span className="panel-toolbar-label">{files.length} file(s) selected</span>
-            </div>
-            <ul className="upload-list">
-              {files.map((f, i) => (
-                <li key={`${f.name}-${i}`}>
-                  <span className="mono">{f.name}</span>
-                  <span className="muted">{(f.size / 1024).toFixed(1)} KB</span>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => removeFile(i)}>
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
+          <div className="file-preview-list" style={{ marginTop: "1rem" }}>
+            <h4 style={{ margin: "0 0 0.5rem 0" }}>Selected Files ({files.length})</h4>
+            {files.map((file, idx) => (
+              <div key={idx} className="file-preview-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
+                <div>
+                  <span className="mono">{file.name}</span>
+                  <span style={{ color: "var(--muted)", marginLeft: "0.5rem", fontSize: "0.85rem" }}>
+                    ({(file.size / 1024 / 1024).toFixed(2)} MB)
+                  </span>
+                </div>
+                <button className="btn btn-sm btn-ghost" onClick={() => removeFile(idx)}>
+                  Remove
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
-        <div className="upload-actions">
+        <div className="form-actions" style={{ marginTop: "1.5rem" }}>
           <button
-            type="button"
             className="btn btn-primary"
-            disabled={submitting || !effectiveDir.trim() || files.length === 0}
             onClick={handleUpload}
+            disabled={submitting || files.length === 0 || (targetType === "source" && !selectedSourceId)}
           >
-            {submitting ? "Uploading…" : "Upload & queue sync"}
+            {submitting ? "Uploading..." : `Upload ${files.length} File(s)`}
           </button>
-          <Link to="/browse" className="btn btn-secondary">
-            Browse folders
-          </Link>
         </div>
       </div>
     </div>

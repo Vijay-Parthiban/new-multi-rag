@@ -86,15 +86,6 @@ export function IconChat({ className, size = 16 }: IconProps) {
   );
 }
 
-export function IconSources({ className, size = 16 }: IconProps) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-      <path d="M2 2.75A2.75 2.75 0 0 1 4.75 0h6.5A2.75 2.75 0 0 1 14 2.75v2.5A2.75 2.75 0 0 1 11.25 8h-6.5A2.75 2.75 0 0 1 2 5.25v-2.5ZM4.75 1.5c-.69 0-1.25.56-1.25 1.25v2.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25v-2.5c0-.69-.56-1.25-1.25-1.25h-6.5Z" />
-      <path d="M4.75 9A2.75 2.75 0 0 0 2 11.75v2.5A2.75 2.75 0 0 0 4.75 17h2.5A2.75 2.75 0 0 0 10 14.25v-2.5A2.75 2.75 0 0 0 7.25 9h-2.5ZM3.5 11.75c0-.69.56-1.25 1.25-1.25h2.5c.69 0 1.25.56 1.25 1.25v2.5c0 .69-.56 1.25-1.25 1.25h-2.5c-.69 0-1.25-.56-1.25-1.25v-2.5ZM9.22 10.22a.75.75 0 0 1 1.06 0L12 11.94l1.72-1.72a.75.75 0 1 1 1.06 1.06L13.06 13l1.72 1.72a.75.75 0 1 1-1.06 1.06L12 14.06l-1.72 1.72a.75.75 0 0 1-1.06-1.06L10.94 13l-1.72-1.72a.75.75 0 0 1 0-1.06Z" />
-    </svg>
-  );
-}
-
 export function IconEvaluation({ className, size = 16 }: IconProps) {
   return (
     <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
@@ -102,3 +93,54 @@ export function IconEvaluation({ className, size = 16 }: IconProps) {
     </svg>
   );
 }
+
+export function IconPrompts({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25Zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25ZM3.5 4.75a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1-.75-.75Zm0 3a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1-.75-.75Zm0 3a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z" />
+    </svg>
+  );
+}
+
+export function IconGuardrails({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M8 0L1 3v5c0 4.42 3 7.5 7 8 4-.5 7-3.58 7-8V3L8 0Zm0 1.5l5.5 2.35V8c0 3.53-2.37 5.97-5.5 6.46C4.87 13.97 2.5 11.53 2.5 8V3.85L8 1.5Zm-.72 4.22a.75.75 0 0 1 1.06 0L10 7.38l1.66-1.66a.75.75 0 1 1 1.06 1.06l-2.19 2.19a.75.75 0 0 1-1.06 0L8 7.5l-.66.66a.75.75 0 0 1-1.06-1.06l.94-.94Z" />
+    </svg>
+  );
+}
+
+export function IconMoreHorizontal({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M2.75 8a1.25 1.25 0 1 1 2.5 0 1.25 1.25 0 0 1-2.5 0Zm4 0a1.25 1.25 0 1 1 2.5 0 1.25 1.25 0 0 1-2.5 0Zm4 0a1.25 1.25 0 1 1 2.5 0 1.25 1.25 0 0 1-2.5 0Z" />
+    </svg>
+  );
+}
+export function IconSources({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M4.5 1.75a.75.75 0 0 0-1.5 0v12.5a.75.75 0 0 0 1.5 0V1.75ZM8.5 1.75a.75.75 0 0 0-1.5 0v12.5a.75.75 0 0 0 1.5 0V1.75ZM12.5 1.75a.75.75 0 0 0-1.5 0v12.5a.75.75 0 0 0 1.5 0V1.75Z" />
+    </svg>
+  );
+}
+export function IconArrowRight({ className, size = 16 }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path fillRule="evenodd" d="M4.75 3.75a.75.75 0 0 1 .75.75v6.537L9.191 8.708a.75.75 0 0 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06L7.75 11.087V4.5a.75.75 0 0 1 .75-.75Z" clipRule="evenodd" />
+    </svg>
+  );
+}
+export function IconBucket({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M14 6H2l1 9h10l1-9zM4 3h8v2H4z" /></svg>); }
+export function IconCheck({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M6 12L2 8l1.5-1.5L6 9l6-6L13.5 4.5z" /></svg>); }
+export function IconCheckCircle({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 4.5l-5 5-2-2L3 8.5l3.5 3.5 6-6L11.5 4.5z" /></svg>); }
+export function IconCopy({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 1h9v12H4V1zM2 3h1v12h10v1H2V3z" /></svg>); }
+export function IconGrid({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M0 0h7v7H0V0zm9 0h7v7H9V0zM0 9h7v7H0V9zm9 0h7v7H9V9z" /></svg>); }
+export function IconList({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M0 2h16v2H0V2zm0 5h16v2H0V7zm0 5h16v2H0v-2z" /></svg>); }
+export function IconPlus({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M7 0h2v16H7V0zM0 7h16v2H0V7z" /></svg>); }
+export function IconRadio({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" /></svg>); }
+export function IconSearch({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M10.5 9.5l4 4-1 1-4-4a5 5 0 1 1 1-1zM6 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" /></svg>); }
+export function IconSync({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M12 4H4v2l-3-3 3-3v2h8c1.1 0 2 .9 2 2v4h-2V4zm-4 8h8v-2l3 3-3 3v-2H4c-1.1 0-2-.9-2-2v-4h2v6z" /></svg>); }
+export function IconTrash({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M5 1h6v1H5V1zM3 3h10v1H3V3zm1 2h8v9H4V5z" /></svg>); }
+export function IconZap({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M10 0L0 10h5v6l10-10H9l1-6z" /></svg>); }
+

@@ -429,6 +429,7 @@ export interface ChatMessage {
     retrieval_mode: string | null;
     rerank_enabled: boolean | null;
     generation_model: string | null;
+    route: string | null;
   } | null;
   sources: {
     source_locator: string;
@@ -436,6 +437,9 @@ export interface ChatMessage {
     rerank_score: number;
   }[];
   metrics_status?: string | null;
+  blocked?: boolean;
+  blocked_by_guard?: string | null;
+  blocked_on?: string | null;
 }
 
 export interface RAGChatResponse {
@@ -481,6 +485,11 @@ export interface RAGChatStatItem {
   kendall_tau: number | null;
   mrr: number | null;
   ndcg: number | null;
+  metrics: {
+    retrieval?: Record<string, any>;
+    reranker?: Record<string, any>;
+    generation?: Record<string, any>;
+  } | null;
   metrics_status: string;
   latency_ms: Record<string, number> | null;
   retrieval_mode: string | null;
@@ -530,6 +539,19 @@ export async function getChatSessionMessages(sessionId: string): Promise<ChatMes
   return res.items || [];
 }
 
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  await ragFetch<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+export async function deleteChatMessage(
+  messageId: string
+): Promise<{ session_id: string; deleted_message_ids: string[] }> {
+  return ragFetch<{ session_id: string; deleted_message_ids: string[] }>(
+    `/chat/messages/${messageId}`,
+    { method: "DELETE" }
+  );
+}
+
 export async function chatWithPipeline(payload: {
   query: string;
   session_id?: string | null;
@@ -544,6 +566,10 @@ export async function chatWithPipeline(payload: {
   collection?: string | null;
   embedding_model?: string | null;
   sparse_embedding_model?: string | null;
+  rag_mode?: string;
+  self_corrective_max_loops?: number;
+  router_enabled?: boolean;
+  router_mode?: string | null;
 }): Promise<RAGChatResponse> {
   return ragFetch<RAGChatResponse>("/chat", {
     method: "POST",
@@ -551,6 +577,63 @@ export async function chatWithPipeline(payload: {
     body: JSON.stringify(payload),
   });
 }
+
+export type ChatEventType = "status" | "token" | "done" | "error" | "session" | "blocked";
+
+export interface ChatStreamEvent {
+  type: ChatEventType;
+  message?: string;
+  content?: string;
+  // session event fields (sent after DB save with real IDs)
+  session_id?: string;
+  message_id?: string;
+  route?: string;
+  metrics_status?: string;
+  blocked_by_guard?: string;
+  blocked_on?: string;
+  blocked_title?: string;
+  metadata?: {
+    message_id?: string;
+    session_id?: string;
+    sources?: any[];
+    route?: string;
+  };
+}
+
+export async function* streamChat(payload: any): AsyncGenerator<ChatStreamEvent> {
+  const res = await fetch(`${RAG_API_URL}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(RAG_API_KEY) },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`RAG API error ${res.status}: ${text || res.statusText}`);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n\n");
+    // Keep the last partial chunk in the buffer
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim().startsWith("data: ")) {
+        const jsonStr = line.replace(/^data:\s*/, "").trim();
+        if (jsonStr) {
+          yield JSON.parse(jsonStr) as ChatStreamEvent;
+        }
+      }
+    }
+  }
+}
+
 
 export async function getMessageMetrics(messageId: string): Promise<RAGMetricsResponse> {
   return ragFetch<RAGMetricsResponse>(`/chat/messages/${messageId}/metrics`);
@@ -606,9 +689,10 @@ export interface EvalRunItemRow {
   expected_sources: Array<string | { name: string; page?: number }>;
   ground_truth_answer: string | null;
   generated_answer: string | null;
-  retrieval_metrics: Record<string, number> | null;
-  rerank_metrics: Record<string, number> | null;
-  generation_metrics: Record<string, number> | null;
+  retrieval_metrics: Record<string, any> | null;
+  rerank_metrics: Record<string, any> | null;
+  generation_metrics: Record<string, any> | null;
+  category: string | null;
   error_message: string | null;
 }
 
@@ -630,6 +714,10 @@ export async function createEvaluationRun(
     embedding_model?: string | null;
     sparse_embedding_model?: string | null;
     k_values?: number[];
+    rag_mode?: string;
+    self_corrective_max_loops?: number;
+    router_enabled?: boolean;
+    router_mode?: string | null;
   }
 ): Promise<{ run_id: string; status: string }> {
   return ragFetch<{ run_id: string; status: string }>("/evaluate/runs", {
@@ -643,7 +731,194 @@ export async function getEvaluationRun(runId: string): Promise<EvalRunResponse> 
   return ragFetch<EvalRunResponse>(`/evaluate/runs/${runId}`);
 }
 
-// --- Sources ---
+// --- Prompt Templates Registry ---
+
+export interface PromptSummary {
+  id: string;
+  filename: string;
+  package: "generation_core" | "rag_core";
+  label: string;
+  description: string;
+  is_overridden: boolean;
+  preview: string;
+}
+
+export interface PromptDetail {
+  id: string;
+  filename: string;
+  package: "generation_core" | "rag_core";
+  label: string;
+  description: string;
+  is_overridden: boolean;
+  packaged_content: string;
+  active_content: string;
+  overrides_dir: string;
+}
+
+export interface PromptListResponse {
+  overrides_dir: string;
+  count: number;
+  items: PromptSummary[];
+}
+
+export async function listPrompts(): Promise<PromptListResponse> {
+  return ragFetch<PromptListResponse>("/prompts");
+}
+
+export async function getPrompt(promptId: string): Promise<PromptDetail> {
+  return ragFetch<PromptDetail>(`/prompts/${encodeURIComponent(promptId)}`);
+}
+
+export async function updatePrompt(promptId: string, content: string): Promise<PromptDetail> {
+  return ragFetch<PromptDetail>(`/prompts/${encodeURIComponent(promptId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function updatePromptsBulk(
+  items: { id: string; content: string }[],
+): Promise<PromptListResponse> {
+  return ragFetch<PromptListResponse>("/prompts", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+}
+
+export async function resetPrompt(promptId: string): Promise<PromptDetail> {
+  return ragFetch<PromptDetail>(`/prompts/${encodeURIComponent(promptId)}/reset`, {
+    method: "POST",
+  });
+}
+
+export async function resetAllPrompts(): Promise<{ reset: string[]; overrides_dir: string }> {
+  return ragFetch<{ reset: string[]; overrides_dir: string }>("/prompts/reset", {
+    method: "POST",
+  });
+}
+
+// --- Guardrails API ---
+
+export interface GuardItemOption {
+  id: string;
+  label: string;
+}
+
+export interface GuardOption {
+  id: string;
+  label: string;
+  description: string;
+  items_key?: string | null;
+  items_label?: string | null;
+  allow_custom?: boolean;
+  options?: GuardItemOption[];
+}
+
+export interface GuardrailsSettings {
+  banned_words: string[];
+  pii_entities: string[];
+}
+
+export interface GuardrailsConfig {
+  id: string;
+  name: string;
+  description: string | null;
+  guards: string[];
+  settings?: GuardrailsSettings;
+  mode: string;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GuardrailsTrace {
+  id: string;
+  config_id: string;
+  config_name: string | null;
+  chat_message_id: string | null;
+  query: string;
+  response: string | null;
+  blocked: boolean;
+  blocked_by_guard: string | null;
+  blocked_on: string | null;
+  guard_results: Record<string, { passed: boolean; error: string | null }>;
+  created_at: string | null;
+}
+
+export interface GuardrailsStats {
+  total_requests: number;
+  blocked_requests: number;
+  passed_requests: number;
+  block_rate: number;
+  per_guard: Record<string, number>;
+}
+
+export async function listAvailableGuards(): Promise<GuardOption[]> {
+  return ragFetch<GuardOption[]>("/guardrails/guards");
+}
+
+export async function createGuardrailsConfig(body: {
+  name: string;
+  description?: string;
+  guards: string[];
+  mode: string;
+  settings?: GuardrailsSettings;
+}): Promise<GuardrailsConfig> {
+  return ragFetch<GuardrailsConfig>("/guardrails/configs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listGuardrailsConfigs(activeOnly = false): Promise<{ count: number; items: GuardrailsConfig[] }> {
+  const qs = activeOnly ? "?active_only=true" : "";
+  return ragFetch<{ count: number; items: GuardrailsConfig[] }>(`/guardrails/configs${qs}`);
+}
+
+export async function updateGuardrailsConfig(
+  configId: string,
+  body: Partial<{
+    name: string;
+    description: string;
+    guards: string[];
+    mode: string;
+    is_active: boolean;
+    settings: GuardrailsSettings;
+  }>,
+): Promise<GuardrailsConfig> {
+  return ragFetch<GuardrailsConfig>(`/guardrails/configs/${configId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteGuardrailsConfig(configId: string): Promise<void> {
+  await ragFetch(`/guardrails/configs/${configId}`, { method: "DELETE" });
+}
+
+export async function listGuardrailsTraces(opts?: {
+  guard?: string;
+  blocked?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<{ total: number; limit: number; offset: number; items: GuardrailsTrace[] }> {
+  const params = new URLSearchParams();
+  if (opts?.guard) params.set("guard", opts.guard);
+  if (opts?.blocked !== undefined) params.set("blocked", String(opts.blocked));
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.offset) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return ragFetch(`/guardrails/traces${qs ? `?${qs}` : ""}`);
+}
+
+export async function getGuardrailsStats(): Promise<GuardrailsStats> {
+  return ragFetch<GuardrailsStats>("/guardrails/stats");
+}
+// --- Data Sources & Storage Connectors API ---
 
 export interface ConnectorOption {
   id: string;
@@ -651,26 +926,52 @@ export interface ConnectorOption {
   description: string;
 }
 
-export interface SourceRecord {
+export interface SourceConnectorRecord {
   id: string;
-  name: string;
+  source_id: string;
   connector_type: string;
   config: Record<string, unknown>;
   monitor_mode: "live" | "scheduled";
-  minio_bucket: string;
   sync_interval_minutes: number | null;
   enabled: boolean;
   last_sync_at: string | null;
   status: string;
   error_message: string | null;
-  pipeline_ids: string[];
   created_at: string;
   updated_at: string;
 }
 
+export interface SourceRecord {
+  id: string;
+  name: string;
+  connector_type: string | null;
+  config: Record<string, unknown> | null;
+  connector_monitor_mode: "live" | "scheduled";
+  connector_sync_interval_minutes: number | null;
+  pipeline_monitor_mode: "live" | "scheduled";
+  pipeline_sync_interval_minutes: number | null;
+  minio_bucket: string;
+  enabled: boolean;
+  last_sync_at: string | null;
+  status: string;
+  error_message: string | null;
+  pipelines: PipelineLinkInfo[];
+  connectors: SourceConnectorRecord[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PipelineLinkInfo {
+  pipeline_id: string;
+  pipeline_name?: string;
+  monitor_mode?: "live" | "scheduled" | null;
+  sync_interval_minutes?: number | null;
+  created_at?: string;
+}
+
 export interface SourceCreateRequest {
   name: string;
-  connector_type: string;
+  connector_type?: string;
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";
   sync_interval_minutes?: number | null;
@@ -678,6 +979,16 @@ export interface SourceCreateRequest {
 
 export interface SourceUpdateRequest {
   name?: string;
+  config?: Record<string, unknown>;
+  connector_monitor_mode?: "live" | "scheduled";
+  connector_sync_interval_minutes?: number | null;
+  pipeline_monitor_mode?: "live" | "scheduled";
+  pipeline_sync_interval_minutes?: number | null;
+  enabled?: boolean;
+}
+
+export interface ConnectorCreateRequest {
+  connector_type: string;
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";
   sync_interval_minutes?: number | null;
@@ -729,8 +1040,43 @@ export async function deleteSource(sourceId: string): Promise<void> {
   await apiFetch(`/api/sources/${sourceId}`, { method: "DELETE" });
 }
 
-export async function linkSourceToPipeline(sourceId: string, pipelineId: string): Promise<void> {
-  await apiFetch(`/api/sources/${sourceId}/pipeline/${pipelineId}`, { method: "POST" });
+export async function addSourceConnector(
+  sourceId: string,
+  body: ConnectorCreateRequest,
+): Promise<SourceConnectorRecord> {
+  return apiFetch<SourceConnectorRecord>(`/api/sources/${sourceId}/connectors`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateSourceConnector(
+  sourceId: string,
+  connectorId: string,
+  body: Partial<ConnectorCreateRequest>,
+): Promise<SourceConnectorRecord> {
+  return apiFetch<SourceConnectorRecord>(`/api/sources/${sourceId}/connectors/${connectorId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteSourceConnector(sourceId: string, connectorId: string): Promise<void> {
+  await apiFetch(`/api/sources/${sourceId}/connectors/${connectorId}`, { method: "DELETE" });
+}
+
+export async function linkSourceToPipeline(
+  sourceId: string,
+  pipelineId: string,
+  body?: { monitor_mode?: "live" | "scheduled"; sync_interval_minutes?: number | null },
+): Promise<void> {
+  await apiFetch(`/api/sources/${sourceId}/pipeline/${pipelineId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 
 export async function unlinkSourceFromPipeline(sourceId: string, pipelineId: string): Promise<void> {
@@ -742,6 +1088,37 @@ export async function listSourceFiles(sourceId: string, prefix = ""): Promise<So
   if (prefix) params.set("prefix", prefix);
   const qs = params.toString();
   return apiFetch<SourceFilesResponse>(`/api/sources/${sourceId}/files${qs ? `?${qs}` : ""}`);
+}
+export async function uploadSourceFile(sourceId: string, file: File): Promise<{ status: string; source_id: string; bucket: string; key: string; size: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiFetch<{ status: string; source_id: string; bucket: string; key: string; size: number }>(`/api/sources/${sourceId}/files`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function deleteSourceFile(sourceId: string, key: string): Promise<{ status: string; source_id: string; bucket: string; key: string }> {
+  const params = new URLSearchParams({ key });
+  return apiFetch<{ status: string; source_id: string; bucket: string; key: string }>(`/api/sources/${sourceId}/files?${params.toString()}`, {
+    method: "DELETE",
+  });
+}
+export function getSourceFileContentUrl(sourceId: string, key: string): string {
+  const params = new URLSearchParams({ key });
+  return `${API_URL}/api/sources/${sourceId}/files/content?${params.toString()}`;
+}
+
+export async function getSourceFileContent(sourceId: string, key: string): Promise<string> {
+  const url = getSourceFileContentUrl(sourceId, key);
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch file content: ${res.statusText}`);
+  }
+  return res.text();
+}
+export async function triggerConnectorSync(sourceId: string, connectorId?: string): Promise<TriggerSyncResponse> {
+  return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
 }
 
 export interface TriggerSyncResponse {
@@ -755,3 +1132,4 @@ export interface TriggerSyncResponse {
 export async function triggerSourceSync(sourceId: string): Promise<TriggerSyncResponse> {
   return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
 }
+

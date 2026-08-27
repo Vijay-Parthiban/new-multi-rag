@@ -10,14 +10,15 @@ import {
   PipelineRecord,
   PipelineRunRecord,
   PipelineStats,
-  createPipeline,
-  getPipelineOptions,
   listDirectories,
   listPipelineRuns,
   listPipelines,
   startPipelineRun,
   getPipelineStats,
   triggerPipelineSync,
+  listSources,
+  linkSourceToPipeline,
+  SourceRecord,
 } from "../api";
 
 const NEEDS_MODALITY = new Set(["multimodal", "metadata"]);
@@ -42,6 +43,8 @@ export default function PipelinesPage() {
   const [sparseEmbeddingModel, setSparseEmbeddingModel] = useState("");
   const [modality, setModality] = useState<string>("text");
   const [selectedDirs, setSelectedDirs] = useState<Set<string>>(new Set());
+  const [sources, setSources] = useState<SourceRecord[]>([]);
+  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(120);
   const [qdrantCollection, setQdrantCollection] = useState("");
@@ -55,13 +58,16 @@ export default function PipelinesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [opts, dirs, pipes] = await Promise.all([
+      const [opts, dirs, pipes, srcs] = await Promise.all([
         getPipelineOptions(),
         listDirectories(),
         listPipelines(),
+        listSources(),
       ]);
       setOptions(opts);
       setDirectories(dirs);
+      setPipelines(pipes);
+      setSources(srcs);
       setPipelines(pipes);
       setError(null);
     } catch (err) {
@@ -150,6 +156,12 @@ export default function PipelinesPage() {
       setSparseEmbeddingModel("");
       await load();
       setSelectedPipelineId(created.id);
+      // Link selected MinIO sources to the newly created pipeline
+      for (const srcId of Array.from(selectedSourceIds)) {
+        try {
+          await linkSourceToPipeline(srcId, created.id);
+        } catch {}
+      }
       await loadPipelineDetails(created.id);
     } catch (err) {
       setError(err instanceof ApiError ? err : null);
@@ -189,7 +201,7 @@ export default function PipelinesPage() {
     embeddingModel.trim().length > 0 &&
     qdrantCollection.trim().length >= 3 &&
     (!showSparse || sparseEmbeddingModel.trim().length > 0) &&
-    (selectedDirs.size > 0 || webScraperEnabled);
+    (selectedDirs.size > 0 || selectedSourceIds.size > 0 || webScraperEnabled);
 
   return (
     <div className="page">
@@ -354,6 +366,32 @@ export default function PipelinesPage() {
                           onChange={() => toggleDir(d.name)}
                         />
                         <span className="mono">{d.name}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <label className="field-label" style={{ marginTop: "1rem" }}>MinIO Sources to link</label>
+              {sources.length === 0 ? (
+                <p className="field-hint">No sources created yet — <Link to="/sources">create a MinIO source first</Link>.</p>
+              ) : (
+                <ul className="folder-checklist">
+                  {sources.map((s) => (
+                    <li key={s.id}>
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={selectedSourceIds.has(s.id)}
+                          onChange={() => {
+                            const next = new Set(selectedSourceIds);
+                            if (next.has(s.id)) next.delete(s.id);
+                            else next.add(s.id);
+                            setSelectedSourceIds(next);
+                          }}
+                        />
+                        <span>
+                          <strong>{s.name}</strong> <span className="mono" style={{ color: "var(--muted)", fontSize: "0.85rem" }}>({s.minio_bucket})</span>
+                        </span>
                       </label>
                     </li>
                   ))}

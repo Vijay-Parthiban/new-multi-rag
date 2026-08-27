@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import ConnectorConfigForm, {
   defaultConfigFor,
+  getConnectorSchema,
 } from "../components/Sources/ConnectorConfigForm";
 import {
   IconCheckCircle,

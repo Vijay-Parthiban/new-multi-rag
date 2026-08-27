@@ -1,10 +1,9 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconBrowse, IconChat, IconHome, IconIngestion, IconPipeline, IconSources, IconTracking, IconUpload, IconEvaluation } from "./Icons";
+import { IconBrowse, IconChat, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconSources, IconTracking, IconUpload, IconEvaluation } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
-import SourcesPage from "../pages/SourcesPage";
 import DirectoryPage from "../pages/DirectoryPage";
 import FileViewerPage from "../pages/FileViewerPage";
 import PipelinesPage from "../pages/PipelinesPage";
@@ -12,17 +11,27 @@ import TrackingPage from "../pages/TrackingPage";
 import ChatPage from "../pages/ChatPage";
 import EvaluationsPage from "../pages/EvaluationsPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
+import PromptsPage from "../pages/PromptsPage";
+import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
+import GuardrailsTracesPage from "../pages/GuardrailsTracesPage";
+import GuardrailsEvaluationPage from "../pages/GuardrailsEvaluationPage";
+import SourcesPage from "../pages/SourcesPage";
+import SourceDetailPage from "../pages/SourceDetailPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
   { to: "/browse", label: "Folders", icon: IconBrowse },
-  { to: "/upload", label: "Upload", icon: IconUpload },
   { to: "/sources", label: "Sources", icon: IconSources },
+  { to: "/upload", label: "Upload", icon: IconUpload },
   { to: "/pipelines", label: "Pipelines", icon: IconPipeline },
   { to: "/chat", label: "Chat", icon: IconChat },
-  { to: "/evaluations", label: "Live Chat Metrics", icon: IconEvaluation },
+  { to: "/prompts", label: "Prompts", icon: IconPrompts },
+  { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
   { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
   { to: "/tracking", label: "Tracking", icon: IconTracking },
+  { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
+  { to: "/guardrails/traces", label: "Guard Traces", icon: IconGuardrails },
+  { to: "/guardrails/evaluation", label: "Guard Evaluation", icon: IconGuardrails },
 ];
 
 /**
@@ -69,6 +78,9 @@ function useRouteParams(path: string) {
     // /directories/:name (legacy)
     const legacyDirMatch = path.match(/^\/directories\/([^/]+)\/?$/);
     if (legacyDirMatch) return { name: legacyDirMatch[1], type: "directory" as const };
+    // /sources/:id
+    const sourceMatch = path.match(/^\/sources\/([^/]+)\/?$/);
+    if (sourceMatch) return { id: sourceMatch[1], type: "source-detail" as const };
 
     return { type: "none" as const };
   }, [path]);
@@ -99,15 +111,20 @@ export default function AppLayout() {
 
   const isHome = path === "/";
   const isBrowseExact = path === "/browse" || path === "/directories";
+  const isSourcesExact = path === "/sources";
   const isUpload = path === "/upload";
-  const isSources = path === "/sources";
   const isPipelines = path === "/pipelines";
   const isChat = path === "/chat";
+  const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
   const isGoldenEvaluations = path === "/golden-evaluations";
   const isTracking = path === "/tracking";
+  const isGuardrailsConfig = path === "/guardrails/config";
+  const isGuardrailsTraces = path === "/guardrails/traces";
+  const isGuardrailsEvaluation = path === "/guardrails/evaluation";
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
+  const isSourceDetail = params.type === "source-detail";
 
   return (
     <div className="shell">
@@ -150,13 +167,12 @@ export default function AppLayout() {
         <PersistentPage visible={isBrowseExact}>
           <BrowsePage />
         </PersistentPage>
+        <PersistentPage visible={isSourcesExact}>
+          <SourcesPage />
+        </PersistentPage>
 
         <PersistentPage visible={isUpload}>
           <UploadPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isSources}>
-          <SourcesPage />
         </PersistentPage>
 
         <PersistentPage visible={isPipelines}>
@@ -165,6 +181,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isChat}>
           <ChatPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isPrompts}>
+          <PromptsPage />
         </PersistentPage>
 
         <PersistentPage visible={isEvaluations}>
@@ -177,6 +197,18 @@ export default function AppLayout() {
 
         <PersistentPage visible={isTracking}>
           <TrackingPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isGuardrailsConfig}>
+          <GuardrailsConfigPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isGuardrailsTraces}>
+          <GuardrailsTracesPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isGuardrailsEvaluation}>
+          <GuardrailsEvaluationPage />
         </PersistentPage>
 
         {/* Dynamic-param pages: re-mount when params change via key */}
@@ -193,6 +225,11 @@ export default function AppLayout() {
               routeFileId={params.fileId}
               routeNavigate={navigate}
             />
+          </PersistentPage>
+        )}
+        {isSourceDetail && params.id && (
+          <PersistentPage visible={true}>
+            <SourceDetailPage routeSourceId={params.id} />
           </PersistentPage>
         )}
       </div>
