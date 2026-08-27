@@ -118,6 +118,22 @@ class FileIndexer:
         text: str,
         relative_path: str | None,
     ) -> int:
+        """
+        Chunks and indexes a single page of text, extracting dense and (optionally) sparse
+        embeddings for each chunk before upserting them to the Qdrant vector store.
+
+        Args:
+            file_id: The UUID mapping to the source document.
+            file_name: Original document filename.
+            directory_name: Parent directory mapping.
+            mime_type: File schema type.
+            page_index: Numeric index of the page inside the multi-page document.
+            text: Raw extracted UTF-8 string for this page.
+            relative_path: The filesystem relative object path.
+
+        Returns:
+            The number of vector points successfully upserted from this page.
+        """
         chunks = chunk_text(text, self._ctx.pipeline.chunk_size, self._ctx.pipeline.chunk_overlap)
         if not chunks:
             return 0
@@ -169,6 +185,14 @@ class FileIndexer:
         image_png: bytes,
         relative_path: str | None,
     ) -> int:
+        """
+        Retrieves multimodal dense embeddings directly from a rasterized PDF page PNG buffer 
+        and stores the data URI base64 chunk representation natively alongside it in Qdrant.
+        Allows downstream vision LLMs to answer directly from native document structure without OCR.
+
+        Returns:
+            Number of vectors upserted (always 1 per page).
+        """
         dense = self._embedder.embed_image_png(image_png)
         if not self._collection_ready:
             self._store.ensure_collection(len(dense), enable_sparse=False)

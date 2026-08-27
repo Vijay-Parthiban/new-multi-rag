@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     file_manager_queue: str = "file_manager:jobs"
     pipeline_queue: str = "ingestion:pipeline:jobs"
     sync_queue: str = "ingestion:sync:jobs"
-    pathway_queue: str = "pathway:sync:jobs"
     chunk_size_bytes: int = 5 * 1024 * 1024  # 5 MB reference for clients
 
     # Vector / embedding (shared with web-scrapper RAG stack)
@@ -27,15 +26,16 @@ class Settings(BaseSettings):
     embed_workers: int = 4
 
     # Cron schedule for pipeline file sync (APScheduler CronTrigger fields)
+    # Every 4 hours at minute 0 (e.g. 00:00, 04:00, 08:00, …).
+    # hour="*/4" with minute="*" would fire every minute during those hours.
     sync_cron_year: str = "*"
     sync_cron_month: str = "*"
     sync_cron_day: str = "*"
     sync_cron_week: str = "*"
     sync_cron_dow: str = "*"       # day_of_week: mon-sun or 0-6
-    sync_cron_hour: str = "*"
-    sync_cron_minute: str = "*/10"
+    sync_cron_hour: str = "*/4"
+    sync_cron_minute: str = "0"
     sync_cron_second: str = "0"
-
     # MinIO Object Storage
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "minioadmin"
@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     minio_use_ssl: str = "false"
     minio_bucket_prefix: str = "source"
     minio_region: str = "us-east-1"
+
     # Web scrapper API (crawl-scrape pipeline)
     scraper_api_url: str = "http://localhost:8000"
     scraper_api_key: str = ""

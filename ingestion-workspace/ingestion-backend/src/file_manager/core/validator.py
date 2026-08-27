@@ -13,6 +13,19 @@ BLOCKED_EXTENSIONS = {
 
 
 def validate_file_name(file_name: str) -> str:
+    """
+    Sanitizes the incoming filename against trailing dot exploits or blocked extensions.
+    Specifically guarantees no heavy video/audio container formats bypass the pipeline constraints.
+
+    Args:
+        file_name: The raw uploaded file string.
+
+    Returns:
+        The sanitized safe string.
+
+    Raises:
+        ValidationError: If the parsed suffix exists in the blocked list.
+    """
     safe_name = sanitize_file_name(file_name)
     ext = Path(safe_name).suffix.lstrip(".").lower()
     if ext in BLOCKED_EXTENSIONS:
@@ -25,6 +38,21 @@ def validate_file_name(file_name: str) -> str:
 
 
 def validate_file_content(path: Path, file_name: str) -> str:
+    """
+    Deep inspects a written file on disk by reading its magic bytes header using 'filetype' library.
+    It asserts that the literal mime type does not belong to a blocked audio/video prefix,
+    which prevents mislabelled files masking as PDF/text from causing pipeline chaos.
+
+    Args:
+        path: Pathlib object pointing to the locally synced tmp/upload storage path.
+        file_name: Original file_name from the client to doubly check extensions.
+
+    Returns:
+        The detected true mime_type string.
+
+    Raises:
+        ValidationError: If type detection yields a forbidden media container.
+    """
     validate_file_name(file_name)
 
     kind = filetype.guess(str(path))

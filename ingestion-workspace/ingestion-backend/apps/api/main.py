@@ -22,6 +22,7 @@ async def lifespan(_app: FastAPI):
     await close_redis()
     await close_db()
 
+
 app = FastAPI(
     title="Ingestion API",
     version="0.1.0",

@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from src.ingestion_service.core.indexer import FileIndexer, IndexContext, validate_pipeline_config
 from src.ingestion_service.core.page_yielder import iter_file_pages
 from src.ingestion_service.vector.qdrant_store import QdrantVectorStore
-from src.file_manager.utils.paths import s3_download_to_temp
+from src.file_manager.utils.paths import storage_root
 from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     FileRecord,
@@ -242,33 +242,26 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
 
 async def _index_single_file(indexer: FileIndexer, file_record: FileRecord) -> tuple[int, int]:
     """Index a single file and return (pages_indexed, points_upserted)."""
-    directory_name = file_record.directory.name if file_record.directory else "unknown"
-    settings = get_settings()
-    bucket = f"{settings.minio_bucket_prefix}-{directory_name}"
-    rel_path = file_record.relative_path or ""
-
-    # Download from S3 to temp file for processing
-    local_path = await s3_download_to_temp(bucket, rel_path)
-    if not local_path:
-        logger.warning("sync_file_missing: bucket=%s key=%s", bucket, rel_path)
+    path = storage_root() / (file_record.relative_path or "")
+    if not path.exists():
+        logger.warning("sync_file_missing: %s", path)
         return 0, 0
 
-    try:
-        def _process() -> tuple[int, int]:
-            pages = iter_file_pages(local_path, file_record.mime_type, file_record.original_name)
-            return indexer.index_file(
-                file_path=local_path,
-                file_id=file_record.id,
-                file_name=file_record.original_name,
-                directory_name=directory_name,
-                mime_type=file_record.mime_type,
-                relative_path=rel_path,
-                pages=pages,
-            )
+    directory_name = file_record.directory.name if file_record.directory else "unknown"
 
-        return await asyncio.to_thread(_process)
-    finally:
-        local_path.unlink(missing_ok=True)
+    def _process() -> tuple[int, int]:
+        pages = iter_file_pages(path, file_record.mime_type, file_record.original_name)
+        return indexer.index_file(
+            file_path=path,
+            file_id=file_record.id,
+            file_name=file_record.original_name,
+            directory_name=directory_name,
+            mime_type=file_record.mime_type,
+            relative_path=file_record.relative_path,
+            pages=pages,
+        )
+
+    return await asyncio.to_thread(_process)
 
 
 # ── top-level: sync ALL pipelines (called by cron) ──────────────────────

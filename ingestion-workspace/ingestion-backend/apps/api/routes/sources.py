@@ -689,6 +689,31 @@ async def delete_source_file(
     }
 
 
+@router.get("/{source_id}/files/content", status_code=200)
+async def get_source_file_content(
+    source_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    key: str = Query(..., min_length=1),
+):
+    """Fetch the content of a file stored in the source's MinIO bucket."""
+    source = await db.get(Source, source_id)
+    if not source:
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+
+    from src.shared.storage import get_object
+    try:
+        data = await get_object(source.minio_bucket, key)
+    except Exception as e:
+        raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}': {str(e)}")
+
+    import mimetypes
+    content_type, _ = mimetypes.guess_type(key)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    from fastapi.responses import Response
+    return Response(content=data, media_type=content_type)
+
 
 
 # ── Sync triggers ─────────────────────────────────────────────────────────

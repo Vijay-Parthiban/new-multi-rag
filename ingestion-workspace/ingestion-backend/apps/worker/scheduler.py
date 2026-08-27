@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the sync scheduler (does NOT start it)."""
-    from src.ingestion_service.clients.source_sync import sync_all_enabled_sources
     from src.ingestion_service.core.sync_runner import sync_all_pipelines
 
     settings = get_settings()
@@ -39,14 +38,6 @@ def create_scheduler() -> AsyncIOScheduler:
         trigger,
         id="pipeline_file_sync",
         name="Pipeline File Sync (cron)",
-        replace_existing=True,
-    )
-
-    scheduler.add_job(
-        sync_all_enabled_sources,
-        trigger,
-        id="source_sync_cron",
-        name="Source Sync (cron)",
         replace_existing=True,
     )
 
