@@ -1,4 +1,4 @@
-type IconProps = { className?: string; size?: number };
+type IconProps = { className?: string; style?: React.CSSProperties; size?: number };
 
 export function IconFolder({ className, size = 16 }: IconProps) {
   return (

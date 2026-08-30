@@ -105,7 +105,7 @@ def _run_to_dict(r: PipelineRun) -> dict:
         "error_message": r.error_message,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-        "created_at": r.created_at.isoformat(),
+        "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
 

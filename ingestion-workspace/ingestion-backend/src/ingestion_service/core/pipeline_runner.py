@@ -79,7 +79,7 @@ async def run_pipeline_job(db: AsyncSession, run_id: uuid.UUID) -> None:
         indexed_res = await db.execute(select(IndexedFile).where(IndexedFile.pipeline_id == pipeline.id))
         indexed_hashes = {rec.content_hash for rec in indexed_res.scalars().all()}
 
-        files = await _load_synced_files(db, pipeline.directory_names)
+        files = await _load_synced_files(db, pipeline)
         
         truly_new_files = []
         for file_record in files:
@@ -155,22 +155,106 @@ async def run_pipeline_job(db: AsyncSession, run_id: uuid.UUID) -> None:
             await _fail_run(db, run, str(exc))
 
 
-async def _load_synced_files(db: AsyncSession, directory_names: list) -> list[FileRecord]:
-    if not directory_names:
-        return []
-    result = await db.execute(
-        select(FileRecord)
-        .join(FileRecord.directory)
-        .where(
-            FileRecord.status == FileStatus.SYNCED,
-            FileRecord.relative_path.isnot(None),
-        )
-        .options(selectinload(FileRecord.directory))
-    )
-    files = result.scalars().all()
-    allowed = {str(n).lower() for n in directory_names}
-    return [f for f in files if f.directory and f.directory.name.lower() in allowed]
+async def _load_synced_files(db: AsyncSession, pipeline: Pipeline) -> list[FileRecord]:
+    from src.shared.db.models import Directory
+    from src.shared.storage.s3_client import get_object, list_objects
+    import hashlib
 
+    all_files: list[FileRecord] = []
+
+    # 1. Directory-based local files
+    if pipeline.directory_names:
+        result = await db.execute(
+            select(FileRecord)
+            .join(FileRecord.directory)
+            .where(
+                FileRecord.status == FileStatus.SYNCED,
+                FileRecord.relative_path.isnot(None),
+            )
+            .options(selectinload(FileRecord.directory))
+        )
+        files = result.scalars().all()
+        allowed = {str(n).lower() for n in pipeline.directory_names}
+        all_files.extend([f for f in files if f.directory and f.directory.name.lower() in allowed])
+
+    # 2. Source MinIO buckets linked to pipeline
+    await pipeline.awaitable_attrs.sources
+    pipeline_sources = pipeline.sources or []
+    sources_to_check = []
+    for ps in pipeline_sources:
+        await ps.awaitable_attrs.source
+        if ps.source:
+            sources_to_check.append(ps.source)
+    if not sources_to_check:
+        res_s = await db.execute(select(Source).where(Source.enabled.is_(True)))
+        sources_to_check = list(res_s.scalars().all())
+
+    for source in sources_to_check:
+        if not source or not source.minio_bucket:
+            continue
+        bucket = source.minio_bucket
+        objs = await list_objects(bucket)
+        if not objs:
+            continue
+
+        dir_res = await db.execute(select(Directory).where(Directory.name == source.name))
+        dir_obj = dir_res.scalar_one_or_none()
+        if not dir_obj:
+            dir_obj = Directory(id=uuid.uuid4(), name=source.name)
+            db.add(dir_obj)
+            await db.commit()
+
+        for obj in objs:
+            key = obj.key
+            if not key or key.endswith("/"):
+                continue
+
+            content = await get_object(bucket, key)
+            if not content:
+                continue
+
+            filename = Path(key).name
+            rel_dir = Path("minio_sources") / bucket
+            dest_dir = storage_root() / rel_dir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = dest_dir / filename
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+            content_hash = hashlib.sha256(content).hexdigest()
+            rel_path = str(rel_dir / filename)
+
+            f_res = await db.execute(
+                select(FileRecord).where(
+                    FileRecord.directory_id == dir_obj.id,
+                    FileRecord.original_name == filename,
+                )
+            )
+            rec = f_res.scalar_one_or_none()
+            if not rec:
+                rec = FileRecord(
+                    id=uuid.uuid4(),
+                    directory_id=dir_obj.id,
+                    original_name=filename,
+                    relative_path=rel_path,
+                    mime_type="application/pdf" if filename.endswith(".pdf") else "application/octet-stream",
+                    size_bytes=len(content),
+                    content_hash=content_hash,
+                    status=FileStatus.SYNCED,
+                )
+                db.add(rec)
+                await db.commit()
+            else:
+                rec.content_hash = content_hash
+                rec.relative_path = rel_path
+                rec.status = FileStatus.SYNCED
+                await db.commit()
+
+            rec.directory = dir_obj
+            all_files.append(rec)
+
+    return all_files
 
 async def _fail_run(db: AsyncSession, run: PipelineRun, message: str) -> None:
     run.status = JobStatus.FAILED

@@ -10,6 +10,8 @@ import {
   PipelineRecord,
   PipelineRunRecord,
   PipelineStats,
+  createPipeline,
+  getPipelineOptions,
   listDirectories,
   listPipelineRuns,
   listPipelines,

@@ -1,27 +1,25 @@
-import { FormEvent, useEffect, useId, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import PageHeader from "../components/PageHeader";
+import { FormEvent, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
+import FileBrowser from "../components/Sources/FileBrowser";
 import ConnectorConfigForm, {
   defaultConfigFor,
-  getConnectorSchema,
 } from "../components/Sources/ConnectorConfigForm";
 import {
-  IconCheckCircle,
+  IconBucket,
   IconFile,
   IconPipeline,
   IconPlus,
-  IconRadio,
   IconSources,
   IconSync,
+  IconTrash,
   IconZap,
 } from "../components/Icons";
-import { formatRelativeTime, formatSize } from "../utils/format";
 import type {
   ConnectorOption,
-  PipelineLinkInfo,
   PipelineRecord,
   SourceConnectorRecord,
+  SourceFileEntry,
   SourceRecord,
 } from "../api";
 import {
@@ -37,7 +35,6 @@ import {
   triggerConnectorSync,
   triggerSourceSync,
   unlinkSourceFromPipeline,
-  updateSource,
   updateSourceConnector,
 } from "../api";
 
@@ -50,145 +47,265 @@ function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
 
 type TabId = "connectors" | "files" | "pipeline";
 
+interface ConnectorCatalogItem {
+  id: string;
+  label: string;
+  category: "cloud" | "database" | "files" | "workspace";
+  icon: string;
+  description: string;
+  badge?: string;
+}
 
-const CORE_CONNECTOR_CATALOG = [
-  { id: "google_drive", label: "Google Drive", icon: "📁", description: "Sync documents, PDFs & folders directly from Google Drive" },
-  { id: "azure_blob", label: "Azure Blob Storage", icon: "☁️", description: "Stream files from Microsoft Azure Blob Storage containers" },
-  { id: "s3", label: "Amazon S3", icon: "🪣", description: "Pull objects from AWS S3 buckets into MinIO" },
-  { id: "google_sheets", label: "Google Sheets", icon: "📊", description: "Import tabular data directly from Google Sheets" },
-  { id: "onedrive", label: "Microsoft OneDrive", icon: "💾", description: "Ingest document libraries from Microsoft OneDrive" },
-  { id: "sharepoint", label: "Microsoft SharePoint", icon: "🌐", description: "Ingest document libraries & lists from SharePoint sites" },
+const EXTENDED_CATALOG: ConnectorCatalogItem[] = [
+  { id: "google_drive", label: "Google Drive", category: "cloud", icon: "📁", description: "Sync documents, PDFs & folders directly from Google Drive" },
+  { id: "s3", label: "Amazon S3", category: "cloud", icon: "🪣", description: "Pull objects from AWS S3 buckets into MinIO namespace" },
+  { id: "azure_blob", label: "Azure Blob Storage", category: "cloud", icon: "☁️", description: "Stream files from Microsoft Azure Blob Storage containers" },
+  { id: "google_sheets", label: "Google Sheets", category: "files", icon: "📊", description: "Import tabular data & spreadsheets automatically" },
+  { id: "onedrive", label: "OneDrive", category: "cloud", icon: "💾", description: "Sync personal and enterprise Microsoft OneDrive files" },
+  { id: "sharepoint", category: "workspace", label: "SharePoint", icon: "🌐", description: "Connect enterprise SharePoint document libraries" },
+  { id: "postgres", label: "PostgreSQL Database", category: "database", icon: "🐘", description: "Ingest tables, schemas, or query results into vectors" },
+  { id: "mysql", label: "MySQL Database", category: "database", icon: "🐬", description: "Real-time CDC capture from MySQL database tables" },
+  { id: "mongodb", label: "MongoDB", category: "database", icon: "🍃", description: "Stream NoSQL documents and BSON collections" },
+  { id: "web_scraper", label: "Web Scraper / Crawler", category: "files", icon: "🕸️", description: "Crawl documentation sites, blogs & web APIs" },
+  { id: "confluence", label: "Confluence", category: "workspace", icon: "📘", description: "Extract space articles & wiki documents" },
+  { id: "sftp", label: "SFTP / FTP Server", category: "files", icon: "🔒", description: "Secure SSH File Transfer Protocol watcher" },
 ];
 
-function MonitorBadge({ mode }: { mode: "live" | "scheduled" }) {
-  return (
-    <span className={`status-badge ${mode === "live" ? "status-running" : "status-synced"}`}>
-      {mode === "live" ? "Live" : "Scheduled"}
-    </span>
-  );
+interface SourceDetailPageProps {
+  routeSourceId?: string;
 }
 
-interface ConnectorFormState {
-  connectorType: string;
-  config: Record<string, unknown>;
-  monitorMode: "live" | "scheduled";
-  syncIntervalMinutes: string;
-}
-
-const EMPTY_CONNECTOR_FORM: ConnectorFormState = {
-  connectorType: "",
-  config: {},
-  monitorMode: "live",
-  syncIntervalMinutes: "",
-};
-
-interface LinkFormState {
-  pipelineId: string;
-  monitorMode: "live" | "scheduled";
-  syncIntervalMinutes: string;
-}
-
-const EMPTY_LINK_FORM: LinkFormState = {
-  pipelineId: "",
-  monitorMode: "live",
-  syncIntervalMinutes: "",
-};
-
-interface SourceMonitorForm {
-  connectorMonitorMode: "live" | "scheduled";
-  connectorSyncInterval: string;
-  pipelineMonitorMode: "live" | "scheduled";
-  pipelineSyncInterval: string;
-}
-
-export default function SourceDetailPage({
-  routeSourceId,
-}: {
-  routeSourceId: string;
-}) {
+// 2026 Engine Source Detail Component
+export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProps) {
+  const { id: paramId } = useParams<{ id: string }>();
+  const id = routeSourceId ?? paramId;
   const navigate = useNavigate();
 
   const [source, setSource] = useState<SourceRecord | null>(null);
-  const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [catalog, setCatalog] = useState<ConnectorOption[]>([]);
+  const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
+  const [files, setFiles] = useState<SourceFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>("connectors");
 
-  const [tab, setTab] = useState<TabId>("connectors");
-  const connectorModalTitleId = useId();
-  const linkModalTitleId = useId();
-
-  // Connector management modal
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [copiedBucket, setCopiedBucket] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  // Connector Modal State
   const [connectorModalOpen, setConnectorModalOpen] = useState(false);
   const [editingConnector, setEditingConnector] = useState<SourceConnectorRecord | null>(null);
-  const [connectorForm, setConnectorForm] = useState<ConnectorFormState>(EMPTY_CONNECTOR_FORM);
-  const [connectorSubmitting, setConnectorSubmitting] = useState(false);
+  const [connectorForm, setConnectorForm] = useState<{
+    connectorType: string;
+    config: Record<string, unknown>;
+    monitorMode: "live" | "scheduled";
+    syncIntervalMinutes: string;
+  }>({
+    connectorType: "google_drive",
+    config: defaultConfigFor("google_drive"),
+    monitorMode: "live",
+    syncIntervalMinutes: "",
+  });
+  const [savingConnector, setSavingConnector] = useState(false);
 
-  // Files
-  const [files, setFiles] = useState<{ key: string; size: number; last_modified: string }[]>([]);
-  const [filesLoading, setFilesLoading] = useState(false);
+  // Pipeline Link Modal State
+  const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
 
-  // Pipeline linking
-  const [linkModalOpen, setLinkModalOpen] = useState(false);
-  const [linkForm, setLinkForm] = useState<LinkFormState>(EMPTY_LINK_FORM);
-
-  // Source RAG Polling Mode
-  const [monitorForm, setMonitorForm] = useState<SourceMonitorForm | null>(null);
-  const [monitorSaving, setMonitorSaving] = useState(false);
-
-  const reloadSource = async (initial = false) => {
-    if (initial && !source) setLoading(true);
+  const fetchSource = async () => {
+    if (!id) return;
     try {
-      const [sourceData, pipelinesData, connectorsData] = await Promise.all([
-        getSource(routeSourceId),
-        listPipelines(),
-        listConnectors(),
-      ]);
-      setSource(sourceData);
-      setPipelines(pipelinesData);
-      setCatalog(connectorsData);
+      const data = await getSource(id);
+      setSource(data);
+      setError(null);
     } catch (err) {
-      setError(toApiError(err, "LOAD_FAILED"));
-    } finally {
-      setLoading(false);
+      setError(toApiError(err, "SOURCE_FETCH_FAILED"));
+    }
+  };
+
+  const fetchFiles = async () => {
+    if (!id) return;
+    try {
+      const res = await listSourceFiles(id);
+      setFiles(res.files ?? []);
+    } catch {
+      // non-fatal
     }
   };
 
   useEffect(() => {
-    reloadSource(true);
-  }, [routeSourceId]);
-  useEffect(() => {
-    if (source) {
-      setMonitorForm({
-        connectorMonitorMode: source.connector_monitor_mode ?? "live",
-        connectorSyncInterval: source.connector_sync_interval_minutes?.toString() ?? "",
-        pipelineMonitorMode: source.pipeline_monitor_mode ?? "live",
-        pipelineSyncInterval: source.pipeline_sync_interval_minutes?.toString() ?? "",
-      });
-    }
-  }, [source]);
+    if (!id) return;
+    let mounted = true;
 
-  const loadFiles = async () => {
-    setFilesLoading(true);
+    async function init() {
+      setLoading(true);
+      try {
+        const [srcData, catData, pipeData] = await Promise.all([
+          getSource(id!),
+          listConnectors().catch(() => []),
+          listPipelines().catch(() => []),
+        ]);
+        if (!mounted) return;
+        setSource(srcData);
+        setCatalog(catData);
+        setPipelines(pipeData);
+
+        const fileRes = await listSourceFiles(id!).catch(() => ({ files: [] }));
+        if (mounted) setFiles(fileRes.files ?? []);
+      } catch (err) {
+        if (mounted) setError(toApiError(err, "LOAD_FAILED"));
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+
+    init();
+    const interval = setInterval(() => {
+      fetchSource();
+      fetchFiles();
+    }, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [id]);
+
+  const handleCopyBucket = () => {
+    if (!source?.minio_bucket) return;
+    navigator.clipboard.writeText(source.minio_bucket);
+    setCopiedBucket(true);
+    setTimeout(() => setCopiedBucket(false), 2000);
+  };
+
+  const handleSyncAll = async () => {
+    if (!source) return;
+    setSyncingAll(true);
     try {
-      const res = await listSourceFiles(routeSourceId);
-      setFiles(res.files);
+      const res = await triggerSourceSync(source.id);
+      setInfo(res.message ?? "Source sync triggered.");
+      await fetchSource();
     } catch (err) {
-      setError(toApiError(err, "LIST_FILES_FAILED"));
+      setError(toApiError(err, "SYNC_FAILED"));
     } finally {
-      setFilesLoading(false);
+      setSyncingAll(false);
     }
   };
 
-  useEffect(() => {
-    loadFiles();
-  }, [tab, routeSourceId]);
+  const handleOpenCatalogueConnector = (item: ConnectorCatalogItem) => {
+    setEditingConnector(null);
+    setConnectorForm({
+      connectorType: item.id,
+      config: defaultConfigFor(item.id),
+      monitorMode: "live",
+      syncIntervalMinutes: "",
+    });
+    setConnectorModalOpen(true);
+  };
 
-  if (loading && !source) {
+  const handleEditConnector = (conn: SourceConnectorRecord) => {
+    setEditingConnector(conn);
+    setConnectorForm({
+      connectorType: conn.connector_type,
+      config: conn.config ?? {},
+      monitorMode: (conn.monitor_mode as "live" | "scheduled") ?? "live",
+      syncIntervalMinutes: conn.sync_interval_minutes?.toString() ?? "",
+    });
+    setConnectorModalOpen(true);
+  };
+
+  const handleSaveConnector = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!source) return;
+    setSavingConnector(true);
+
+    try {
+      const syncInterval = connectorForm.syncIntervalMinutes
+        ? parseInt(connectorForm.syncIntervalMinutes, 10)
+        : undefined;
+
+      if (editingConnector) {
+        await updateSourceConnector(source.id, editingConnector.id, {
+          config: connectorForm.config,
+          monitor_mode: connectorForm.monitorMode,
+          sync_interval_minutes: syncInterval,
+        });
+        setInfo("Connector configuration updated.");
+      } else {
+        await addSourceConnector(source.id, {
+          connector_type: connectorForm.connectorType,
+          config: connectorForm.config,
+          monitor_mode: connectorForm.monitorMode,
+          sync_interval_minutes: syncInterval,
+        });
+        setInfo("Connector attached successfully.");
+      }
+      setConnectorModalOpen(false);
+      await fetchSource();
+    } catch (err) {
+      setError(toApiError(err, "SAVE_CONNECTOR_FAILED"));
+    } finally {
+      setSavingConnector(false);
+    }
+  };
+
+  const handleDeleteConnector = async (conn: SourceConnectorRecord) => {
+    if (!source) return;
+    if (!window.confirm(`Remove connector "${conn.connector_type}"?`)) return;
+    try {
+      await deleteSourceConnector(source.id, conn.id);
+      setInfo("Connector removed.");
+      await fetchSource();
+    } catch (err) {
+      setError(toApiError(err, "DELETE_CONNECTOR_FAILED"));
+    }
+  };
+
+  const handleSyncSingleConnector = async (connId: string) => {
+    if (!source) return;
+    try {
+      await triggerConnectorSync(source.id, connId);
+      setInfo("Connector sync started.");
+      await fetchSource();
+    } catch (err) {
+      setError(toApiError(err, "SYNC_CONNECTOR_FAILED"));
+    }
+  };
+
+  const handleLinkPipelineSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!source || !selectedPipelineId) return;
+    setLinkingPipeline(true);
+    try {
+      await linkSourceToPipeline(source.id, selectedPipelineId);
+      setInfo("Linked to RAG pipeline.");
+      setPipelineModalOpen(false);
+      setSelectedPipelineId("");
+      await fetchSource();
+    } catch (err) {
+      setError(toApiError(err, "LINK_PIPELINE_FAILED"));
+    } finally {
+      setLinkingPipeline(false);
+    }
+  };
+
+  const handleUnlinkPipeline = async (pipelineId: string) => {
+    if (!source) return;
+    if (!window.confirm("Unlink this source from the RAG pipeline?")) return;
+    try {
+      await unlinkSourceFromPipeline(source.id, pipelineId);
+      setInfo("Pipeline unlinked.");
+      await fetchSource();
+    } catch (err) {
+      setError(toApiError(err, "UNLINK_PIPELINE_FAILED"));
+    }
+  };
+
+  if (loading) {
     return (
-      <div className="page" style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <p className="muted">Loading source details...</p>
+      <div className="page" style={{ textAlign: "center", padding: "5rem 2rem" }}>
+        <IconSync size={32} className="spin" style={{ color: "#58a6ff", marginBottom: "1rem" }} />
+        <div style={{ color: "#e6edf3", fontWeight: 600 }}>Loading Data Source details...</div>
       </div>
     );
   }
@@ -196,11 +313,11 @@ export default function SourceDetailPage({
   if (error && !source) {
     return (
       <div className="page">
-        <div className="alert alert-error" role="alert">
+        <div className="alert alert-error" style={{ marginBottom: "1.5rem" }}>
           <strong>{error.code}</strong>: {error.message}
         </div>
         <button type="button" className="btn btn-secondary" onClick={() => navigate("/sources")}>
-          Back to sources
+          ← Back to Data Sources
         </button>
       </div>
     );
@@ -208,742 +325,703 @@ export default function SourceDetailPage({
 
   if (!source) return null;
 
-  const connectorLabel = (id: string) =>
-    catalog.find((c) => c.id === id)?.label ??
-    CORE_CONNECTOR_CATALOG.find((c) => c.id === id)?.label ??
-    id;
-
-  const getPipelineName = (pipelineId: string) =>
-    pipelines.find((p) => p.id === pipelineId)?.name ?? pipelineId;
-
-  const handleSelectCatalogueConnector = (typeId: string) => {
-    setEditingConnector(null);
-    setConnectorForm({
-      connectorType: typeId,
-      config: defaultConfigFor(typeId),
-      monitorMode: "live",
-      syncIntervalMinutes: "",
-    });
-    setError(null);
-    setConnectorModalOpen(true);
-  };
-
-  const handleAddConnector = () => {
-    const firstType = CORE_CONNECTOR_CATALOG[0]?.id ?? "google_drive";
-    handleSelectCatalogueConnector(firstType);
-  };
-
-  const handleEditConnector = (connector: SourceConnectorRecord) => {
-    setEditingConnector(connector);
-    setConnectorForm({
-      connectorType: connector.connector_type,
-      config: connector.config ?? {},
-      monitorMode: connector.monitor_mode ?? "live",
-      syncIntervalMinutes: connector.sync_interval_minutes?.toString() ?? "",
-    });
-    setError(null);
-    setConnectorModalOpen(true);
-  };
-
-  const handleSubmitConnector = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!source) return;
-    const config = connectorForm.config;
-    const syncInterval = connectorForm.syncIntervalMinutes
-      ? Number(connectorForm.syncIntervalMinutes)
-      : null;
-    setConnectorSubmitting(true);
-    setError(null);
-    try {
-      if (editingConnector) {
-        await updateSourceConnector(source.id, editingConnector.id, {
-          config,
-          monitor_mode: connectorForm.monitorMode,
-          sync_interval_minutes: syncInterval,
-        });
-        setInfo(`Connector updated.`);
-      } else {
-        await addSourceConnector(source.id, {
-          connector_type: connectorForm.connectorType,
-          config,
-          monitor_mode: connectorForm.monitorMode,
-          sync_interval_minutes: syncInterval,
-        });
-        setInfo(`Connector added.`);
-      }
-      setConnectorModalOpen(false);
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "CONNECTOR_SAVE_FAILED"));
-    } finally {
-      setConnectorSubmitting(false);
-    }
-  };
-
-  const handleDeleteConnector = async (connector: SourceConnectorRecord) => {
-    if (!source) return;
-    if (!window.confirm(`Delete connector "${connectorLabel(connector.connector_type)}"?`)) return;
-    try {
-      await deleteSourceConnector(source.id, connector.id);
-      setInfo("Connector removed.");
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "DELETE_CONNECTOR_FAILED"));
-    }
-  };
-
-  const handleConnectorSync = async (connector: SourceConnectorRecord) => {
-    if (!source) return;
-    try {
-      await triggerConnectorSync(source.id, connector.id);
-      setInfo(`Sync triggered for connector ${connectorLabel(connector.connector_type)}.`);
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "CONNECTOR_SYNC_FAILED"));
-    }
-  };
-
-  const handleSourceSync = async () => {
-    if (!source) return;
-    try {
-      await triggerSourceSync(source.id);
-      setInfo("Sync triggered for all connectors on this MinIO bucket.");
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "SOURCE_SYNC_FAILED"));
-    }
-  };
-
-  const handleDeleteFile = async (key: string) => {
-    if (!source) return;
-    if (!window.confirm(`Delete file "${key}" from MinIO bucket?`)) return;
-    try {
-      await deleteSourceFile(source.id, key);
-      setInfo(`File deleted.`);
-      await loadFiles();
-    } catch (err) {
-      setError(toApiError(err, "DELETE_FILE_FAILED"));
-    }
-  };
-
-  const handleLinkPipeline = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!source || !linkForm.pipelineId) return;
-    try {
-      await linkSourceToPipeline(source.id, linkForm.pipelineId, {
-        monitor_mode: linkForm.monitorMode,
-        sync_interval_minutes: linkForm.syncIntervalMinutes
-          ? Number(linkForm.syncIntervalMinutes)
-          : null,
-      });
-      setInfo("Linked to pipeline.");
-      setLinkModalOpen(false);
-      setLinkForm(EMPTY_LINK_FORM);
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "LINK_PIPELINE_FAILED"));
-    }
-  };
-
-  const handleUnlinkPipeline = async (link: PipelineLinkInfo) => {
-    if (!source) return;
-    const name = getPipelineName(link.pipeline_id);
-    if (!window.confirm(`Unlink from pipeline "${name}"?`)) return;
-    try {
-      await unlinkSourceFromPipeline(source.id, link.pipeline_id);
-      setInfo("Pipeline unlinked.");
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "UNLINK_PIPELINE_FAILED"));
-    }
-  };
-
-  const handleSaveMonitor = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!source || !monitorForm) return;
-    setMonitorSaving(true);
-    try {
-      await updateSource(source.id, {
-        connector_monitor_mode: monitorForm.connectorMonitorMode,
-        connector_sync_interval_minutes: monitorForm.connectorSyncInterval
-          ? Number(monitorForm.connectorSyncInterval)
-          : null,
-        pipeline_monitor_mode: monitorForm.pipelineMonitorMode,
-        pipeline_sync_interval_minutes: monitorForm.pipelineSyncInterval
-          ? Number(monitorForm.pipelineSyncInterval)
-          : null,
-      });
-      setInfo("Source & RAG polling modes updated.");
-      await reloadSource();
-    } catch (err) {
-      setError(toApiError(err, "UPDATE_MONITOR_FAILED"));
-    } finally {
-      setMonitorSaving(false);
-    }
-  };
-
-  const renderConnectors = () => (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      {/* Configured connectors list */}
-      <div className="panel">
-        <div className="panel-toolbar">
-          <span className="panel-toolbar-label">
-            Configured Connectors ({source.connectors.length})
-          </span>
-          <button type="button" className="btn btn-sm btn-primary" onClick={handleAddConnector}>
-            + Add Custom Connector
-          </button>
-        </div>
-        {source.connectors.length === 0 ? (
-          <div className="panel-empty">
-            <IconSources className="empty-icon" size={40} />
-            <p>No connectors linked to this MinIO bucket yet</p>
-            <p className="muted">
-              Select a connector from the catalogue below to configure file polling into{" "}
-              <span className="mono">{source.minio_bucket}</span>.
-            </p>
-          </div>
-        ) : (
-          <div className="repo-table-wrap">
-            <table className="repo-table">
-              <thead>
-                <tr>
-                  <th>Connector</th>
-                  <th>File Polling Mode</th>
-                  <th>Status</th>
-                  <th>Last Sync</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {source.connectors.map((connector) => (
-                  <tr key={connector.id}>
-                    <td>
-                      <span className="file-name-cell" style={{ fontWeight: 600 }}>
-                        {connectorLabel(connector.connector_type)}
-                      </span>
-                      {!connector.enabled && (
-                        <span className="status-badge status-deleted" style={{ marginLeft: "0.5rem" }}>
-                          disabled
-                        </span>
-                      )}
-                      {connector.error_message && (
-                        <div className="file-meta muted">{connector.error_message.slice(0, 120)}</div>
-                      )}
-                    </td>
-                    <td>
-                      <MonitorBadge mode={connector.monitor_mode ?? "live"} />
-                      {connector.sync_interval_minutes && (
-                        <span className="file-meta" style={{ display: "block" }}>
-                          every {connector.sync_interval_minutes} min
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <StatusBadge status={connector.status} />
-                    </td>
-                    <td className="muted">
-                      {connector.last_sync_at ? formatRelativeTime(connector.last_sync_at) : "never"}
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => handleConnectorSync(connector)}
-                        >
-                          Sync Now
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => handleEditConnector(connector)}
-                        >
-                          Configure Polling
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger-ghost"
-                          onClick={() => handleDeleteConnector(connector)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Interactive Connector Catalogue Grid */}
-      {/* Interactive Connector Catalogue Grid */}
-      <div className="panel">
-        <div className="panel-toolbar">
-          <span className="panel-toolbar-label" style={{ fontWeight: 600 }}>
-            Connector Catalogue — Attach to MinIO Bucket <code className="mono">{source.minio_bucket}</code>
-          </span>
-        </div>
-        <div className="form-body">
-          <p className="muted" style={{ marginBottom: "1.25rem" }}>
-            Select an integration connector below to configure automated sync schedules from external storage or SaaS applications.
-          </p>
-          <div className="catalog-grid">
-            {CORE_CONNECTOR_CATALOG.map((cat) => (
-              <div key={cat.id} className="catalog-card">
-                <div>
-                  <div className="catalog-card-header">
-                    <div className="catalog-card-icon">{cat.icon}</div>
-                    <h3 className="catalog-card-title">{cat.label}</h3>
-                  </div>
-                  <p className="catalog-card-desc">{cat.description}</p>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  style={{ width: "100%", justifyContent: "center", display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
-                  onClick={() => handleSelectCatalogueConnector(cat.id)}
-                >
-                  <IconPlus size={14} />
-                  Configure & Attach
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderFiles = () => (
-    <div className="panel">
-      <div className="panel-toolbar">
-        <span className="panel-toolbar-label">
-          {filesLoading ? "Loading…" : `${files.length} file${files.length === 1 ? "" : "s"} in bucket ${source.minio_bucket}`}
-        </span>
-        <button type="button" className="btn btn-sm btn-secondary" onClick={loadFiles}>
-          Refresh Files
-        </button>
-      </div>
-      {filesLoading ? (
-        <p className="panel-empty muted">Loading files from MinIO…</p>
-      ) : files.length === 0 ? (
-        <div className="panel-empty">
-          <p>No files in MinIO bucket <span className="mono">{source.minio_bucket}</span></p>
-          <p className="muted">
-            Configure a connector from the Catalogue to automatically poll files into this bucket.
-          </p>
-        </div>
-      ) : (
-        <div className="repo-table-wrap">
-          <table className="repo-table">
-            <thead>
-              <tr>
-                <th>File Key</th>
-                <th>Size</th>
-                <th>Last Modified</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr key={file.key}>
-                  <td>
-                    <span className="mono">{file.key}</span>
-                  </td>
-                  <td>{formatSize(file.size)}</td>
-                  <td className="muted">{formatRelativeTime(file.last_modified)}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-danger-ghost"
-                        onClick={() => handleDeleteFile(file.key)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-
-  const renderPipeline = () => (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      {/* Linked Pipelines */}
-      <div className="panel">
-        <div className="panel-toolbar">
-          <span className="panel-toolbar-label">Linked RAG Pipelines</span>
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            onClick={() => {
-              const available = pipelines.filter(
-                (p) => !source.pipeline_links.some((l) => l.pipeline_id === p.id),
-              );
-              setLinkForm({
-                pipelineId: available[0]?.id ?? "",
-                monitorMode: "live",
-                syncIntervalMinutes: "",
-              });
-              setLinkModalOpen(true);
-            }}
-          >
-            + Link to Pipeline
-          </button>
-        </div>
-        {source.pipeline_links.length === 0 ? (
-          <div className="panel-empty">
-            <p>Not linked to any pipeline</p>
-            <p className="muted">
-              Link this MinIO bucket to a RAG pipeline to automatically ingest files into vector search.
-            </p>
-          </div>
-        ) : (
-          <div className="repo-table-wrap">
-            <table className="repo-table">
-              <thead>
-                <tr>
-                  <th>Pipeline</th>
-                  <th>RAG File Polling Mode</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {source.pipeline_links.map((link) => (
-                  <tr key={link.pipeline_id}>
-                    <td>
-                      <span className="file-name-cell" style={{ fontWeight: 600 }}>
-                        {getPipelineName(link.pipeline_id)}
-                      </span>
-                    </td>
-                    <td>
-                      <MonitorBadge mode={link.monitor_mode ?? "live"} />
-                      {link.sync_interval_minutes && (
-                        <span className="file-meta" style={{ display: "block" }}>
-                          every {link.sync_interval_minutes} min
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger-ghost"
-                          onClick={() => handleUnlinkPipeline(link)}
-                        >
-                          Unlink
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Bucket RAG Polling Mode Config */}
-      <div className="panel">
-        <div className="panel-toolbar">
-          <span className="panel-toolbar-label">MinIO Bucket RAG Polling Mode</span>
-        </div>
-        {monitorForm && (
-          <form className="form-body" onSubmit={handleSaveMonitor}>
-            <p className="muted" style={{ marginBottom: "1rem" }}>
-              Configure how this MinIO bucket delivers contents and CRUD updates to linked RAG pipelines.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
-              <div>
-                <label className="field-label" htmlFor="src-pipeline-mode">
-                  RAG Delivery Polling Mode
-                </label>
-                <select
-                  id="src-pipeline-mode"
-                  value={monitorForm.pipelineMonitorMode}
-                  onChange={(e) =>
-                    setMonitorForm((prev) =>
-                      prev ? { ...prev, pipelineMonitorMode: e.target.value as "live" | "scheduled" } : prev,
-                    )
-                  }
-                >
-                  <option value="live">Live Polling (Push on CRUD events)</option>
-                  <option value="scheduled">Scheduled Polling (Interval batch)</option>
-                </select>
-              </div>
-              {monitorForm.pipelineMonitorMode === "scheduled" && (
-                <div>
-                  <label className="field-label" htmlFor="src-pipeline-interval">
-                    Poll Interval (minutes)
-                  </label>
-                  <input
-                    id="src-pipeline-interval"
-                    type="number"
-                    min={1}
-                    value={monitorForm.pipelineSyncInterval}
-                    placeholder="15"
-                    onChange={(e) =>
-                      setMonitorForm((prev) =>
-                        prev ? { ...prev, pipelineSyncInterval: e.target.value } : prev,
-                      )
-                    }
-                  />
-                </div>
-              )}
-            </div>
-            <div className="form-actions" style={{ marginTop: "1rem" }}>
-              <button type="submit" className="btn btn-secondary" disabled={monitorSaving}>
-                {monitorSaving ? "Saving…" : "Save MinIO Bucket RAG Polling Mode"}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
+  const connectorCount = source.connectors?.length ?? 0;
+  const linkedPipelines = source.pipelines ?? [];
+  const filteredCatalog = EXTENDED_CATALOG.filter(
+    (item) => categoryFilter === "all" || item.category === categoryFilter
   );
 
   return (
     <div className="page">
-      <PageHeader
-        title={source.name}
-        description={`MinIO bucket: ${source.minio_bucket}`}
-        breadcrumbs={[
-          { label: "Sources", to: "/sources" },
-          { label: source.name, to: `/sources/${source.id}` },
-        ]}
-        actions={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={handleSourceSync}
-              style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
-            >
-              <IconSync size={15} />
-              Sync All Connectors
-            </button>
-            <button type="button" className="btn btn-primary" onClick={() => navigate("/sources")}>
-              Back to Sources
-            </button>
-          </>
-        }
-      />
+      {/* Top Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+        <div>
+          <div style={{ fontSize: "0.8rem", color: "#8b949e", marginBottom: "0.25rem" }}>
+            Overview &gt; Sources &gt; <span style={{ color: "#c9d1d9" }}>{source.name}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+            <h1 style={{ fontSize: "1.75rem", fontWeight: 800, color: "#e6edf3", margin: 0, display: "flex", alignItems: "center", gap: "0.6rem" }}>
+              <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(56, 139, 253, 0.15)", color: "#58a6ff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <IconSources size={22} />
+              </div>
+              <span>{source.name}</span>
+            </h1>
+            <StatusBadge status={source.status || "idle"} />
 
-      {error && (
-        <div className="alert alert-error" role="alert">
-          <strong>{error.code}</strong>: {error.message}
+            {/* MinIO Bucket Pill */}
+            <div
+              onClick={handleCopyBucket}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.4rem",
+                padding: "0.25rem 0.65rem",
+                borderRadius: "999px",
+                background: "rgba(56, 139, 253, 0.1)",
+                border: "1px solid rgba(56, 139, 253, 0.25)",
+                color: "#58a6ff",
+                fontSize: "0.8rem",
+                cursor: "pointer",
+              }}
+              title="Click to copy MinIO bucket name"
+            >
+              <IconBucket size={13} />
+              <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
+              <span>{copiedBucket ? "✓" : "📋"}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => navigate("/sources")}
+          >
+            ← Back to Sources
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleSyncAll}
+            disabled={syncingAll}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+          >
+            <IconSync size={15} className={syncingAll ? "spin" : ""} />
+            <span>{syncingAll ? "Syncing All..." : "Sync All Connectors"}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Info / Error Alerts */}
+      {info && (
+        <div className="alert alert-info" style={{ marginBottom: "1.25rem" }}>
+          <span>ℹ️ {info}</span>
+          <button type="button" className="btn-close" onClick={() => setInfo(null)}>×</button>
         </div>
       )}
-      {info && <div className="alert alert-info" role="status">{info}</div>}
+      {error && (
+        <div className="alert alert-error" style={{ marginBottom: "1.25rem" }}>
+          <strong>{error.code}</strong>: {error.message}
+          <button type="button" className="btn-close" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
 
-      {/* Overview Stat Cards Row */}
-      <div className="stats-overview-grid">
+      {/* Top Source Summary Metric Cards */}
+      <div className="stats-overview-grid" style={{ marginBottom: "1.5rem" }}>
         <div className="stats-overview-card">
           <div>
             <div className="stats-overview-label">Source Status</div>
-            <div style={{ marginTop: "0.25rem" }}>
-              <StatusBadge status={source.status} />
+            <div className="stats-overview-value" style={{ textTransform: "capitalize", fontSize: "1.35rem" }}>
+              {source.status || "Idle / Ready"}
             </div>
-            {source.error_message ? (
-              <div className="stats-overview-subtext" style={{ color: "var(--danger)" }}>
-                {source.error_message}
-              </div>
-            ) : (
-              <div className="stats-overview-subtext">
-                {source.last_sync_at ? `Last sync: ${formatRelativeTime(source.last_sync_at)}` : "Ready"}
-              </div>
-            )}
+            <div className="stats-overview-subtext">
+              Last updated: {source.updated_at ? new Date(source.updated_at).toLocaleTimeString() : "Recently"}
+            </div>
           </div>
           <div className="stats-overview-icon stats-icon--blue">
-            <IconCheckCircle size={20} />
+            <IconSources size={22} />
           </div>
         </div>
 
         <div className="stats-overview-card">
           <div>
-            <div className="stats-overview-label">Connectors Attached</div>
-            <div className="stats-overview-value">{source.connectors.length}</div>
+            <div className="stats-overview-label">Attached Connectors</div>
+            <div className="stats-overview-value">{connectorCount}</div>
             <div className="stats-overview-subtext">
-              {source.connectors.map((c) => connectorLabel(c.connector_type)).join(", ") || "None attached"}
+              {connectorCount === 0 ? "No active streams" : `${connectorCount} active ingestion streams`}
+            </div>
+          </div>
+          <div className="stats-overview-icon stats-icon--green">
+            <IconZap size={22} />
+          </div>
+        </div>
+
+        <div className="stats-overview-card">
+          <div>
+            <div className="stats-overview-label">RAG Pipeline Delivery</div>
+            <div className="stats-overview-value">{linkedPipelines.length}</div>
+            <div className="stats-overview-subtext">
+              {linkedPipelines.length === 0 ? "Not linked to vector index" : "Connected to vector store"}
             </div>
           </div>
           <div className="stats-overview-icon stats-icon--purple">
-            <IconZap size={20} />
-          </div>
-        </div>
-
-        <div className="stats-overview-card">
-          <div>
-            <div className="stats-overview-label">RAG Delivery Polling</div>
-            <div style={{ marginTop: "0.25rem" }}>
-              <MonitorBadge mode={source.pipeline_monitor_mode ?? "live"} />
-            </div>
-            <div className="stats-overview-subtext">
-              {source.pipeline_sync_interval_minutes
-                ? `Every ${source.pipeline_sync_interval_minutes}m batch`
-                : "Real-time CRUD push"}
-            </div>
-          </div>
-          <div className="stats-overview-icon stats-icon--amber">
-            <IconRadio size={20} />
+            <IconPipeline size={22} />
           </div>
         </div>
       </div>
 
       {/* Tab Navigation */}
-      <nav className="sources-tabs-nav" aria-label="Source sections">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          padding: "0.35rem",
+          background: "rgba(11, 14, 20, 0.6)",
+          border: "1px solid rgba(56, 68, 100, 0.45)",
+          borderRadius: "10px",
+          marginBottom: "1.75rem",
+          width: "fit-content",
+          backdropFilter: "blur(8px)",
+        }}
+      >
         <button
           type="button"
-          className={`sources-tab-btn${tab === "connectors" ? " active" : ""}`}
-          onClick={() => setTab("connectors")}
+          onClick={() => setActiveTab("connectors")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            padding: "0.55rem 1.1rem",
+            borderRadius: "7px",
+            border: "none",
+            background: activeTab === "connectors" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
+            color: activeTab === "connectors" ? "#ffffff" : "#94a3b8",
+            fontSize: "0.875rem",
+            fontWeight: activeTab === "connectors" ? 600 : 500,
+            cursor: "pointer",
+            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            boxShadow: activeTab === "connectors" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+          }}
         >
-          <IconZap size={16} />
-          Connectors Catalogue
-          <span className="sources-tab-badge">{source.connectors.length}</span>
-        </button>
-        <button
-          type="button"
-          className={`sources-tab-btn${tab === "files" ? " active" : ""}`}
-          onClick={() => setTab("files")}
-        >
-          <IconFile size={16} />
-          Bucket Files
-          <span className="sources-tab-badge">{files.length}</span>
-        </button>
-        <button
-          type="button"
-          className={`sources-tab-btn${tab === "pipeline" ? " active" : ""}`}
-          onClick={() => setTab("pipeline")}
-        >
-          <IconPipeline size={16} />
-          RAG Pipelines
-          <span className="sources-tab-badge">{source.pipeline_links.length}</span>
-        </button>
-      </nav>
-
-      {tab === "connectors" && renderConnectors()}
-      {tab === "files" && renderFiles()}
-      {tab === "pipeline" && renderPipeline()}
-
-      {/* Connector add/edit modal */}
-      {connectorModalOpen && (
-        <div className="modal-overlay" onClick={() => setConnectorModalOpen(false)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={connectorModalTitleId}
-            onClick={(e) => e.stopPropagation()}
+          <IconZap size={15} />
+          <span>Connectors Catalogue</span>
+          <span
+            style={{
+              fontSize: "0.72rem",
+              padding: "0.15rem 0.5rem",
+              borderRadius: "999px",
+              background: activeTab === "connectors" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+              color: activeTab === "connectors" ? "#ffffff" : "#8b949e",
+              fontWeight: 600,
+            }}
           >
-            <div className="modal-header">
-              <h2 className="modal-title" id={connectorModalTitleId}>
-                {editingConnector ? "Configure Connector" : "Add Connector from Catalogue"}
+            {connectorCount}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("files")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            padding: "0.55rem 1.1rem",
+            borderRadius: "7px",
+            border: "none",
+            background: activeTab === "files" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
+            color: activeTab === "files" ? "#ffffff" : "#94a3b8",
+            fontSize: "0.875rem",
+            fontWeight: activeTab === "files" ? 600 : 500,
+            cursor: "pointer",
+            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            boxShadow: activeTab === "files" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+          }}
+        >
+          <IconFile size={15} />
+          <span>Bucket Storage Files</span>
+          <span
+            style={{
+              fontSize: "0.72rem",
+              padding: "0.15rem 0.5rem",
+              borderRadius: "999px",
+              background: activeTab === "files" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+              color: activeTab === "files" ? "#ffffff" : "#8b949e",
+              fontWeight: 600,
+            }}
+          >
+            {files.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("pipeline")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            padding: "0.55rem 1.1rem",
+            borderRadius: "7px",
+            border: "none",
+            background: activeTab === "pipeline" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
+            color: activeTab === "pipeline" ? "#ffffff" : "#94a3b8",
+            fontSize: "0.875rem",
+            fontWeight: activeTab === "pipeline" ? 600 : 500,
+            cursor: "pointer",
+            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            boxShadow: activeTab === "pipeline" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+          }}
+        >
+          <IconPipeline size={15} />
+          <span>Linked RAG Pipelines</span>
+          <span
+            style={{
+              fontSize: "0.72rem",
+              padding: "0.15rem 0.5rem",
+              borderRadius: "999px",
+              background: activeTab === "pipeline" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+              color: activeTab === "pipeline" ? "#ffffff" : "#8b949e",
+              fontWeight: 600,
+            }}
+          >
+            {linkedPipelines.length}
+          </span>
+        </button>
+      </div>
+
+      {/* TAB 1: CONNECTORS CATALOGUE & ACTIVE CONNECTORS */}
+      {activeTab === "connectors" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
+          {/* Active Attached Connectors Section */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                Active Attached Connectors ({connectorCount})
               </h2>
+            </div>
+
+            {connectorCount === 0 ? (
+              <div style={{ padding: "2.5rem 1.5rem", textAlign: "center", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>⚡</div>
+                <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e6edf3", marginBottom: "0.25rem" }}>
+                  No connectors attached to this source yet
+                </div>
+                <div style={{ fontSize: "0.8125rem", color: "#8b949e", marginBottom: "1rem" }}>
+                  Select any integration from the catalogue below to begin streaming documents into MinIO bucket <code>{source.minio_bucket}</code>.
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+                {source.connectors?.map((conn) => (
+                  <div
+                    key={conn.id}
+                    style={{
+                      background: "rgba(17, 21, 30, 0.6)",
+                      border: "1px solid rgba(88, 166, 253, 0.2)",
+                      borderRadius: "12px",
+                      padding: "1.15rem",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                          <span style={{ fontSize: "1.5rem" }}>
+                            {EXTENDED_CATALOG.find((item) => item.id === conn.connector_type)?.icon || "⚡"}
+                          </span>
+                          <div>
+                            <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3", textTransform: "capitalize" }}>
+                              {conn.connector_type.replace(/_/g, " ")}
+                            </div>
+                            <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
+                              Mode: <span style={{ color: "#58a6ff", fontWeight: 600 }}>{conn.monitor_mode === "scheduled" ? `${conn.sync_interval_minutes || 15}m interval` : "Live Webhooks / CDC"}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <StatusBadge status={conn.status || "idle"} />
+                      </div>
+
+                      <div style={{ fontSize: "0.78rem", color: "#8b949e", marginBottom: "1rem", background: "rgba(0, 0, 0, 0.2)", padding: "0.5rem 0.75rem", borderRadius: "6px" }}>
+                        Last sync: {conn.last_sync_at ? new Date(conn.last_sync_at).toLocaleString() : "Never synced"}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleSyncSingleConnector(conn.id)}
+                        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+                      >
+                        <IconSync size={12} />
+                        <span>Sync Now</span>
+                      </button>
+
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => handleEditConnector(conn)}
+                        >
+                          Configure
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleDeleteConnector(conn)}
+                          style={{ color: "#f85149" }}
+                        >
+                          <IconTrash size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Categorized Connector Catalogue Grid */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap", gap: "1rem" }}>
+              <div>
+                <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                  Integration Catalogue
+                </h2>
+                <div style={{ fontSize: "0.8rem", color: "#8b949e" }}>
+                  Attach external services to MinIO bucket <code>{source.minio_bucket}</code>
+                </div>
+              </div>
+
+              {/* Category Filter Pills */}
+              <div style={{ display: "flex", gap: "0.4rem" }}>
+                {[
+                  { id: "all", label: "All Connectors" },
+                  { id: "cloud", label: "Cloud Storage" },
+                  { id: "database", label: "Databases" },
+                  { id: "files", label: "Files & Web" },
+                  { id: "workspace", label: "Workspaces" },
+                ].map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setCategoryFilter(cat.id)}
+                    style={{
+                      padding: "0.35rem 0.75rem",
+                      borderRadius: "6px",
+                      fontSize: "0.78rem",
+                      fontWeight: 600,
+                      border: "none",
+                      cursor: "pointer",
+                      background: categoryFilter === cat.id ? "#58a6ff" : "rgba(255, 255, 255, 0.06)",
+                      color: categoryFilter === cat.id ? "#0b0e14" : "#c9d1d9",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Grid of Catalogue Connectors */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
+              {filteredCatalog.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => handleOpenCatalogueConnector(item)}
+                  style={{
+                    background: "rgba(17, 21, 30, 0.5)",
+                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                    borderRadius: "12px",
+                    padding: "1.25rem",
+                    cursor: "pointer",
+                    transition: "all 0.2s ease",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                  }}
+                  className="connector-cat-card"
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.6rem" }}>
+                      <span style={{ fontSize: "1.75rem" }}>{item.icon}</span>
+                      <div>
+                        <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
+                          {item.label}
+                        </div>
+                        <div style={{ fontSize: "0.72rem", color: "#58a6ff", textTransform: "uppercase", fontWeight: 600 }}>
+                          {item.category}
+                        </div>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: "0.8125rem", color: "#8b949e", lineHeight: 1.4, margin: "0 0 1rem 0" }}>
+                      {item.description}
+                    </p>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px solid rgba(255, 255, 255, 0.06)" }}>
+                    <span style={{ fontSize: "0.75rem", color: "#3fb950", fontWeight: 600 }}>
+                      ✓ CDC Poller Supported
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: "0.75rem" }}
+                    >
+                      + Attach
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: BUCKET STORAGE FILES */}
+      {activeTab === "files" && (
+        <FileBrowser
+          sourceId={source?.id ?? id ?? ""}
+          bucketName={source?.bucket_name ?? ""}
+          files={files}
+          allowUpload={false}
+          allowDelete={false}
+          onError={(err) => setError(err)}
+          onInfo={(msg) => console.log(msg)}
+        />
+      )}
+
+      {/* TAB 3: LINKED RAG PIPELINES */}
+      {activeTab === "pipeline" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                Linked Vector Pipelines ({linkedPipelines.length})
+              </h2>
+              <div style={{ fontSize: "0.8rem", color: "#8b949e" }}>
+                RAG index target vector stores connected to MinIO bucket <code>{source.minio_bucket}</code>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setPipelineModalOpen(true)}
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+            >
+              <IconPlus size={15} />
+              <span>Link to RAG Pipeline</span>
+            </button>
+          </div>
+
+          {linkedPipelines.length === 0 ? (
+            <div style={{ padding: "3rem 1.5rem", textAlign: "center", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+              <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🔮</div>
+              <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e6edf3", marginBottom: "0.25rem" }}>
+                Source not linked to any vector pipeline yet
+              </div>
+              <div style={{ fontSize: "0.8125rem", color: "#8b949e", marginBottom: "1rem" }}>
+                Link this source to a RAG pipeline to automatically vectorize uploaded files into Qdrant collections.
+              </div>
               <button
                 type="button"
-                className="modal-close"
-                onClick={() => setConnectorModalOpen(false)}
-                aria-label="Close"
+                className="btn btn-primary"
+                onClick={() => setPipelineModalOpen(true)}
               >
-                ×
+                + Link Pipeline Now
               </button>
             </div>
-            <form className="modal-body" onSubmit={handleSubmitConnector}>
-              {!editingConnector && (
-                <div>
-                  <label className="field-label" htmlFor="connector-type">
-                    Selected Connector Type
-                  </label>
-                  <select
-                    id="connector-type"
-                    value={connectorForm.connectorType}
-                    onChange={(e) =>
-                      setConnectorForm((prev) => ({
-                        ...prev,
-                        connectorType: e.target.value,
-                        config: defaultConfigFor(e.target.value),
-                      }))
-                    }
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+              {linkedPipelines.map((pipe) => (
+                <div
+                  key={pipe.id}
+                  style={{
+                    background: "rgba(17, 21, 30, 0.6)",
+                    border: "1px solid rgba(88, 166, 253, 0.25)",
+                    borderRadius: "12px",
+                    padding: "1.25rem",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                      <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "rgba(163, 113, 247, 0.15)", color: "#a371f7", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <IconPipeline size={18} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
+                          {pipe.name}
+                        </div>
+                        <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
+                          Qdrant Collection: <code style={{ color: "#a371f7" }}>{pipe.qdrant_collection ?? "default"}</code>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: "0.75rem", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                    <span style={{ fontSize: "0.75rem", color: "#3fb950" }}>
+                      ● Automatic Vector Delivery Active
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleUnlinkPipeline(pipe.id)}
+                      style={{ color: "#f85149" }}
+                    >
+                      Unlink
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CONNECTOR CONFIGURATION MODAL */}
+      {connectorModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1.5rem",
+          }}
+          onClick={() => setConnectorModalOpen(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "640px",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              background: "#111622",
+              border: "1px solid rgba(88, 166, 253, 0.3)",
+              borderRadius: "16px",
+              padding: "1.75rem",
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(56, 139, 253, 0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <div>
+                <h2 style={{ fontSize: "1.25rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                  {editingConnector ? `Configure ${editingConnector.connector_type}` : `Attach ${connectorForm.connectorType.replace(/_/g, " ")}`}
+                </h2>
+                <div style={{ fontSize: "0.78rem", color: "#8b949e" }}>
+                  Destination MinIO Bucket: <code>{source.minio_bucket}</code>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConnectorModalOpen(false)}
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveConnector} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+              {/* Connector Type Form */}
+              <ConnectorConfigForm
+                connectorType={connectorForm.connectorType}
+                config={connectorForm.config}
+                onConfigChange={(newConfig) =>
+                  setConnectorForm((prev) => ({ ...prev, config: newConfig }))
+                }
+              />
+
+              {/* Polling Strategy */}
+              <div style={{ paddingTop: "1rem", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.5rem" }}>
+                  Sync Monitoring Strategy
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                  <label
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: `1px solid ${connectorForm.monitorMode === "live" ? "#58a6ff" : "rgba(255, 255, 255, 0.1)"}`,
+                      background: connectorForm.monitorMode === "live" ? "rgba(56, 139, 253, 0.1)" : "rgba(0, 0, 0, 0.2)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.5rem",
+                    }}
                   >
-                    {CORE_CONNECTOR_CATALOG.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.icon} {c.label}
-                      </option>
-                    ))}
-                  </select>
+                    <input
+                      type="radio"
+                      name="monitorMode"
+                      value="live"
+                      checked={connectorForm.monitorMode === "live"}
+                      onChange={() => setConnectorForm((prev) => ({ ...prev, monitorMode: "live" }))}
+                    />
+                    <div>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Live Webhooks / CDC</div>
+                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Real-time change events</div>
+                    </div>
+                  </label>
+
+                  <label
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: `1px solid ${connectorForm.monitorMode === "scheduled" ? "#58a6ff" : "rgba(255, 255, 255, 0.1)"}`,
+                      background: connectorForm.monitorMode === "scheduled" ? "rgba(56, 139, 253, 0.1)" : "rgba(0, 0, 0, 0.2)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.5rem",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="monitorMode"
+                      value="scheduled"
+                      checked={connectorForm.monitorMode === "scheduled"}
+                      onChange={() => setConnectorForm((prev) => ({ ...prev, monitorMode: "scheduled" }))}
+                    />
+                    <div>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Scheduled Interval</div>
+                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Periodic background poll</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {connectorForm.monitorMode === "scheduled" && (
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                    Sync Interval (Minutes)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={connectorForm.syncIntervalMinutes}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, syncIntervalMinutes: e.target.value }))}
+                    placeholder="15"
+                    style={{
+                      width: "100%",
+                      padding: "0.65rem 0.85rem",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(56, 68, 100, 0.45)",
+                      background: "rgba(11, 14, 20, 0.6)",
+                      color: "#e6edf3",
+                    }}
+                  />
                 </div>
               )}
 
-              <div style={{ marginTop: "0.75rem" }}>
-                <label className="field-label">Connector Configuration</label>
-                <ConnectorConfigForm
-                  connectorType={connectorForm.connectorType}
-                  config={connectorForm.config}
-                  onConfigChange={(newConfig) =>
-                    setConnectorForm((prev) => ({ ...prev, config: newConfig }))
-                  }
-                />
-              </div>
-
-              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid var(--border)" }}>
-                <label className="field-label" htmlFor="connector-monitor-mode">
-                  File Polling Mode (Connector → MinIO Bucket)
-                </label>
-                <select
-                  id="connector-monitor-mode"
-                  value={connectorForm.monitorMode}
-                  onChange={(e) =>
-                    setConnectorForm((prev) => ({
-                      ...prev,
-                      monitorMode: e.target.value as "live" | "scheduled",
-                    }))
-                  }
-                >
-                  <option value="live">Live Polling (Continuous / Real-time)</option>
-                  <option value="scheduled">Scheduled Polling (Interval batch)</option>
-                </select>
-
-                {connectorForm.monitorMode === "scheduled" && (
-                  <div style={{ marginTop: "0.5rem" }}>
-                    <label className="field-label" htmlFor="connector-poll-interval">
-                      Poll Interval (minutes)
-                    </label>
-                    <input
-                      id="connector-poll-interval"
-                      type="number"
-                      min={1}
-                      className="form-input"
-                      placeholder="15"
-                      value={connectorForm.syncIntervalMinutes}
-                      onChange={(e) =>
-                        setConnectorForm((prev) => ({
-                          ...prev,
-                          syncIntervalMinutes: e.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div className="modal-footer" style={{ marginTop: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem", marginTop: "1rem" }}>
                 <button
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => setConnectorModalOpen(false)}
+                  disabled={savingConnector}
                 >
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={connectorSubmitting}>
-                  {connectorSubmitting ? "Saving…" : editingConnector ? "Save Connector" : "Add Connector"}
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={savingConnector}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+                >
+                  {savingConnector ? <IconSync size={14} className="spin" /> : <IconPlus size={14} />}
+                  <span>{savingConnector ? "Saving..." : editingConnector ? "Save Changes" : "Attach Connector"}</span>
                 </button>
               </div>
             </form>
@@ -951,105 +1029,90 @@ export default function SourceDetailPage({
         </div>
       )}
 
-      {/* Link to pipeline modal */}
-      {linkModalOpen && (
-        <div className="modal-overlay" onClick={() => setLinkModalOpen(false)}>
+      {/* PIPELINE LINK MODAL */}
+      {pipelineModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1.5rem",
+          }}
+          onClick={() => setPipelineModalOpen(false)}
+        >
           <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={linkModalTitleId}
+            style={{
+              width: "100%",
+              maxWidth: "480px",
+              background: "#111622",
+              border: "1px solid rgba(88, 166, 253, 0.3)",
+              borderRadius: "16px",
+              padding: "1.75rem",
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
+            }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="modal-header">
-              <h2 className="modal-title" id={linkModalTitleId}>
-                Link MinIO Bucket to Pipeline
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                Link to RAG Pipeline
               </h2>
               <button
                 type="button"
-                className="modal-close"
-                onClick={() => setLinkModalOpen(false)}
-                aria-label="Close"
+                onClick={() => setPipelineModalOpen(false)}
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
               >
-                ×
+                ✕
               </button>
             </div>
-            <form className="modal-body" onSubmit={handleLinkPipeline}>
-              <div>
-                <label className="field-label" htmlFor="link-pipeline-id">
-                  Target Pipeline
+
+            <form onSubmit={handleLinkPipelineSubmit}>
+              <div style={{ marginBottom: "1.25rem" }}>
+                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                  Select Target Pipeline *
                 </label>
                 <select
-                  id="link-pipeline-id"
-                  value={linkForm.pipelineId}
-                  onChange={(e) =>
-                    setLinkForm((prev) => ({ ...prev, pipelineId: e.target.value }))
-                  }
+                  value={selectedPipelineId}
+                  onChange={(e) => setSelectedPipelineId(e.target.value)}
                   required
+                  style={{
+                    width: "100%",
+                    padding: "0.75rem 1rem",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(56, 68, 100, 0.5)",
+                    background: "rgba(17, 21, 30, 0.8)",
+                    color: "#e6edf3",
+                    fontSize: "0.9rem",
+                  }}
                 >
-                  <option value="" disabled>
-                    Select a pipeline
-                  </option>
-                  {pipelines
-                    .filter((p) => !source.pipeline_links.some((l) => l.pipeline_id === p.id))
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.qdrant_collection})
-                      </option>
-                    ))}
+                  <option value="">-- Choose RAG Pipeline --</option>
+                  {pipelines.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.qdrant_collection ?? "default collection"})
+                    </option>
+                  ))}
                 </select>
               </div>
 
-              <div style={{ marginTop: "0.75rem" }}>
-                <label className="field-label" htmlFor="link-monitor-mode">
-                  RAG Polling Mode for this Pipeline Link
-                </label>
-                <select
-                  id="link-monitor-mode"
-                  value={linkForm.monitorMode}
-                  onChange={(e) =>
-                    setLinkForm((prev) => ({
-                      ...prev,
-                      monitorMode: e.target.value as "live" | "scheduled",
-                    }))
-                  }
-                >
-                  <option value="live">Live Polling (Push CRUD events immediately)</option>
-                  <option value="scheduled">Scheduled Polling (Interval batch)</option>
-                </select>
-              </div>
-
-              {linkForm.monitorMode === "scheduled" && (
-                <div style={{ marginTop: "0.5rem" }}>
-                  <label className="field-label" htmlFor="link-sync-interval">
-                    Poll Interval (minutes)
-                  </label>
-                  <input
-                    id="link-sync-interval"
-                    type="number"
-                    min={1}
-                    placeholder="15"
-                    value={linkForm.syncIntervalMinutes}
-                    onChange={(e) =>
-                      setLinkForm((prev) => ({
-                        ...prev,
-                        syncIntervalMinutes: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              )}
-
-              <div className="modal-footer" style={{ marginTop: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => setLinkModalOpen(false)}
+                  onClick={() => setPipelineModalOpen(false)}
+                  disabled={linkingPipeline}
                 >
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={!linkForm.pipelineId}>
-                  Link Pipeline
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={linkingPipeline || !selectedPipelineId}
+                >
+                  {linkingPipeline ? "Linking..." : "Link Pipeline"}
                 </button>
               </div>
             </form>

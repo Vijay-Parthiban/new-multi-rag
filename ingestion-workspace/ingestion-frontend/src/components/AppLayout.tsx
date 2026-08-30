@@ -229,7 +229,7 @@ export default function AppLayout() {
         )}
         {isSourceDetail && params.id && (
           <PersistentPage visible={true}>
-            <SourceDetailPage routeSourceId={params.id} />
+            <SourceDetailPage key={params.id} routeSourceId={params.id} />
           </PersistentPage>
         )}
       </div>

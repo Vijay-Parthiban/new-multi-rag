@@ -14,13 +14,21 @@ import "./FileBrowser.css";
 
 export interface FileBrowserProps {
   /** Source ID used for all API calls. */
-  sourceId: string;
+  sourceId?: string;
   /** MinIO bucket name — shown in the header. */
-  bucketName: string;
+  bucketName?: string;
+  /** Optional initial/pre-loaded file list. */
+  files?: SourceFileEntry[];
+  /** Optional delete callback. */
+  onDelete?: (fileKey: string) => Promise<void>;
   /** Optional error callback so parent can surface toasts/alerts. */
   onError?: (error: ApiError) => void;
   /** Optional info callback for success messages. */
   onInfo?: (message: string) => void;
+  /** Whether to show manual upload controls/dropzone. Default: false. */
+  allowUpload?: boolean;
+  /** Whether to show delete file actions. Default: false. */
+  allowDelete?: boolean;
 }
 
 interface DirectoryNode {
@@ -59,15 +67,25 @@ function toApiError(err: unknown, code: string): ApiError {
 /* ── Component ── */
 
 export default function FileBrowser({
-  sourceId,
-  bucketName,
+  sourceId = "",
+  bucketName = "",
+  files: propFiles,
+  onDelete: propOnDelete,
   onError,
   onInfo,
+  allowUpload = false,
+  allowDelete = false,
 }: FileBrowserProps) {
-  const [files, setFiles] = useState<SourceFileEntry[]>([]);
+  const [files, setFiles] = useState<SourceFileEntry[]>(propFiles ?? []);
   const [prefix, setPrefix] = useState("");
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<"flat" | "tree">("flat");
+
+  useEffect(() => {
+    if (propFiles !== undefined) {
+      setFiles(propFiles);
+    }
+  }, [propFiles]);
 
   // Upload state
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -154,14 +172,18 @@ export default function FileBrowser({
     async (file: SourceFileEntry) => {
       if (!window.confirm(`Delete ${file.key} from the bucket?`)) return;
       try {
-        await deleteSourceFile(sourceId, file.key);
+        if (propOnDelete) {
+          await propOnDelete(file.key);
+        } else if (sourceId) {
+          await deleteSourceFile(sourceId, file.key);
+        }
         onInfo?.(`Deleted ${file.key}.`);
         await loadFiles(prefix);
       } catch (err) {
         onError?.(toApiError(err, "FILE_DELETE_FAILED"));
       }
     },
-    [sourceId, prefix, loadFiles, onInfo, onError],
+    [propOnDelete, sourceId, prefix, loadFiles, onInfo, onError],
   );
 
   /* ── Derived data ── */
@@ -325,88 +347,89 @@ export default function FileBrowser({
         )}
       </div>
 
-      {/* Upload zone */}
-      <div className="upload-zone-wrap">
-        <div
-          className={`dropzone file-browser-dropzone${dragActive ? " dropzone-active" : ""}`}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onClick={() => fileInputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          aria-label="Upload files by clicking or dragging"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              fileInputRef.current?.click();
-            }
-          }}
-        >
-          <IconUpload className="dropzone-icon" size={28} />
-          <p className="dropzone-title">Drop files here or click to upload</p>
-          <p className="dropzone-sub">
-            Files are stored in the MinIO bucket{" "}
-            <span className="mono">{bucketName}</span>
-            {prefix ? (
-              <span>
-                {" "}under <span className="mono">{prefix}</span>
-              </span>
-            ) : null}
-          </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            style={{ display: "none" }}
-            onChange={handleFileSelect}
-            aria-label="File input"
-          />
-        </div>
-
-        {uploadFiles.length > 0 && (
-          <div className="upload-queue">
-            <ul className="upload-list">
-              {uploadFiles.map((file, i) => (
-                <li key={`${file.name}-${i}`}>
-                  <IconFile size={14} className="muted" />
-                  <span className="mono">{file.name}</span>
-                  <span className="muted">{formatSize(file.size)}</span>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => setUploadFiles((prev) => prev.filter((_, j) => j !== i))}
-                    aria-label={`Remove ${file.name} from upload queue`}
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="upload-actions">
-              <button
-                type="button"
-                className="btn btn-sm btn-primary"
-                disabled={uploading}
-                onClick={() => void handleUpload()}
-              >
-                {uploading
-                  ? "Uploading…"
-                  : `Upload ${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost"
-                disabled={uploading}
-                onClick={() => setUploadFiles([])}
-              >
-                Clear
-              </button>
-            </div>
+      {/* Upload zone (only rendered when allowUpload is true) */}
+      {allowUpload && (
+        <div className="upload-zone-wrap">
+          <div
+            className={`dropzone file-browser-dropzone${dragActive ? " dropzone-active" : ""}`}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onClick={() => fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload files by clicking or dragging"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+          >
+            <IconUpload className="dropzone-icon" size={28} />
+            <p className="dropzone-title">Drop files here or click to upload</p>
+            <p className="dropzone-sub">
+              Files are stored in the MinIO bucket{" "}
+              <span className="mono">{bucketName}</span>
+              {prefix ? (
+                <span>
+                  {" "}under <span className="mono">{prefix}</span>
+                </span>
+              ) : null}
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              style={{ display: "none" }}
+              onChange={handleFileSelect}
+              aria-label="File input"
+            />
           </div>
-        )}
-      </div>
 
+          {uploadFiles.length > 0 && (
+            <div className="upload-queue">
+              <ul className="upload-list">
+                {uploadFiles.map((file, i) => (
+                  <li key={`${file.name}-${i}`}>
+                    <IconFile size={14} className="muted" />
+                    <span className="mono">{file.name}</span>
+                    <span className="muted">{formatSize(file.size)}</span>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setUploadFiles((prev) => prev.filter((_, j) => j !== i))}
+                      aria-label={`Remove ${file.name} from upload queue`}
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="upload-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={uploading}
+                  onClick={() => void handleUpload()}
+                >
+                  {uploading
+                    ? "Uploading…"
+                    : `Upload ${uploadFiles.length} file${uploadFiles.length === 1 ? "" : "s"}`}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  disabled={uploading}
+                  onClick={() => setUploadFiles([])}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* Directory tree */}
       {directories.length > 0 && (
         <div className="file-browser-tree">
@@ -457,10 +480,14 @@ export default function FileBrowser({
           <div className="panel-empty">
             <IconFile className="empty-icon muted" size={32} />
             <p>No files in this location</p>
-            <p className="muted">Upload files using the dropzone above.</p>
+            <p className="muted">
+              {allowUpload
+                ? "Upload files using the dropzone above."
+                : "Files in this MinIO bucket are automatically ingested and updated via configured connector sync streams."}
+            </p>
           </div>
         ) : sortedFiles.length === 0 ? (
-          <p className="panel-empty muted">No files at this level — only folders above.</p>
+          <p className="panel-empty muted">No files at this level — switch to "All Files (Flat)" or select a folder above.</p>
         ) : (
           <>
             <div className="repo-table-wrap">
@@ -522,15 +549,28 @@ export default function FileBrowser({
                         {file.last_modified ? formatRelativeTime(file.last_modified) : "—"}
                       </td>
                       <td>
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger-ghost"
-                            onClick={() => void handleDelete(file)}
-                            aria-label={`Delete ${file.key}`}
-                          >
-                            Delete
-                          </button>
+                        <div className="row-actions" style={{ display: "flex", gap: "0.5rem" }}>
+                          {sourceId && file.key && (
+                            <a
+                              href={`http://localhost:8007/api/sources/${sourceId}/files?key=${encodeURIComponent(file.key)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="btn btn-sm btn-secondary"
+                              style={{ textDecoration: "none" }}
+                            >
+                              Open & Visualize
+                            </a>
+                          )}
+                          {(allowDelete || propOnDelete) && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger-ghost"
+                              onClick={() => void handleDelete(file)}
+                              aria-label={`Delete ${file.key}`}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

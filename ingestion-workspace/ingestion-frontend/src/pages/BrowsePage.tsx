@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
-import { IconBucket, IconFolder, IconList, IconRefresh, IconSearch } from "../components/Icons";
 import {
   ApiError,
   SourceFileEntry,
@@ -11,7 +10,7 @@ import {
   listSourceFiles,
   listSources,
 } from "../api";
-import { formatSize, formatRelativeTime } from "../utils/format";
+import { formatSize, formatRelativeTime, formatBytes } from "../utils/format";
 import MarkdownMessage from "../components/MarkdownMessage";
 
 export default function BrowsePage() {
@@ -245,9 +244,7 @@ export default function BrowsePage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredFiles.map((file) => {
-                  const ext = getFileExtension(file.key);
-                  return (
+                {filteredFiles.map((file) => (
                     <tr key={file.key} style={{ borderBottom: "1px solid var(--border)" }}>
                       <td style={{ padding: "0.6rem" }}>
                         <button
@@ -259,7 +256,7 @@ export default function BrowsePage() {
                         </button>
                       </td>
                       <td style={{ padding: "0.6rem", fontSize: "0.85rem", color: "var(--muted)" }}>
-                        {formatBytes(file.size)}
+                        {formatSize(file.size)}
                       </td>
                       <td style={{ padding: "0.6rem", fontSize: "0.85rem", color: "var(--muted)" }}>
                         {formatRelativeTime(file.last_modified)}
@@ -273,8 +270,7 @@ export default function BrowsePage() {
                         </button>
                       </td>
                     </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>

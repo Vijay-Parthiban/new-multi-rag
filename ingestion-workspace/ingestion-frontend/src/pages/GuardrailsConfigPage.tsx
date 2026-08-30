@@ -482,7 +482,7 @@ export default function GuardrailsConfigPage() {
                                 <div className="gr-config-detail">
                                     <span className="gr-detail-label">Keywords:</span>
                                     <div className="gr-guard-tags">
-                                        {c.settings.banned_words.map((w) => (
+                                        {c.settings?.banned_words?.map((w) => (
                                             <span key={w} className="gr-item-tag">{w}</span>
                                         ))}
                                     </div>
@@ -492,7 +492,7 @@ export default function GuardrailsConfigPage() {
                                 <div className="gr-config-detail">
                                     <span className="gr-detail-label">PII:</span>
                                     <div className="gr-guard-tags">
-                                        {c.settings.pii_entities.map((e) => (
+                                        {c.settings?.pii_entities?.map((e) => (
                                             <span key={e} className="gr-item-tag">{piiLabel(e)}</span>
                                         ))}
                                     </div>

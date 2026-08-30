@@ -279,8 +279,8 @@ def validate_pipeline_config(pipeline: Pipeline) -> None:
         raise ValueError("qdrant_collection is required for every pipeline.")
     if not pipeline.description:
         raise ValueError("description is required for every pipeline.")
-    if not pipeline.directory_names and not pipeline.web_scraper_enabled:
-        raise ValueError("Select at least one folder or enable web scraper.")
+    if not pipeline.directory_names and not pipeline.web_scraper_enabled and not pipeline.sources:
+        raise ValueError("Select at least one folder, enable web scraper, or link a source.")
     if _needs_modality(pipeline.rag_strategy) and not pipeline.modality:
         raise ValueError("Multimodal and metadata strategies require a modality (text or image).")
     modality = _resolve_modality(pipeline)

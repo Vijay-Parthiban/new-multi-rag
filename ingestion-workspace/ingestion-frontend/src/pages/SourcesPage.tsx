@@ -1,13 +1,10 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import {
   IconArrowRight,
   IconBucket,
-  IconCheck,
   IconCheckCircle,
-  IconCopy,
   IconGrid,
   IconList,
   IconPlus,
@@ -16,9 +13,8 @@ import {
   IconSources,
   IconSync,
   IconTrash,
-  IconZap,
+
 } from "../components/Icons";
-import { formatRelativeTime } from "../utils/format";
 import {
   ApiError,
   SourceConnectorRecord,
@@ -36,8 +32,22 @@ function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
   });
 }
 
-/* ── Connector status summary ── */
+/* ── Connector brand helper icons ── */
+function getConnectorIcon(type?: string): string {
+  if (!type) return "📁";
+  const t = type.toLowerCase();
+  if (t.includes("drive")) return "📁";
+  if (t.includes("s3")) return "🪣";
+  if (t.includes("azure")) return "☁️";
+  if (t.includes("sheet")) return "📊";
+  if (t.includes("onedrive")) return "💾";
+  if (t.includes("sharepoint")) return "🌐";
+  if (t.includes("postgres") || t.includes("mysql") || t.includes("db")) return "🗄️";
+  if (t.includes("scrape") || t.includes("crawl") || t.includes("web")) return "🌐";
+  return "⚡";
+}
 
+/* ── Connector status summary ── */
 interface StatusSummary {
   connected: number;
   syncing: number;
@@ -49,17 +59,18 @@ interface StatusSummary {
 function summarizeConnectors(connectors: SourceConnectorRecord[]): StatusSummary {
   const summary: StatusSummary = { connected: 0, syncing: 0, errored: 0, disabled: 0, other: 0 };
   if (!connectors) return summary;
+
   for (const c of connectors) {
-    if (!c.enabled) {
+    if (c.enabled === false) {
       summary.disabled += 1;
       continue;
     }
-    const s = c.status;
-    if (s === "synced" || s === "connected" || s === "success" || s === "completed") {
+    const st = (c.status || "").toLowerCase();
+    if (st === "connected" || st === "active" || st === "ready" || st === "idle") {
       summary.connected += 1;
-    } else if (s === "processing" || s === "syncing" || s === "running" || s === "pending") {
+    } else if (st === "syncing" || st === "processing" || st === "indexing") {
       summary.syncing += 1;
-    } else if (s === "failed" || s === "error") {
+    } else if (st === "error" || st === "failed" || !!c.error_message) {
       summary.errored += 1;
     } else {
       summary.other += 1;
@@ -68,41 +79,7 @@ function summarizeConnectors(connectors: SourceConnectorRecord[]): StatusSummary
   return summary;
 }
 
-function StatusPill({ label, count, variant }: { label: string; count: number; variant: string }) {
-  if (count === 0) return null;
-  return (
-    <span className={`status-pill ${variant}`}>
-      <span className="status-pill-dot" />
-      {count} {label}
-    </span>
-  );
-}
-
-function ConnectorStatusSummary({ connectors }: { connectors: SourceConnectorRecord[] }) {
-  const summary = summarizeConnectors(connectors);
-  const total = connectors?.length ?? 0;
-
-  if (total === 0) {
-    return (
-      <div className="source-card-empty-connectors">
-        <span>+ No connectors attached</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="status-pill-group">
-      <StatusPill label="connected" count={summary.connected} variant="status-pill--connected" />
-      <StatusPill label="syncing" count={summary.syncing} variant="status-pill--syncing" />
-      <StatusPill label="error" count={summary.errored} variant="status-pill--error" />
-      <StatusPill label="disabled" count={summary.disabled} variant="status-pill--disabled" />
-      <StatusPill label="other" count={summary.other} variant="status-pill--other" />
-    </div>
-  );
-}
-
 /* ── Source card ── */
-
 function SourceCard({
   source,
   onNavigate,
@@ -119,7 +96,8 @@ function SourceCard({
   deleting: boolean;
 }) {
   const [copied, setCopied] = useState(false);
-  const connectorCount = source.connector_count ?? source.connectors?.length ?? 0;
+  const connectorCount = source.connectors?.length ?? 0;
+
 
   const handleCopyBucket = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -144,93 +122,121 @@ function SourceCard({
       onClick={() => onNavigate(source.id)}
       onKeyDown={handleKeyDown}
     >
-      {/* Header */}
+      {/* Top Banner & Header */}
       <div className="source-card-header">
         <div className="source-card-title">
           <div className="source-card-icon">
-            <IconSources size={18} />
+            <IconSources size={20} />
           </div>
           <div>
             <h3 className="source-card-name">{source.name}</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.15rem" }}>
+              <span className="source-status-dot" data-status={source.status || "idle"} />
+              <span style={{ fontSize: "0.75rem", color: "#8b949e", textTransform: "capitalize" }}>
+                {source.status || "Idle / Ready"}
+              </span>
+            </div>
           </div>
         </div>
+
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <StatusBadge status={source.status || "idle"} />
           <IconArrowRight className="source-card-arrow" size={16} />
         </div>
       </div>
 
-      {/* Meta Stats & Bucket Badge */}
+      {/* Meta Stats & MinIO Bucket Tag */}
       <div className="source-card-meta">
         <div className="source-card-stat">
           <span className="source-card-stat-value">{connectorCount}</span>
           <span className="source-card-stat-label">{connectorCount === 1 ? "connector" : "connectors"}</span>
         </div>
         <div className="source-card-divider" />
+
         <div className="source-card-bucket" title={`MinIO Bucket: ${source.minio_bucket}`}>
-          <IconBucket size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <span style={{ color: "#58a6ff", display: "inline-flex" }}>
+            <IconBucket size={14} />
+          </span>
           <span className="source-card-bucket-code">{source.minio_bucket}</span>
           <button
             type="button"
             onClick={handleCopyBucket}
-            className="btn btn-ghost btn-sm"
-            style={{ padding: "0.125rem 0.25rem", height: "auto", minHeight: 0 }}
-            title="Copy Bucket Name"
+            className="source-card-copy-btn"
+            title="Copy bucket name"
+            aria-label="Copy bucket name"
           >
-            {copied ? <IconCheck size={12} style={{ color: "var(--success-text)" }} /> : <IconCopy size={12} />}
+            {copied ? <IconCheckCircle size={12} style={{ color: "#3fb950" }} /> : "📋"}
           </button>
         </div>
       </div>
 
-      {/* Connector Status Summary */}
-      <div className="source-card-connectors">
-        <ConnectorStatusSummary connectors={source.connectors || []} />
+      {/* Attached Connectors Brand Badges Row */}
+      <div style={{ marginTop: "0.85rem", marginBottom: "0.85rem" }}>
+        {connectorCount === 0 ? (
+          <div className="source-card-empty-connectors">
+            <span>+ No connectors configured</span>
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+            {source.connectors?.slice(0, 4).map((c) => (
+              <span
+                key={c.id}
+                style={{
+                  fontSize: "0.75rem",
+                  padding: "0.2rem 0.55rem",
+                  borderRadius: "6px",
+                  background: "rgba(255, 255, 255, 0.05)",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                  color: "#c9d1d9",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.3rem",
+                }}
+              >
+                <span>{getConnectorIcon(c.connector_type)}</span>
+                <span style={{ fontWeight: 500 }}>{c.connector_type.replace(/_/g, " ")}</span>
+              </span>
+            ))}
+            {connectorCount > 4 && (
+              <span style={{ fontSize: "0.75rem", color: "#8b949e" }}>+{connectorCount - 4} more</span>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Error Message if present */}
-      {source.error_message && (
-        <div className="source-card-error" title={source.error_message}>
-          <span>⚠️</span> {source.error_message}
-        </div>
-      )}
+      {/* Actions Toolbar */}
+      <div className="source-card-actions" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => onSync(source.id)}
+          disabled={syncing}
+          style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+        >
+          <IconSync size={13} className={syncing ? "spin" : ""} />
+          <span>{syncing ? "Syncing..." : "Sync Now"}</span>
+        </button>
 
-      {/* Footer Timestamp & Actions */}
-      <div className="source-card-footer">
-        <span className="muted" style={{ fontSize: "0.75rem" }}>
-          {source.last_sync_at ? `Synced ${formatRelativeTime(source.last_sync_at)}` : "Never synced"}
-        </span>
-
-        <div className="source-card-actions" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => onSync(source.id)}
-            disabled={syncing || source.status === "syncing"}
-            aria-label={`Sync ${source.name}`}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+            className="btn btn-ghost btn-sm"
+            onClick={() => onDelete(source.id, source.name)}
+            disabled={deleting}
+            title="Delete Source"
+            style={{ color: "#f85149" }}
           >
-            <IconSync size={13} className={syncing || source.status === "syncing" ? "spin" : ""} />
-            {syncing || source.status === "syncing" ? "Syncing" : "Sync"}
+            <IconTrash size={14} />
           </button>
 
           <button
             type="button"
             className="btn btn-secondary btn-sm"
             onClick={() => onNavigate(source.id)}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", color: "#58a6ff" }}
           >
-            Manage →
-          </button>
-
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            onClick={() => onDelete(source.id, source.name)}
-            disabled={deleting}
-            aria-label={`Delete ${source.name}`}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
-          >
-            <IconTrash size={13} />
+            <span>Manage</span>
+            <IconArrowRight size={13} />
           </button>
         </div>
       </div>
@@ -239,7 +245,6 @@ function SourceCard({
 }
 
 /* ── Source Table View ── */
-
 function SourceTable({
   sources,
   onNavigate,
@@ -256,67 +261,82 @@ function SourceTable({
   deletingId: string | null;
 }) {
   return (
-    <div className="repo-table-wrap">
-      <table className="repo-table">
+    <div className="table-responsive" style={{ borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+      <table className="table" style={{ margin: 0 }}>
         <thead>
           <tr>
             <th>Source Name</th>
+            <th>MinIO Storage Bucket</th>
             <th>Status</th>
-            <th>MinIO S3 Bucket</th>
             <th>Connectors</th>
-            <th>Last Synced</th>
+            <th>Last Updated</th>
             <th style={{ textAlign: "right" }}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {sources.map((s) => {
-            const count = s.connector_count ?? s.connectors?.length ?? 0;
+            const connectorCount = s.connectors?.length ?? 0;
             return (
-              <tr key={s.id} onClick={() => onNavigate(s.id)} style={{ cursor: "pointer" }}>
+              <tr
+                key={s.id}
+                style={{ cursor: "pointer" }}
+                onClick={() => onNavigate(s.id)}
+              >
                 <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                    <IconSources size={16} style={{ color: "var(--accent)" }} />
-                    <span style={{ fontWeight: 600 }}>{s.name}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                    <div className="source-card-icon" style={{ width: "32px", height: "32px" }}>
+                      <IconSources size={16} />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, color: "#e6edf3" }}>{s.name}</div>
+                      <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>ID: {s.id.slice(0, 8)}...</div>
+                    </div>
                   </div>
+                </td>
+                <td>
+                  <code style={{ fontSize: "0.8rem", color: "#58a6ff", background: "rgba(56, 139, 253, 0.1)", padding: "0.2rem 0.5rem", borderRadius: "6px" }}>
+                    {s.minio_bucket}
+                  </code>
                 </td>
                 <td>
                   <StatusBadge status={s.status || "idle"} />
                 </td>
                 <td>
-                  <code className="source-card-bucket-code">{s.minio_bucket}</code>
+                  <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>
+                    {connectorCount}
+                  </span>{" "}
+                  <span style={{ fontSize: "0.75rem", color: "#8b949e" }}>connected</span>
                 </td>
                 <td>
-                  <span className="sources-filter-count">{count} attached</span>
-                </td>
-                <td>
-                  <span className="muted" style={{ fontSize: "0.8125rem" }}>
-                    {s.last_sync_at ? formatRelativeTime(s.last_sync_at) : "Never"}
+                  <span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
+                    {s.updated_at ? new Date(s.updated_at).toLocaleString() : "Recently"}
                   </span>
                 </td>
                 <td style={{ textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
-                  <div style={{ display: "inline-flex", gap: "0.375rem" }}>
+                  <div style={{ display: "inline-flex", gap: "0.4rem" }}>
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
                       onClick={() => onSync(s.id)}
-                      disabled={syncingId === s.id || s.status === "syncing"}
+                      disabled={syncingId === s.id}
                     >
-                      <IconSync size={13} className={syncingId === s.id ? "spin" : ""} />
+                      <IconSync size={12} className={syncingId === s.id ? "spin" : ""} />
                     </button>
                     <button
                       type="button"
-                      className="btn btn-primary btn-sm"
+                      className="btn btn-secondary btn-sm"
                       onClick={() => onNavigate(s.id)}
                     >
                       Manage
                     </button>
                     <button
                       type="button"
-                      className="btn btn-danger btn-sm"
+                      className="btn btn-ghost btn-sm"
                       onClick={() => onDelete(s.id, s.name)}
                       disabled={deletingId === s.id}
+                      style={{ color: "#f85149" }}
                     >
-                      <IconTrash size={13} />
+                      <IconTrash size={14} />
                     </button>
                   </div>
                 </td>
@@ -330,7 +350,6 @@ function SourceTable({
 }
 
 /* ── Stats overview dashboard ── */
-
 function StatsOverview({
   sources,
   activeFilter,
@@ -342,11 +361,8 @@ function StatsOverview({
 }) {
   const totalSources = sources.length;
   const activeSources = sources.filter((s) => s.enabled !== false).length;
-  const totalConnectors = sources.reduce(
-    (sum, s) => sum + (s.connector_count ?? s.connectors?.length ?? 0),
-    0
-  );
   const syncingSources = sources.filter((s) => s.status === "syncing" || s.status === "processing").length;
+  const totalConnectors = sources.reduce((acc, s) => acc + (s.connectors?.length ?? 0), 0);
 
   return (
     <div className="stats-overview-grid">
@@ -356,12 +372,12 @@ function StatsOverview({
         style={{ cursor: "pointer" }}
       >
         <div>
-          <div className="stats-overview-label">Total Sources</div>
+          <div className="stats-overview-label">Total Data Sources</div>
           <div className="stats-overview-value">{totalSources}</div>
-          <div className="stats-overview-subtext">Configured storage buckets</div>
+          <div className="stats-overview-subtext">{activeSources} enabled & operational</div>
         </div>
         <div className="stats-overview-icon stats-icon--blue">
-          <IconSources size={20} />
+          <IconSources size={22} />
         </div>
       </div>
 
@@ -371,23 +387,12 @@ function StatsOverview({
         style={{ cursor: "pointer" }}
       >
         <div>
-          <div className="stats-overview-label">Active Sources</div>
-          <div className="stats-overview-value">{activeSources}</div>
-          <div className="stats-overview-subtext">Ready for ingestion</div>
+          <div className="stats-overview-label">Attached Connectors</div>
+          <div className="stats-overview-value">{totalConnectors}</div>
+          <div className="stats-overview-subtext">Active integration streams</div>
         </div>
         <div className="stats-overview-icon stats-icon--green">
-          <IconCheckCircle size={20} />
-        </div>
-      </div>
-
-      <div className="stats-overview-card">
-        <div>
-          <div className="stats-overview-label">Total Connectors</div>
-          <div className="stats-overview-value">{totalConnectors}</div>
-          <div className="stats-overview-subtext">External integrations</div>
-        </div>
-        <div className="stats-overview-icon stats-icon--purple">
-          <IconZap size={20} />
+          <IconCheckCircle size={22} />
         </div>
       </div>
 
@@ -399,10 +404,21 @@ function StatsOverview({
         <div>
           <div className="stats-overview-label">Syncing Sources</div>
           <div className="stats-overview-value">{syncingSources}</div>
-          <div className="stats-overview-subtext">Active background sync</div>
+          <div className="stats-overview-subtext">Continuous CDC background poller</div>
+        </div>
+        <div className="stats-overview-icon stats-icon--purple">
+          <IconRadio size={22} />
+        </div>
+      </div>
+
+      <div className="stats-overview-card">
+        <div>
+          <div className="stats-overview-label">Isolated MinIO Buckets</div>
+          <div className="stats-overview-value">{totalSources}</div>
+          <div className="stats-overview-subtext">S3-compatible namespaces</div>
         </div>
         <div className="stats-overview-icon stats-icon--amber">
-          <IconRadio size={20} />
+          <IconBucket size={22} />
         </div>
       </div>
     </div>
@@ -410,7 +426,6 @@ function StatsOverview({
 }
 
 /* ── Main SourcesPage component ── */
-
 export default function SourcesPage() {
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -533,299 +548,313 @@ export default function SourcesPage() {
 
   return (
     <div className="page">
-      <PageHeader
-        title="Sources"
-        description="Connect multiple data sources — each source manages its own connectors, MinIO bucket, and pipeline links."
-        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Sources" }]}
-        actions={
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => setShowCreateForm(!showCreateForm)}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
-          >
-            <IconPlus size={16} />
-            {showCreateForm ? "Cancel" : "New Source"}
-          </button>
-        }
-      />
+      {/* Top Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+        <div>
+          <div style={{ fontSize: "0.8rem", color: "#8b949e", marginBottom: "0.25rem" }}>
+            Overview &gt; Sources
+          </div>
+          <h1 style={{ fontSize: "1.75rem", fontWeight: 800, color: "#e6edf3", margin: 0, display: "flex", alignItems: "center", gap: "0.6rem" }}>
+            <span>Data Sources</span>
+            <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "999px", background: "rgba(88, 166, 253, 0.15)", color: "#58a6ff", border: "1px solid rgba(88, 166, 253, 0.3)" }}>
+              2026 Engine
+            </span>
+          </h1>
+          <p style={{ fontSize: "0.875rem", color: "#8b949e", marginTop: "0.35rem", margin: 0 }}>
+            Connect external data sources — each source gets an isolated MinIO bucket and real-time RAG delivery streams.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => setShowCreateForm(true)}
+          style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", padding: "0.6rem 1.1rem" }}
+        >
+          <IconPlus size={16} />
+          <span>New Source</span>
+        </button>
+      </div>
+
+      {/* Info / Error Banners */}
+      {info && (
+        <div className="alert alert-info" role="status" style={{ marginBottom: "1.25rem" }}>
+          <span>ℹ️ {info}</span>
+          <button type="button" className="btn-close" onClick={() => setInfo(null)}>×</button>
+        </div>
+      )}
 
       {error && (
-        <div className="alert alert-error" role="alert">
-          <strong>{error.code}:</strong> {error.message}
+        <div className="alert alert-error" role="alert" style={{ marginBottom: "1.25rem" }}>
+          <strong>{error.code}</strong>: {error.message}
+          <button type="button" className="btn-close" onClick={() => setError(null)}>×</button>
         </div>
       )}
 
-      {info && (
-        <div className="alert alert-info" role="status">
-          {info}
-        </div>
-      )}
+      {/* Stats Overview Grid */}
+      <StatsOverview
+        sources={sources}
+        activeFilter={statusFilter}
+        onSelectFilter={(f) => setStatusFilter(f)}
+      />
 
-      {/* Styled Create Source Form Card */}
-      {showCreateForm && (
-        <div className="source-create-card">
-          <div className="source-create-header">
-            <h2 className="source-create-title">
-              <IconSources size={20} style={{ color: "var(--accent)" }} />
-              Create New Data Source
-            </h2>
+      {/* Toolbar & Search Bar */}
+      <div className="sources-toolbar" style={{ marginTop: "1.5rem", marginBottom: "1.25rem" }}>
+        <div className="sources-search-wrap">
+          <IconSearch className="sources-search-icon" size={16} />
+          <input
+            type="text"
+            className="sources-search-input"
+            placeholder="Search sources or buckets..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowCreateForm(false)}
+              onClick={() => setSearchQuery("")}
+              style={{
+                position: "absolute",
+                right: "0.75rem",
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "none",
+                border: "none",
+                color: "#8b949e",
+                cursor: "pointer",
+              }}
             >
               ✕
             </button>
-          </div>
-
-          <p className="muted" style={{ fontSize: "0.875rem", marginBottom: "1rem" }}>
-            Each source gets a dedicated, isolated MinIO bucket to store and sync your external data documents into RAG vector pipelines.
-          </p>
-
-          <div style={{ marginBottom: "1rem" }}>
-            <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: "0.5rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Available Connector Types
-            </span>
-            <div className="source-presets-grid">
-              <div className="source-preset-item active">
-                <span className="source-preset-icon">📁</span>
-                <span className="source-preset-name">Google Drive</span>
-              </div>
-              <div className="source-preset-item active">
-                <span className="source-preset-icon">🪣</span>
-                <span className="source-preset-name">Amazon S3</span>
-              </div>
-              <div className="source-preset-item active">
-                <span className="source-preset-icon">☁️</span>
-                <span className="source-preset-name">Azure Blob</span>
-              </div>
-              <div className="source-preset-item active">
-                <span className="source-preset-icon">📂</span>
-                <span className="source-preset-name">Local Directory</span>
-              </div>
-              <div className="source-preset-item active">
-                <span className="source-preset-icon">🌐</span>
-                <span className="source-preset-name">Web Scraper</span>
-              </div>
-            </div>
-          </div>
-
-          <form onSubmit={handleCreate}>
-            <div style={{ marginBottom: "1.25rem" }}>
-              <label htmlFor="source-name-input" className="field-label" style={{ fontWeight: 600 }}>
-                Source Identifier Name
-              </label>
-              <input
-                id="source-name-input"
-                type="text"
-                className="input"
-                placeholder="e.g. customer-support-docs, engineering-specs..."
-                value={newSourceName}
-                onChange={(e) => setNewSourceName(e.target.value)}
-                autoFocus
-                required
-                style={{ fontSize: "0.9375rem" }}
-              />
-              <span className="muted" style={{ fontSize: "0.75rem", marginTop: "0.375rem", display: "block" }}>
-                Bucket will be auto-slugified: <code>source-&lt;name&gt;-&lt;id&gt;</code>
-              </span>
-            </div>
-
-            <div className="form-actions" style={{ justifyContent: "flex-end", gap: "0.75rem" }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowCreateForm(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={creating}
-                style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
-              >
-                <IconPlus size={16} />
-                {creating ? "Creating Source..." : "Create Data Source"}
-              </button>
-            </div>
-          </form>
+          )}
         </div>
-      )}
 
-      {/* Stats Dashboard */}
-      {!loading && sources.length > 0 && (
-        <StatsOverview
-          sources={sources}
-          activeFilter={statusFilter}
-          onSelectFilter={(f) => setStatusFilter(f)}
-        />
-      )}
-
-      {/* Toolbar — Search, Filters & View Mode Toggle */}
-      {!loading && sources.length > 0 && (
-        <div className="sources-toolbar">
-          <div className="sources-toolbar-group">
-            <div className="sources-search-box">
-              <IconSearch size={14} className="sources-search-icon" />
-              <input
-                type="text"
-                className="sources-search-input"
-                placeholder="Search sources or buckets..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery("")}
-                  style={{
-                    position: "absolute",
-                    right: "0.5rem",
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    background: "none",
-                    border: "none",
-                    color: "var(--text-secondary)",
-                    cursor: "pointer",
-                  }}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            <div className="sources-filter-pills">
-              <button
-                type="button"
-                className={`sources-filter-btn${statusFilter === "all" ? " active" : ""}`}
-                onClick={() => setStatusFilter("all")}
-              >
-                All <span className="sources-filter-count">{sources.length}</span>
-              </button>
-              <button
-                type="button"
-                className={`sources-filter-btn${statusFilter === "active" ? " active" : ""}`}
-                onClick={() => setStatusFilter("active")}
-              >
-                Active <span className="sources-filter-count">{activeCount}</span>
-              </button>
-              <button
-                type="button"
-                className={`sources-filter-btn${statusFilter === "syncing" ? " active" : ""}`}
-                onClick={() => setStatusFilter("syncing")}
-              >
-                Syncing <span className="sources-filter-count">{syncingCount}</span>
-              </button>
-              {errorCount > 0 && (
-                <button
-                  type="button"
-                  className={`sources-filter-btn${statusFilter === "error" ? " active" : ""}`}
-                  onClick={() => setStatusFilter("error")}
-                >
-                  Errors <span className="sources-filter-count" style={{ color: "var(--danger)" }}>{errorCount}</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="sources-view-toggle">
-            <button
-              type="button"
-              className={`sources-view-btn${viewMode === "grid" ? " active" : ""}`}
-              onClick={() => setViewMode("grid")}
-              title="Grid View"
-            >
-              <IconGrid size={16} />
-            </button>
-            <button
-              type="button"
-              className={`sources-view-btn${viewMode === "table" ? " active" : ""}`}
-              onClick={() => setViewMode("table")}
-              title="Table View"
-            >
-              <IconList size={16} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Loading state */}
-      {loading && (
-        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
-          <p className="muted">Loading sources...</p>
-        </div>
-      )}
-
-      {/* Empty state */}
-      {!loading && sources.length === 0 && (
-        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2.5rem", marginBottom: "0.5rem" }}>📁</div>
-          <h3 style={{ margin: "0 0 0.5rem" }}>No data sources created yet</h3>
-          <p className="muted" style={{ margin: "0 0 1.5rem", maxWidth: "480px", marginLeft: "auto", marginRight: "auto" }}>
-            Create your first data source to begin connecting external files (Google Drive, S3, Azure Blob, Local Dir, Web Scraper).
-          </p>
+        {/* Filter Pills */}
+        <div className="sources-filters-group">
           <button
             type="button"
-            className="btn btn-primary"
-            onClick={() => setShowCreateForm(true)}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}
+            className={`sources-filter-btn${statusFilter === "all" ? " active" : ""}`}
+            onClick={() => setStatusFilter("all")}
           >
-            <IconPlus size={16} />
-            Create First Source
+            All <span className="sources-filter-count">{sources.length}</span>
           </button>
-        </div>
-      )}
 
-      {/* Filtered Empty State */}
-      {!loading && sources.length > 0 && filteredSources.length === 0 && (
-        <div className="panel" style={{ padding: "3rem", textAlign: "center" }}>
-          <h3 style={{ margin: "0 0 0.5rem" }}>No matching sources found</h3>
-          <p className="muted" style={{ margin: "0 0 1.5rem" }}>
-            No sources matched your search "{searchQuery}" or selected status filter.
-          </p>
           <button
             type="button"
-            className="btn btn-secondary"
-            onClick={() => {
-              setSearchQuery("");
-              setStatusFilter("all");
-            }}
+            className={`sources-filter-btn${statusFilter === "active" ? " active" : ""}`}
+            onClick={() => setStatusFilter("active")}
           >
-            Clear Filters
+            Active <span className="sources-filter-count">{activeCount}</span>
+          </button>
+
+          <button
+            type="button"
+            className={`sources-filter-btn${statusFilter === "syncing" ? " active" : ""}`}
+            onClick={() => setStatusFilter("syncing")}
+          >
+            Syncing <span className="sources-filter-count">{syncingCount}</span>
+          </button>
+
+          {errorCount > 0 && (
+            <button
+              type="button"
+              className={`sources-filter-btn${statusFilter === "error" ? " active" : ""}`}
+              onClick={() => setStatusFilter("error")}
+              style={{ color: "#f85149" }}
+            >
+              Error <span className="sources-filter-count">{errorCount}</span>
+            </button>
+          )}
+        </div>
+
+        {/* View Toggle */}
+        <div className="sources-view-toggle">
+          <button
+            type="button"
+            className={`sources-view-btn${viewMode === "grid" ? " active" : ""}`}
+            onClick={() => setViewMode("grid")}
+            title="Grid View"
+          >
+            <IconGrid size={16} />
+          </button>
+          <button
+            type="button"
+            className={`sources-view-btn${viewMode === "table" ? " active" : ""}`}
+            onClick={() => setViewMode("table")}
+            title="Table View"
+          >
+            <IconList size={16} />
           </button>
         </div>
-      )}
+      </div>
 
-      {/* Sources Display View (Grid or Table) */}
-      {!loading && filteredSources.length > 0 && (
-        <>
-          {viewMode === "grid" ? (
-            <div className="source-grid">
-              {filteredSources.map((source) => (
-                <SourceCard
-                  key={source.id}
-                  source={source}
-                  onNavigate={handleNavigate}
-                  onSync={handleSync}
-                  onDelete={handleDelete}
-                  syncing={syncingId === source.id}
-                  deleting={deletingId === source.id}
-                />
-              ))}
-            </div>
-          ) : (
-            <SourceTable
-              sources={filteredSources}
+      {/* Content Rendering */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "4rem 2rem", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+          <IconSync size={28} className="spin" style={{ color: "#58a6ff", marginBottom: "0.75rem" }} />
+          <div style={{ color: "#e6edf3", fontWeight: 600 }}>Loading data sources...</div>
+        </div>
+      ) : filteredSources.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "4rem 2rem", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
+          <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>📭</div>
+          <h3 style={{ color: "#e6edf3", margin: "0 0 0.5rem 0" }}>No data sources found</h3>
+          <p style={{ color: "#8b949e", fontSize: "0.875rem", marginBottom: "1.25rem" }}>
+            {searchQuery || statusFilter !== "all"
+              ? "No sources match your current search criteria."
+              : "Get started by creating your first data source integration."}
+          </p>
+          {!searchQuery && statusFilter === "all" && (
+            <button type="button" className="btn btn-primary" onClick={() => setShowCreateForm(true)}>
+              + Create Data Source
+            </button>
+          )}
+        </div>
+      ) : viewMode === "grid" ? (
+        <div className="sources-grid">
+          {filteredSources.map((s) => (
+            <SourceCard
+              key={s.id}
+              source={s}
               onNavigate={handleNavigate}
               onSync={handleSync}
               onDelete={handleDelete}
-              syncingId={syncingId}
-              deletingId={deletingId}
+              syncing={syncingId === s.id}
+              deleting={deletingId === s.id}
             />
-          )}
-        </>
+          ))}
+        </div>
+      ) : (
+        <SourceTable
+          sources={filteredSources}
+          onNavigate={handleNavigate}
+          onSync={handleSync}
+          onDelete={handleDelete}
+          syncingId={syncingId}
+          deletingId={deletingId}
+        />
+      )}
+
+      {/* CREATE NEW DATA SOURCE MODAL */}
+      {showCreateForm && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1.5rem",
+          }}
+          onClick={() => setShowCreateForm(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "520px",
+              background: "#111622",
+              border: "1px solid rgba(88, 166, 253, 0.3)",
+              borderRadius: "16px",
+              padding: "1.75rem",
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(56, 139, 253, 0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(56, 139, 253, 0.15)", color: "#58a6ff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <IconSources size={20} />
+                </div>
+                <div>
+                  <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                    Create Data Source
+                  </h2>
+                  <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
+                    Isolated MinIO bucket & RAG pipeline isolation
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateForm(false)}
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreate}>
+              <div style={{ marginBottom: "1.25rem" }}>
+                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                  Source Name *
+                </label>
+                <input
+                  type="text"
+                  value={newSourceName}
+                  onChange={(e) => setNewSourceName(e.target.value)}
+                  placeholder="e.g. engineering-docs, customer-support, hr-policy"
+                  required
+                  autoFocus
+                  style={{
+                    width: "100%",
+                    padding: "0.75rem 1rem",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(56, 68, 100, 0.5)",
+                    background: "rgba(17, 21, 30, 0.8)",
+                    color: "#e6edf3",
+                    fontSize: "0.9rem",
+                    outline: "none",
+                  }}
+                />
+              </div>
+
+              {/* MinIO Bucket Preview Card */}
+              {newSourceName.trim() && (
+                <div
+                  style={{
+                    padding: "0.85rem 1rem",
+                    borderRadius: "8px",
+                    background: "rgba(56, 139, 253, 0.08)",
+                    border: "1px solid rgba(56, 139, 253, 0.25)",
+                    marginBottom: "1.25rem",
+                  }}
+                >
+                  <div style={{ fontSize: "0.75rem", color: "#8b949e", marginBottom: "0.25rem" }}>
+                    Auto-generated MinIO Bucket:
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    <IconBucket size={14} style={{ color: "#58a6ff" }} />
+                    <code style={{ fontSize: "0.85rem", color: "#58a6ff", fontWeight: 600 }}>
+                      source-{newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}-...
+                    </code>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowCreateForm(false)}
+                  disabled={creating}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={creating || !newSourceName.trim()}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+                >
+                  {creating ? <IconSync size={14} className="spin" /> : <IconPlus size={14} />}
+                  <span>{creating ? "Creating..." : "Create Source"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

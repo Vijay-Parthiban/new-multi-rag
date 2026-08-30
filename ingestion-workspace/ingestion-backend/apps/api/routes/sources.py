@@ -117,18 +117,20 @@ def _connector_to_dict(c: SourceConnector) -> dict:
         "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         "status": c.status,
         "error_message": c.error_message,
-        "created_at": c.created_at.isoformat(),
-        "updated_at": c.updated_at.isoformat(),
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
 
 
 async def _source_to_dict(s: Source) -> dict:
-    await s.awaitable_attrs.pipelines
-    await s.awaitable_attrs.connectors
-    await s.awaitable_attrs.created_at
-    await s.awaitable_attrs.updated_at
-    if s.last_sync_at:
-        await s.awaitable_attrs.last_sync_at
+    try:
+        pipelines = s.pipelines or []
+    except Exception:
+        pipelines = []
+    try:
+        connectors = s.connectors or []
+    except Exception:
+        connectors = []
     return {
         "id": str(s.id),
         "name": s.name,
@@ -147,17 +149,17 @@ async def _source_to_dict(s: Source) -> dict:
         "last_sync_at": s.last_sync_at.isoformat() if s.last_sync_at else None,
         "status": s.status,
         "error_message": s.error_message,
-        "pipeline_ids": [str(ps.pipeline_id) for ps in (s.pipelines or [])],
+        "pipeline_ids": [str(ps.pipeline_id) for ps in pipelines],
         "pipeline_links": [
             {
                 "pipeline_id": str(ps.pipeline_id),
                 "monitor_mode": ps.monitor_mode.value if ps.monitor_mode else None,
                 "sync_interval_minutes": ps.sync_interval_minutes,
             }
-            for ps in (s.pipelines or [])
+            for ps in pipelines
         ],
-        "connectors": [_connector_to_dict(c) for c in (s.connectors or [])],
-        "connector_count": len(s.connectors or []),
+        "connectors": [_connector_to_dict(c) for c in connectors],
+        "connector_count": len(connectors),
         "created_at": s.created_at.isoformat(),
         "updated_at": s.updated_at.isoformat(),
     }
@@ -288,7 +290,13 @@ async def create_source(
         except Exception:
             pass
 
-    return await _source_to_dict(source)
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.pipelines), selectinload(Source.connectors))
+        .where(Source.id == source.id)
+    )
+    refreshed_source = result.scalar_one()
+    return await _source_to_dict(refreshed_source)
 
 
 @router.get("/{source_id}", status_code=200)
@@ -378,13 +386,13 @@ async def delete_source(
             {"pipeline_ids": linked},
         )
 
-    # Remove bucket from MinIO (best-effort)
-    try:
-        from src.shared.storage import delete_bucket as s3_delete_bucket
-        await s3_delete_bucket(source.minio_bucket)
-    except Exception:
-        pass
-
+    # Remove bucket from MinIO
+    if source.minio_bucket:
+        try:
+            from src.shared.storage import delete_bucket as s3_delete_bucket
+            await s3_delete_bucket(source.minio_bucket)
+        except Exception as exc:
+            logger.error("Failed deleting MinIO bucket %s for source %s: %s", source.minio_bucket, source_id, exc)
     await db.delete(source)
     await db.commit()
     return {"status": "deleted", "id": str(source_id)}
@@ -570,6 +578,19 @@ async def link_source_to_pipeline(
     )
     db.add(link)
     await db.commit()
+
+    try:
+        from src.ingestion_service.core.pathway_sync import start_minio_monitor
+        start_minio_monitor(source_id)
+    except Exception as exc:
+        logger.warning("failed_starting_minio_monitor source=%s err=%s", source_id, exc)
+
+    try:
+        from src.shared.queue.client import enqueue_sync_run
+        await enqueue_sync_run(pipeline_id)
+    except Exception as exc:
+        logger.warning("failed_enqueue_sync_run pipeline=%s err=%s", pipeline_id, exc)
+
     return {"status": "linked", "source_id": str(source_id), "pipeline_id": str(pipeline_id)}
 
 
@@ -591,6 +612,13 @@ async def unlink_source_from_pipeline(
         raise NotFoundError("LINK_NOT_FOUND", "This source is not linked to this pipeline.")
     await db.delete(link)
     await db.commit()
+
+    try:
+        from src.shared.queue.client import enqueue_sync_run
+        await enqueue_sync_run(pipeline_id)
+    except Exception as exc:
+        logger.warning("failed_enqueue_sync_run pipeline=%s err=%s", pipeline_id, exc)
+
     return {"status": "unlinked", "source_id": str(source_id), "pipeline_id": str(pipeline_id)}
 
 

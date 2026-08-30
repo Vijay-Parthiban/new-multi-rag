@@ -1117,7 +1117,7 @@ export async function getSourceFileContent(sourceId: string, key: string): Promi
   }
   return res.text();
 }
-export async function triggerConnectorSync(sourceId: string, connectorId?: string): Promise<TriggerSyncResponse> {
+export async function triggerConnectorSync(sourceId: string, _connectorId?: string): Promise<TriggerSyncResponse> {
   return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
 }
 

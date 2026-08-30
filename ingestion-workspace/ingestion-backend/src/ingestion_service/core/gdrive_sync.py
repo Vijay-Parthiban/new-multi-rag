@@ -162,17 +162,49 @@ async def sync_google_drive_to_minio(
     """
     from src.shared.storage.s3_client import delete_object, head_object, list_objects
 
-    # Extract service account credentials
-    sa_json = config.get("service_account_json") or config.get("credentials_json")
-    if isinstance(sa_json, str):
-        sa_json = json.loads(sa_json)
+    import os
+    sa_json = None
+    sa_input = (
+        config.get("service_account_json")
+        or config.get("credentials_json")
+        or config.get("credentials")
+        or config.get("service_account_file")
+        or "/app/sanguine-robot-499610-q7-b777bdf1ad75.json"
+    )
+    if isinstance(sa_input, dict):
+        sa_json = sa_input
+    elif isinstance(sa_input, str):
+        sa_str = sa_input.strip()
+        if sa_str.startswith("{"):
+            sa_json = json.loads(sa_str)
+        else:
+            filename = sa_str.replace("\\", "/").split("/")[-1]
+            candidate_paths = [
+                sa_str,
+                filename,
+                os.path.join("/app", filename),
+                os.path.join(os.getcwd(), filename),
+                "/app/sanguine-robot-499610-q7-b777bdf1ad75.json",
+            ]
+            found_path = next((p for p in candidate_paths if os.path.exists(p)), None)
+            if found_path:
+                with open(found_path, "r", encoding="utf-8") as f:
+                    sa_json = json.load(f)
+            else:
+                try:
+                    sa_json = json.loads(sa_str)
+                except Exception as e:
+                    logger.error("gdrive_sa_credentials_not_found input=%s", sa_input)
+                    sa_json = None
     if not sa_json:
-        raise ValueError("Missing service_account_json or credentials_json in connector config")
-
-    # Extract folder ID from URL or direct ID
-    folder_url = config.get("folder_url", "") or config.get("folder_id", "")
-    if not folder_url:
-        raise ValueError("Missing folder_url or folder_id in connector config")
+        fallback_file = "/app/sanguine-robot-499610-q7-b777bdf1ad75.json"
+        if os.path.exists(fallback_file):
+            with open(fallback_file, "r", encoding="utf-8") as f:
+                sa_json = json.load(f)
+        else:
+            logger.error("gdrive_sync_missing_sa_json source=%s", source_id)
+            return {"files_synced": 0, "status": "error", "error": "Missing service_account_json"}
+    folder_url = config.get("folder_url", "") or config.get("folder_id", "") or "14IXHBDpExTdBDfh5GTKmQEIiv6AYHRMG"
     folder_id = _extract_folder_id(folder_url)
 
     logger.info(

@@ -47,3 +47,6 @@ temp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Keys & Secrets
+sanguine-robot-*.json

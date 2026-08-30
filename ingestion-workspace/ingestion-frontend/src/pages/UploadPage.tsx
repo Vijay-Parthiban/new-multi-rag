@@ -34,8 +34,8 @@ export default function UploadPage() {
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [loadingSources, setLoadingSources] = useState(true);
 
-  const [directoryName, setDirectoryName] = useState(presetDir);
-  const [usePreset, setUsePreset] = useState(!!presetDir);
+  const [directoryName, _setDirectoryName] = useState(presetDir);
+  const [usePreset, _setUsePreset] = useState(!!presetDir);
   const [newFolderName, setNewFolderName] = useState("");
   const [contentType, setContentType] = useState<ContentType>("document");
   const [files, setFiles] = useState<File[]>([]);

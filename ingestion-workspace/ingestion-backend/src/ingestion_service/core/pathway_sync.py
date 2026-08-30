@@ -3,6 +3,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.shared.config.settings import get_settings
@@ -117,16 +118,17 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
                 )
                 files_synced_total += res.get("files_synced", 0)
 
-            elif connector.connector_type == "google_drive":
+            elif connector.connector_type in ["google_drive", "s3", "amazon_s3", "azure_blob", "azure"]:
+                from src.ingestion_service.core.nifi_sync import sync_connector_via_nifi
                 config = connector.config or {}
-                res = await sync_google_drive_to_minio(
+                res = await sync_connector_via_nifi(
                     source_id=source.id,
-                    config=config,
-                    bucket=minio_bucket,
                     connector_id=connector.id,
+                    connector_type=connector.connector_type,
+                    config=config,
+                    minio_bucket=minio_bucket,
                 )
                 files_synced_total += res.get("files_synced", 0)
-            
             # Update connector sync status
             connector.status = "synced"
             connector.last_sync_at = datetime.now(UTC)
@@ -193,11 +195,13 @@ async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
     for pipeline_id in pipeline_ids:
         try:
             await db.execute(
-                """
-                INSERT INTO pipeline_sync_queue (pipeline_id, source_id, created_at)
-                VALUES (:pipeline_id, :source_id, :created_at)
-                ON CONFLICT DO NOTHING
-                """,
+                text(
+                    """
+                    INSERT INTO pipeline_sync_queue (pipeline_id, source_id, created_at)
+                    VALUES (:pipeline_id, :source_id, :created_at)
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
                 {
                     "pipeline_id": pipeline_id,
                     "source_id": source.id,
@@ -205,9 +209,9 @@ async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
                 },
             )
             await db.commit()
+            await enqueue_sync_run(pipeline_id)
         except Exception as exc:
             logger.error("pipeline_sync_enqueue_failed pipeline=%s source=%s error=%s", pipeline_id, source.id, str(exc))
-
 _MINIO_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
 
 def start_minio_monitor(source_id: uuid.UUID) -> None:
@@ -233,20 +237,9 @@ def start_minio_monitor(source_id: uuid.UUID) -> None:
                     if bucket_key:
                         logger.info("MinIO file detected: %s", bucket_key)
                         async with AsyncSessionLocal() as db:
-                            await db.execute(
-                                """
-                                INSERT INTO pipeline_sync_queue (pipeline_id, source_id, file_path, created_at)
-                                VALUES (:pipeline_id, :source_id, :file_path, :created_at)
-                                ON CONFLICT DO NOTHING
-                                """,
-                                {
-                                    "pipeline_id": None,
-                                    "source_id": source_id,
-                                    "file_path": bucket_key,
-                                    "created_at": datetime.utcnow(),
-                                },
-                            )
-                            await db.commit()
+                            source = await db.get(Source, source_id)
+                            if source:
+                                await _trigger_pipeline_syncs(db, source)
         except asyncio.CancelledError:
             pass
         except Exception as exc:

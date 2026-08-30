@@ -81,3 +81,19 @@ async def dequeue_sync_run(timeout: int = 5) -> uuid.UUID | None:
         return None
     payload = json.loads(result[1])
     return uuid.UUID(payload["pipeline_id"])
+
+async def enqueue_pathway_sync(source_id: uuid.UUID) -> None:
+    client = await get_redis()
+    await client.lpush("pathway_sync_queue", json.dumps({"source_id": str(source_id)}))
+
+
+async def dequeue_pathway_sync(timeout: int = 5) -> uuid.UUID | None:
+    client = await get_redis()
+    try:
+        result = await client.brpop("pathway_sync_queue", timeout=timeout)
+    except aioredis.TimeoutError:
+        return None
+    if not result:
+        return None
+    payload = json.loads(result[1])
+    return uuid.UUID(payload["source_id"])

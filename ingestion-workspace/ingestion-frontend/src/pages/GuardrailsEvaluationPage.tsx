@@ -334,7 +334,7 @@ export default function GuardrailsEvaluationPage() {
               ) : (
                 runs.map((r) => (
                   <tr key={r.run_id} className={selectedRun?.run_id === r.run_id ? "is-selected" : undefined}>
-                    <td className="mono">{formatRelativeTime(r.created_at)}</td>
+                    <td className="mono">{formatRelativeTime(r.created_at || "")}</td>
                     <td>{r.status}</td>
                     <td>{r.config_snapshot?.name || r.config_id.slice(0, 8)}</td>
                     <td className="mono">{formatMetric(r.aggregate_metrics?.accuracy)}</td>

@@ -7,9 +7,9 @@ files, and updates the IndexedFile tracking table.
 
 import asyncio
 import logging
+from pathlib import Path
 import uuid
-from datetime import UTC, datetime
-
+from datetime import datetime, UTC
 from qdrant_client.http import models as qmodels
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,8 @@ from src.shared.db.models import (
     JobStatus,
     Pipeline,
     PipelineRun,
+    PipelineSource,
+    Source,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,36 @@ async def _load_indexed_files(db: AsyncSession, pipeline_id: uuid.UUID) -> list[
     return list(result.scalars().all())
 
 
+async def _load_synced_source_files(source: Source) -> list[dict]:
+    """Return object metadata dicts for objects stored in the source's MinIO bucket."""
+    if not source.minio_bucket:
+        return []
+    from src.shared.storage.s3_client import list_objects
+    try:
+        objs = await list_objects(source.minio_bucket)
+    except Exception as exc:
+        logger.error("failed_listing_minio_bucket bucket=%s err=%s", source.minio_bucket, exc)
+        return []
+
+    res = []
+    for obj in objs:
+        if not obj.key or obj.key.endswith("/"):
+            continue
+        content_hash = obj.etag if obj.etag else f"{obj.size}-{obj.last_modified}"
+        original_name = Path(obj.key).name
+        virtual_file_id = uuid.uuid5(uuid.NAMESPACE_URL, f"minio://{source.id}/{obj.key}")
+        res.append({
+            "source_id": source.id,
+            "source_name": source.name,
+            "bucket_name": source.minio_bucket,
+            "file_key": obj.key,
+            "original_name": original_name,
+            "content_hash": content_hash,
+            "size": obj.size,
+            "virtual_file_id": virtual_file_id,
+        })
+    return res
+
 def _build_file_filter(*, file_id: uuid.UUID, pipeline_id: uuid.UUID) -> qmodels.Filter:
     """Build a Qdrant filter that matches points for a specific file in a pipeline."""
     return qmodels.Filter(
@@ -82,10 +114,16 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
 
     Returns the PipelineRun.id tracking this sync operation.
     """
-    pipeline = await db.get(Pipeline, pipeline_id, options=(selectinload(Pipeline.runs),))
+    pipeline = await db.get(
+        Pipeline,
+        pipeline_id,
+        options=(
+            selectinload(Pipeline.runs),
+            selectinload(Pipeline.sources).selectinload(PipelineSource.source),
+        ),
+    )
     if not pipeline:
         raise ValueError(f"Pipeline {pipeline_id} not found")
-
     validate_pipeline_config(pipeline)
 
     # Create a run to track this sync
@@ -117,12 +155,16 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
         # 2. Already-indexed records
         indexed_records = await _load_indexed_files(db, pipeline.id)
         indexed_by_file_id: dict[uuid.UUID, IndexedFile] = {
-            rec.file_id: rec for rec in indexed_records
+            rec.file_id: rec for rec in indexed_records if rec.file_id
         }
-        indexed_hashes: set[str] = {rec.content_hash for rec in indexed_records}
+        indexed_by_source_key: dict[tuple[uuid.UUID, str], IndexedFile] = {
+            (rec.source_id, rec.file_key): rec
+            for rec in indexed_records
+            if rec.source_id and rec.file_key
+        }
+        indexed_hashes: set[str] = {rec.content_hash for rec in indexed_records if rec.content_hash}
 
-        # 3. Determine what to do
-        # New files: content_hash not yet indexed
+        # 3. Determine what to do for directory-backed files
         new_files = [
             f for f in current_files
             if f.content_hash
@@ -130,7 +172,6 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
             and f.id not in indexed_by_file_id
         ]
 
-        # Changed files: same file_id exists but content_hash differs
         changed_files = [
             f for f in current_files
             if f.id in indexed_by_file_id
@@ -138,12 +179,39 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
             and indexed_by_file_id[f.id].content_hash != f.content_hash
         ]
 
-        # Deleted: indexed file_ids not in current set
         deleted_indexed = [
             rec for rec in indexed_records
-            if rec.file_id not in current_by_id
+            if rec.file_id and rec.file_id not in current_by_id
         ]
 
+        # 3b. Determine what to do for source-backed files in linked MinIO buckets
+        current_source_objs: list[dict] = []
+        if pipeline.sources:
+            for ps in pipeline.sources:
+                if ps.source:
+                    objs = await _load_synced_source_files(ps.source)
+                    current_source_objs.extend(objs)
+
+        current_source_by_key: dict[tuple[uuid.UUID, str], dict] = {
+            (obj["source_id"], obj["file_key"]): obj for obj in current_source_objs
+        }
+
+        new_source_objs = [
+            obj for obj in current_source_objs
+            if (obj["source_id"], obj["file_key"]) not in indexed_by_source_key
+            and obj["content_hash"] not in indexed_hashes
+        ]
+
+        changed_source_objs = [
+            obj for obj in current_source_objs
+            if (obj["source_id"], obj["file_key"]) in indexed_by_source_key
+            and indexed_by_source_key[(obj["source_id"], obj["file_key"])].content_hash != obj["content_hash"]
+        ]
+
+        deleted_source_indexed = [
+            rec for rec in indexed_records
+            if rec.source_id and rec.file_key and (rec.source_id, rec.file_key) not in current_source_by_key
+        ]
         # Also skip files whose content_hash already indexed under a different file_id
         # (duplicate content detection)
         truly_new_files: list[FileRecord] = []
@@ -157,8 +225,25 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
             truly_new_files.append(f)
             # Track hash so subsequent files in this batch with same hash are also skipped
             indexed_hashes.add(f.content_hash)
+        truly_new_source_objs: list[dict] = []
+        for obj in new_source_objs:
+            if obj["content_hash"] in indexed_hashes:
+                logger.info(
+                    "sync_skip_duplicate_source pipeline=%s key=%s hash=%s",
+                    pipeline.id, obj["file_key"], obj["content_hash"],
+                )
+                continue
+            truly_new_source_objs.append(obj)
+            indexed_hashes.add(obj["content_hash"])
 
-        run.files_total = len(truly_new_files) + len(changed_files) + len(deleted_indexed)
+        run.files_total = (
+            len(truly_new_files)
+            + len(changed_files)
+            + len(deleted_indexed)
+            + len(truly_new_source_objs)
+            + len(changed_source_objs)
+            + len(deleted_source_indexed)
+        )
         await db.commit()
 
         ctx = IndexContext(pipeline=pipeline, run_id=run.id, collection=collection)
@@ -217,6 +302,56 @@ async def sync_pipeline(db: AsyncSession, pipeline_id: uuid.UUID) -> uuid.UUID:
                 "sync_deleted pipeline=%s file_id=%s", pipeline.id, idx_rec.file_id,
             )
 
+        # 4d. Index NEW source files
+        for source_obj in truly_new_source_objs:
+            pages_indexed, points = await _index_single_source_file(indexer, source_obj)
+            db.add(IndexedFile(
+                pipeline_id=pipeline.id,
+                source_id=source_obj["source_id"],
+                file_key=source_obj["file_key"],
+                content_hash=source_obj["content_hash"],
+            ))
+            run.files_processed += 1
+            run.pages_indexed += pages_indexed
+            run.points_upserted += points
+            await db.commit()
+            logger.info(
+                "sync_indexed_new_source pipeline=%s source=%s key=%s pages=%d points=%d",
+                pipeline.id, source_obj["source_name"], source_obj["file_key"], pages_indexed, points,
+            )
+        # 4e. Re-index CHANGED source files
+        for source_obj in changed_source_objs:
+            filt = _build_file_filter(file_id=source_obj["virtual_file_id"], pipeline_id=pipeline.id)
+            await asyncio.to_thread(store.delete_by_filter, filt)
+
+            pages_indexed, points = await _index_single_source_file(indexer, source_obj)
+            idx_rec = indexed_by_source_key[(source_obj["source_id"], source_obj["file_key"])]
+            idx_rec.content_hash = source_obj["content_hash"]
+            idx_rec.indexed_at = datetime.now(UTC)
+
+            run.files_processed += 1
+            run.pages_indexed += pages_indexed
+            run.points_upserted += points
+            await db.commit()
+            logger.info(
+                "sync_reindexed_changed_source pipeline=%s source=%s key=%s pages=%d points=%d",
+                pipeline.id, source_obj["source_name"], source_obj["file_key"], pages_indexed, points,
+            )
+
+        # 4f. Delete chunks for REMOVED source files
+        for idx_rec in deleted_source_indexed:
+            v_id = uuid.uuid5(uuid.NAMESPACE_URL, f"minio://{idx_rec.source_id}/{idx_rec.file_key}")
+            filt = _build_file_filter(file_id=v_id, pipeline_id=pipeline.id)
+            await asyncio.to_thread(store.delete_by_filter, filt)
+            await db.execute(
+                delete(IndexedFile).where(IndexedFile.id == idx_rec.id)
+            )
+            run.files_processed += 1
+            await db.commit()
+            logger.info(
+                "sync_deleted_source pipeline=%s source_id=%s file_key=%s",
+                pipeline.id, idx_rec.source_id, idx_rec.file_key,
+            )
         # 5. Done
         run.status = JobStatus.SUCCESS
         run.completed_at = datetime.now(UTC)
@@ -262,6 +397,46 @@ async def _index_single_file(indexer: FileIndexer, file_record: FileRecord) -> t
         )
 
     return await asyncio.to_thread(_process)
+
+async def _index_single_source_file(indexer: FileIndexer, source_obj: dict) -> tuple[int, int]:
+    """Download source object from MinIO to temporary file and index its pages."""
+    import mimetypes
+    import tempfile
+    from src.shared.storage.s3_client import get_object
+
+    bucket_name = source_obj["bucket_name"]
+    file_key = source_obj["file_key"]
+    original_name = source_obj["original_name"]
+    virtual_file_id = source_obj["virtual_file_id"]
+    source_name = source_obj["source_name"]
+
+    data = await get_object(bucket_name, file_key)
+    suffix = Path(original_name).suffix or ".bin"
+    mime_type, _ = mimetypes.guess_type(original_name)
+    if not mime_type and suffix.lower() == ".pdf":
+        mime_type = "application/pdf"
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+
+    try:
+        def _process() -> tuple[int, int]:
+            pages = iter_file_pages(tmp_path, mime_type, original_name)
+            return indexer.index_file(
+                file_path=tmp_path,
+                file_id=virtual_file_id,
+                file_name=original_name,
+                directory_name=source_name,
+                mime_type=mime_type,
+                relative_path=file_key,
+                pages=pages,
+            )
+
+        return await asyncio.to_thread(_process)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 # ── top-level: sync ALL pipelines (called by cron) ──────────────────────
