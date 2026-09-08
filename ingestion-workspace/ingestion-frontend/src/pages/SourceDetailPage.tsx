@@ -112,6 +112,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   // Pipeline Link Modal State
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
 
+  const [selectedPipelineId, setSelectedPipelineId] = useState("");
+  const [linkingPipeline, setLinkingPipeline] = useState(false);
   const fetchSource = async () => {
     if (!id) return;
     try {
@@ -768,7 +770,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
       {activeTab === "files" && (
         <FileBrowser
           sourceId={source?.id ?? id ?? ""}
-          bucketName={source?.bucket_name ?? ""}
+          bucketName={source?.minio_bucket ?? ""}
           files={files}
           allowUpload={false}
           allowDelete={false}
@@ -822,7 +824,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
               {linkedPipelines.map((pipe) => (
                 <div
-                  key={pipe.id}
+                  key={pipe.pipeline_id}
                   style={{
                     background: "rgba(17, 21, 30, 0.6)",
                     border: "1px solid rgba(88, 166, 253, 0.25)",
@@ -837,24 +839,24 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                       </div>
                       <div>
                         <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
-                          {pipe.name}
+                          {pipe.pipeline_name || pipe.pipeline_id}
                         </div>
                         <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
-                          Qdrant Collection: <code style={{ color: "#a371f7" }}>{pipe.qdrant_collection ?? "default"}</code>
+                          Pipeline ID: <code style={{ color: "#58a6ff" }}>{pipe.pipeline_id}</code>
                         </div>
                       </div>
                     </div>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: "0.75rem", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
-                    <span style={{ fontSize: "0.75rem", color: "#3fb950" }}>
-                      ● Automatic Vector Delivery Active
-                    </span>
                     <button
                       type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleUnlinkPipeline(pipe.id)}
-                      style={{ color: "#f85149" }}
+                      onClick={() => handleUnlinkPipeline(pipe.pipeline_id)}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#f85149",
+                        fontSize: "0.8rem",
+                        cursor: "pointer",
+                        padding: "0.2rem 0.5rem",
+                      }}
                     >
                       Unlink
                     </button>

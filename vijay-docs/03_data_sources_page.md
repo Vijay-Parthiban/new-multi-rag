@@ -1,15 +1,13 @@
 # Page Documentation: Data Sources & Connector Configuration (`SourcesPage.tsx`, `SourceDetailPage.tsx`, `ConnectorConfigForm.tsx`)
 
-## 1. Overview & Purpose
-
-The **Data Sources Management System** allows enterprise teams to connect, isolate, and synchronize external data repositories (Google Drive, Amazon S3, Azure Blob, Google Sheets, Databases, Web Scrapers, Confluence, SFTP) into dedicated MinIO object namespaces and RAG vector indexes using Apache NiFi for connector ingestion and Pathway for live event monitoring.
+The **Data Sources Management System** allows enterprise teams to connect, isolate, and synchronize external data repositories (Google Drive, Amazon S3, Azure Blob, Google Sheets, Databases, Web Scrapers, Confluence, SFTP) into dedicated MinIO object namespaces and RAG vector indexes using Apache NiFi for connector ingestion and Pathway for live event monitoring. Linked MinIO buckets can be mapped to 5 enterprise 2026 RAG destination stores via the **Knowledge Store Manager** (`/knowledge-store`).
 ---
 
 ## 2. Page & Component Architecture
 
 1. **`SourcesPage.tsx` (`/sources`)**: Overview grid of registered data sources, storage buckets, operational statuses, and search/filter tools.
-2. **`SourceDetailPage.tsx` (`/sources/:id`)**: Detail management dashboard for a single source, featuring connector configuration, storage file browser, and linked RAG pipelines.
-3. **`ConnectorConfigForm.tsx`**: Dynamic GUI form component with raw JSON editor toggle, password visibility toggles, and drag-and-drop key upload zones.
+2. **`SourceDetailPage.tsx` (`/sources/:id`)**: Detail management dashboard for a single source, featuring connector configuration, storage file browser, linked RAG pipelines, and Knowledge Profile assignments.
+3. **`ConnectorConfigForm.tsx`**: Dynamic GUI form component with raw JSON editor toggle, password visibility toggles, and drag-and-drop key upload zones (e.g. Google Cloud Service Account JSON keys for `google_drive` connectors).
 
 ---
 

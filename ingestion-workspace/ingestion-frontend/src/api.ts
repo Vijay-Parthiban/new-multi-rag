@@ -298,6 +298,128 @@ export async function getPipelineStats(pipelineId: string): Promise<PipelineStat
 export async function triggerPipelineSync(pipelineId: string): Promise<{ status: string, pipeline_id: string }> {
   return apiFetch<{ status: string, pipeline_id: string }>(`/api/pipelines/${pipelineId}/sync`, { method: "POST" });
 }
+export interface KnowledgeDestinationOption {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  default_config: Record<string, unknown>;
+}
+
+export interface KnowledgeDestinationConfig {
+  id?: string;
+  destination_type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  status?: string;
+  last_sync_at?: string | null;
+  error_message?: string | null;
+}
+
+export interface KnowledgeProfileSource {
+  source_id: string;
+  name: string;
+  connector_type?: string | null;
+  minio_bucket: string;
+  status?: string;
+}
+
+export interface KnowledgeProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  status: string;
+  error_message?: string | null;
+  last_sync_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  sources: KnowledgeProfileSource[];
+  destinations: KnowledgeDestinationConfig[];
+}
+
+export interface KnowledgeProfileCreateRequest {
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  source_ids?: string[];
+  destinations?: {
+    destination_type: string;
+    enabled: boolean;
+    config: Record<string, unknown>;
+  }[];
+}
+
+export interface TestConnectionResponse {
+  status: "success" | "error";
+  destination_type: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface KnowledgeSyncResponse {
+  status: string;
+  profile_id: string;
+  files_processed: number;
+  destinations_synced: string[];
+  details?: Record<string, unknown>;
+}
+export async function getDestinationOptions(): Promise<KnowledgeDestinationOption[]> {
+  return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-profiles/destinations/options");
+}
+
+export async function listKnowledgeProfiles(): Promise<KnowledgeProfile[]> {
+  return apiFetch<KnowledgeProfile[]>("/api/knowledge-profiles");
+}
+
+export async function getKnowledgeProfile(profileId: string): Promise<KnowledgeProfile> {
+  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`);
+}
+
+export async function createKnowledgeProfile(
+  body: KnowledgeProfileCreateRequest
+): Promise<KnowledgeProfile> {
+  return apiFetch<KnowledgeProfile>("/api/knowledge-profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateKnowledgeProfile(
+  profileId: string,
+  body: Partial<KnowledgeProfileCreateRequest>
+): Promise<KnowledgeProfile> {
+  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteKnowledgeProfile(profileId: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/api/knowledge-profiles/${profileId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function testDestinationConnection(
+  profileId: string,
+  destinationType: string,
+  config: Record<string, any>
+): Promise<TestConnectionResponse> {
+  return apiFetch<TestConnectionResponse>(`/api/knowledge-profiles/${profileId}/test-connection`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ destination_type: destinationType, config }),
+  });
+}
+
+export async function syncKnowledgeProfile(profileId: string): Promise<KnowledgeSyncResponse> {
+  return apiFetch<KnowledgeSyncResponse>(`/api/knowledge-profiles/${profileId}/sync`, {
+    method: "POST",
+  });
+}
 
 export async function startPipelineRun(pipelineId: string): Promise<PipelineRunRecord> {
   return apiFetch<PipelineRunRecord>(`/api/pipelines/${pipelineId}/run`, { method: "POST" });

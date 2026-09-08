@@ -2,10 +2,10 @@
 
 ## 1. Executive Summary & Platform Overview
 
-The Multi-RAG Platform is an enterprise-grade, multi-workspace Retrieval-Augmented Generation (RAG) and document intelligence ecosystem. It integrates asynchronous multi-source document ingestion, web content scraping, vector database indexing (Qdrant), hybrid retrieval & reranking, LLM orchestration, AI guardrails moderation, and real-time observability tracing.
+The **Multi-RAG Platform** is an enterprise-grade, multi-workspace Retrieval-Augmented Generation (RAG) and document intelligence ecosystem. It integrates asynchronous multi-source document ingestion (Google Drive, Amazon S3, Azure Blob, Google Sheets, Databases, Web Scrapers, Confluence, SFTP), Apache NiFi external connectors, Pathway real-time continuous vector sync pollers, vector database indexing (Qdrant), hybrid retrieval & reranking, LLM orchestration, AI guardrails moderation, and a **Universal Multi-Sink Fanout Ingestion Engine** routing MinIO document buckets into 5 enterprise 2026 RAG destination categories.
 
-The platform consists of three core execution workspaces:
-1. **`ingestion-workspace`**: Full-stack web frontend (React/TypeScript/Vite on port `5173`) and Ingestion API backend (FastAPI on port `8007`). Handles file uploads, directory watchers, Apache NiFi external connector syncs (Google Drive, S3, Azure Blob, Google Sheets, Databases, Web Scrapers, Confluence, SFTP) into MinIO per-source buckets, Celery background indexing workers, and Pathway real-time continuous MinIO vector sync poller workers.
+### Three Core Workspaces
+1. **`ingestion-workspace`**: Full-stack web frontend (React/TypeScript/Vite on port `5173`) and Ingestion API backend (FastAPI on port `8007`). Handles file uploads, directory watchers, Apache NiFi external connector syncs, Celery background indexing workers, Pathway continuous vector pollers, and the **Knowledge Store Manager** (`/knowledge-store`).
 2. **`web-scrapper-workspace`**: Crawl4AI web scraper API (FastAPI on port `8000`) and shared infrastructure orchestrator (PostgreSQL `5432`, Redis `6379`, MinIO `9000/9001`, Qdrant `6333/6334`).
 3. **`rag-app-workspace`**: RAG Query Engine & Evaluation API backend (FastAPI on port `8001`). Handles hybrid vector retrieval (dense embeddings + BM25 sparse text), cross-encoder reranking, LLM answer synthesis, Ragas/DeepEval offline evaluation execution, and guardrails trace moderation.
 
@@ -14,105 +14,90 @@ The platform consists of three core execution workspaces:
 ## 2. High-Level Architecture Topology
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   Ingestion Frontend (React / Vite)                    │
-│                             Port: 5173                                 │
-└───────┬─────────────────────────┬──────────────────────────┬───────────┘
-        │                         │                          │
-        │ API Requests            │ Scraper Requests         │ RAG Query & Eval
-        v                         v                          v
-┌───────────────┐         ┌───────────────┐          ┌───────────────┐
-│ Ingestion API │         │ Web Scraper   │          │ RAG Query API │
-│  (FastAPI)    │         │  (FastAPI)    │          │  (FastAPI)    │
-│  Port: 8007   │         │  Port: 8000   │          │  Port: 8001   │
-└───────┬───────┘         └───────┬───────┘          └───────┬───────┘
-        │                         │                          │
-        ├─────────────────────────┼──────────────────────────┤
-        │                         │                          │
-        v                         v                          v
-┌───────────────┐         ┌───────────────┐          ┌───────────────┐
-│ MinIO Storage │         │ PostgreSQL DB │          │ Redis Queue   │
-│  Port: 9000   │         │  Port: 5432   │          │  Port: 6379   │
-└───────┬───────┘         └───────┬───────┘          └───────┬───────┘
-        │                         │                          │
-        └─────────────────────────┼──────────────────────────┘
-                                  │
-                                  v
-                       ┌────────────────────┐
-                       │ Qdrant Vector DB   │
-                       │ Port: 6333 / 6334  │
-                       └────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Ingestion Frontend (React / Vite UI)                        │
+│                                  Port: 5173                                      │
+└───────────┬──────────────────────────────┬──────────────────────────────┬────────┘
+            │                              │                              │
+            │ Ingestion / Knowledge API    │ Scraper API                  │ RAG Query / Eval API
+            v                              v                              v
+┌────────────────────────┐      ┌────────────────────────┐      ┌────────────────────────┐
+│ Ingestion API (FastAPI)│      │ Web Scraper (FastAPI)  │      │ RAG Query API (FastAPI)│
+│       Port: 8007       │      │       Port: 8000       │      │       Port: 8001       │
+└───────────┬────────────┘      └───────────┬────────────┘      └───────────┬────────────┘
+            │                              │                              │
+            ├──────────────────────────────┼──────────────────────────────┤
+            │                              │                              │
+            v                              v                              v
+┌────────────────────────┐      ┌────────────────────────┐      ┌────────────────────────┐
+│  MinIO Storage (S3)    │      │ PostgreSQL DB (5432)   │      │ Redis Cache & Queue    │
+│  Per-Source Buckets    │      │ Knowledge & RAG Tables │      │ Celery / Cache (6379)  │
+└───────────┬────────────┘      └───────────┬────────────┘      └───────────┬────────────┘
+            │                              │                              │
+            └──────────────────────────────┼──────────────────────────────┘
+                                           │
+                                           v
+            ┌────────────────────────────────────────────────────────────┐
+            │       Universal 2026 RAG Multi-Sink Fanout Engine          │
+            ├──────────────┬─────────────┬─────────────┬─────────────────┤
+            │              │             │             │                 │
+            v              v             v             v                 v
+     ┌─────────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐   ┌───────────────┐
+     │   Qdrant    │ │ OpenSearch│ │  Neo4j    │ │PostgreSQL │   │    RedisVL    │
+     │ Vector DB   │ │ Lexical   │ │ GraphRAG  │ │ (pgvector)│   │Semantic Cache │
+     │ (Port 6333) │ │(Port 9200)│ │(Port 7687)│ │(Port 5432)│   │  (Port 6379)  │
+     └─────────────┘ └───────────┘ └───────────┘ └───────────┘   └───────────────┘
 ```
 
 ---
 
-## 3. Workspace Component Breakdown
+## 3. Knowledge Store Manager & 5-Sink Fanout Architecture
 
-### 3.1 `ingestion-workspace`
-- **Frontend (`ingestion-frontend`)**: React 18, Vite, TypeScript, Lucide Icons, React Router v6. Single-Page Application (SPA) providing 11 distinct operational views:
-  - Overview / Dashboard
-  - Folders & Directory File Browser
-  - Data Sources & Connector Catalogue
-  - Document Upload & Ingestion
-  - RAG Pipelines Management
-  - RAG Chat Assistant & Playground
-  - Prompts Management
-  - Real-Time Performance Monitoring
-  - Offline Evaluation & Golden Dataset Benchmark
-  - Tracking & Telemetry Tracing
-  - AI Guardrails Configuration, Tracing & Evaluation
-- **Backend API (`ingestion-backend`)**: Python 3.11 FastAPI service managing pipelines, source connectors, file storage buckets, parsing, chunking, and worker tasks.
-- **Celery Worker**: Asynchronous queue worker processing document parsing (PDF, DOCX, TXT, HTML, Markdown), text chunking, embedding generation, and Qdrant collection upserts.
-- **Pathway Worker**: Continuous real-time Change Data Capture (CDC) worker monitoring external source connectors.
+The **Knowledge Store Manager** (`/knowledge-store`) decouples source document collection from destination vector & graph indexing. Users create **Knowledge Profiles** that group one or more isolated MinIO source buckets and map them to 5 enterprise 2026 RAG destination categories.
 
-### 3.2 `web-scrapper-workspace`
-- **Scraper API**: FastAPI service utilizing Crawl4AI to execute headless Playwright crawls, extract markdown/text, chunk contents, generate embeddings, and write directly into Qdrant collections.
-- **Docker Compose Infrastructure**: Shared PostgreSQL database (relational metadata, pipelines, connectors, evaluations), Redis (Celery task broker & pub/sub), MinIO (S3-compatible object storage), and Qdrant (vector database).
-
-### 3.3 `rag-app-workspace`
-- **RAG Engine API**: FastAPI service serving hybrid vector search queries (`/api/v1/query`), LLM generation (`/api/v1/chat`), evaluation metrics execution (`/api/v1/evaluations`), and guardrails enforcement (`/api/v1/guardrails`).
-- **Evaluation Engine**: Integrates Ragas and DeepEval frameworks to benchmark Faithfulness, Answer Relevance, Context Precision, and Context Recall against golden datasets.
+### 5 Enterprise Destination Categories
+1. **Vector Engine (Qdrant)**: Stores 2048-dimensional dense vector embeddings using HNSW graph indexing and scalar/binary quantization (`knowledge_qdrant_collection`).
+2. **Lexical & Sparse Search Engine (OpenSearch)**: Handles BM25 keyword matching and SPLADE/BGE-M3 learned sparse vector inverted indexing (`knowledge_lexical_index`).
+3. **Knowledge Graph Store (Neo4j)**: Performs entity-relationship extraction and builds community report summaries for GraphRAG (`bolt://localhost:7687`).
+4. **Multi-Model Relational Database (PostgreSQL with pgvector/pgvectorscale)**: Provides co-located document metadata, ownership ACLs, and vector embedding tables (`knowledge_vector_records`).
+5. **Semantic Cache & Summary Stores (RedisVL)**: Manages parent-child chunk mappings, RAPTOR summary trees, and prompt semantic caching (`knowledge_cache`).
 
 ---
 
-## 4. Shared Data Contracts & Vector Schema
+## 4. Source Connectors & Pathway Continuous Workers
 
-### 4.1 MinIO Object Namespace Structure
-- **Direct Workspace Bucket**: `rag-raw-documents`
-- **Per-Source Isolated Buckets**: `source-{source_name}-{source_id}`
+### 4.1 Google Drive NiFi Source Sync
+- **Connector Type**: `google_drive`
+- **Authentication**: Google Cloud Service Account JSON key (`sanguine-robot-499610-q7-b777bdf1ad75.json`).
+- **Target Folder**: Google Drive Folder ID `14IXHBDpExTdBDfh5GTKmQEIiv6AYHRMG` containing document sets (e.g. PDF resume files).
+- **MinIO Storage**: Files are synchronized into dedicated per-source MinIO buckets (e.g. `source-gdrive-nifi-source-1788811754-4fdd6039`).
 
-### 4.2 Qdrant Vector Payload Schema
-All vectors written to Qdrant follow a standardized metadata contract:
-```json
-{
-  "document_id": "uuid-string",
-  "file_name": "annual_report_2026.pdf",
-  "source_id": "a8541818-bb30-44b5-8956-75e0e5ca7d88",
-  "source_type": "google_drive",
-  "bucket": "source-engineering-knowledge-a8541818",
-  "pipeline_id": "p-9902-vector-index",
-  "chunk_index": 14,
-  "total_chunks": 85,
-  "chunk_text": "The Q3 financial summary indicates a 24% growth in ARR...",
-  "embedding_model": "text-embedding-3-small",
-  "created_at": "2026-08-30T10:15:30Z"
-}
-```
+### 4.2 Pathway Continuous Vector Poller (`apps/pathway_worker/main.py`)
+- Continuously monitors MinIO source buckets in real time using Pathway's streaming engine.
+- Extracts document text, splits chunks, computes dense embeddings, and automatically upserts vectors into Qdrant collection `gdrive_nifi_pathway_collection`.
 
 ---
 
-## 5. Environment Setup & Deployment Guide
+## 5. Shared Data Contracts & Database Schema
 
-### 5.1 System Prerequisites
-- **Operating System**: Linux (Ubuntu 22.04+), macOS (Apple Silicon/Intel), or Windows 11 (WSL2 recommended)
+### 5.1 Alembic Migration `008_knowledge_store.py`
+- `knowledge_profiles`: Stores profile ID, name, description, enabled status, sync status (`syncing`, `success`, `error`), and `last_sync_at`.
+- `knowledge_profile_sources`: Junction table linking `knowledge_profiles` to `sources` (MinIO source buckets).
+- `knowledge_destination_configs`: Configuration table holding destination type (`vector_qdrant`, `lexical_opensearch`, `graph_neo4j`, `relational_pgvector`, `cache_redisvl`), enabled status, configuration JSON, and sync timestamps.
+
+---
+
+## 6. Environment Setup & Deployment Guide
+
+### 6.1 System Prerequisites
 - **Docker**: Docker Engine 24.0+ & Docker Compose v2.20+
-- **Node.js**: Node v18.0+ or v20.0+ & npm 9+
+- **Node.js**: Node v18+ & npm 9+
 - **Python**: Python 3.11+
 - **Git**: Git 2.34+
 
-### 5.2 Environment Variables Configuration
+### 6.2 Environment Variables Configuration
 
-#### Root / Shared Docker Services (`.env` in `web-scrapper-workspace/`)
+#### Shared Infrastructure (`web-scrapper-workspace/.env`)
 ```ini
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
@@ -129,114 +114,81 @@ MINIO_ENDPOINT=http://minio:9000
 
 QDRANT_HOST=qdrant
 QDRANT_PORT=6333
-
-OPENAI_API_KEY=sk-proj-your-openai-key-here
+QDRANT_API_KEY=qdrant
 ```
 
 #### Ingestion Backend (`ingestion-workspace/ingestion-backend/.env`)
 ```ini
 PORT=8007
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/rag_platform
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/rag_platform
 REDIS_URL=redis://localhost:6379/0
 MINIO_ENDPOINT=http://localhost:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
+QDRANT_API_KEY=qdrant
 RAG_API_URL=http://localhost:8001
 SCRAPER_API_URL=http://localhost:8000
 ```
 
 #### Ingestion Frontend (`ingestion-workspace/ingestion-frontend/.env`)
 ```ini
-VITE_API_BASE_URL=http://localhost:8007
+VITE_API_URL=http://localhost:8007
 VITE_RAG_API_URL=http://localhost:8001
 VITE_SCRAPER_API_URL=http://localhost:8000
 ```
 
 ---
 
-## 6. Step-by-Step Installation & Execution
+## 7. Step-by-Step Installation & Running Guide
 
-### Step 1: Clone Repository
-```bash
-git clone https://github.com/your-org/new-multi-rag.git
-cd new-multi-rag
-```
-
-### Step 2: Launch Shared Infrastructure (Postgres, Redis, MinIO, Qdrant)
+### Step 1: Start Shared Infrastructure Containers
 ```bash
 cd web-scrapper-workspace
 docker-compose up -d --build
 ```
-*Verify container status:*
+*Verify containers are healthy (`postgres`, `redis`, `minio`, `qdrant`):*
 ```bash
 docker-compose ps
 ```
 
-### Step 3: Run Database Migrations
+### Step 2: Database Migration
 ```bash
 cd ../ingestion-workspace/ingestion-backend
+# Activate virtual environment
 python -m venv venv
-# Linux/macOS:
-source venv/bin/activate
 # Windows:
 .\venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
 
 pip install -r requirements.txt
 alembic upgrade head
 ```
 
-### Step 4: Start Ingestion Backend API & Celery Worker
+### Step 3: Launch Ingestion Backend Containers & Services
 ```bash
-# Terminal 1 - API Service (Port 8007)
-python -m apps.api.main
-
-# Terminal 2 - Celery Background Worker
-celery -A apps.worker.main worker --loglevel=info
+cd ../
+docker-compose up -d --build
+```
+*Or sync code updates directly to the running API container:*
+```bash
+docker cp ingestion-workspace/ingestion-backend/apps/api/routes/knowledge.py ingestion-workspace-api-1:/app/apps/api/routes/knowledge.py
+docker cp ingestion-workspace/ingestion-backend/src/ingestion_service/core/universal_fanout.py ingestion-workspace-api-1:/app/src/ingestion_service/core/universal_fanout.py
+docker exec ingestion-workspace-api-1 find /app -name "__pycache__" -exec rm -rf {} +
+docker restart ingestion-workspace-api-1
 ```
 
-### Step 5: Start RAG Query API Service
+### Step 4: Launch Frontend Dev Server
 ```bash
-cd ../../rag-app-workspace
-python -m venv venv
-source venv/bin/activate # or .\venv\Scripts\activate
-pip install -r requirements.txt
-python -m apps.api.main # Runs on Port 8001
-```
-
-### Step 6: Start Ingestion Frontend Dev Server
-```bash
-cd ../ingestion-workspace/ingestion-frontend
+cd ingestion-frontend
 npm install
 npm run dev
 ```
-*Access the Web UI in your browser at:* `http://localhost:5173`
+*Open web interface at `http://localhost:5173/knowledge-store`.*
 
----
-
-## 7. Operational Verification Checklist
-1. **Frontend UI**: Open `http://localhost:5173` and verify Overview dashboard renders.
-2. **Ingestion Backend API**: Open `http://localhost:8007/docs` and execute `GET /health`.
-3. **RAG Query API**: Open `http://localhost:8001/docs` and execute `GET /health`.
-4. **Scraper API**: Open `http://localhost:8000/docs` and execute `GET /health`.
-5. **MinIO Console**: Open `http://localhost:9001` (Credentials: `minioadmin` / `minioadmin`).
-6. **Qdrant Dashboard**: Open `http://localhost:6333/dashboard`.
-
----
-
-## 8. Documentation Index
-
-The `vijay-docs/` folder contains detailed technical implementations for every individual page in the system:
-
-- [`01_overview_dashboard_page.md`](./01_overview_dashboard_page.md): System Metrics Overview & Activity Dashboard
-- [`02_folders_and_file_browser_page.md`](./02_folders_and_file_browser_page.md): Folders, Directory Hierarchy & File Viewer
-- [`03_data_sources_page.md`](./03_data_sources_page.md): Data Sources Management, Connectors Catalogue & Configuration
-- [`04_document_upload_page.md`](./04_document_upload_page.md): Document Upload & Multi-Format Ingestion Engine
-- [`05_rag_pipelines_page.md`](./05_rag_pipelines_page.md): RAG Pipelines, Chunking Strategies & Vector Indexing
-- [`06_rag_chat_page.md`](./06_rag_chat_page.md): RAG Chat Assistant, Hybrid Search & Reranking Playground
-- [`07_prompts_management_page.md`](./07_prompts_management_page.md): System Prompts Management & Version Control
-- [`08_realtime_monitoring_page.md`](./08_realtime_monitoring_page.md): Real-Time System Metrics & Performance Dashboard
-- [`09_offline_evaluation_page.md`](./09_offline_evaluation_page.md): Offline Evaluation & Golden Dataset Benchmarking
-- [`10_tracking_and_traces_page.md`](./10_tracking_and_traces_page.md): OpenTelemetry Tracing & Observability
-- [`11_ai_guardrails_page.md`](./11_ai_guardrails_page.md): AI Guardrails Configuration, Tracing & Moderation
+### Step 5: Test & Verify Ingestion
+1. **Google Drive Sync**: Navigate to `/sources` and trigger sync for Google Drive connector.
+2. **Knowledge Store Manager**: Navigate to `/knowledge-store`, click **Test Connection** for Qdrant, and click **Sync All Sinks**.
+3. **Verify Vector Indexing**: Inspect Qdrant collections at `http://localhost:6333/dashboard` to confirm vectors are indexed in `knowledge_qdrant_collection`.

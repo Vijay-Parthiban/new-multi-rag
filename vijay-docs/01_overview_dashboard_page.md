@@ -25,20 +25,20 @@ The **Overview / System Summary Dashboard** serves as the central command center
 │ Quick Action Shortcuts               │ Recent System Activity Feed          │
 │  - 📤 Ingest Documents               │  - [10:14] Google Drive Sync Done    │
 │  - ⚡ Connect Data Source             │  - [10:12] Chunking 45 pages to S3   │
-│  - 🔮 Open RAG Chat Playground       │  - [10:05] Qdrant Collection Upsert  │
-│  - ⚙️ Configure Vector Pipeline      │  - [09:50] Evaluation Test Passed    │
+│  - ⚙️ Configure Vector Pipeline      │  - [10:05] Qdrant Collection Upsert  │
+│  - 🧠 Knowledge Store Manager        │  - [09:50] 5-Sink Fanout Sync Done   │
 └──────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
 ### 2.2 Key UI Components
 - **Header Banner**: Dynamic greeting, current system environment badge (`2026 Engine`), and quick action buttons.
-- **5-Card Metric Bento Grid**: High-contrast dark glass cards displaying:
+- **6-Card Metric Bento Grid**: High-contrast dark glass cards displaying:
   1. *Total Data Sources* (Total count of registered local & external sources).
   2. *Active Connector Streams* (Number of active polling/webhook streams).
   3. *Isolated MinIO Buckets* (Total storage namespaces created).
-  4. *Average Query Latency* (P95 search + generation response time).
-  5. *Total Vector Embeddings* (Total chunk points stored in Qdrant).
-- **Service Health Bar**: Status indicators showing real-time ping results for backend APIs and storage layers.
+  4. *Active RAG Destinations* (5 Enterprise Stores: Qdrant, OpenSearch, Neo4j, Postgres, RedisVL).
+  5. *Average Query Latency* (P95 search + generation response time).
+  6. *Total Vector Embeddings* (Total chunk points stored in Qdrant).
 - **Quick Shortcuts Panel**: Instant navigation links to Ingestion, Sources, Chat, and Pipelines.
 - **Recent System Activity Stream**: Chronological audit feed of document processing jobs, sync events, and evaluation runs.
 

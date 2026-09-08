@@ -1,8 +1,6 @@
 # Page Documentation: RAG Pipelines Management (`PipelinesPage.tsx`)
 
-## 1. Overview & Purpose
-
-The **RAG Pipelines Management Page** (`/pipelines`) allows platform engineers and data architects to construct, configure, execute, and monitor end-to-end vector indexing pipelines. Pipelines orchestrate how raw documents and web content are parsed, chunked, embedded, and mapped into specific Qdrant vector collections.
+The **RAG Pipelines Management Page** (`/pipelines`) allows platform engineers and data architects to construct, configure, execute, and monitor end-to-end vector indexing pipelines. Pipelines orchestrate how raw documents and web content are parsed, chunked, embedded, and mapped into specific Qdrant vector collections or routed into 5 enterprise RAG destination stores via the **Knowledge Store Manager** (`/knowledge-store`).
 
 ---
 

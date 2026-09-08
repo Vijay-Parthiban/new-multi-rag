@@ -17,11 +17,14 @@ import GuardrailsTracesPage from "../pages/GuardrailsTracesPage";
 import GuardrailsEvaluationPage from "../pages/GuardrailsEvaluationPage";
 import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
+import KnowledgeStorePage from "../pages/KnowledgeStorePage";
+import { IconDatabase } from "./Icons";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
   { to: "/browse", label: "Folders", icon: IconBrowse },
   { to: "/sources", label: "Sources", icon: IconSources },
+  { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
   { to: "/upload", label: "Upload", icon: IconUpload },
   { to: "/pipelines", label: "Pipelines", icon: IconPipeline },
   { to: "/chat", label: "Chat", icon: IconChat },
@@ -112,6 +115,7 @@ export default function AppLayout() {
   const isHome = path === "/";
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isSourcesExact = path === "/sources";
+  const isKnowledgeStore = path === "/knowledge-store";
   const isUpload = path === "/upload";
   const isPipelines = path === "/pipelines";
   const isChat = path === "/chat";
@@ -169,6 +173,10 @@ export default function AppLayout() {
         </PersistentPage>
         <PersistentPage visible={isSourcesExact}>
           <SourcesPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isKnowledgeStore}>
+          <KnowledgeStorePage />
         </PersistentPage>
 
         <PersistentPage visible={isUpload}>

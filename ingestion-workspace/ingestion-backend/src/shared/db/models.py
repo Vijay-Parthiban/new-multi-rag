@@ -302,6 +302,76 @@ class PipelineRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     pipeline: Mapped["Pipeline"] = relationship(back_populates="runs")
+class KnowledgeProfile(Base):
+    """Knowledge profile linking MinIO source buckets to multi-sink knowledge destinations."""
+
+    __tablename__ = "knowledge_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    status: Mapped[str] = mapped_column(String(32), default="idle", server_default="idle")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    sources: Mapped[list["KnowledgeProfileSource"]] = relationship(
+        back_populates="knowledge_profile", cascade="all, delete-orphan", lazy="selectin"
+    )
+    destinations: Mapped[list["KnowledgeDestinationConfig"]] = relationship(
+        back_populates="knowledge_profile", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class KnowledgeProfileSource(Base):
+    """M2M join between KnowledgeProfile and Source (MinIO bucket)."""
+
+    __tablename__ = "knowledge_profile_sources"
+    __table_args__ = (
+        Index("ix_knowledge_profile_sources_unique", "knowledge_profile_id", "source_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    knowledge_profile: Mapped["KnowledgeProfile"] = relationship(back_populates="sources", lazy="selectin")
+    source: Mapped["Source"] = relationship(lazy="selectin")
+
+
+class KnowledgeDestinationConfig(Base):
+    """Destination configuration for a knowledge profile (Qdrant, OpenSearch, Neo4j, pgvector, RedisVL)."""
+
+    __tablename__ = "knowledge_destination_configs"
+    __table_args__ = (
+        Index("ix_knowledge_dest_profile_type_unique", "knowledge_profile_id", "destination_type", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    destination_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="idle", server_default="idle")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    knowledge_profile: Mapped["KnowledgeProfile"] = relationship(back_populates="destinations", lazy="selectin")
 
 
 class IndexedFile(Base):

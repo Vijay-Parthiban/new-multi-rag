@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.exceptions import app_error_handler
-from apps.api.routes import directories, files, pipelines, sources, uploads
+from apps.api.routes import directories, files, knowledge, pipelines, sources, uploads
 from src.file_manager.core.errors import AppError
 from src.file_manager.utils.paths import ensure_storage_layout
 from src.shared.db.session import close_db
@@ -42,6 +42,7 @@ app.include_router(directories.router)
 app.include_router(files.router)
 app.include_router(pipelines.router)
 app.include_router(sources.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/health")

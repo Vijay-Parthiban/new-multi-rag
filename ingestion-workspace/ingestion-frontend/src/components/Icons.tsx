@@ -132,15 +132,129 @@ export function IconArrowRight({ className, size = 16 }: IconProps) {
   );
 }
 export function IconBucket({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M14 6H2l1 9h10l1-9zM4 3h8v2H4z" /></svg>); }
-export function IconCheck({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M6 12L2 8l1.5-1.5L6 9l6-6L13.5 4.5z" /></svg>); }
 export function IconCheckCircle({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 4.5l-5 5-2-2L3 8.5l3.5 3.5 6-6L11.5 4.5z" /></svg>); }
 export function IconCopy({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 1h9v12H4V1zM2 3h1v12h10v1H2V3z" /></svg>); }
 export function IconGrid({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M0 0h7v7H0V0zm9 0h7v7H9V0zM0 9h7v7H0V9zm9 0h7v7H9V9z" /></svg>); }
 export function IconList({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M0 2h16v2H0V2zm0 5h16v2H0V7zm0 5h16v2H0v-2z" /></svg>); }
-export function IconPlus({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M7 0h2v16H7V0zM0 7h16v2H0V7z" /></svg>); }
+export function IconDatabase({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+    </svg>
+  );
+}
+
+export function IconClose({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"></line>
+      <line x1="6" y1="6" x2="18" y2="18"></line>
+    </svg>
+  );
+}
+
+export function IconDelete({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6"></polyline>
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+    </svg>
+  );
+}
+
+export function IconEdit({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+    </svg>
+  );
+}
+
+export function IconRefresh({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="23 4 23 10 17 10"></polyline>
+      <polyline points="1 20 1 14 7 14"></polyline>
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+    </svg>
+  );
+}
+
+export function IconServer({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+      <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+      <line x1="6" y1="6" x2="6.01" y2="6"></line>
+      <line x1="6" y1="18" x2="6.01" y2="18"></line>
+    </svg>
+  );
+}
+
+export function IconZap({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+    </svg>
+  );
+}
+
+export function IconPlus({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+  );
+}
+
+export function IconCheck({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12"></polyline>
+    </svg>
+  );
+}
+
+export function IconClock({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"></circle>
+      <polyline points="12 6 12 12 16 14"></polyline>
+    </svg>
+  );
+}
+
+export function IconError({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="8" x2="12" y2="12"></line>
+      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+    </svg>
+  );
+}
+
+export function IconSearch({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    </svg>
+  );
+}
+
+export function IconSparkles({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"></path>
+    </svg>
+  );
+}
 export function IconRadio({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" /></svg>); }
-export function IconSearch({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M10.5 9.5l4 4-1 1-4-4a5 5 0 1 1 1-1zM6 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" /></svg>); }
 export function IconSync({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M12 4H4v2l-3-3 3-3v2h8c1.1 0 2 .9 2 2v4h-2V4zm-4 8h8v-2l3 3-3 3v-2H4c-1.1 0-2-.9-2-2v-4h2v6z" /></svg>); }
 export function IconTrash({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M5 1h6v1H5V1zM3 3h10v1H3V3zm1 2h8v9H4V5z" /></svg>); }
-export function IconZap({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M10 0L0 10h5v6l10-10H9l1-6z" /></svg>); }
 
