@@ -76,7 +76,8 @@ async def _load_synced_source_files(source: Source) -> list[dict]:
     for obj in objs:
         if not obj.key or obj.key.endswith("/"):
             continue
-        content_hash = obj.etag if obj.etag else f"{obj.size}-{obj.last_modified}"
+        etag = getattr(obj, "etag", None)
+        content_hash = etag if etag else f"{obj.size}-{obj.last_modified}"
         original_name = Path(obj.key).name
         virtual_file_id = uuid.uuid5(uuid.NAMESPACE_URL, f"minio://{source.id}/{obj.key}")
         res.append({

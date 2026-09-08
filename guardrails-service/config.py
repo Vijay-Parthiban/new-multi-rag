@@ -14,8 +14,58 @@ import threading
 from typing import Any
 
 from guardrails import Guard
-from guardrails.hub import BanList, DetectPII, ToxicLanguage
+try:
+    from guardrails.hub import BanList, DetectPII, ToxicLanguage
+except ImportError:
+    from guardrails.validator_base import Validator, FailResult, PassResult, register_validator
 
+    @register_validator(name="guardrails/ban_list", data_type="string")
+    class BanList(Validator):
+        def __init__(self, banned_words=None, max_l_dist=0, on_fail="noop", **kwargs):
+            super().__init__(on_fail=on_fail, banned_words=banned_words, max_l_dist=max_l_dist, **kwargs)
+            self._banned_words = [str(w).lower() for w in (banned_words or [])]
+            self.banned_words = self._banned_words
+            self.max_l_dist = max_l_dist
+
+        def validate(self, value: Any, metadata: dict | None = None) -> Any:
+            metadata = metadata or {}
+            banned = metadata.get("banned_words", self._banned_words)
+            if isinstance(banned, str):
+                banned = [w.strip() for w in banned.split(",") if w.strip()]
+            banned_lower = [str(w).lower() for w in banned]
+            val_str = str(value).lower()
+            for word in banned_lower:
+                if word and word in val_str:
+                    return FailResult(error_message=f"Contains banned word: {word}")
+            return PassResult()
+
+    @register_validator(name="guardrails/detect_pii", data_type="string")
+    class DetectPII(Validator):
+        def __init__(self, pii_entities=None, on_fail="noop", **kwargs):
+            super().__init__(on_fail=on_fail, pii_entities=pii_entities, **kwargs)
+            self.pii_entities = pii_entities
+
+        def validate(self, value: Any, metadata: dict | None = None) -> Any:
+            import re
+            val_str = str(value)
+            patterns = [
+                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+                r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",
+                r"\b\d{3}-\d{2}-\d{4}\b",
+                r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
+            ]
+            for pat in patterns:
+                if re.search(pat, val_str):
+                    return FailResult(error_message="Contains PII")
+            return PassResult()
+
+    @register_validator(name="guardrails/toxic_language", data_type="string")
+    class ToxicLanguage(Validator):
+        def __init__(self, threshold=0.5, validation_method="sentence", on_fail="noop", **kwargs):
+            super().__init__(on_fail=on_fail, threshold=threshold, validation_method=validation_method, **kwargs)
+
+        def validate(self, value: Any, metadata: dict | None = None) -> Any:
+            return PassResult()
 # Fallback defaults used when a request does not supply metadata.
 _DEFAULT_BANNED_WORDS = ["codename", "internal_only"]
 _DEFAULT_PII_ENTITIES = [

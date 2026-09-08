@@ -6,6 +6,7 @@ WORKDIR /app
 COPY shared-libs/platform-common /tmp/platform-common
 RUN pip install --no-cache-dir /tmp/platform-common && rm -rf /tmp/platform-common
 
+COPY sanguine-robot-499610-q7-b777bdf1ad75.json /app/sanguine-robot-499610-q7-b777bdf1ad75.json
 COPY ingestion-workspace/ingestion-backend/pyproject.toml .
 COPY ingestion-workspace/ingestion-backend/alembic.ini .
 COPY ingestion-workspace/ingestion-backend/alembic ./alembic
@@ -13,8 +14,7 @@ COPY ingestion-workspace/ingestion-backend/apps ./apps
 COPY ingestion-workspace/ingestion-backend/src ./src
 COPY ingestion-workspace/ingestion-backend/scripts ./scripts
 
-RUN pip install --no-cache-dir .
-
+RUN pip install --no-cache-dir -e .
 ENV PYTHONPATH=/app
 ENV STORAGE_PATH=/app/storage
 

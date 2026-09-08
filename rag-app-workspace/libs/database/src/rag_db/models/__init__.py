@@ -5,6 +5,14 @@ from rag_db.models.evaluation import (
     GoldenDataset,
     GoldenDatasetItem,
 )
+from rag_db.models.guardrails import (
+    GuardrailsConfig,
+    GuardrailsTrace,
+    GuardrailsGoldenDataset,
+    GuardrailsGoldenDatasetItem,
+    GuardrailsEvalRun,
+    GuardrailsEvalRunItem,
+)
 
 __all__ = [
     "ChatSession",
@@ -15,4 +23,10 @@ __all__ = [
     "GoldenDatasetItem",
     "EvaluationRun",
     "EvaluationRunItem",
+    "GuardrailsConfig",
+    "GuardrailsTrace",
+    "GuardrailsGoldenDataset",
+    "GuardrailsGoldenDatasetItem",
+    "GuardrailsEvalRun",
+    "GuardrailsEvalRunItem",
 ]
