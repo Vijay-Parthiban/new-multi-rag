@@ -12,14 +12,16 @@ logger = logging.getLogger(__name__)
 async def pathway_worker_loop() -> None:
     """Main loop for Pathway Airbyte connector worker.
 
-    This worker polls the pathway_queue, processes source syncs, and updates
-    source status/timestamps in the database.
+    This worker polls the pathway_queue for on-demand sync jobs, and periodically
+    executes differential CRUD syncs for scheduled active sources into MinIO and Knowledge Destinations.
     """
     logger.info("Pathway worker started — pathway:sync:jobs")
+    last_scheduled_check = 0.0
 
     while True:
         handled = False
 
+        # 1. Process queued sync requests
         source_id = await dequeue_pathway_sync(timeout=2)
         if source_id:
             handled = True
@@ -31,9 +33,25 @@ async def pathway_worker_loop() -> None:
                 except Exception:
                     logger.exception("Pathway sync for source %s failed", source_id)
 
+        # 2. Periodic poll check for scheduled sources (every 10 seconds)
+        now_ts = asyncio.get_event_loop().time()
+        if now_ts - last_scheduled_check > 10.0:
+            last_scheduled_check = now_ts
+            try:
+                from sqlalchemy import select
+                from src.shared.db.models import Source
+                async with AsyncSessionLocal() as db:
+                    stmt = select(Source).where(Source.enabled == True)
+                    res = await db.execute(stmt)
+                    sources = res.scalars().all()
+                    for src in sources:
+                        if src.status != "syncing":
+                            await sync_source_from_pathway(db, src.id)
+            except Exception as exc:
+                logger.warning("scheduled_source_poll_failed error=%s", exc)
+
         if not handled:
             await asyncio.sleep(0.1)
-
 
 async def main() -> None:
     try:

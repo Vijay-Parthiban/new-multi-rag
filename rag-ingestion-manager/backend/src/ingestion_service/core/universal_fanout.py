@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 async def execute_universal_fanout_sync(
     db: AsyncSession, profile: KnowledgeProfile
 ) -> dict[str, Any]:
-    """Execute multi-sink fanout ingestion for a Knowledge Profile."""
+    """Execute multi-sink fanout ingestion for a Knowledge Profile with full differential state CRUD."""
+    from sqlalchemy import select, delete
+    from src.shared.db.models import IndexedFile
+
     logger.info(
         "starting_universal_fanout_sync profile_id=%s name=%s",
         profile.id,
@@ -45,13 +48,19 @@ async def execute_universal_fanout_sync(
         return {
             "status": "success",
             "files_processed": 0,
-            "destinations_synced": [d.destination_type for d in enabled_destinations],
+            "files_added": 0,
+            "files_updated": 0,
+            "files_deleted": 0,
+            "pages_processed": 0,
+            "destinations_synced": [],
             "message": "No linked MinIO source buckets to sync.",
         }
 
     total_files = 0
+    total_added = 0
+    total_updated = 0
+    total_deleted = 0
     total_pages = 0
-    total_chunks = 0
     destinations_synced = []
 
     # Process files from linked MinIO buckets
@@ -59,29 +68,49 @@ async def execute_universal_fanout_sync(
         bucket = source.minio_bucket
         try:
             objs = await list_objects(bucket)
-            print(f"[FANOUT] Bucket '{bucket}' has {len(objs)} objects")
         except Exception as exc:
             logger.error("minio_list_objects_failed bucket=%s error=%s", bucket, str(exc))
-            print(f"[FANOUT] Error listing bucket '{bucket}': {exc}")
             continue
 
+        active_remote_map = {}
         for obj in objs:
             key = getattr(obj, "key", "")
-            if not key or key.endswith("/"):
-                continue
+            if key and not key.endswith("/"):
+                active_remote_map[key] = obj
 
-            print(f"[FANOUT] Fetching object key '{key}' from bucket '{bucket}'...")
+        # Query existing indexed files from database for this source
+        stmt = select(IndexedFile).where(IndexedFile.source_id == source.id)
+        res = await db.execute(stmt)
+        existing_records = {rec.file_key: rec for rec in res.scalars().all()}
+
+        # 1. Handle ADD and UPDATE
+        for key, obj in active_remote_map.items():
             try:
                 data = await get_object(bucket, key)
-                suffix = Path(key).suffix or ".bin"
+                import hashlib
+                content_hash = hashlib.sha256(data).hexdigest()
 
+                existing_rec = existing_records.get(key)
+                is_add = existing_rec is None
+                is_update = existing_rec is not None and existing_rec.content_hash != content_hash
+
+                if not is_add and not is_update:
+                    continue
+
+                if is_update:
+                    # Purge existing artifacts in destinations before updating
+                    await purge_file_from_destinations(profile, key)
+                    total_updated += 1
+                else:
+                    total_added += 1
+
+                suffix = Path(key).suffix or ".bin"
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp.write(data)
                     tmp_path = Path(tmp.name)
 
                 try:
                     pages = list(iter_file_pages(tmp_path, mime_type=None, original_name=key))
-                    print(f"[FANOUT] Extracted {len(pages)} pages from file '{key}'")
                     if pages:
                         total_files += 1
                         total_pages += len(pages)
@@ -90,7 +119,6 @@ async def execute_universal_fanout_sync(
                         for dest in enabled_destinations:
                             dest_type = dest.destination_type
                             dest_cfg = dest.config or {}
-                            print(f"[FANOUT] Fanning out file '{key}' to destination '{dest_type}'...")
 
                             await _fanout_to_destination(
                                 dest_type=dest_type,
@@ -100,21 +128,45 @@ async def execute_universal_fanout_sync(
                             )
                             if dest_type not in destinations_synced:
                                 destinations_synced.append(dest_type)
+
+                        # Update or insert IndexedFile tracking record
+                        if existing_rec:
+                            existing_rec.content_hash = content_hash
+                            existing_rec.indexed_at = datetime.now(UTC)
+                        else:
+                            new_rec = IndexedFile(
+                                source_id=source.id,
+                                file_key=key,
+                                content_hash=content_hash,
+                                indexed_at=datetime.now(UTC),
+                            )
+                            db.add(new_rec)
+                        await db.commit()
                 finally:
                     if tmp_path.exists():
                         tmp_path.unlink()
             except Exception as exc:
-                logger.error(
-                    "fanout_file_processing_failed bucket=%s key=%s error=%s",
-                    bucket,
-                    key,
-                    str(exc),
-                )
+                logger.error("fanout_file_processing_failed bucket=%s key=%s error=%s", bucket, key, str(exc))
+
+        # 2. Handle DELETE (Files removed from MinIO bucket)
+        for file_key, rec in existing_records.items():
+            if file_key not in active_remote_map:
+                try:
+                    await purge_file_from_destinations(profile, file_key)
+                    await db.delete(rec)
+                    await db.commit()
+                    total_deleted += 1
+                    logger.info("universal_fanout_file_deleted profile_id=%s file_key=%s", profile.id, file_key)
+                except Exception as exc:
+                    logger.error("universal_fanout_delete_failed profile_id=%s file_key=%s error=%s", profile.id, file_key, str(exc))
 
     logger.info(
-        "universal_fanout_sync_completed profile_id=%s files=%d pages=%d destinations=%s",
+        "universal_fanout_sync_completed profile_id=%s files=%d added=%d updated=%d deleted=%d pages=%d destinations=%s",
         profile.id,
         total_files,
+        total_added,
+        total_updated,
+        total_deleted,
         total_pages,
         destinations_synced,
     )
@@ -122,11 +174,12 @@ async def execute_universal_fanout_sync(
     return {
         "status": "success",
         "files_processed": total_files,
+        "files_added": total_added,
+        "files_updated": total_updated,
+        "files_deleted": total_deleted,
         "pages_processed": total_pages,
         "destinations_synced": destinations_synced,
     }
-
-
 async def _fanout_to_destination(
     dest_type: str,
     dest_config: dict[str, Any],
@@ -135,6 +188,78 @@ async def _fanout_to_destination(
 ) -> None:
     """Fan out page content and embeddings to a specific destination engine."""
     await asyncio.to_thread(_sync_fanout_to_destination, dest_type, dest_config, file_key, pages)
+
+
+async def purge_file_from_destinations(
+    profile: KnowledgeProfile,
+    file_key: str,
+) -> None:
+    """Purge index artifacts and embeddings for a deleted or modified file across all enabled destinations."""
+    enabled_destinations = [d for d in (profile.destinations or []) if d.enabled]
+    for dest in enabled_destinations:
+        try:
+            await asyncio.to_thread(_sync_purge_file_from_destination, dest.destination_type, dest.config or {}, file_key)
+        except Exception as exc:
+            logger.error("purge_file_from_destination_failed dest=%s file=%s error=%s", dest.destination_type, file_key, exc)
+
+
+def _sync_purge_file_from_destination(dest_type: str, dest_config: dict[str, Any], file_key: str) -> None:
+    settings = get_settings()
+    logger.info("purging_file_from_destination type=%s file_key=%s", dest_type, file_key)
+
+    if dest_type == "vector_qdrant":
+        collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
+        url = dest_config.get("url") or settings.qdrant_url
+        api_key = dest_config.get("api_key") or settings.qdrant_api_key
+        try:
+            from qdrant_client import QdrantClient, models
+            client = QdrantClient(url=url, api_key=api_key, timeout=5.0)
+            client.delete(
+                collection_name=collection_name,
+                points_selector=models.Filter(
+                    must=[models.FieldCondition(key="file_key", match=models.MatchValue(value=file_key))]
+                ),
+            )
+            logger.info("qdrant_points_deleted collection=%s file_key=%s", collection_name, file_key)
+        except Exception as exc:
+            logger.warning("qdrant_purge_failed file_key=%s error=%s", file_key, exc)
+
+    elif dest_type in ["lexical_opensearch", "elasticsearch"]:
+        index_name = dest_config.get("index_name", "knowledge_lexical_index")
+        url = dest_config.get("url") or getattr(settings, "opensearch_url", "http://opensearch:9200")
+        try:
+            import httpx
+            with httpx.Client(timeout=5.0) as client:
+                query = {"query": {"term": {"file_key.keyword": file_key}}}
+                client.post(f"{url}/{index_name}/_delete_by_query", json=query)
+            logger.info("opensearch_docs_deleted index=%s file_key=%s", index_name, file_key)
+        except Exception as exc:
+            logger.warning("opensearch_purge_failed file_key=%s error=%s", file_key, exc)
+
+    elif dest_type == "cache_redis":
+        url = dest_config.get("url") or settings.redis_url
+        try:
+            import redis
+            r = redis.Redis.from_url(url)
+            keys = r.keys(f"*{file_key}*")
+            if keys:
+                r.delete(*keys)
+            logger.info("redis_keys_deleted count=%d file_key=%s", len(keys), file_key)
+        except Exception as exc:
+            logger.warning("redis_purge_failed file_key=%s error=%s", file_key, exc)
+
+    elif dest_type == "graph_neo4j":
+        url = dest_config.get("url") or getattr(settings, "neo4j_url", "bolt://neo4j:7687")
+        user = dest_config.get("username") or getattr(settings, "neo4j_user", "neo4j")
+        password = dest_config.get("password") or getattr(settings, "neo4j_password", "password")
+        try:
+            from neo4j import GraphDatabase
+            with GraphDatabase.driver(url, auth=(user, password)) as driver:
+                with driver.session() as session:
+                    session.run("MATCH (n) WHERE n.file_key = $file_key DETACH DELETE n", file_key=file_key)
+            logger.info("neo4j_nodes_deleted file_key=%s", file_key)
+        except Exception as exc:
+            logger.warning("neo4j_purge_failed file_key=%s error=%s", file_key, exc)
 
 
 def _sync_fanout_to_destination(
@@ -167,7 +292,7 @@ def _sync_fanout_to_destination(
             payload = {
                 "file_key": file_key,
                 "page_index": p.page_index,
-                "text": text[:1000],  # store text preview / content
+                "text": text[:1000],
                 "created_at": datetime.now(UTC).isoformat(),
             }
             points.append({
@@ -177,31 +302,26 @@ def _sync_fanout_to_destination(
             })
 
         if points:
-            print(f"[FANOUT] Instantiating QdrantVectorStore collection='{collection_name}'...")
             qdrant = QdrantVectorStore(
                 url=url,
                 collection=collection_name,
                 api_key=api_key,
             )
-            print(f"[FANOUT] Calling ensure_collection...")
             qdrant.ensure_collection(vector_size=len(points[0]["dense_vector"]), enable_sparse=False)
-            print(f"[FANOUT] Calling upsert_batch for {len(points)} points...")
             qdrant.upsert_batch(points)
-            print(f"[FANOUT] Qdrant upsert_batch complete!")
             logger.info("qdrant_fanout_complete collection=%s points_count=%d", collection_name, len(points))
+
+    elif dest_type in ["lexical_opensearch", "elasticsearch"]:
         index_name = dest_config.get("index_name", "knowledge_lexical_index")
         logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
 
     elif dest_type == "graph_neo4j":
         logger.info("neo4j_graphrag_indexed file=%s pages=%d", file_key, len(pages))
 
-    elif dest_type == "relational_pgvector":
+    elif dest_type in ["relational_pgvector", "database_pgvector"]:
         table_name = dest_config.get("table_name", "knowledge_vector_records")
         logger.info("pgvector_relational_upserted table=%s file=%s pages=%d", table_name, file_key, len(pages))
 
-    elif dest_type == "cache_redisvl":
-        index_prefix = dest_config.get("index_prefix", "knowledge_cache")
-        logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))
-        # Simulates RedisVL RAPTOR tree summary caching & parent-child chunk hashes
+    elif dest_type in ["cache_redis", "cache_redisvl"]:
         index_prefix = dest_config.get("index_prefix", "knowledge_cache")
         logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))

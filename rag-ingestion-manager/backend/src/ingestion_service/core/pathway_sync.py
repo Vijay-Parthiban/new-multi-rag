@@ -107,28 +107,17 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
             # Get MinIO bucket for this source
             minio_bucket = source.minio_bucket
             
-            # Determine sync method based on connector type
-            if connector.connector_type in ["local_folder", "local_dir"]:
-                config = connector.config or {}
-                res = await sync_local_dir_to_minio(
-                    source_id=source.id,
-                    connector_id=connector.id,
-                    config=config,
-                    bucket=minio_bucket,
-                )
-                files_synced_total += res.get("files_synced", 0)
-
-            elif connector.connector_type in ["google_drive", "s3", "amazon_s3", "azure_blob", "azure"]:
-                from src.ingestion_service.core.nifi_sync import sync_connector_via_nifi
-                config = connector.config or {}
-                res = await sync_connector_via_nifi(
-                    source_id=source.id,
-                    connector_id=connector.id,
-                    connector_type=connector.connector_type,
-                    config=config,
-                    minio_bucket=minio_bucket,
-                )
-                files_synced_total += res.get("files_synced", 0)
+            # Determine sync method based on connector type (all connectors route through NiFi Connector Engine)
+            from src.ingestion_service.core.nifi_sync import sync_connector_via_nifi
+            config = connector.config or {}
+            res = await sync_connector_via_nifi(
+                source_id=source.id,
+                connector_id=connector.id,
+                connector_type=connector.connector_type,
+                config=config,
+                minio_bucket=minio_bucket,
+            )
+            files_synced_total += res.get("files_synced", 0)
             # Update connector sync status
             connector.status = "synced"
             connector.last_sync_at = datetime.now(UTC)
@@ -189,9 +178,26 @@ async def _run_airbyte_connector(config: dict) -> dict:
         return resp.json() if resp.status_code == 200 else {}
 
 async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
-    """Enqueue pipeline re-indexing for all pipelines linked to source."""
-    await source.awaitable_attrs.pipelines
-    pipeline_ids = [pipeline.id for pipeline in source.pipelines or []]
+    """Trigger Knowledge Profile fanout sync and pipeline re-indexing for linked source."""
+    from sqlalchemy import select
+    from src.shared.db.models import KnowledgeProfile, KnowledgeProfileSource
+    from src.ingestion_service.core.universal_fanout import execute_universal_fanout_sync
+
+    # 1. Trigger universal fanout sync across Knowledge Destinations for linked profiles
+    try:
+        stmt = select(KnowledgeProfileSource).where(KnowledgeProfileSource.source_id == source.id)
+        res = await db.execute(stmt)
+        kp_sources = res.scalars().all()
+        for kp_src in kp_sources:
+            profile = await db.get(KnowledgeProfile, kp_src.knowledge_profile_id)
+            if profile and profile.enabled:
+                logger.info("triggering_universal_fanout_sync profile_id=%s source_id=%s", profile.id, source.id)
+                await execute_universal_fanout_sync(db, profile)
+    except Exception as exc:
+        logger.error("knowledge_profile_fanout_sync_failed source=%s error=%s", source.id, str(exc))
+
+    # 2. Trigger legacy pipeline sync runs
+    pipeline_ids = [p.id for p in (source.pipelines or [])]
     for pipeline_id in pipeline_ids:
         try:
             await db.execute(
@@ -212,7 +218,6 @@ async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
             await enqueue_sync_run(pipeline_id)
         except Exception as exc:
             logger.error("pipeline_sync_enqueue_failed pipeline=%s source=%s error=%s", pipeline_id, source.id, str(exc))
-_MINIO_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
 
 def start_minio_monitor(source_id: uuid.UUID) -> None:
     """Start background watch task on source MinIO bucket without holding DB sessions."""
