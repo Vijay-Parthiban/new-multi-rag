@@ -199,6 +199,7 @@ export interface PipelineCatalogEntry {
 
 export interface PipelineRecord {
   id: string;
+  knowledge_profile_id?: string | null;
   name: string;
   description: string;
   rag_strategy: string;
@@ -251,6 +252,7 @@ export interface CreatePipelineRequest {
   scraper_max_depth?: number;
   scraper_max_pages?: number;
   scraper_mode?: string;
+  knowledge_profile_id?: string;
 }
 
 export interface PipelinePatchRequest {
@@ -288,6 +290,11 @@ export async function updatePipeline(pipelineId: string, body: PipelinePatchRequ
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+export async function deletePipeline(pipelineId: string): Promise<void> {
+  return apiFetch<void>(`/api/pipelines/${pipelineId}`, {
+    method: "DELETE",
   });
 }
 
@@ -336,8 +343,8 @@ export interface KnowledgeProfile {
   updated_at?: string;
   sources: KnowledgeProfileSource[];
   destinations: KnowledgeDestinationConfig[];
+  pipelines?: PipelineRecord[];
 }
-
 export interface KnowledgeProfileCreateRequest {
   name: string;
   description?: string;

@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconBrowse, IconChat, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconSources, IconTracking, IconUpload, IconEvaluation } from "./Icons";
+import { IconBrowse, IconHome, IconIngestion, IconSources, IconUpload } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
@@ -26,15 +26,6 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/sources", label: "Sources", icon: IconSources },
   { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
   { to: "/upload", label: "Upload", icon: IconUpload },
-  { to: "/pipelines", label: "Pipelines", icon: IconPipeline },
-  { to: "/chat", label: "Chat", icon: IconChat },
-  { to: "/prompts", label: "Prompts", icon: IconPrompts },
-  { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
-  { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
-  { to: "/tracking", label: "Tracking", icon: IconTracking },
-  { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
-  { to: "/guardrails/traces", label: "Guard Traces", icon: IconGuardrails },
-  { to: "/guardrails/evaluation", label: "Guard Evaluation", icon: IconGuardrails },
 ];
 
 /**
@@ -135,7 +126,7 @@ export default function AppLayout() {
       <aside className="sidebar">
         <NavLink to="/" className="sidebar-brand" end>
           <IconIngestion className="brand-icon" />
-          <span>Ingestion</span>
+          <span>Ingestion Manager</span>
         </NavLink>
 
         <nav className="sidebar-nav" aria-label="Main">

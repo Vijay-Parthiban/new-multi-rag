@@ -4,14 +4,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, HTTPException
 from src.ingestion_service.vector.search import search_document_chunks
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.file_manager.core.errors import ConflictError, NotFoundError, ValidationError
 from src.ingestion_service.utils.validation import validate_description, validate_qdrant_collection
 from src.shared.config.settings import get_settings
-from src.shared.db.models import IndexModality, JobStatus, Pipeline, PipelineRun, RagStrategy, IndexedFile
+from src.shared.db.models import IndexModality, JobStatus, KnowledgeProfile, Pipeline, PipelineRun, PipelineSource, RagStrategy, IndexedFile
 from src.shared.db.session import get_db
 from src.shared.queue.client import enqueue_pipeline_run, enqueue_sync_run
 
@@ -36,7 +36,7 @@ class PipelineCreateRequest(BaseModel):
     scraper_max_depth: int = Field(default=2, ge=0)
     scraper_max_pages: int = Field(default=50, ge=1)
     scraper_mode: Literal["httpx", "playwright", "auto"] = "httpx"
-
+    knowledge_profile_id: str | None = None
     @field_validator("directory_names")
     @classmethod
     def normalize_dirs(cls, v: list[str]) -> list[str]:
@@ -71,6 +71,7 @@ class PipelinePatchRequest(BaseModel):
 def _pipeline_to_dict(p: Pipeline) -> dict:
     return {
         "id": str(p.id),
+        "knowledge_profile_id": str(p.knowledge_profile_id) if p.knowledge_profile_id else None,
         "name": p.name,
         "description": p.description,
         "rag_strategy": p.rag_strategy.value,
@@ -191,7 +192,18 @@ async def get_pipeline_by_description(
 @router.get("", status_code=200)
 async def list_pipelines(db: Annotated[AsyncSession, Depends(get_db)]):
     result = await db.execute(select(Pipeline).order_by(Pipeline.created_at.desc()))
-    return [_pipeline_to_dict(p) for p in result.scalars().all()]
+    pipelines = list(result.scalars().all())
+    
+    unlinked = [p for p in pipelines if p.knowledge_profile_id is None]
+    if unlinked:
+        kp_res = await db.execute(select(KnowledgeProfile).order_by(KnowledgeProfile.created_at.asc()).limit(1))
+        default_kp = kp_res.scalar_one_or_none()
+        if default_kp:
+            for p in unlinked:
+                p.knowledge_profile_id = default_kp.id
+            await db.commit()
+
+    return [_pipeline_to_dict(p) for p in pipelines]
 
 
 @router.post("", status_code=201)
@@ -216,7 +228,17 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
             "This Qdrant collection name is already used by another pipeline.",
         )
 
+    kp_id: uuid.UUID | None = None
+    if body.knowledge_profile_id:
+        kp_id = uuid.UUID(body.knowledge_profile_id)
+    else:
+        kp_res = await db.execute(select(KnowledgeProfile).order_by(KnowledgeProfile.created_at.asc()).limit(1))
+        default_kp = kp_res.scalar_one_or_none()
+        if default_kp:
+            kp_id = default_kp.id
+
     pipeline = Pipeline(
+        knowledge_profile_id=kp_id,
         name=body.name,
         description=body.description,
         rag_strategy=RagStrategy(body.rag_strategy),
@@ -305,6 +327,16 @@ async def update_pipeline(
     await db.commit()
     await db.refresh(pipeline)
     return _pipeline_to_dict(pipeline)
+@router.delete("/{pipeline_id}", status_code=204)
+async def delete_pipeline(pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]):
+    pipeline = await db.get(Pipeline, pipeline_id)
+    if not pipeline:
+        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
+    await db.execute(delete(PipelineRun).where(PipelineRun.pipeline_id == pipeline_id))
+    await db.execute(delete(PipelineSource).where(PipelineSource.pipeline_id == pipeline_id))
+    await db.delete(pipeline)
+    await db.commit()
+    return None
 
 
 @router.get("/{pipeline_id}/stats", status_code=200)

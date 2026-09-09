@@ -4,14 +4,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, HTTPException
 from src.ingestion_service.vector.search import search_document_chunks
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.file_manager.core.errors import ConflictError, NotFoundError, ValidationError
 from src.ingestion_service.utils.validation import validate_description, validate_qdrant_collection
 from src.shared.config.settings import get_settings
-from src.shared.db.models import IndexModality, JobStatus, Pipeline, PipelineRun, RagStrategy, IndexedFile
+from src.shared.db.models import IndexModality, JobStatus, KnowledgeProfile, Pipeline, PipelineRun, PipelineSource, RagStrategy, IndexedFile
 from src.shared.db.session import get_db
 from src.shared.queue.client import enqueue_pipeline_run, enqueue_sync_run
 
@@ -36,6 +36,7 @@ class PipelineCreateRequest(BaseModel):
     scraper_max_depth: int = Field(default=2, ge=0)
     scraper_max_pages: int = Field(default=50, ge=1)
     scraper_mode: Literal["httpx", "playwright", "auto"] = "httpx"
+    knowledge_profile_id: str | None = None
 
     @field_validator("directory_names")
     @classmethod
@@ -71,6 +72,7 @@ class PipelinePatchRequest(BaseModel):
 def _pipeline_to_dict(p: Pipeline) -> dict:
     return {
         "id": str(p.id),
+        "knowledge_profile_id": str(p.knowledge_profile_id) if p.knowledge_profile_id else None,
         "name": p.name,
         "description": p.description,
         "rag_strategy": p.rag_strategy.value,
@@ -96,6 +98,7 @@ def _run_to_dict(r: PipelineRun) -> dict:
         "id": str(r.id),
         "pipeline_id": str(r.pipeline_id),
         "status": r.status.value,
+        "trigger": r.trigger.value if r.trigger else "manual",
         "files_total": r.files_total,
         "files_processed": r.files_processed,
         "pages_indexed": r.pages_indexed,
@@ -135,17 +138,26 @@ async def pipeline_options():
     return {
         "rag_strategies": [
             {"id": "naive", "label": "Standard", "description": "Standard text understanding"},
-            {"id": "sparse", "label": "Keyword", "description": "Exact keyword matching"},
-            {"id": "hybrid", "label": "Advanced Hybrid", "description": "Combines meaning and keyword search"},
-            {"id": "multimodal", "label": "Visual & Text", "description": "Processes both text and images"},
-            {"id": "metadata", "label": "Advanced Metadata", "description": "Rich data storage for filtering"},
+            {"id": "sparse", "label": "Sparse / BM25", "description": "Lexical keyword matching"},
+            {"id": "hybrid", "label": "Hybrid", "description": "Combined dense + sparse search"},
+            {"id": "multimodal", "label": "Multimodal", "description": "Text and image understanding"},
+            {"id": "metadata", "label": "Metadata-Aware", "description": "Structured field filtering"},
         ],
-        "modalities": [
-            {"id": "text", "label": "Text", "description": "Process standard text documents"},
-            {"id": "image", "label": "Visual", "description": "Capture and process visual pages"},
+        "default_embedding_model": settings.DEFAULT_EMBEDDING_MODEL,
+        "default_sparse_embedding_model": settings.DEFAULT_SPARSE_EMBEDDING_MODEL,
+        "embedding_model_options": [
+            "text-embedding-3-small",
+            "text-embedding-3-large",
+            "text-embedding-ada-002",
+            "BAAI/bge-small-en-v1.5",
+            "BAAI/bge-base-en-v1.5",
+            "BAAI/bge-large-en-v1.5",
         ],
-        "suggested_embedding_models": settings.unique_embedding_models,
-        "suggested_sparse_models": [settings.sparse_embedding_model],
+        "sparse_embedding_model_options": [
+            "Qdrant/bm25",
+            "prithivida/Splade_PP_en_v1",
+            "naver/splade-cocondenser-ensembledistil",
+        ],
         "scraper_modes": list(SCRAPER_MODES),
         "collection_naming_hint": "Use a unique name per pipeline, e.g. legal-docs-hybrid-v1",
     }
@@ -191,7 +203,18 @@ async def get_pipeline_by_description(
 @router.get("", status_code=200)
 async def list_pipelines(db: Annotated[AsyncSession, Depends(get_db)]):
     result = await db.execute(select(Pipeline).order_by(Pipeline.created_at.desc()))
-    return [_pipeline_to_dict(p) for p in result.scalars().all()]
+    pipelines = list(result.scalars().all())
+
+    unlinked = [p for p in pipelines if p.knowledge_profile_id is None]
+    if unlinked:
+        kp_res = await db.execute(select(KnowledgeProfile).order_by(KnowledgeProfile.created_at.asc()).limit(1))
+        default_kp = kp_res.scalar_one_or_none()
+        if default_kp:
+            for p in unlinked:
+                p.knowledge_profile_id = default_kp.id
+            await db.commit()
+
+    return [_pipeline_to_dict(p) for p in pipelines]
 
 
 @router.post("", status_code=201)
@@ -216,7 +239,17 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
             "This Qdrant collection name is already used by another pipeline.",
         )
 
+    kp_id: uuid.UUID | None = None
+    if body.knowledge_profile_id:
+        kp_id = uuid.UUID(body.knowledge_profile_id)
+    else:
+        kp_res = await db.execute(select(KnowledgeProfile).order_by(KnowledgeProfile.created_at.asc()).limit(1))
+        default_kp = kp_res.scalar_one_or_none()
+        if default_kp:
+            kp_id = default_kp.id
+
     pipeline = Pipeline(
+        knowledge_profile_id=kp_id,
         name=body.name,
         description=body.description,
         rag_strategy=RagStrategy(body.rag_strategy),
@@ -239,10 +272,41 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
     return _pipeline_to_dict(pipeline)
 
 
+@router.post("/{pipeline_id}/runs", status_code=202)
+async def trigger_pipeline_run(
+    pipeline_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Trigger a new indexing run for this pipeline."""
+    pipeline = await db.get(Pipeline, pipeline_id)
+    if not pipeline:
+        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
+
+    active_run = await db.execute(
+        select(PipelineRun).where(
+            PipelineRun.pipeline_id == pipeline_id,
+            PipelineRun.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
+        )
+    )
+    if active_run.scalar_one_or_none():
+        raise ConflictError("RUN_IN_PROGRESS", "A run is already in progress for this pipeline.")
+
+    run = PipelineRun(
+        pipeline_id=pipeline_id,
+        status=JobStatus.PENDING,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    enqueue_pipeline_run(str(run.id), str(pipeline_id))
+    return _run_to_dict(run)
+
+
 @router.get("/runs", status_code=200)
 async def list_all_pipeline_runs(
     db: Annotated[AsyncSession, Depends(get_db)],
-    limit: int = 100,
+    limit: int = Query(default=50, ge=1, le=500),
 ):
     """All runs across all pipelines, newest first, with pipeline name attached."""
     result = await db.execute(
@@ -307,185 +371,13 @@ async def update_pipeline(
     return _pipeline_to_dict(pipeline)
 
 
-@router.get("/{pipeline_id}/stats", status_code=200)
-async def get_pipeline_stats(
-    pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
-):
-    from sqlalchemy import func
+@router.delete("/{pipeline_id}", status_code=204)
+async def delete_pipeline(pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]):
     pipeline = await db.get(Pipeline, pipeline_id)
     if not pipeline:
         raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
-
-    # Get total indexed files from our tracking table
-    files_result = await db.execute(
-        select(func.count()).where(IndexedFile.pipeline_id == pipeline_id)
-    )
-    indexed_files_count = files_result.scalar() or 0
-
-    # Get latest pages indexed from latest scraper run
-    pages_result = await db.execute(
-        select(PipelineRun.pages_indexed)
-        .where(PipelineRun.pipeline_id == pipeline_id)
-        .order_by(PipelineRun.created_at.desc())
-        .limit(1)
-    )
-    pages_indexed = pages_result.scalar() or 0
-
-    return {
-        "pipeline_id": str(pipeline_id),
-        "indexed_files_count": indexed_files_count,
-        "scraped_pages_count": pages_indexed,
-    }
-
-
-@router.post("/{pipeline_id}/run", status_code=202)
-async def start_pipeline(pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]):
-    pipeline = await db.get(Pipeline, pipeline_id)
-    if not pipeline:
-        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
-
-    active = await db.execute(
-        select(PipelineRun).where(
-            PipelineRun.pipeline_id == pipeline_id,
-            PipelineRun.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
-        )
-    )
-    if active.scalar_one_or_none():
-        raise ConflictError("PIPELINE_RUNNING", "This pipeline already has an active run.")
-
-    run = PipelineRun(pipeline_id=pipeline.id, status=JobStatus.PENDING)
-    db.add(run)
+    await db.execute(delete(PipelineRun).where(PipelineRun.pipeline_id == pipeline_id))
+    await db.execute(delete(PipelineSource).where(PipelineSource.pipeline_id == pipeline_id))
+    await db.delete(pipeline)
     await db.commit()
-    await db.refresh(run)
-    await enqueue_pipeline_run(run.id)
-    return _run_to_dict(run)
-
-
-@router.get("/{pipeline_id}/runs", status_code=200)
-async def list_pipeline_runs(pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]):
-    pipeline = await db.get(Pipeline, pipeline_id)
-    if not pipeline:
-        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
-    result = await db.execute(
-        select(PipelineRun)
-        .where(PipelineRun.pipeline_id == pipeline_id)
-        .order_by(PipelineRun.created_at.desc())
-    )
-    return [_run_to_dict(r) for r in result.scalars().all()]
-
-
-@router.post("/{pipeline_id}/sync", status_code=202)
-async def trigger_pipeline_sync(
-    pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
-):
-    """Manually trigger a file-sync for this pipeline."""
-    pipeline = await db.get(Pipeline, pipeline_id)
-    if not pipeline:
-        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
-    if not pipeline.directory_names:
-        raise ValidationError(
-            "NO_DIRECTORIES",
-            "Pipeline has no directories configured for sync.",
-        )
-
-    # Prevent overlapping syncs
-    active = await db.execute(
-        select(PipelineRun).where(
-            PipelineRun.pipeline_id == pipeline_id,
-            PipelineRun.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
-        )
-    )
-    if active.scalar_one_or_none():
-        raise ConflictError("SYNC_RUNNING", "This pipeline already has an active run.")
-
-    await enqueue_sync_run(pipeline.id)
-    return {"status": "queued", "pipeline_id": str(pipeline.id)}
-
-
-@router.get("/{pipeline_id}/sync-status", status_code=200)
-async def get_pipeline_sync_status(
-    pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
-):
-    """Return the latest pipeline run (which may be a sync run)."""
-    pipeline = await db.get(Pipeline, pipeline_id)
-    if not pipeline:
-        raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
-
-    result = await db.execute(
-        select(PipelineRun)
-        .where(PipelineRun.pipeline_id == pipeline_id)
-        .order_by(PipelineRun.created_at.desc())
-        .limit(1)
-    )
-    run = result.scalar_one_or_none()
-    if not run:
-        return {"status": "no_runs", "pipeline_id": str(pipeline_id)}
-    return _run_to_dict(run)
-
-
-class RAGQueryRequest(BaseModel):
-    text_query: str = Field(..., description="The semantic search question text.")
-    collection: str | None = Field(default=None, description="Qdrant collection to search. If omitted, uses default.")
-    limit: int = Field(default=5, ge=1, le=50, description="Number of items to retrieve.")
-    mode: Literal["hybrid", "dense", "sparse"] = Field(
-        default="hybrid",
-        description="Search mode: hybrid (RRF), dense, or sparse.",
-    )
-    source_type: Literal["all", "web_scrape", "file_ingest"] = Field(
-        default="all",
-        description="Filter by ingest source: all, web_scrape, or file_ingest.",
-    )
-    source_id: str | None = Field(
-        default=None,
-        description="Optional job/document id to scope retrieval (scrape_job_id or pipeline run id).",
-    )
-    pipeline_id: str | None = Field(default=None, description="Optional pipeline id to scope search.")
-    file_id: str | None = Field(default=None, description="Optional file id to scope search.")
-    directory_name: str | None = Field(default=None, description="Optional directory name filter.")
-    original_name: str | None = Field(default=None, description="Optional file name filter.")
-    mime_type: str | None = Field(default=None, description="Optional mime type filter.")
-    rag_strategy: str | None = Field(default=None, description="Optional RAG strategy filter.")
-
-
-class RAGChunkItem(BaseModel):
-    id: str
-    score: float
-    type: str = Field(..., description="Modality variant: 'text' or 'image'")
-    content: str = Field(..., description="Raw string segment or base64 data URI string.")
-    source_type: str
-    source_id: str
-    source_locator: str
-    chunk_index: int | None = None
-    source_url: str
-    title: str | None = None
-    scrape_job_id: str
-    file_id: str | None = None
-    directory_name: str | None = None
-    original_name: str | None = None
-    page_index: int | None = None
-
-
-@router.post("/query", response_model=list[RAGChunkItem])
-async def query_pipeline_chunks(payload: RAGQueryRequest) -> list[RAGChunkItem]:
-    """Search stored document/web scraper chunks with dense, sparse or hybrid retrieval modes + metadata filters."""
-    try:
-        hits = search_document_chunks(
-            query_text=payload.text_query,
-            collection=payload.collection,
-            limit=payload.limit,
-            mode=payload.mode,
-            source_type=payload.source_type,
-            source_id=payload.source_id,
-            pipeline_id=payload.pipeline_id,
-            file_id=payload.file_id,
-            directory_name=payload.directory_name,
-            original_name=payload.original_name,
-            mime_type=payload.mime_type,
-            rag_strategy=payload.rag_strategy,
-        )
-        return [RAGChunkItem(**hit) for hit in hits]
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Vector retrieval failure: {str(exc)}"
-        ) from exc
+    return None

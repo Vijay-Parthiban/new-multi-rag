@@ -4,13 +4,22 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import unquote
 
-from opentelemetry import trace
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+try:
+    from opentelemetry import trace
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    HAVE_OTEL = True
+except ImportError:
+    HAVE_OTEL = False
+    trace = None
 
+try:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    HAVE_HTTPX_OTEL = True
+except ImportError:
+    HAVE_HTTPX_OTEL = False
 logger = logging.getLogger(__name__)
 
 _tracer: trace.Tracer | None = None
@@ -70,13 +79,18 @@ def init_tracing() -> None:
     global _tracer, _provider, _initialized
     if _initialized:
         return
+    if not HAVE_OTEL:
+        logger.info("OpenTelemetry not installed, tracing disabled")
+        _initialized = True
+        return
 
     enabled = os.getenv("OTEL_TRACING_ENABLED", "true").lower() == "true"
     service_name = os.getenv("OTEL_SERVICE_NAME", "rag-platform")
 
     if not enabled:
         logger.info("OpenTelemetry tracing is disabled")
-        _tracer = trace.get_tracer(service_name)
+        if trace:
+            _tracer = trace.get_tracer(service_name)
         _initialized = True
         return
 
@@ -109,7 +123,8 @@ def init_tracing() -> None:
     _tracer = trace.get_tracer(service_name)
 
     # Auto-instrument outbound HTTP (LiteLLM, Qdrant, etc.) as child spans when a parent exists
-    HTTPXClientInstrumentor().instrument()
+    if HAVE_HTTPX_OTEL:
+        HTTPXClientInstrumentor().instrument()
     _initialized = True
     logger.info("OpenTelemetry tracing initialized service=%s", service_name)
 

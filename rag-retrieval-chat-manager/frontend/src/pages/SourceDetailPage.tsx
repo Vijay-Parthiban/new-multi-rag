@@ -8,7 +8,6 @@ import ConnectorConfigForm, {
 import {
   IconBucket,
   IconFile,
-  IconPipeline,
   IconPlus,
   IconSources,
   IconSync,
@@ -17,7 +16,6 @@ import {
 } from "../components/Icons";
 import type {
   ConnectorOption,
-  PipelineRecord,
   SourceConnectorRecord,
   SourceFileEntry,
   SourceRecord,
@@ -27,13 +25,10 @@ import {
   addSourceConnector,
   deleteSourceConnector,
   getSource,
-  linkSourceToPipeline,
   listConnectors,
-  listPipelines,
   listSourceFiles,
   triggerConnectorSync,
   triggerSourceSync,
-  unlinkSourceFromPipeline,
   updateSourceConnector,
 } from "../api";
 
@@ -44,7 +39,7 @@ function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
   });
 }
 
-type TabId = "connectors" | "files" | "pipeline";
+type TabId = "connectors" | "files";
 
 interface ConnectorCatalogItem {
   id: string;
@@ -82,7 +77,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
   const [source, setSource] = useState<SourceRecord | null>(null);
   const [, setCatalog] = useState<ConnectorOption[]>([]);
-  const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [files, setFiles] = useState<SourceFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
@@ -108,11 +102,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   });
   const [savingConnector, setSavingConnector] = useState(false);
 
-  // Pipeline Link Modal State
-  const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
-
-  const [selectedPipelineId, setSelectedPipelineId] = useState("");
-  const [linkingPipeline, setLinkingPipeline] = useState(false);
   const fetchSource = async () => {
     if (!id) return;
     try {
@@ -141,15 +130,13 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     async function init() {
       setLoading(true);
       try {
-        const [srcData, catData, pipeData] = await Promise.all([
+        const [srcData, catData] = await Promise.all([
           getSource(id!),
           listConnectors().catch(() => []),
-          listPipelines().catch(() => []),
         ]);
         if (!mounted) return;
         setSource(srcData);
         setCatalog(catData);
-        setPipelines(pipeData);
 
         const fileRes = await listSourceFiles(id!).catch(() => ({ files: [] }));
         if (mounted) setFiles(fileRes.files ?? []);
@@ -273,34 +260,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     }
   };
 
-  const handleLinkPipelineSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!source || !selectedPipelineId) return;
-    setLinkingPipeline(true);
-    try {
-      await linkSourceToPipeline(source.id, selectedPipelineId);
-      setInfo("Linked to RAG pipeline.");
-      setPipelineModalOpen(false);
-      setSelectedPipelineId("");
-      await fetchSource();
-    } catch (err) {
-      setError(toApiError(err, "LINK_PIPELINE_FAILED"));
-    } finally {
-      setLinkingPipeline(false);
-    }
-  };
-
-  const handleUnlinkPipeline = async (pipelineId: string) => {
-    if (!source) return;
-    if (!window.confirm("Unlink this source from the RAG pipeline?")) return;
-    try {
-      await unlinkSourceFromPipeline(source.id, pipelineId);
-      setInfo("Pipeline unlinked.");
-      await fetchSource();
-    } catch (err) {
-      setError(toApiError(err, "UNLINK_PIPELINE_FAILED"));
-    }
-  };
 
   if (loading) {
     return (
@@ -327,7 +286,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   if (!source) return null;
 
   const connectorCount = source.connectors?.length ?? 0;
-  const linkedPipelines = source.pipelines ?? [];
   const filteredCatalog = EXTENDED_CATALOG.filter(
     (item) => categoryFilter === "all" || item.category === categoryFilter
   );
@@ -438,18 +396,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           </div>
         </div>
 
-        <div className="stats-overview-card">
-          <div>
-            <div className="stats-overview-label">RAG Pipeline Delivery</div>
-            <div className="stats-overview-value">{linkedPipelines.length}</div>
-            <div className="stats-overview-subtext">
-              {linkedPipelines.length === 0 ? "Not linked to vector index" : "Connected to vector store"}
-            </div>
-          </div>
-          <div className="stats-overview-icon stats-icon--purple">
-            <IconPipeline size={22} />
-          </div>
-        </div>
       </div>
 
       {/* Tab Navigation */}
@@ -537,40 +483,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           </span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveTab("pipeline")}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            padding: "0.55rem 1.1rem",
-            borderRadius: "7px",
-            border: "none",
-            background: activeTab === "pipeline" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
-            color: activeTab === "pipeline" ? "#ffffff" : "#94a3b8",
-            fontSize: "0.875rem",
-            fontWeight: activeTab === "pipeline" ? 600 : 500,
-            cursor: "pointer",
-            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-            boxShadow: activeTab === "pipeline" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
-          }}
-        >
-          <IconPipeline size={15} />
-          <span>Linked RAG Pipelines</span>
-          <span
-            style={{
-              fontSize: "0.72rem",
-              padding: "0.15rem 0.5rem",
-              borderRadius: "999px",
-              background: activeTab === "pipeline" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
-              color: activeTab === "pipeline" ? "#ffffff" : "#8b949e",
-              fontWeight: 600,
-            }}
-          >
-            {linkedPipelines.length}
-          </span>
-        </button>
       </div>
 
       {/* TAB 1: CONNECTORS CATALOGUE & ACTIVE CONNECTORS */}
@@ -778,94 +690,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
         />
       )}
 
-      {/* TAB 3: LINKED RAG PIPELINES */}
-      {activeTab === "pipeline" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                Linked Vector Pipelines ({linkedPipelines.length})
-              </h2>
-              <div style={{ fontSize: "0.8rem", color: "#8b949e" }}>
-                RAG index target vector stores connected to MinIO bucket <code>{source.minio_bucket}</code>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => setPipelineModalOpen(true)}
-              style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
-            >
-              <IconPlus size={15} />
-              <span>Link to RAG Pipeline</span>
-            </button>
-          </div>
-
-          {linkedPipelines.length === 0 ? (
-            <div style={{ padding: "3rem 1.5rem", textAlign: "center", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
-              <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🔮</div>
-              <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e6edf3", marginBottom: "0.25rem" }}>
-                Source not linked to any vector pipeline yet
-              </div>
-              <div style={{ fontSize: "0.8125rem", color: "#8b949e", marginBottom: "1rem" }}>
-                Link this source to a RAG pipeline to automatically vectorize uploaded files into Qdrant collections.
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setPipelineModalOpen(true)}
-              >
-                + Link Pipeline Now
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
-              {linkedPipelines.map((pipe) => (
-                <div
-                  key={pipe.pipeline_id}
-                  style={{
-                    background: "rgba(17, 21, 30, 0.6)",
-                    border: "1px solid rgba(88, 166, 253, 0.25)",
-                    borderRadius: "12px",
-                    padding: "1.25rem",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                      <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "rgba(163, 113, 247, 0.15)", color: "#a371f7", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <IconPipeline size={18} />
-                      </div>
-                      <div>
-                        <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
-                          {pipe.pipeline_name || pipe.pipeline_id}
-                        </div>
-                        <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
-                          Pipeline ID: <code style={{ color: "#58a6ff" }}>{pipe.pipeline_id}</code>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleUnlinkPipeline(pipe.pipeline_id)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#f85149",
-                        fontSize: "0.8rem",
-                        cursor: "pointer",
-                        padding: "0.2rem 0.5rem",
-                      }}
-                    >
-                      Unlink
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* CONNECTOR CONFIGURATION MODAL */}
       {connectorModalOpen && (
@@ -1023,97 +847,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                 >
                   {savingConnector ? <IconSync size={14} className="spin" /> : <IconPlus size={14} />}
                   <span>{savingConnector ? "Saving..." : editingConnector ? "Save Changes" : "Attach Connector"}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* PIPELINE LINK MODAL */}
-      {pipelineModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 1000,
-            background: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(12px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1.5rem",
-          }}
-          onClick={() => setPipelineModalOpen(false)}
-        >
-          <div
-            style={{
-              width: "100%",
-              maxWidth: "480px",
-              background: "#111622",
-              border: "1px solid rgba(88, 166, 253, 0.3)",
-              borderRadius: "16px",
-              padding: "1.75rem",
-              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-              <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                Link to RAG Pipeline
-              </h2>
-              <button
-                type="button"
-                onClick={() => setPipelineModalOpen(false)}
-                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleLinkPipelineSubmit}>
-              <div style={{ marginBottom: "1.25rem" }}>
-                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
-                  Select Target Pipeline *
-                </label>
-                <select
-                  value={selectedPipelineId}
-                  onChange={(e) => setSelectedPipelineId(e.target.value)}
-                  required
-                  style={{
-                    width: "100%",
-                    padding: "0.75rem 1rem",
-                    borderRadius: "8px",
-                    border: "1px solid rgba(56, 68, 100, 0.5)",
-                    background: "rgba(17, 21, 30, 0.8)",
-                    color: "#e6edf3",
-                    fontSize: "0.9rem",
-                  }}
-                >
-                  <option value="">-- Choose RAG Pipeline --</option>
-                  {pipelines.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.qdrant_collection ?? "default collection"})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setPipelineModalOpen(false)}
-                  disabled={linkingPipeline}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={linkingPipeline || !selectedPipelineId}
-                >
-                  {linkingPipeline ? "Linking..." : "Link Pipeline"}
                 </button>
               </div>
             </form>

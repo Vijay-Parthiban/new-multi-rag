@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   createKnowledgeProfile,
   deleteKnowledgeProfile,
+  deletePipeline,
   getDestinationOptions,
   listKnowledgeProfiles,
   listSources,
@@ -157,6 +158,16 @@ export default function KnowledgeStorePage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to delete profile.";
       alert("Failed to delete profile: " + msg);
+    }
+  };
+  const handleDeletePipeline = async (pipelineId: string) => {
+    if (!confirm("Are you sure you want to delete this RAG Pipeline?")) return;
+    try {
+      await deletePipeline(pipelineId);
+      await loadData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete pipeline.";
+      alert("Failed to delete pipeline: " + msg);
     }
   };
 
@@ -682,6 +693,103 @@ export default function KnowledgeStorePage() {
                         </div>
                       );
                     })}
+                  </div>
+                  {/* Linked RAG Pipelines Section */}
+                  <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                      <div>
+                        <h4 style={{ fontSize: "14px", fontWeight: 700, color: "#f8fafc", margin: 0 }}>
+                          Linked RAG Pipelines ({profile.pipelines?.length || 0})
+                        </h4>
+                        <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
+                          Vector search & ingestion pipelines connected to this Knowledge Profile
+                        </div>
+                      </div>
+                      <a
+                        href="/pipelines"
+                        className="btn btn-secondary"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          padding: "6px 12px",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          textDecoration: "none",
+                        }}
+                      >
+                        <IconPlus style={{ width: "14px", height: "14px" }} />
+                        Create / Manage Pipelines
+                      </a>
+                    </div>
+
+                    {(!profile.pipelines || profile.pipelines.length === 0) ? (
+                      <div style={{ padding: "16px", textAlign: "center", background: "rgba(15, 23, 42, 0.4)", borderRadius: "10px", border: "1px dashed rgba(255, 255, 255, 0.1)", fontSize: "13px", color: "#64748b" }}>
+                        No RAG pipelines linked to this profile. Create one on the Pipelines page.
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "12px" }}>
+                        {profile.pipelines.map((pipe) => (
+                          <div
+                            key={pipe.id}
+                            style={{
+                              background: "rgba(15, 23, 42, 0.6)",
+                              border: "1px solid rgba(255, 255, 255, 0.08)",
+                              borderRadius: "10px",
+                              padding: "14px",
+                              display: "flex",
+                              flexDirection: "column",
+                              justifyContent: "space-between",
+                            }}
+                          >
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                                <span style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>{pipe.name}</span>
+                                <span
+                                  style={{
+                                    fontSize: "10px",
+                                    fontWeight: 700,
+                                    padding: "2px 8px",
+                                    borderRadius: "4px",
+                                    background: "rgba(34, 197, 94, 0.2)",
+                                    color: "#4ade80",
+                                  }}
+                                >
+                                  ACTIVE
+                                </span>
+                              </div>
+                              <div style={{ fontSize: "12px", color: "#94a3b8", display: "flex", flexDirection: "column", gap: "4px" }}>
+                                <div><strong>Collection:</strong> <code>{pipe.qdrant_collection}</code></div>
+                                <div><strong>Strategy:</strong> {pipe.rag_strategy} ({pipe.chunk_size} / {pipe.chunk_overlap})</div>
+                                <div><strong>Embedding:</strong> {pipe.embedding_model}</div>
+                              </div>
+                            </div>
+                            <div style={{ marginTop: "12px", paddingTop: "8px", borderTop: "1px solid rgba(255, 255, 255, 0.05)", display: "flex", justifyContent: "flex-end" }}>
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePipeline(pipe.id)}
+                                style={{
+                                  background: "rgba(239, 68, 68, 0.1)",
+                                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                                  color: "#ef4444",
+                                  borderRadius: "6px",
+                                  padding: "4px 10px",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                <IconDelete style={{ width: "12px", height: "12px" }} />
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

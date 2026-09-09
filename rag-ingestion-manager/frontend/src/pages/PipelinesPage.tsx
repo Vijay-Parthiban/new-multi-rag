@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import {
@@ -11,10 +11,13 @@ import {
   PipelineRunRecord,
   PipelineStats,
   createPipeline,
+  deletePipeline,
   getPipelineOptions,
   listDirectories,
   listPipelineRuns,
   listPipelines,
+  listKnowledgeProfiles,
+  KnowledgeProfile,
   startPipelineRun,
   getPipelineStats,
   triggerPipelineSync,
@@ -47,6 +50,8 @@ export default function PipelinesPage() {
   const [selectedDirs, setSelectedDirs] = useState<Set<string>>(new Set());
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [knowledgeProfiles, setKnowledgeProfiles] = useState<KnowledgeProfile[]>([]);
+  const [selectedKnowledgeProfileId, setSelectedKnowledgeProfileId] = useState<string>("");
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(120);
   const [qdrantCollection, setQdrantCollection] = useState("");
@@ -56,21 +61,24 @@ export default function PipelinesPage() {
   const [scraperMaxPages, setScraperMaxPages] = useState(50);
   const [scraperMode, setScraperMode] = useState("httpx");
   const [scraperEmbeddingSource, setScraperEmbeddingSource] = useState<"markdown" | "image">("markdown");
-  const location = useLocation();
 
   const load = useCallback(async () => {
     try {
-      const [opts, dirs, pipes, srcs] = await Promise.all([
+      const [opts, dirs, pipes, srcs, kps] = await Promise.all([
         getPipelineOptions(),
         listDirectories(),
         listPipelines(),
         listSources(),
+        listKnowledgeProfiles(),
       ]);
       setOptions(opts);
       setDirectories(dirs);
       setPipelines(pipes);
       setSources(srcs);
-      setPipelines(pipes);
+      setKnowledgeProfiles(kps);
+      if (kps.length > 0 && !selectedKnowledgeProfileId) {
+        setSelectedKnowledgeProfileId(kps[0].id);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err : null);
@@ -146,6 +154,7 @@ export default function PipelinesPage() {
       scraper_max_depth: scraperMaxDepth,
       scraper_max_pages: scraperMaxPages,
       scraper_mode: scraperMode,
+      knowledge_profile_id: selectedKnowledgeProfileId || undefined,
     };
 
     try {
@@ -312,6 +321,24 @@ export default function PipelinesPage() {
                 onChange={(e) => setEmbeddingModel(e.target.value)}
                 required
               >
+              {knowledgeProfiles.length > 0 && (
+                <div style={{ marginBottom: "1rem" }}>
+                  <label htmlFor="knowledge-profile-select" className="field-label">Knowledge Profile</label>
+                  <select
+                    id="knowledge-profile-select"
+                    className="input"
+                    value={selectedKnowledgeProfileId}
+                    onChange={(e) => setSelectedKnowledgeProfileId(e.target.value)}
+                  >
+                    {knowledgeProfiles.map((kp) => (
+                      <option key={kp.id} value={kp.id}>
+                        {kp.name} {kp.description ? `(${kp.description})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="field-hint">Associate this RAG pipeline with a Knowledge Store profile.</p>
+                </div>
+              )}
                 <option value="" disabled>Select an engine...</option>
                 {options?.suggested_embedding_models.map((m) => (
                   <option key={m} value={m}>{m}</option>
@@ -542,10 +569,11 @@ export default function PipelinesPage() {
             ) : (
               <ul className="pipeline-list">
                 {pipelines.map((p) => (
-                  <li key={p.id} className={selectedPipelineId === p.id ? "active" : ""}>
+                  <li key={p.id} className={selectedPipelineId === p.id ? "active" : ""} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <button
                       type="button"
                       className="pipeline-list-item"
+                      style={{ flex: 1, textAlign: "left" }}
                       onClick={() => setSelectedPipelineId(p.id)}
                     >
                       <strong>{p.description}</strong>
@@ -556,13 +584,37 @@ export default function PipelinesPage() {
                         {p.sparse_embedding_model ? ` + ${p.sparse_embedding_model}` : ""}
                       </span>
                     </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleRun(p.id)}
-                    >
-                      Run
-                    </button>
+                    <div style={{ display: "flex", gap: "0.5rem", marginLeft: "0.5rem" }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleRun(p.id)}
+                      >
+                        Run
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ color: "var(--color-error, #dc2626)", borderColor: "#fecaca", padding: "0.25rem 0.5rem", fontSize: "0.8rem" }}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (confirm(`Are you sure you want to delete pipeline "${p.name}"?`)) {
+                            try {
+                              await deletePipeline(p.id);
+                              setInfo(`Pipeline "${p.name}" deleted.`);
+                              if (selectedPipelineId === p.id) {
+                                setSelectedPipelineId(null);
+                              }
+                              await load();
+                            } catch (err) {
+                              setError(err instanceof ApiError ? err : null);
+                            }
+                          }
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -169,6 +169,31 @@ async def _profile_to_dict(profile: KnowledgeProfile) -> dict[str, Any]:
                 "error_message": d_cfg.error_message,
             }
         )
+    pipelines_data = []
+    for p in profile.pipelines or []:
+        pipelines_data.append(
+            {
+                "id": str(p.id),
+                "knowledge_profile_id": str(p.knowledge_profile_id) if p.knowledge_profile_id else None,
+                "name": p.name,
+                "description": p.description,
+                "rag_strategy": p.rag_strategy.value if hasattr(p.rag_strategy, "value") else str(p.rag_strategy),
+                "embedding_model": p.embedding_model,
+                "sparse_embedding_model": p.sparse_embedding_model,
+                "modality": p.modality.value if p.modality and hasattr(p.modality, "value") else (str(p.modality) if p.modality else None),
+                "directory_names": p.directory_names or [],
+                "chunk_size": p.chunk_size,
+                "chunk_overlap": p.chunk_overlap,
+                "qdrant_collection": p.qdrant_collection,
+                "web_scraper_enabled": p.web_scraper_enabled,
+                "scraper_seed_url": p.scraper_seed_url,
+                "scraper_max_depth": p.scraper_max_depth,
+                "scraper_max_pages": p.scraper_max_pages,
+                "scraper_mode": p.scraper_mode,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+            }
+        )
 
     return {
         "id": str(profile.id),
@@ -182,8 +207,8 @@ async def _profile_to_dict(profile: KnowledgeProfile) -> dict[str, Any]:
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
         "sources": sources_data,
         "destinations": destinations_data,
+        "pipelines": pipelines_data,
     }
-
 
 # ── API Routes ───────────────────────────────────────────────────────────────
 

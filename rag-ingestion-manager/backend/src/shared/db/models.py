@@ -272,14 +272,19 @@ class Pipeline(Base):
     scraper_max_depth: Mapped[int] = mapped_column(Integer, default=2)
     scraper_max_pages: Mapped[int] = mapped_column(Integer, default=50)
     scraper_mode: Mapped[str] = mapped_column(String(32), default="httpx")
+    knowledge_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_profiles.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline")
-    sources: Mapped[list["PipelineSource"]] = relationship(back_populates="pipeline", lazy="selectin")
-
+    runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline", cascade="all, delete-orphan")
+    sources: Mapped[list["PipelineSource"]] = relationship(back_populates="pipeline", lazy="selectin", cascade="all, delete-orphan")
+    knowledge_profile: Mapped["KnowledgeProfile | None"] = relationship(
+        "KnowledgeProfile", back_populates="pipelines", lazy="selectin"
+    )
 
 class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
@@ -324,6 +329,9 @@ class KnowledgeProfile(Base):
     )
     destinations: Mapped[list["KnowledgeDestinationConfig"]] = relationship(
         back_populates="knowledge_profile", cascade="all, delete-orphan", lazy="selectin"
+    )
+    pipelines: Mapped[list["Pipeline"]] = relationship(
+        back_populates="knowledge_profile", lazy="selectin"
     )
 
 
