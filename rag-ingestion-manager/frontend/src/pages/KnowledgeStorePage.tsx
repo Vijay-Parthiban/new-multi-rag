@@ -537,27 +537,42 @@ export default function KnowledgeStorePage() {
                         No MinIO buckets linked.
                       </span>
                     ) : (
-                      profile.sources.map((s) => (
-                        <div
-                          key={s.source_id}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "8px",
-                            padding: "6px 14px",
-                            borderRadius: "8px",
-                            background: "rgba(15, 23, 42, 0.6)",
-                            border: "1px solid rgba(56, 189, 248, 0.2)",
-                            fontSize: "13px",
-                            color: "#e2e8f0",
-                          }}
-                        >
-                          <IconServer style={{ width: "14px", height: "14px", color: "#38bdf8" }} />
-                          <span style={{ fontWeight: 600 }}>{s.name}</span>
-                          <span style={{ color: "#64748b", fontSize: "11px" }}>({s.minio_bucket})</span>
-                        </div>
-                      ))
-                    )}
+                      profile.sources.map((s) => {
+                        const isLocal = s.connector_type === "local_filesystem" || s.source_type === "local_filesystem" || s.minio_bucket?.startsWith("local-");
+                        const folderName = (s.config?.folder_name as string) || s.minio_bucket?.replace("local-", "");
+                        return (
+                          <div
+                            key={s.source_id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              padding: "6px 14px",
+                              borderRadius: "8px",
+                              background: "rgba(15, 23, 42, 0.6)",
+                              border: `1px solid ${isLocal ? "rgba(46, 160, 67, 0.3)" : "rgba(56, 189, 248, 0.2)"}`,
+                              fontSize: "13px",
+                              color: "#e2e8f0",
+                            }}
+                          >
+                            {isLocal ? (
+                              <>
+                                <span style={{ fontSize: "13px" }}>📁</span>
+                                <span style={{ fontWeight: 600 }}>{s.name}</span>
+                                <span style={{ color: "#7ee787", fontSize: "11px", fontWeight: 500 }}>
+                                  (Local FS: {folderName})
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <IconServer style={{ width: "14px", height: "14px", color: "#38bdf8" }} />
+                                <span style={{ fontWeight: 600 }}>{s.name}</span>
+                                <span style={{ color: "#64748b", fontSize: "11px" }}>({s.minio_bucket})</span>
+                              </>
+                            )}
+                          </div>
+                        );
+                      }))}
                   </div>
                 </div>
 
@@ -919,17 +934,22 @@ export default function KnowledgeStorePage() {
                 </div>
               </div>
 
-              {/* MinIO Source Buckets Selection */}
+              {/* MinIO Bucket & Local File System Source Selection */}
               <div style={{ marginBottom: "28px" }}>
-                <label style={{ display: "block", fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "8px" }}>
-                  Link MinIO Source Buckets
+                <label style={{ display: "block", fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "4px" }}>
+                  Link Data Sources (MinIO Buckets & Local File Systems)
                 </label>
+                <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "10px" }}>
+                  Select at least one MinIO bucket source, at least one Local File System source, or any combination of both.
+                </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                   {sources.length === 0 ? (
                     <div style={{ fontSize: "13px", color: "#64748b" }}>No sources available.</div>
                   ) : (
                     sources.map((src) => {
                       const isSelected = selectedSourceIds.includes(src.id);
+                      const isLocal = src.connector_type === "local_filesystem" || src.source_type === "local_filesystem" || src.minio_bucket?.startsWith("local-");
+                      const folderName = (src.config?.folder_name as string) || src.minio_bucket?.replace("local-", "");
                       return (
                         <label
                           key={src.id}
@@ -939,8 +959,8 @@ export default function KnowledgeStorePage() {
                             gap: "12px",
                             padding: "10px 14px",
                             borderRadius: "10px",
-                            background: isSelected ? "rgba(59, 130, 246, 0.12)" : "rgba(30, 41, 59, 0.5)",
-                            border: `1px solid ${isSelected ? "rgba(59, 130, 246, 0.3)" : "rgba(255, 255, 255, 0.08)"}`,
+                            background: isSelected ? (isLocal ? "rgba(46, 160, 67, 0.15)" : "rgba(59, 130, 246, 0.12)") : "rgba(30, 41, 59, 0.5)",
+                            border: `1px solid ${isSelected ? (isLocal ? "rgba(46, 160, 67, 0.4)" : "rgba(59, 130, 246, 0.3)") : "rgba(255, 255, 255, 0.08)"}`,
                             cursor: "pointer",
                           }}
                         >
@@ -955,13 +975,45 @@ export default function KnowledgeStorePage() {
                               }
                             }}
                           />
-                          <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                             <span style={{ fontWeight: 600, fontSize: "14px", color: "#f8fafc" }}>
                               {src.name}
                             </span>
-                            <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "10px" }}>
-                              Bucket: {src.minio_bucket}
-                            </span>
+                            {isLocal ? (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  color: "#7ee787",
+                                  padding: "2px 8px",
+                                  borderRadius: "6px",
+                                  background: "rgba(46, 160, 67, 0.2)",
+                                  border: "1px solid rgba(46, 160, 67, 0.3)",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                📁 Local File System (storage/local_sources/{folderName})
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  color: "#38bdf8",
+                                  padding: "2px 8px",
+                                  borderRadius: "6px",
+                                  background: "rgba(56, 189, 248, 0.15)",
+                                  border: "1px solid rgba(56, 189, 248, 0.25)",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                🪣 MinIO Bucket ({src.minio_bucket})
+                              </span>
+                            )}
                           </div>
                         </label>
                       );

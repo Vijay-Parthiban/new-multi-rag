@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
+import FileBrowser from "../components/Sources/FileBrowser";
 import {
   IconArrowRight,
   IconBucket,
@@ -13,7 +14,6 @@ import {
   IconSources,
   IconSync,
   IconTrash,
-
 } from "../components/Icons";
 import {
   ApiError,
@@ -56,7 +56,7 @@ interface StatusSummary {
   other: number;
 }
 
-function summarizeConnectors(connectors: SourceConnectorRecord[]): StatusSummary {
+export function summarizeConnectors(connectors: SourceConnectorRecord[]): StatusSummary {
   const summary: StatusSummary = { connected: 0, syncing: 0, errored: 0, disabled: 0, other: 0 };
   if (!connectors) return summary;
 
@@ -85,6 +85,7 @@ function SourceCard({
   onNavigate,
   onSync,
   onDelete,
+  onOpenFiles,
   syncing,
   deleting,
 }: {
@@ -92,11 +93,14 @@ function SourceCard({
   onNavigate: (id: string) => void;
   onSync: (id: string) => void;
   onDelete: (id: string, name: string) => void;
+  onOpenFiles?: (source: SourceRecord) => void;
   syncing: boolean;
   deleting: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const connectorCount = source.connectors?.length ?? 0;
+  const isLocal = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-");
+  const folderName = (source.config?.folder_name as string) || source.minio_bucket.replace("local-", "");
 
 
   const handleCopyBucket = (e: React.MouseEvent) => {
@@ -146,33 +150,54 @@ function SourceCard({
       </div>
 
       {/* Meta Stats & MinIO Bucket Tag */}
+      {/* Meta Stats & MinIO Bucket / Local FS Tag */}
       <div className="source-card-meta">
-        <div className="source-card-stat">
-          <span className="source-card-stat-value">{connectorCount}</span>
-          <span className="source-card-stat-label">{connectorCount === 1 ? "connector" : "connectors"}</span>
-        </div>
+        {isLocal ? (
+          <div className="source-card-stat">
+            <span className="source-card-stat-value" style={{ color: "#7ee787", fontSize: "0.85rem" }}>📁 FS</span>
+            <span className="source-card-stat-label">Local System</span>
+          </div>
+        ) : (
+          <div className="source-card-stat">
+            <span className="source-card-stat-value">{connectorCount}</span>
+            <span className="source-card-stat-label">{connectorCount === 1 ? "connector" : "connectors"}</span>
+          </div>
+        )}
         <div className="source-card-divider" />
 
-        <div className="source-card-bucket" title={`MinIO Bucket: ${source.minio_bucket}`}>
-          <span style={{ color: "#58a6ff", display: "inline-flex" }}>
-            <IconBucket size={14} />
-          </span>
-          <span className="source-card-bucket-code">{source.minio_bucket}</span>
-          <button
-            type="button"
-            onClick={handleCopyBucket}
-            className="source-card-copy-btn"
-            title="Copy bucket name"
-            aria-label="Copy bucket name"
-          >
-            {copied ? <IconCheckCircle size={12} style={{ color: "#3fb950" }} /> : "📋"}
-          </button>
-        </div>
+        {isLocal ? (
+          <div className="source-card-bucket" title={`Local Storage Path: storage/local_sources/${folderName}`}>
+            <span style={{ color: "#3fb950", display: "inline-flex", fontSize: "0.85rem" }}>
+              📁
+            </span>
+            <span className="source-card-bucket-code" style={{ color: "#7ee787" }}>storage/local_sources/{folderName}</span>
+          </div>
+        ) : (
+          <div className="source-card-bucket" title={`MinIO Bucket: ${source.minio_bucket}`}>
+            <span style={{ color: "#58a6ff", display: "inline-flex" }}>
+              <IconBucket size={14} />
+            </span>
+            <span className="source-card-bucket-code">{source.minio_bucket}</span>
+            <button
+              type="button"
+              onClick={handleCopyBucket}
+              className="source-card-copy-btn"
+              title="Copy bucket name"
+              aria-label="Copy bucket name"
+            >
+              {copied ? <IconCheckCircle size={12} style={{ color: "#3fb950" }} /> : "📋"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Attached Connectors Brand Badges Row */}
       <div style={{ marginTop: "0.85rem", marginBottom: "0.85rem" }}>
-        {connectorCount === 0 ? (
+        {isLocal ? (
+          <div className="source-card-empty-connectors" style={{ borderColor: "rgba(46, 160, 67, 0.25)", background: "rgba(46, 160, 67, 0.08)" }}>
+            <span style={{ color: "#7ee787", fontWeight: 500 }}>📁 Manual File Uploads Only (No Connectors)</span>
+          </div>
+        ) : connectorCount === 0 ? (
           <div className="source-card-empty-connectors">
             <span>+ No connectors configured</span>
           </div>
@@ -218,6 +243,20 @@ function SourceCard({
         </button>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          {onOpenFiles && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenFiles(source);
+              }}
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+            >
+              <span>📁 Files</span>
+            </button>
+          )}
+
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -250,6 +289,7 @@ function SourceTable({
   onNavigate,
   onSync,
   onDelete,
+  onOpenFiles,
   syncingId,
   deletingId,
 }: {
@@ -257,6 +297,7 @@ function SourceTable({
   onNavigate: (id: string) => void;
   onSync: (id: string) => void;
   onDelete: (id: string, name: string) => void;
+  onOpenFiles?: (source: SourceRecord) => void;
   syncingId: string | null;
   deletingId: string | null;
 }) {
@@ -266,7 +307,7 @@ function SourceTable({
         <thead>
           <tr>
             <th>Source Name</th>
-            <th>MinIO Storage Bucket</th>
+            <th>Storage Location</th>
             <th>Status</th>
             <th>Connectors</th>
             <th>Last Updated</th>
@@ -276,6 +317,8 @@ function SourceTable({
         <tbody>
           {sources.map((s) => {
             const connectorCount = s.connectors?.length ?? 0;
+            const isLocal = s.connector_type === "local_filesystem" || s.source_type === "local_filesystem" || s.minio_bucket.startsWith("local-");
+            const folderName = (s.config?.folder_name as string) || s.minio_bucket.replace("local-", "");
             return (
               <tr
                 key={s.id}
@@ -285,7 +328,7 @@ function SourceTable({
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
                     <div className="source-card-icon" style={{ width: "32px", height: "32px" }}>
-                      <IconSources size={16} />
+                      {isLocal ? <span style={{ fontSize: "1rem" }}>📁</span> : <IconSources size={16} />}
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, color: "#e6edf3" }}>{s.name}</div>
@@ -294,9 +337,15 @@ function SourceTable({
                   </div>
                 </td>
                 <td>
-                  <code style={{ fontSize: "0.8rem", color: "#58a6ff", background: "rgba(56, 139, 253, 0.1)", padding: "0.2rem 0.5rem", borderRadius: "6px" }}>
-                    {s.minio_bucket}
-                  </code>
+                  {isLocal ? (
+                    <code style={{ fontSize: "0.8rem", color: "#7ee787", background: "rgba(46, 160, 67, 0.15)", padding: "0.2rem 0.5rem", borderRadius: "6px" }}>
+                      storage/local_sources/{folderName}
+                    </code>
+                  ) : (
+                    <code style={{ fontSize: "0.8rem", color: "#58a6ff", background: "rgba(56, 139, 253, 0.1)", padding: "0.2rem 0.5rem", borderRadius: "6px" }}>
+                      {s.minio_bucket}
+                    </code>
+                  )}
                 </td>
                 <td>
                   <StatusBadge status={s.status || "idle"} />
@@ -435,8 +484,9 @@ export default function SourcesPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newSourceName, setNewSourceName] = useState("");
+  const [selectedSourceType, setSelectedSourceType] = useState<"minio" | "local_filesystem">("minio");
+  const [fileDrawerSource, setFileDrawerSource] = useState<SourceRecord | null>(null);
   const [creating, setCreating] = useState(false);
-
   // Search & Filter controls state
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "syncing" | "error">("all");
@@ -511,9 +561,13 @@ export default function SourcesPage() {
       if (!newSourceName.trim()) return;
       setCreating(true);
       try {
-        const created = await createSource({ name: newSourceName.trim() });
+        const created = await createSource({
+          name: newSourceName.trim(),
+          source_type: selectedSourceType,
+        });
         setInfo(`Source "${created.name}" created successfully.`);
         setNewSourceName("");
+        setSelectedSourceType("minio");
         setShowCreateForm(false);
         await load();
         navigate(`/sources/${created.id}`);
@@ -523,9 +577,8 @@ export default function SourcesPage() {
         setCreating(false);
       }
     },
-    [newSourceName, load, navigate]
+    [newSourceName, selectedSourceType, load, navigate]
   );
-
   // Filtered sources
   const filteredSources = sources.filter((s) => {
     const matchesSearch =
@@ -718,6 +771,7 @@ export default function SourcesPage() {
               onNavigate={handleNavigate}
               onSync={handleSync}
               onDelete={handleDelete}
+              onOpenFiles={(src) => setFileDrawerSource(src)}
               syncing={syncingId === s.id}
               deleting={deletingId === s.id}
             />
@@ -729,6 +783,7 @@ export default function SourcesPage() {
           onNavigate={handleNavigate}
           onSync={handleSync}
           onDelete={handleDelete}
+          onOpenFiles={(src) => setFileDrawerSource(src)}
           syncingId={syncingId}
           deletingId={deletingId}
         />
@@ -754,6 +809,8 @@ export default function SourcesPage() {
             style={{
               width: "100%",
               maxWidth: "520px",
+              maxHeight: "90vh",
+              overflowY: "auto",
               background: "#111622",
               border: "1px solid rgba(88, 166, 253, 0.3)",
               borderRadius: "16px",
@@ -779,12 +836,18 @@ export default function SourcesPage() {
               <button
                 type="button"
                 onClick={() => setShowCreateForm(false)}
-                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#8b949e",
+                  fontSize: "1.2rem",
+                  cursor: "pointer",
+                  padding: "0.25rem",
+                }}
               >
                 ✕
               </button>
             </div>
-
             <form onSubmit={handleCreate}>
               <div style={{ marginBottom: "1.25rem" }}>
                 <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
@@ -810,24 +873,75 @@ export default function SourcesPage() {
                 />
               </div>
 
-              {/* MinIO Bucket Preview Card */}
+              <div style={{ marginBottom: "1.25rem" }}>
+                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                  Storage Option *
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceType("minio")}
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: selectedSourceType === "minio" ? "1px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
+                      background: selectedSourceType === "minio" ? "rgba(56, 139, 253, 0.15)" : "rgba(17, 21, 30, 0.6)",
+                      color: selectedSourceType === "minio" ? "#58a6ff" : "#8b949e",
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                      <IconBucket size={14} /> MinIO Bucket
+                    </div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>S3 object storage</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceType("local_filesystem")}
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: selectedSourceType === "local_filesystem" ? "1px solid #3fb950" : "1px solid rgba(255,255,255,0.1)",
+                      background: selectedSourceType === "local_filesystem" ? "rgba(46, 160, 67, 0.15)" : "rgba(17, 21, 30, 0.6)",
+                      color: selectedSourceType === "local_filesystem" ? "#7ee787" : "#8b949e",
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                      📁 Local File System
+                    </div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>storage/local_sources/</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Storage Location Preview Card */}
               {newSourceName.trim() && (
                 <div
                   style={{
                     padding: "0.85rem 1rem",
                     borderRadius: "8px",
-                    background: "rgba(56, 139, 253, 0.08)",
-                    border: "1px solid rgba(56, 139, 253, 0.25)",
+                    background: selectedSourceType === "local_filesystem" ? "rgba(46, 160, 67, 0.1)" : "rgba(56, 139, 253, 0.08)",
+                    border: selectedSourceType === "local_filesystem" ? "1px solid rgba(46, 160, 67, 0.3)" : "1px solid rgba(56, 139, 253, 0.25)",
                     marginBottom: "1.25rem",
                   }}
                 >
                   <div style={{ fontSize: "0.75rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-                    Auto-generated MinIO Bucket:
+                    {selectedSourceType === "local_filesystem" ? "Local Storage Path:" : "Auto-generated MinIO Bucket:"}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                    <IconBucket size={14} style={{ color: "#58a6ff" }} />
-                    <code style={{ fontSize: "0.85rem", color: "#58a6ff", fontWeight: 600 }}>
-                      source-{newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}-...
+                    {selectedSourceType === "local_filesystem" ? (
+                      <span style={{ fontSize: "0.9rem" }}>📁</span>
+                    ) : (
+                      <IconBucket size={14} style={{ color: "#58a6ff" }} />
+                    )}
+                    <code style={{ fontSize: "0.85rem", color: selectedSourceType === "local_filesystem" ? "#7ee787" : "#58a6ff", fontWeight: 600 }}>
+                      {selectedSourceType === "local_filesystem"
+                        ? `storage/local_sources/${newSourceName.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`
+                        : `source-${newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`}
                     </code>
                   </div>
                 </div>
@@ -838,21 +952,80 @@ export default function SourcesPage() {
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => setShowCreateForm(false)}
-                  disabled={creating}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={creating || !newSourceName.trim()}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+                  disabled={creating}
                 >
-                  {creating ? <IconSync size={14} className="spin" /> : <IconPlus size={14} />}
-                  <span>{creating ? "Creating..." : "Create Source"}</span>
+                  {creating ? "Creating..." : "Create Data Source"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* FILE MANAGEMENT MODAL */}
+      {fileDrawerSource && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1.5rem",
+          }}
+          onClick={() => setFileDrawerSource(null)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: "840px",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              background: "#111622",
+              border: "1px solid rgba(88, 166, 253, 0.3)",
+              borderRadius: "16px",
+              padding: "1.75rem",
+              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <div>
+                <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                  Manage Source Files — {fileDrawerSource.name}
+                </h2>
+                <div style={{ fontSize: "0.78rem", color: "#8b949e", marginTop: "0.2rem" }}>
+                  {fileDrawerSource.connector_type === "local_filesystem" || fileDrawerSource.minio_bucket.startsWith("local-")
+                    ? `Local Storage: storage/local_sources/${(fileDrawerSource.config?.folder_name as string) || fileDrawerSource.minio_bucket.replace("local-", "")}`
+                    : `MinIO Bucket: ${fileDrawerSource.minio_bucket}`}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFileDrawerSource(null)}
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <FileBrowser
+              sourceId={fileDrawerSource.id}
+              bucketName={fileDrawerSource.minio_bucket}
+              allowUpload={true}
+              allowDelete={true}
+              onError={(err) => setError(err)}
+              onInfo={(msg) => setInfo(msg)}
+            />
           </div>
         </div>
       )}

@@ -7,7 +7,7 @@ from apps.api.exceptions import app_error_handler
 from apps.api.routes import directories, files, knowledge, pipelines, sources, uploads
 from src.file_manager.core.errors import AppError
 from src.file_manager.utils.paths import ensure_storage_layout
-from src.shared.db.session import close_db
+from src.shared.db.session import close_db, init_db
 from src.shared.queue.client import close_redis
 from src.shared.auth import verify_api_key
 
@@ -15,6 +15,10 @@ from src.shared.auth import verify_api_key
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ensure_storage_layout()
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"Warning: init_db failed: {e}")
     yield
     await close_redis()
     await close_db()

@@ -86,8 +86,8 @@ export default function DirectoryPage({ routeName, routeNavigate }: DirectoryPag
                 Open viewer
               </Link>
             )}
-            <Link to="/upload" state={{ directory: name }} className="btn btn-primary">
-              Upload here
+            <Link to="/sources" className="btn btn-primary">
+              Manage Sources
             </Link>
           </div>
         }
@@ -115,7 +115,7 @@ export default function DirectoryPage({ routeName, routeNavigate }: DirectoryPag
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => navigate("/upload", { state: { directory: name } })}
+              onClick={() => navigate("/sources")}
             >
               Upload files
             </button>

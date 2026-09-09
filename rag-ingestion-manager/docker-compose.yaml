@@ -3,7 +3,7 @@ services:
   migrate:
     build:
       context: ..
-      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
+      dockerfile: rag-ingestion-manager/backend/Dockerfile
     command: ["sh", "/app/scripts/run-migrate.sh"]
     env_file:
       - .env
@@ -15,7 +15,7 @@ services:
   api:
     build:
       context: ..
-      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
+      dockerfile: rag-ingestion-manager/backend/Dockerfile
     command: ["sh", "/app/scripts/run-api.sh"]
     ports:
       - "8007:8000"
@@ -43,7 +43,7 @@ services:
   worker:
     build:
       context: ..
-      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
+      dockerfile: rag-ingestion-manager/backend/Dockerfile
     command: ["sh", "/app/scripts/run-worker.sh"]
     env_file:
       - .env
@@ -84,7 +84,7 @@ services:
   pathway-worker:
     build:
       context: ..
-      dockerfile: ingestion-workspace/ingestion-backend/Dockerfile
+      dockerfile: rag-ingestion-manager/backend/Dockerfile
     command: ["python", "-m", "apps.pathway_worker.main"]
     env_file:
       - .env
@@ -120,12 +120,12 @@ services:
 
   web:
     build:
-      context: ./ingestion-frontend
+      context: ./frontend
       dockerfile: Dockerfile
     ports:
       - "5173:5173"
     volumes:
-      - ./ingestion-frontend/src:/app/src
+      - ./frontend/src:/app/src
     environment:
       - VITE_API_URL=http://localhost:8007
       - VITE_SCRAPER_URL=http://localhost:8000

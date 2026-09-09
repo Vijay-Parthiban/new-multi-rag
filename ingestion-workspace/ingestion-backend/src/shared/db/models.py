@@ -5,8 +5,16 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+@compiles(UUID, "sqlite")
+def _compile_uuid_sqlite(type_, compiler, **kw):
+    return "VARCHAR(36)"
 
 class Base(AsyncAttrs, DeclarativeBase):
     pass
@@ -252,9 +260,6 @@ class Pipeline(Base):
     __tablename__ = "pipelines"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    knowledge_profile_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("knowledge_profiles.id", ondelete="SET NULL"), nullable=True
-    )
     name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     description: Mapped[str] = mapped_column(String(512), unique=True, index=True)
     rag_strategy: Mapped[RagStrategy] = mapped_column(

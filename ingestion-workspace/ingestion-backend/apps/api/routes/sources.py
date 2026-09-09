@@ -6,10 +6,13 @@ Two monitoring modes at two points:
   - Source → Pipeline: how bucket changes trigger pipeline re-indexing (per-link or source default)
 """
 
+import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Literal
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -17,15 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.file_manager.core.errors import ConflictError, NotFoundError, ValidationError
+from src.file_manager.utils.paths import sanitize_directory_name, sanitize_file_name, storage_root
 from src.shared.db.session import get_db
 from src.shared.storage import ensure_bucket
 from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource
 from src.shared.config.settings import get_settings
-
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 settings = get_settings()
 
 CONNECTOR_OPTIONS = [
+    {"id": "local_filesystem", "label": "Local File System", "description": "Local workspace folder storage"},
     {"id": "google_drive", "label": "Google Drive", "description": "Sync files from Google Drive"},
     {"id": "google_sheets", "label": "Google Sheets", "description": "Sync spreadsheets from Google Sheets"},
     {"id": "gcs", "label": "Google Cloud Storage", "description": "Sync files from GCS buckets"},
@@ -69,6 +73,7 @@ class ConnectorUpdateRequest(BaseModel):
 
 class SourceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    source_type: Literal["minio", "local_filesystem"] | str | None = Field(default="minio")
     # Legacy single-connector fields (backward compat)
     connector_type: str | None = Field(default=None, max_length=64)
     config: dict = Field(default_factory=dict)
@@ -122,6 +127,29 @@ def _connector_to_dict(c: SourceConnector) -> dict:
     }
 
 
+def _is_local_source(s: Source) -> bool:
+    if s.connector_type == "local_filesystem":
+        return True
+    if (s.config or {}).get("source_type") == "local_filesystem":
+        return True
+    if s.minio_bucket and s.minio_bucket.startswith("local-"):
+        return True
+    return False
+
+def _trigger_sync_in_background(source: Source) -> None:
+    async def _runner():
+        from src.shared.db.session import AsyncSessionLocal
+        from src.ingestion_service.core.pathway_sync import _trigger_pipeline_syncs
+        try:
+            async with AsyncSessionLocal() as db_session:
+                s = await db_session.get(Source, source.id)
+                if s:
+                    await _trigger_pipeline_syncs(db_session, s)
+        except Exception as exc:
+            logger.warning("background_fanout_sync_failed source=%s error=%s", source.id, exc)
+    asyncio.create_task(_runner())
+
+
 async def _source_to_dict(s: Source) -> dict:
     try:
         pipelines = s.pipelines or []
@@ -131,9 +159,12 @@ async def _source_to_dict(s: Source) -> dict:
         connectors = s.connectors or []
     except Exception:
         connectors = []
+    is_local = _is_local_source(s)
     return {
         "id": str(s.id),
         "name": s.name,
+        "source_type": "local_filesystem" if is_local else "minio",
+        "local_path": (s.config or {}).get("local_path") if is_local else None,
         # Legacy fields
         "connector_type": s.connector_type,
         "config": s.config or {},
@@ -198,13 +229,56 @@ async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
 async def create_source(
     body: SourceCreateRequest, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Create a new external data source with its own MinIO bucket.
+    """Create a new external data source or local filesystem source."""
+    is_local = body.source_type == "local_filesystem" or body.connector_type == "local_filesystem"
 
-    Supports both legacy single-connector and new multi-connector creation:
-    - Legacy: pass connector_type + config directly
-    - New: pass connectors[] array with multiple connector configs
-    """
-    # Build connector list from either legacy or new format
+    # Check name uniqueness
+    existing = await db.execute(select(Source).where(Source.name == body.name.strip()))
+    if existing.scalar_one_or_none():
+        raise ConflictError("SOURCE_EXISTS", f"A source named '{body.name}' already exists.")
+
+    source_id = uuid.uuid4()
+
+    if is_local:
+        import re
+        safe_name = re.sub(r"[^a-z0-9_-]", "_", body.name.strip().lower())
+        if not safe_name:
+            safe_name = "local_source"
+        folder_name = f"{safe_name}-{str(source_id)[:8]}"
+        local_dir = storage_root() / "local_sources" / folder_name
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        bucket = f"local-{folder_name}"
+        config = body.config or {}
+        config["source_type"] = "local_filesystem"
+        config["folder_name"] = folder_name
+        config["local_path"] = str(local_dir)
+
+        source = Source(
+            id=source_id,
+            name=body.name.strip(),
+            connector_type="local_filesystem",
+            config=config,
+            connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
+            connector_sync_interval_minutes=body.connector_sync_interval_minutes,
+            pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
+            pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
+            minio_bucket=bucket,
+            status="synced",
+            sync_interval_minutes=body.sync_interval_minutes,
+        )
+        db.add(source)
+        await db.commit()
+        from sqlalchemy.orm import selectinload
+        res = await db.execute(
+            select(Source)
+            .options(selectinload(Source.pipelines), selectinload(Source.connectors))
+            .where(Source.id == source_id)
+        )
+        refreshed_source = res.scalar_one()
+        return await _source_to_dict(refreshed_source)
+
+    # MinIO / Multi-connector source path
     connector_requests: list[ConnectorCreateRequest] = []
     if body.connectors:
         connector_requests = body.connectors
@@ -218,7 +292,6 @@ async def create_source(
             )
         ]
 
-    # Validate connector types
     for cr in connector_requests:
         if cr.connector_type not in VALID_CONNECTOR_IDS:
             raise ValidationError(
@@ -227,12 +300,6 @@ async def create_source(
                 f"Valid options: {sorted(VALID_CONNECTOR_IDS)}",
             )
 
-    # Check name uniqueness
-    existing = await db.execute(select(Source).where(Source.name == body.name.strip()))
-    if existing.scalar_one_or_none():
-        raise ConflictError("SOURCE_EXISTS", f"A source named '{body.name}' already exists.")
-
-    source_id = uuid.uuid4()
     bucket = _make_bucket_name(str(source_id), body.name.strip())
 
     source = Source(
@@ -249,7 +316,6 @@ async def create_source(
     )
     db.add(source)
 
-    # Add connectors
     for cr in connector_requests:
         connector = SourceConnector(
             source_id=source_id,
@@ -264,31 +330,10 @@ async def create_source(
     await db.commit()
     source = await db.get(Source, source.id)
 
-    # Create MinIO bucket
     try:
         await ensure_bucket(bucket)
     except Exception:
-        pass
-
-    # Set up bucket notifications for live monitoring mode
-    if source.pipeline_monitor_mode == SourceMonitorMode.LIVE:
-        try:
-            from src.shared.storage.s3_client import setup_bucket_notification
-            webhook_url = f"{settings.internal_api_url}/api/sources/{source.id}/events"
-            await setup_bucket_notification(bucket, webhook_url)
-        except Exception as exc:
-            logger.warning(
-                "bucket_notification_setup_failed source=%s bucket=%s error=%s",
-                source.id, bucket, exc,
-            )
-
-    # Trigger initial sync for all connectors
-    if source.enabled and connector_requests:
-        try:
-            from src.ingestion_service.clients.source_sync import trigger_source_sync as do_sync
-            await do_sync(db, source.id)
-        except Exception:
-            pass
+        logger.warning("failed_ensuring_minio_bucket bucket=%s", bucket)
 
     result = await db.execute(
         select(Source)
@@ -358,7 +403,8 @@ async def update_source(
         try:
             from src.shared.storage.s3_client import setup_bucket_notification
             if source.pipeline_monitor_mode == SourceMonitorMode.LIVE:
-                webhook_url = f"{settings.internal_api_url}/api/sources/{source.id}/events"
+                api_base = getattr(settings, "internal_api_url", "http://localhost:8000")
+                webhook_url = f"{api_base}/api/sources/{source.id}/events"
                 await setup_bucket_notification(source.minio_bucket, webhook_url)
                 logger.info("bucket_notification_enabled source=%s", source.id)
             else:
@@ -386,8 +432,16 @@ async def delete_source(
             {"pipeline_ids": linked},
         )
 
-    # Remove bucket from MinIO
-    if source.minio_bucket:
+    is_local = _is_local_source(source)
+    if is_local:
+        try:
+            folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+            local_dir = storage_root() / "local_sources" / folder_name
+            if local_dir.exists():
+                shutil.rmtree(local_dir)
+        except Exception as exc:
+            logger.error("Failed deleting local source directory for source %s: %s", source_id, exc)
+    elif source.minio_bucket:
         try:
             from src.shared.storage import delete_bucket as s3_delete_bucket
             await s3_delete_bucket(source.minio_bucket)
@@ -398,17 +452,12 @@ async def delete_source(
     return {"status": "deleted", "id": str(source_id)}
 
 
-# ── Source Connectors CRUD ────────────────────────────────────────────────
-
-
-@router.get("/{source_id}/connectors", status_code=200)
+@router.get("/{source_id}/connectors")
 async def list_source_connectors(
     source_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
 ):
     """List all connectors for a source."""
     source = await db.get(Source, source_id)
-    if not source:
-        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
     result = await db.execute(
         select(SourceConnector)
         .where(SourceConnector.source_id == source_id)
@@ -427,6 +476,12 @@ async def add_source_connector(
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+
+    if _is_local_source(source):
+        raise ValidationError(
+            "CONNECTORS_NOT_SUPPORTED",
+            "Local File System sources do not support connectors."
+        )
 
     if body.connector_type not in VALID_CONNECTOR_IDS:
         raise ValidationError(
@@ -631,10 +686,33 @@ async def list_source_files(
     db: Annotated[AsyncSession, Depends(get_db)],
     prefix: str = Query(default=""),
 ):
-    """List files in the source's MinIO bucket."""
+    """List files in the source (MinIO bucket or Local File System)."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+
+    is_local = _is_local_source(source)
+    if is_local:
+        folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+        local_dir = storage_root() / "local_sources" / folder_name
+        local_dir.mkdir(parents=True, exist_ok=True)
+        file_entries = []
+        for p in local_dir.rglob("*"):
+            if p.is_file():
+                rel_key = str(p.relative_to(local_dir)).replace("\\", "/")
+                if prefix and not rel_key.startswith(prefix):
+                    continue
+                stat = p.stat()
+                file_entries.append({
+                    "key": rel_key,
+                    "size": stat.st_size,
+                    "last_modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                })
+        return {
+            "source_id": str(source_id),
+            "bucket": source.minio_bucket,
+            "files": file_entries,
+        }
 
     from src.shared.storage import list_objects as s3_list
 
@@ -657,30 +735,60 @@ async def upload_source_file(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Upload a file directly into the source's MinIO bucket.
-
-    Multipart field name must be `file`. In live monitoring mode, the bucket
-    notification webhook fires and triggers pipeline re-indexing automatically.
-    """
+    """Upload file(s) into the source (MinIO bucket or Local File System folder)."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
     form = await request.form()
-    upload = form.get("file")
-    if upload is None or getattr(upload, "filename", None) is None:
-        raise ValidationError("FILE_REQUIRED", "Multipart field 'file' is required.")
+    raw_uploads = form.getlist("file") + form.getlist("files")
+    if not raw_uploads:
+        single = form.get("file") or form.get("files")
+        if single:
+            raw_uploads = [single]
 
+    if not raw_uploads:
+        raise ValidationError("FILE_REQUIRED", "Multipart field 'file' or 'files' is required.")
+
+    is_local = _is_local_source(source)
+    if is_local:
+        folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+        local_dir = storage_root() / "local_sources" / folder_name
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_files = []
+        for item in raw_uploads:
+            if not hasattr(item, "filename") or not item.filename:
+                continue
+            data = await item.read()
+            clean_name = sanitize_file_name(item.filename)
+            file_path = local_dir / clean_name
+            file_path.write_bytes(data)
+            saved_files.append({"key": clean_name, "size": len(data)})
+
+        logger.info("local_source_file_uploaded source=%s folder=%s count=%d", source.id, folder_name, len(saved_files))
+        _trigger_sync_in_background(source)
+        return {
+            "status": "uploaded",
+            "source_id": str(source_id),
+            "bucket": source.minio_bucket,
+            "key": saved_files[0]["key"] if saved_files else "",
+            "size": saved_files[0]["size"] if saved_files else 0,
+            "files": saved_files,
+        }
+    # MinIO upload path
+    upload = raw_uploads[0]
     data = await upload.read()
     if not data:
         raise ValidationError("EMPTY_FILE", "Uploaded file is empty.")
 
-    key = upload.filename.strip("/")
+    key = sanitize_file_name(getattr(upload, "filename", "file"))
     from src.shared.storage import ensure_bucket, put_object
 
     await ensure_bucket(source.minio_bucket)
     await put_object(source.minio_bucket, key, data)
     logger.info("source_file_uploaded source=%s bucket=%s key=%s bytes=%d", source.id, source.minio_bucket, key, len(data))
+    _trigger_sync_in_background(source)
     return {
         "status": "uploaded",
         "source_id": str(source_id),
@@ -689,26 +797,37 @@ async def upload_source_file(
         "size": len(data),
     }
 
-
 @router.delete("/{source_id}/files", status_code=200)
 async def delete_source_file(
     source_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     key: str = Query(..., min_length=1),
 ):
-    """Delete a file from the source's MinIO bucket.
-
-    In live monitoring mode the removal event triggers pipeline sync, which
-    drops the vectors for the removed file.
-    """
+    """Delete a file from the source (MinIO bucket or Local File System)."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
-    from src.shared.storage import delete_object
+    is_local = _is_local_source(source)
+    if is_local:
+        folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+        local_dir = storage_root() / "local_sources" / folder_name
+        file_path = local_dir / key
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+        logger.info("local_source_file_deleted source=%s folder=%s key=%s", source.id, folder_name, key)
+        _trigger_sync_in_background(source)
+        return {
+            "status": "deleted",
+            "source_id": str(source_id),
+            "bucket": source.minio_bucket,
+            "key": key,
+        }
 
+    from src.shared.storage import delete_object
     await delete_object(source.minio_bucket, key)
     logger.info("source_file_deleted source=%s bucket=%s key=%s", source.id, source.minio_bucket, key)
+    _trigger_sync_in_background(source)
     return {
         "status": "deleted",
         "source_id": str(source_id),
@@ -723,10 +842,25 @@ async def get_source_file_content(
     db: Annotated[AsyncSession, Depends(get_db)],
     key: str = Query(..., min_length=1),
 ):
-    """Fetch the content of a file stored in the source's MinIO bucket."""
+    """Fetch the content of a file stored in the source."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+
+    import mimetypes
+    content_type, _ = mimetypes.guess_type(key)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    is_local = _is_local_source(source)
+    if is_local:
+        folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+        local_dir = storage_root() / "local_sources" / folder_name
+        file_path = local_dir / key
+        if not file_path.exists() or not file_path.is_file():
+            raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}'")
+        content = file_path.read_bytes()
+        return Response(content=content, media_type=content_type)
 
     from src.shared.storage import get_object
     try:
@@ -734,12 +868,6 @@ async def get_source_file_content(
     except Exception as e:
         raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}': {str(e)}")
 
-    import mimetypes
-    content_type, _ = mimetypes.guess_type(key)
-    if not content_type:
-        content_type = "application/octet-stream"
-
-    from fastapi.responses import Response
     return Response(content=data, media_type=content_type)
 
 

@@ -26,6 +26,15 @@ from src.shared.db.models import KnowledgeProfile
 from src.shared.storage.s3_client import get_object, list_objects
 logger = logging.getLogger(__name__)
 
+def _is_local_source(s: Any) -> bool:
+    if getattr(s, "connector_type", None) == "local_filesystem":
+        return True
+    if (getattr(s, "config", None) or {}).get("source_type") == "local_filesystem":
+        return True
+    if getattr(s, "minio_bucket", None) and str(s.minio_bucket).startswith("local-"):
+        return True
+    return False
+
 
 async def execute_universal_fanout_sync(
     db: AsyncSession, profile: KnowledgeProfile
@@ -63,30 +72,45 @@ async def execute_universal_fanout_sync(
     total_pages = 0
     destinations_synced = []
 
-    # Process files from linked MinIO buckets
+    # Process files from linked sources (MinIO buckets or Local File Systems)
     for source in linked_sources:
-        bucket = source.minio_bucket
-        try:
-            objs = await list_objects(bucket)
-        except Exception as exc:
-            logger.error("minio_list_objects_failed bucket=%s error=%s", bucket, str(exc))
-            continue
+        is_local = _is_local_source(source)
+        if is_local:
+            from src.shared.storage import storage_root
+            folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+            local_dir = storage_root() / "local_sources" / folder_name
+            local_dir.mkdir(parents=True, exist_ok=True)
 
-        active_remote_map = {}
-        for obj in objs:
-            key = getattr(obj, "key", "")
-            if key and not key.endswith("/"):
-                active_remote_map[key] = obj
+            active_remote_map = {}
+            for p in local_dir.rglob("*"):
+                if p.is_file():
+                    key = str(p.relative_to(local_dir)).replace("\\", "/")
+                    active_remote_map[key] = p
+        else:
+            bucket = source.minio_bucket
+            try:
+                objs = await list_objects(bucket)
+            except Exception as exc:
+                logger.error("minio_list_objects_failed bucket=%s error=%s", bucket, str(exc))
+                continue
 
+            active_remote_map = {}
+            for obj in objs:
+                key = getattr(obj, "key", "")
+                if key and not key.endswith("/"):
+                    active_remote_map[key] = obj
         # Query existing indexed files from database for this source
         stmt = select(IndexedFile).where(IndexedFile.source_id == source.id)
         res = await db.execute(stmt)
         existing_records = {rec.file_key: rec for rec in res.scalars().all()}
 
         # 1. Handle ADD and UPDATE
-        for key, obj in active_remote_map.items():
+        for key, item in active_remote_map.items():
             try:
-                data = await get_object(bucket, key)
+                if is_local:
+                    data = item.read_bytes()
+                else:
+                    data = await get_object(bucket, key)
                 import hashlib
                 content_hash = hashlib.sha256(data).hexdigest()
 

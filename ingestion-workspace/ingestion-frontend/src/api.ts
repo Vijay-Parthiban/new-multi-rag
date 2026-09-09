@@ -139,6 +139,10 @@ export interface DirectorySummary {
   id: string;
   name: string;
   created_at: string;
+  file_count?: number;
+  fileCount?: number;
+  updated_at?: string;
+  updatedAt?: string;
 }
 
 export async function listDirectories(): Promise<DirectorySummary[]> {
@@ -199,6 +203,7 @@ export interface PipelineCatalogEntry {
 
 export interface PipelineRecord {
   id: string;
+  knowledge_profile_id?: string | null;
   name: string;
   description: string;
   rag_strategy: string;
@@ -251,8 +256,8 @@ export interface CreatePipelineRequest {
   scraper_max_depth?: number;
   scraper_max_pages?: number;
   scraper_mode?: string;
+  knowledge_profile_id?: string;
 }
-
 export interface PipelinePatchRequest {
   directory_names?: string[];
   web_scraper_enabled?: boolean;
@@ -288,6 +293,11 @@ export async function updatePipeline(pipelineId: string, body: PipelinePatchRequ
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+export async function deletePipeline(pipelineId: string): Promise<void> {
+  return apiFetch<void>(`/api/pipelines/${pipelineId}`, {
+    method: "DELETE",
   });
 }
 
@@ -336,8 +346,8 @@ export interface KnowledgeProfile {
   updated_at?: string;
   sources: KnowledgeProfileSource[];
   destinations: KnowledgeDestinationConfig[];
+  pipelines?: PipelineRecord[];
 }
-
 export interface KnowledgeProfileCreateRequest {
   name: string;
   description?: string;
@@ -1066,6 +1076,8 @@ export interface SourceConnectorRecord {
 export interface SourceRecord {
   id: string;
   name: string;
+  source_type?: "minio" | "local_filesystem" | string;
+  local_path?: string | null;
   connector_type: string | null;
   config: Record<string, unknown> | null;
   connector_monitor_mode: "live" | "scheduled";
@@ -1082,7 +1094,6 @@ export interface SourceRecord {
   created_at: string;
   updated_at: string;
 }
-
 export interface PipelineLinkInfo {
   pipeline_id: string;
   pipeline_name?: string;
@@ -1093,6 +1104,7 @@ export interface PipelineLinkInfo {
 
 export interface SourceCreateRequest {
   name: string;
+  source_type?: "minio" | "local_filesystem" | string;
   connector_type?: string;
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";
@@ -1215,6 +1227,17 @@ export async function uploadSourceFile(sourceId: string, file: File): Promise<{ 
   const formData = new FormData();
   formData.append("file", file);
   return apiFetch<{ status: string; source_id: string; bucket: string; key: string; size: number }>(`/api/sources/${sourceId}/files`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function uploadSourceFiles(sourceId: string, files: File[]): Promise<{ status: string; source_id: string; bucket: string; files?: { key: string; size: number }[] }> {
+  const formData = new FormData();
+  for (const f of files) {
+    formData.append("files", f);
+  }
+  return apiFetch<{ status: string; source_id: string; bucket: string; files?: { key: string; size: number }[] }>(`/api/sources/${sourceId}/files`, {
     method: "POST",
     body: formData,
   });

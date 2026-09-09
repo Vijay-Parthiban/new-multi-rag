@@ -137,6 +137,9 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
         if (!mounted) return;
         setSource(srcData);
         setCatalog(catData);
+        if (srcData.connector_type === "local_filesystem" || srcData.source_type === "local_filesystem" || srcData.minio_bucket?.startsWith("local-")) {
+          setActiveTab("files");
+        }
 
         const fileRes = await listSourceFiles(id!).catch(() => ({ files: [] }));
         if (mounted) setFiles(fileRes.files ?? []);
@@ -286,10 +289,10 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   if (!source) return null;
 
   const connectorCount = source.connectors?.length ?? 0;
+  const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-");
   const filteredCatalog = EXTENDED_CATALOG.filter(
     (item) => categoryFilter === "all" || item.category === categoryFilter
   );
-
   return (
     <div className="page">
       {/* Top Header */}
@@ -307,27 +310,47 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             </h1>
             <StatusBadge status={source.status || "idle"} />
 
-            {/* MinIO Bucket Pill */}
-            <div
-              onClick={handleCopyBucket}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.4rem",
-                padding: "0.25rem 0.65rem",
-                borderRadius: "999px",
-                background: "rgba(56, 139, 253, 0.1)",
-                border: "1px solid rgba(56, 139, 253, 0.25)",
-                color: "#58a6ff",
-                fontSize: "0.8rem",
-                cursor: "pointer",
-              }}
-              title="Click to copy MinIO bucket name"
-            >
-              <IconBucket size={13} />
-              <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
-              <span>{copiedBucket ? "✓" : "📋"}</span>
-            </div>
+            {/* Bucket / Local Storage Pill */}
+            {source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-") ? (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  padding: "0.25rem 0.65rem",
+                  borderRadius: "999px",
+                  background: "rgba(46, 160, 67, 0.15)",
+                  border: "1px solid rgba(46, 160, 67, 0.3)",
+                  color: "#7ee787",
+                  fontSize: "0.8rem",
+                }}
+                title="Local Storage Path"
+              >
+                <span>📁</span>
+                <code style={{ fontWeight: 600 }}>storage/local_sources/{(source.config?.folder_name as string) || source.minio_bucket.replace("local-", "")}</code>
+              </div>
+            ) : (
+              <div
+                onClick={handleCopyBucket}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  padding: "0.25rem 0.65rem",
+                  borderRadius: "999px",
+                  background: "rgba(56, 139, 253, 0.1)",
+                  border: "1px solid rgba(56, 139, 253, 0.25)",
+                  color: "#58a6ff",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                }}
+                title="Click to copy MinIO bucket name"
+              >
+                <IconBucket size={13} />
+                <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
+                <span>{copiedBucket ? "✓" : "📋"}</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -339,16 +362,18 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           >
             ← Back to Sources
           </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={handleSyncAll}
-            disabled={syncingAll}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
-          >
-            <IconSync size={15} className={syncingAll ? "spin" : ""} />
-            <span>{syncingAll ? "Syncing All..." : "Sync All Connectors"}</span>
-          </button>
+          {!isLocalSource && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSyncAll}
+              disabled={syncingAll}
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+            >
+              <IconSync size={15} className={syncingAll ? "spin" : ""} />
+              <span>{syncingAll ? "Syncing All..." : "Sync All Connectors"}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -397,96 +422,124 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
         </div>
 
       </div>
-
-      {/* Tab Navigation */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "0.5rem",
-          padding: "0.35rem",
-          background: "rgba(11, 14, 20, 0.6)",
-          border: "1px solid rgba(56, 68, 100, 0.45)",
-          borderRadius: "10px",
-          marginBottom: "1.75rem",
-          width: "fit-content",
-          backdropFilter: "blur(8px)",
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => setActiveTab("connectors")}
+      {/* Local File System Information Banner */}
+      {isLocalSource && (
+        <div
           style={{
-            display: "inline-flex",
+            padding: "1rem 1.25rem",
+            borderRadius: "10px",
+            background: "rgba(46, 160, 67, 0.1)",
+            border: "1px solid rgba(46, 160, 67, 0.25)",
+            color: "#7ee787",
+            marginBottom: "1.5rem",
+            display: "flex",
             alignItems: "center",
-            gap: "0.5rem",
-            padding: "0.55rem 1.1rem",
-            borderRadius: "7px",
-            border: "none",
-            background: activeTab === "connectors" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
-            color: activeTab === "connectors" ? "#ffffff" : "#94a3b8",
-            fontSize: "0.875rem",
-            fontWeight: activeTab === "connectors" ? 600 : 500,
-            cursor: "pointer",
-            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-            boxShadow: activeTab === "connectors" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+            gap: "0.75rem",
           }}
         >
-          <IconZap size={15} />
-          <span>Connectors Catalogue</span>
-          <span
-            style={{
-              fontSize: "0.72rem",
-              padding: "0.15rem 0.5rem",
-              borderRadius: "999px",
-              background: activeTab === "connectors" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
-              color: activeTab === "connectors" ? "#ffffff" : "#8b949e",
-              fontWeight: 600,
-            }}
-          >
-            {connectorCount}
-          </span>
-        </button>
+          <span style={{ fontSize: "1.4rem" }}>📁</span>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
+              Local File System Source (Manual Uploads Only)
+            </div>
+            <div style={{ fontSize: "0.82rem", color: "#a5d6a7", marginTop: "0.15rem" }}>
+              Files are stored locally in <code>storage/local_sources/{(source.config?.folder_name as string) || source.minio_bucket.replace("local-", "")}</code>.
+              Pathway CRUD monitoring automatically watches this folder and syncs changes to all linked Knowledge Store destinations. Connectors are disabled for local sources.
+            </div>
+          </div>
+        </div>
+      )}
 
-        <button
-          type="button"
-          onClick={() => setActiveTab("files")}
+      {/* Tab Navigation (Hidden for Local FS sources) */}
+      {!isLocalSource && (
+        <div
           style={{
-            display: "inline-flex",
+            display: "flex",
             alignItems: "center",
             gap: "0.5rem",
-            padding: "0.55rem 1.1rem",
-            borderRadius: "7px",
-            border: "none",
-            background: activeTab === "files" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
-            color: activeTab === "files" ? "#ffffff" : "#94a3b8",
-            fontSize: "0.875rem",
-            fontWeight: activeTab === "files" ? 600 : 500,
-            cursor: "pointer",
-            transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
-            boxShadow: activeTab === "files" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+            padding: "0.35rem",
+            background: "rgba(11, 14, 20, 0.6)",
+            border: "1px solid rgba(56, 68, 100, 0.45)",
+            borderRadius: "10px",
+            marginBottom: "1.75rem",
+            width: "fit-content",
+            backdropFilter: "blur(8px)",
           }}
         >
-          <IconFile size={15} />
-          <span>Bucket Storage Files</span>
-          <span
+          <button
+            type="button"
+            onClick={() => setActiveTab("connectors")}
             style={{
-              fontSize: "0.72rem",
-              padding: "0.15rem 0.5rem",
-              borderRadius: "999px",
-              background: activeTab === "files" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
-              color: activeTab === "files" ? "#ffffff" : "#8b949e",
-              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              padding: "0.55rem 1.1rem",
+              borderRadius: "7px",
+              border: "none",
+              background: activeTab === "connectors" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
+              color: activeTab === "connectors" ? "#ffffff" : "#94a3b8",
+              fontSize: "0.875rem",
+              fontWeight: activeTab === "connectors" ? 600 : 500,
+              cursor: "pointer",
+              transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+              boxShadow: activeTab === "connectors" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
             }}
           >
-            {files.length}
-          </span>
-        </button>
+            <IconZap size={15} />
+            <span>Connectors Catalogue</span>
+            <span
+              style={{
+                fontSize: "0.72rem",
+                padding: "0.15rem 0.5rem",
+                borderRadius: "999px",
+                background: activeTab === "connectors" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+                color: activeTab === "connectors" ? "#ffffff" : "#8b949e",
+                fontWeight: 600,
+              }}
+            >
+              {connectorCount}
+            </span>
+          </button>
 
-      </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab("files")}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              padding: "0.55rem 1.1rem",
+              borderRadius: "7px",
+              border: "none",
+              background: activeTab === "files" ? "linear-gradient(135deg, #388bfd 0%, #1f6feb 100%)" : "transparent",
+              color: activeTab === "files" ? "#ffffff" : "#94a3b8",
+              fontSize: "0.875rem",
+              fontWeight: activeTab === "files" ? 600 : 500,
+              cursor: "pointer",
+              transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+              boxShadow: activeTab === "files" ? "0 2px 10px rgba(56, 139, 253, 0.35)" : "none",
+            }}
+          >
+            <IconFile size={15} />
+            <span>Source Files</span>
+            <span
+              style={{
+                fontSize: "0.72rem",
+                padding: "0.15rem 0.5rem",
+                borderRadius: "999px",
+                background: activeTab === "files" ? "rgba(255, 255, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+                color: activeTab === "files" ? "#ffffff" : "#8b949e",
+                fontWeight: 600,
+              }}
+            >
+              {files.length}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* TAB 1: CONNECTORS CATALOGUE & ACTIVE CONNECTORS */}
-      {activeTab === "connectors" && (
+      {!isLocalSource && activeTab === "connectors" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
           {/* Active Attached Connectors Section */}
           <div>
@@ -683,8 +736,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           sourceId={source?.id ?? id ?? ""}
           bucketName={source?.minio_bucket ?? ""}
           files={files}
-          allowUpload={false}
-          allowDelete={false}
+          allowUpload={true}
+          allowDelete={true}
           onError={(err) => setError(err)}
           onInfo={(msg) => console.log(msg)}
         />

@@ -13,13 +13,17 @@ def _get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        _engine = create_async_engine(
-            settings.async_database_url,
-            pool_pre_ping=True,
-            pool_size=30,
-            max_overflow=50,
-            pool_timeout=30,
-        )
+        url = settings.async_database_url
+        if "sqlite" in url:
+            _engine = create_async_engine(url, pool_pre_ping=True)
+        else:
+            _engine = create_async_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=30,
+                max_overflow=50,
+                pool_timeout=30,
+            )
     return _engine
 
 
@@ -42,3 +46,26 @@ async def close_db() -> None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
+
+
+async def init_db() -> None:
+    from pathlib import Path
+    from src.shared.db.models import Base
+    engine = _get_engine()
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"PostgreSQL connection failed ({e}). Falling back to SQLite database...")
+        global _engine, _session_factory
+        if _engine is not None:
+            await _engine.dispose()
+        settings = get_settings()
+        db_dir = Path(settings.storage_path)
+        db_dir.mkdir(parents=True, exist_ok=True)
+        sqlite_path = db_dir / "ingestion.db"
+        sqlite_url = f"sqlite+aiosqlite:///{sqlite_path.as_posix()}"
+        _engine = create_async_engine(sqlite_url, pool_pre_ping=True)
+        _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+        async with _engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)

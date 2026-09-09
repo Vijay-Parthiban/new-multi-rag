@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { IconBrowse, IconHome, IconIngestion, IconSources, IconUpload } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
-import UploadPage from "../pages/UploadPage";
 import DirectoryPage from "../pages/DirectoryPage";
 import FileViewerPage from "../pages/FileViewerPage";
 import PipelinesPage from "../pages/PipelinesPage";
@@ -25,7 +24,6 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/browse", label: "Folders", icon: IconBrowse },
   { to: "/sources", label: "Sources", icon: IconSources },
   { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
-  { to: "/upload", label: "Upload", icon: IconUpload },
 ];
 
 /**
@@ -107,7 +105,6 @@ export default function AppLayout() {
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isSourcesExact = path === "/sources";
   const isKnowledgeStore = path === "/knowledge-store";
-  const isUpload = path === "/upload";
   const isPipelines = path === "/pipelines";
   const isChat = path === "/chat";
   const isPrompts = path === "/prompts";
@@ -170,9 +167,6 @@ export default function AppLayout() {
           <KnowledgeStorePage />
         </PersistentPage>
 
-        <PersistentPage visible={isUpload}>
-          <UploadPage />
-        </PersistentPage>
 
         <PersistentPage visible={isPipelines}>
           <PipelinesPage />

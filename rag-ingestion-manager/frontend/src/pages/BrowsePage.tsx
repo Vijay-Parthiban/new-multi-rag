@@ -146,8 +146,8 @@ export default function BrowsePage() {
             <button className="btn btn-secondary" onClick={() => selectedSourceId && loadFiles(selectedSourceId)}>
               Refresh Files
             </button>
-            <Link to="/upload" className="btn btn-primary">
-              Upload Files
+            <Link to="/sources" className="btn btn-primary">
+              Manage Sources
             </Link>
           </div>
         }

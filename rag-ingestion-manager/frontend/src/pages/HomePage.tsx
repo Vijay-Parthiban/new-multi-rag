@@ -7,11 +7,11 @@ import { formatRelativeTime } from "../utils/format";
 
 const QUICK_LINKS = [
   {
-    to: "/upload",
-    title: "Upload Documents",
-    description: "Multi-part chunked upload with client SHA-256 hash verification and deduplication.",
-    icon: IconUpload,
-    cta: "Start Upload",
+    to: "/sources",
+    title: "Data Sources & Storage",
+    description: "Manage local storage folders, object buckets, and multi-format document uploads.",
+    icon: IconSources,
+    cta: "Manage Sources",
   },
   {
     to: "/browse",
@@ -121,8 +121,8 @@ export default function HomePage() {
         ) : directories.length === 0 ? (
           <div className="empty-inline">
             <p>No workspace folders created yet.</p>
-            <Link to="/upload" className="btn btn-primary btn-sm">
-              Upload files to create folder
+            <Link to="/sources" className="btn btn-primary btn-sm">
+              Create Data Source
             </Link>
           </div>
         ) : (

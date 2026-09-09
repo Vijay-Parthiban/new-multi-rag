@@ -247,6 +247,64 @@ def start_minio_monitor(source_id: uuid.UUID) -> None:
 
     task = asyncio.create_task(_monitor_loop())
     _MINIO_MONITOR_TASKS[source_id] = task
+_LOCAL_FS_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
+
+
+def start_local_fs_monitor(source_id: uuid.UUID) -> None:
+    """Start Pathway local directory CRUD monitor task watching storage/local_sources/<folder_name>."""
+    if source_id in _LOCAL_FS_MONITOR_TASKS and not _LOCAL_FS_MONITOR_TASKS[source_id].done():
+        return
+
+    async def _monitor_loop():
+        from src.shared.db.session import AsyncSessionLocal
+        from src.shared.storage import storage_root
+
+        folder_name = None
+        async with AsyncSessionLocal() as db:
+            source = await db.get(Source, source_id)
+            if source:
+                folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+
+        if not folder_name:
+            return
+
+        local_dir = storage_root() / "local_sources" / folder_name
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        last_snapshot: dict[str, float] = {}
+
+        while True:
+            try:
+                await asyncio.sleep(2.0)
+                if not local_dir.exists():
+                    continue
+
+                current_snapshot: dict[str, float] = {}
+                for p in local_dir.rglob("*"):
+                    if p.is_file():
+                        try:
+                            stat = p.stat()
+                            rel_path = str(p.relative_to(local_dir)).replace("\\", "/")
+                            current_snapshot[rel_path] = stat.st_mtime
+                        except Exception:
+                            pass
+
+                if last_snapshot and current_snapshot != last_snapshot:
+                    logger.info("local_fs_change_detected source=%s folder=%s files=%d", source_id, folder_name, len(current_snapshot))
+                    async with AsyncSessionLocal() as db:
+                        source = await db.get(Source, source_id)
+                        if source:
+                            await _trigger_pipeline_syncs(db, source)
+
+                last_snapshot = current_snapshot
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("local_fs_monitor_error source=%s error=%s", source_id, exc)
+                await asyncio.sleep(5.0)
+
+    task = asyncio.create_task(_monitor_loop())
+    _LOCAL_FS_MONITOR_TASKS[source_id] = task
 async def sync_local_dir_to_minio(
     connector_id: uuid.UUID | str,
     config: dict[str, Any],
