@@ -25,6 +25,7 @@ dependencies = [
     "google-auth>=2.20.0",
     "platform-common",
     "shared-contracts",
+    "aiosqlite>=0.22.1",
 ]
 
 [tool.uv.sources]

@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,7 +23,7 @@ from src.file_manager.core.errors import ConflictError, NotFoundError, Validatio
 from src.file_manager.utils.paths import sanitize_directory_name, sanitize_file_name, storage_root
 from src.shared.db.session import get_db
 from src.shared.storage import ensure_bucket
-from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource
+from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource, KnowledgeProfileSource
 from src.shared.config.settings import get_settings
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 settings = get_settings()
@@ -269,7 +269,6 @@ async def create_source(
         )
         db.add(source)
         await db.commit()
-        from sqlalchemy.orm import selectinload
         res = await db.execute(
             select(Source)
             .options(selectinload(Source.pipelines), selectinload(Source.connectors))
@@ -282,7 +281,7 @@ async def create_source(
     connector_requests: list[ConnectorCreateRequest] = []
     if body.connectors:
         connector_requests = body.connectors
-    elif body.connector_type:
+    elif body.connector_type and body.connector_type not in ("minio", "local_filesystem"):
         connector_requests = [
             ConnectorCreateRequest(
                 connector_type=body.connector_type,
@@ -331,7 +330,7 @@ async def create_source(
     source = await db.get(Source, source.id)
 
     try:
-        await ensure_bucket(bucket)
+        await asyncio.wait_for(ensure_bucket(bucket), timeout=2.0)
     except Exception:
         logger.warning("failed_ensuring_minio_bucket bucket=%s", bucket)
 
@@ -424,13 +423,8 @@ async def delete_source(
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
-    if source.pipelines:
-        linked = [str(ps.pipeline_id) for ps in source.pipelines]
-        raise ConflictError(
-            "SOURCE_IN_USE",
-            f"Source is still linked to {len(linked)} pipeline(s). Remove links first.",
-            {"pipeline_ids": linked},
-        )
+    await db.execute(delete(KnowledgeProfileSource).where(KnowledgeProfileSource.source_id == source_id))
+    await db.execute(delete(PipelineSource).where(PipelineSource.source_id == source_id))
 
     is_local = _is_local_source(source)
     if is_local:
@@ -444,7 +438,7 @@ async def delete_source(
     elif source.minio_bucket:
         try:
             from src.shared.storage import delete_bucket as s3_delete_bucket
-            await s3_delete_bucket(source.minio_bucket)
+            await asyncio.wait_for(s3_delete_bucket(source.minio_bucket), timeout=2.0)
         except Exception as exc:
             logger.error("Failed deleting MinIO bucket %s for source %s: %s", source.minio_bucket, source_id, exc)
     await db.delete(source)
@@ -716,7 +710,12 @@ async def list_source_files(
 
     from src.shared.storage import list_objects as s3_list
 
-    files = await s3_list(source.minio_bucket, prefix=prefix)
+    try:
+        files = await asyncio.wait_for(s3_list(source.minio_bucket, prefix=prefix), timeout=2.0)
+    except Exception as exc:
+        logger.warning("Failed or timed out listing MinIO files for bucket %s: %s", source.minio_bucket, exc)
+        files = []
+
     return {
         "source_id": str(source_id),
         "bucket": source.minio_bucket,
