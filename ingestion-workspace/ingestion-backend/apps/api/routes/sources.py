@@ -329,10 +329,7 @@ async def create_source(
     await db.commit()
     source = await db.get(Source, source.id)
 
-    try:
-        await asyncio.wait_for(ensure_bucket(bucket), timeout=2.0)
-    except Exception:
-        logger.warning("failed_ensuring_minio_bucket bucket=%s", bucket)
+    asyncio.create_task(ensure_bucket(bucket))
 
     result = await db.execute(
         select(Source)

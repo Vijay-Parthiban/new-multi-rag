@@ -738,7 +738,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           sourceId={source?.id ?? id ?? ""}
           bucketName={source?.minio_bucket ?? ""}
           files={files}
-          allowUpload={true}
+          allowUpload={isLocalSource}
           allowDelete={true}
           onError={(err) => setError(err)}
           onInfo={(msg) => console.log(msg)}

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import socket
 from typing import Any, AsyncGenerator
 import aioboto3
 from botocore.exceptions import ClientError
@@ -7,17 +8,30 @@ from src.shared.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+_session: aioboto3.Session | None = None
+
+def _get_session() -> aioboto3.Session:
+    global _session
+    if _session is None:
+        _session = aioboto3.Session()
+    return _session
+
 def _get_endpoint_url() -> str:
     settings = get_settings()
     ep = settings.minio_endpoint
     if not ep.startswith("http://") and not ep.startswith("https://"):
         scheme = "https://" if str(settings.minio_use_ssl).lower() == "true" else "http://"
-        return f"{scheme}{ep}"
+        ep = f"{scheme}{ep}"
+    if "minio:9000" in ep:
+        try:
+            socket.gethostbyname("minio")
+        except socket.gaierror:
+            ep = ep.replace("minio:9000", "127.0.0.1:9000")
     return ep
 
 def get_minio_client():
     settings = get_settings()
-    session = aioboto3.Session()
+    session = _get_session()
     return session.client(
         "s3",
         endpoint_url=_get_endpoint_url(),
