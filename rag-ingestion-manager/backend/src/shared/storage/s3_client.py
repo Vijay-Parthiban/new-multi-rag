@@ -51,17 +51,31 @@ class MinIOEvent:
         self.action = action
         self.bucket_key = bucket_key
 
-async def ensure_bucket(bucket: str) -> None:
-    async with get_minio_client() as s3:
+def _sync_ensure_bucket(bucket: str) -> None:
+    endpoint_url = _get_endpoint_url()
+    settings = get_settings()
+    try:
+        import boto3
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=settings.minio_access_key,
+            aws_secret_access_key=settings.minio_secret_key,
+            use_ssl=str(settings.minio_use_ssl).lower() == "true",
+        )
         try:
-            await s3.head_bucket(Bucket=bucket)
-        except ClientError:
+            s3.head_bucket(Bucket=bucket)
+        except Exception:
             try:
-                await s3.create_bucket(Bucket=bucket)
+                s3.create_bucket(Bucket=bucket)
                 logger.info("Created bucket %s", bucket)
             except Exception as e:
                 logger.warning("Could not create bucket %s: %s", bucket, e)
+    except Exception as e:
+        logger.warning("Failed ensuring bucket %s: %s", bucket, e)
 
+async def ensure_bucket(bucket: str) -> None:
+    await asyncio.to_thread(_sync_ensure_bucket, bucket)
 async def put_object(
     bucket: str = "",
     key: str = "",

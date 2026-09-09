@@ -1,6 +1,9 @@
+import logging
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.exceptions import app_error_handler
@@ -10,6 +13,8 @@ from src.file_manager.utils.paths import ensure_storage_layout
 from src.shared.db.session import close_db, init_db
 from src.shared.queue.client import close_redis
 from src.shared.auth import verify_api_key
+
+logger = logging.getLogger("api")
 
 
 @asynccontextmanager
@@ -41,6 +46,10 @@ app.add_middleware(
 
 app.add_exception_handler(AppError, app_error_handler)
 
+@app.exception_handler(Exception)
+async def global_exception_handler(_request: Request, exc: Exception):
+    logger.error("Unhandled API error: %s\n%s", exc, traceback.format_exc())
+    return JSONResponse(status_code=500, content={"error": {"message": str(exc)}})
 app.include_router(uploads.router)
 app.include_router(directories.router)
 app.include_router(files.router)

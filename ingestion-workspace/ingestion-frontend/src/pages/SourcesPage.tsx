@@ -559,25 +559,31 @@ export default function SourcesPage() {
     async (e: FormEvent) => {
       e.preventDefault();
       if (!newSourceName.trim()) return;
+      const nameToCreate = newSourceName.trim();
+      const typeToCreate = selectedSourceType;
+
+      // Close modal immediately and reset inputs
+      setShowCreateForm(false);
+      setNewSourceName("");
+      setSelectedSourceType("minio");
       setCreating(true);
+
       try {
         const created = await createSource({
-          name: newSourceName.trim(),
-          source_type: selectedSourceType,
+          name: nameToCreate,
+          source_type: typeToCreate,
         });
         setInfo(`Source "${created.name}" created successfully.`);
-        setNewSourceName("");
-        setSelectedSourceType("minio");
-        setShowCreateForm(false);
-        await load();
+        setSources((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
         navigate(`/sources/${created.id}`);
       } catch (err) {
         setError(toApiError(err, "CREATE_FAILED"));
+        setShowCreateForm(true);
       } finally {
         setCreating(false);
       }
     },
-    [newSourceName, selectedSourceType, load, navigate]
+    [newSourceName, selectedSourceType, navigate]
   );
   // Filtered sources
   const filteredSources = sources.filter((s) => {
