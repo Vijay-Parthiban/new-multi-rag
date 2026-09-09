@@ -329,7 +329,7 @@ async def create_source(
     await db.commit()
     source = await db.get(Source, source.id)
 
-    asyncio.create_task(ensure_bucket(bucket))
+    await ensure_bucket(bucket)
 
     result = await db.execute(
         select(Source)
@@ -435,7 +435,7 @@ async def delete_source(
     elif source.minio_bucket:
         try:
             from src.shared.storage import delete_bucket as s3_delete_bucket
-            await asyncio.wait_for(s3_delete_bucket(source.minio_bucket), timeout=2.0)
+            await s3_delete_bucket(source.minio_bucket)
         except Exception as exc:
             logger.error("Failed deleting MinIO bucket %s for source %s: %s", source.minio_bucket, source_id, exc)
     await db.delete(source)

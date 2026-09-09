@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import socket
 from typing import Any, AsyncGenerator
 import aioboto3
 from botocore.exceptions import ClientError
@@ -8,30 +7,17 @@ from src.shared.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-_session: aioboto3.Session | None = None
-
-def _get_session() -> aioboto3.Session:
-    global _session
-    if _session is None:
-        _session = aioboto3.Session()
-    return _session
-
 def _get_endpoint_url() -> str:
     settings = get_settings()
     ep = settings.minio_endpoint
     if not ep.startswith("http://") and not ep.startswith("https://"):
         scheme = "https://" if str(settings.minio_use_ssl).lower() == "true" else "http://"
-        ep = f"{scheme}{ep}"
-    if "minio:9000" in ep:
-        try:
-            socket.gethostbyname("minio")
-        except socket.gaierror:
-            ep = ep.replace("minio:9000", "127.0.0.1:9000")
+        return f"{scheme}{ep}"
     return ep
 
 def get_minio_client():
     settings = get_settings()
-    session = _get_session()
+    session = aioboto3.Session()
     return session.client(
         "s3",
         endpoint_url=_get_endpoint_url(),
@@ -66,11 +52,8 @@ def _sync_ensure_bucket(bucket: str) -> None:
         try:
             s3.head_bucket(Bucket=bucket)
         except Exception:
-            try:
-                s3.create_bucket(Bucket=bucket)
-                logger.info("Created bucket %s", bucket)
-            except Exception as e:
-                logger.warning("Could not create bucket %s: %s", bucket, e)
+            s3.create_bucket(Bucket=bucket)
+            logger.info("Created bucket %s", bucket)
     except Exception as e:
         logger.warning("Failed ensuring bucket %s: %s", bucket, e)
 
@@ -153,7 +136,6 @@ def _sync_delete_bucket(bucket: str) -> None:
 
 async def delete_bucket(bucket: str) -> None:
     await asyncio.to_thread(_sync_delete_bucket, bucket)
-
 async def head_object(bucket: str, key: str) -> dict[str, Any]:
     async with get_minio_client() as s3:
         res = await s3.head_object(Bucket=bucket, Key=key)
