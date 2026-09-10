@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary & Platform Overview
 
-The **Universal Multi-RAG Ecosystem** (`new-multi-rag`) is an enterprise-grade, microservices-based Retrieval-Augmented Generation (RAG) platform. The codebase is organized into two completely domain-isolated sub-projects operating on shared underlying storage and vector infrastructure:
+The **Universal Multi-RAG Ecosystem** (`new-multi-rag`) is an enterprise-grade, microservices-based Retrieval-Augmented Generation (RAG) platform. The codebase is organized into two domain-isolated sub-projects operating on shared underlying storage and vector infrastructure:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -18,7 +18,7 @@ The **Universal Multi-RAG Ecosystem** (`new-multi-rag`) is an enterprise-grade, 
 │                                        │                     │                                          │
 │  UI: http://localhost:5173             │                     │  UI: http://localhost:5174               │
 │  API: http://localhost:8007            │                     │  API: http://localhost:8001              │
-│  Vite Proxy: /api -> 8007              │                     │  Guardrails API: http://localhost:8002   │
+│  Vite Proxy: /api -> 127.0.0.1:8007    │                     │  Guardrails API: http://localhost:8002   │
 │                                        │                     │  Vite Proxy: /api -> 8007, /api/rag -> 8001│
 │  Scope: Document Ingestion & Storage   │                     │  Scope: Retrieval, Chat, Monitoring, Eval│
 │  Pages (5):                            │                     │  Pages (11):                             │
@@ -32,163 +32,44 @@ The **Universal Multi-RAG Ecosystem** (`new-multi-rag`) is an enterprise-grade, 
 │                                        │                     │   8. Guard Config (/guard-config)        │
 │                                        │                     │   9. Guard Traces (/guard-traces)        │
 │                                        │                     │  10. Guard Evaluation (/guard-eval)     │
-│                                        │                     │  11. Knowledge Store Proxy (/knowledge-store)│
+│                                        │                     │  11. Knowledge Store (/knowledge-store)  │
 └────────────────────────────────────────┘                     └──────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Infrastructure & Shared Services Map
+## 2. Platform Architecture & Data Flow
 
-| Service Name | Default Port | Internal / Host Binding | Purpose / Description |
-| :--- | :--- | :--- | :--- |
-| **Ingestion Frontend** | `5173` | `http://localhost:5173` | `rag-ingestion-manager` UI (5 Pages) |
-| **Retrieval/Chat Frontend** | `5174` | `http://localhost:5174` | `rag-retrieval-chat-manager` UI (11 Pages) |
-| **Ingestion API** | `8007` | `http://localhost:8007` | Data ingestion, source connectors, file upload, directories, knowledge store |
-| **RAG Query API** | `8001` | `http://localhost:8001` | RAG hybrid retrieval, chat synthesis, prompt management, offline evaluation |
-| **Guardrails API** | `8002` | `http://localhost:8002` | Input/Output moderation, toxicity filtering, PII masking, hallucination check |
-| **Scraper API** | `8000` | `http://localhost:8000` | Web scraper and deep-crawler service |
-| **PostgreSQL** | `5432` | `localhost:5432` | Primary relational database (`rag_db`, `user: postgres`, `password: postgres`) |
-| **Redis** | `6379` | `localhost:6379` | Celery task queue & caching broker |
-| **MinIO S3** | `9000` (API) / `9001` (UI) | `http://localhost:9000` | Blob storage (`access_key: minioadmin`, `secret_key: minioadmin`) |
-| **Qdrant Vector DB** | `6333` (HTTP) / `6334` (gRPC)| `http://localhost:6333` | Dense & sparse vector index engine |
+### 2.1. Ingestion Pipeline & Storage Layer (`rag-ingestion-manager`)
+1. **Source Connectors**: Connects to Google Drive, S3, Azure Blob, Google Sheets, SQL DBs, Web Scrapers, or Local Filesystem.
+2. **Sync Engine (`gdrive_sync.py` & `pathway_sync.py`)**: Runs connector downloads in `asyncio.to_thread` and uploads files directly into dedicated MinIO S3 buckets (`source-<name>-<hash>`).
+3. **Threaded MinIO S3 Client (`s3_client.py`)**: Executes all S3 operations using synchronous `boto3` inside `asyncio.to_thread` for non-blocking execution and event loop stability under Windows asyncio. Automatically calculates `total_files` and `total_size_bytes` per source.
+4. **Universal Multi-Sink Fanout Engine (`universal_fanout.py`)**: Processes documents into 5 destination sinks:
+   - **Qdrant**: Vector embeddings & BM25 sparse vectors.
+   - **OpenSearch**: Lexical BM25 & SPLADE indices.
+   - **Neo4j**: GraphRAG entity-relation summaries & graph triplets.
+   - **PostgreSQL**: `pgvector` / `pgvectorscale` tables.
+   - **RedisVL**: Semantic summary maps & RAPTOR trees.
 
----
-
-## 3. Shared Libraries & Workspace Modules
-
-- **`shared-libs/platform-common`**: Python core library containing embedding wrappers (dense SentenceTransformers/OpenAI, sparse BM25 FastEmbed), MinIO S3 clients, Qdrant database clients, authentication, and SSRF prevention utilities.
-- **`rag-app-workspace/libs/shared`**: Shared RAG telemetry, OpenTelemetry tracing decorators (`@trace_span`), logger formatters, and custom exception handlers.
+### 2.2. Retrieval, Chat & Monitoring Layer (`rag-retrieval-chat-manager`)
+1. **Hybrid Vector Search**: Combines Qdrant dense vector search with OpenSearch BM25 sparse keyword search using Reciprocal Rank Fusion (RRF).
+2. **Cross-Encoder Reranking**: Re-ranks top candidate chunks to surface relevant context.
+3. **RAG Chat & Citation Engine**: Synthesizes answers using customizable prompt templates and streams responses with inline source citations.
+4. **AI Guardrails Moderation**: Filters input queries and output responses using NeMo / LlamaGuard safety policies.
+5. **Telemetry & Offline Evaluation**: Tracks request traces, token usage, latency distribution, and RAGAS offline evaluation metrics.
 
 ---
 
-## 4. Step-by-Step Guide: Running in a New Environment
+## 3. Port & Service Summary
 
-### Step 4.1. System Prerequisites
-Ensure the following tools are installed on the host operating system:
-- **Python**: `3.11` or `3.12`
-- **Node.js**: `v18.0.0+` or `v20.0.0+` (or **Bun** `v1.0+`)
-- **Docker & Docker Compose**: (For launching Postgres, Redis, MinIO, Qdrant)
-
----
-
-### Step 4.2. Environment Configuration File (`.env`)
-Create a root `.env` file or export the following variables in your terminal:
-
-```env
-# Database & Cache
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=rag_db
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/rag_db
-REDIS_URL=redis://localhost:6379/0
-
-# Object Storage (MinIO)
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_SECURE=false
-
-# Vector Database (Qdrant)
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-
-# Service Ports & APIs
-INGESTION_API_PORT=8007
-RAG_API_PORT=8001
-GUARDRAILS_API_PORT=8002
-SCRAPER_API_PORT=8000
-
-# Frontend Proxies
-VITE_API_URL=http://localhost:8007
-VITE_RAG_API_URL=http://localhost:8001
-VITE_GUARDRAILS_API_URL=http://localhost:8002
-```
-
----
-
-### Step 4.3. Launch Infrastructure (Docker Compose)
-Launch the shared storage services:
-
-```bash
-# Navigate to the workspace root
-cd new-multi-rag/ingestion-workspace
-
-# Start Postgres, Redis, MinIO, Qdrant in detached mode
-docker-compose up -d postgres redis minio qdrant
-```
-
----
-
-### Step 4.4. Backend Setup & Database Migrations
-
-```bash
-# 1. Create and activate a Python virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# 2. Install shared platform packages
-pip install -e shared-libs/platform-common
-pip install -e rag-app-workspace/libs/shared
-
-# 3. Install ingestion backend dependencies
-cd ingestion-workspace/ingestion-backend
-pip install -r requirements.txt
-
-# 4. Run Alembic Database Migrations
-alembic upgrade head
-```
-
----
-
-### Step 4.5. Starting Backend API Services
-
-#### 1. Ingestion API Backend (Port 8007)
-```bash
-cd ingestion-workspace/ingestion-backend
-uvicorn apps.api.main:app --host 0.0.0.0 --port 8007 --reload
-```
-
-#### 2. RAG Query API Backend (Port 8001)
-```bash
-cd rag-app-workspace/apps/rag-query-api
-uvicorn main:app --host 0.0.0.0 --port 8001 --reload
-```
-
-#### 3. AI Guardrails API Service (Port 8002)
-```bash
-cd guardrails-service
-uvicorn main:app --host 0.0.0.0 --port 8002 --reload
-```
-
----
-
-### Step 4.6. Starting Frontend UI Management Applications
-
-#### 1. Start `rag-ingestion-manager` UI (Port 5173)
-```bash
-cd rag-ingestion-manager/frontend
-npm install
-npm run dev
-# App will open at http://localhost:5173
-```
-
-#### 2. Start `rag-retrieval-chat-manager` UI (Port 5174)
-```bash
-cd rag-retrieval-chat-manager/frontend
-npm install
-npm run dev
-# App will open at http://localhost:5174
-```
-
----
-
-## 5. Verification Checklist
-
-1. **Ingestion Health**: Visit `http://localhost:8007/health` -> Returns `{"status": "ok"}`.
-2. **RAG Query Health**: Visit `http://localhost:8001/health` -> Returns `{"status": "ok"}`.
-3. **Ingestion UI**: Visit `http://localhost:5173` -> Displays 5 sidebar navigation links (`Overview`, `Folders`, `Sources`, `Knowledge Store`, `Upload`).
-4. **Retrieval & Chat UI**: Visit `http://localhost:5174` -> Displays 11 sidebar navigation links (`Pipelines`, `Chat`, `Prompts`, `Real Time Monitoring`, `Offline Evaluation`, `Tracking`, `Guard Config`, `Guard Traces`, `Guard Evaluation`, `Knowledge Store`, `Overview`).
-5. **Data Sources Test**: Open `http://localhost:5173/sources` -> Loads data sources cleanly with zero network errors.
+| Service | Host Port | Protocol / Proxy | Purpose |
+|---|---|---|---|
+| Ingestion Manager Frontend | `5173` | HTTP / React (Vite) | Ingestion Dashboard, Sources, Folders, Knowledge Store, Upload UI |
+| Ingestion Manager API | `8007` | FastHTTP / FastAPI | Sources, Connectors, MinIO S3 Storage, Directories, Fanout Engine |
+| Retrieval Chat Frontend | `5174` | HTTP / React (Vite) | Chat UI, Pipelines, Prompts, Monitoring, Traces, Guardrails UI |
+| Retrieval Chat API | `8001` | FastAPI / Python | RAG Querying, Hybrid Search, Chat Sessions, Prompts, RAGAS Eval |
+| Guardrails API | `8002` | FastAPI / Python | Safety Moderation, PII Detection, Guardrails Traces & Evaluation |
+| MinIO S3 Console & API | `9000` / `9001` | S3 API / HTTP | Physical object storage buckets for document sources |
+| Qdrant Vector DB | `6333` / `6334` | HTTP / gRPC | High-performance vector embeddings & payload storage |
+| PostgreSQL DB | `5432` | PostgreSQL Protocol | Metadata persistence, pipeline sync queue, chat sessions, trace logs |
+| Redis Cache | `6379` | Redis Protocol | Async task queue, semantic cache, RAPTOR trees |

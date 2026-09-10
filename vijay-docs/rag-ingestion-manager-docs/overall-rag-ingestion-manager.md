@@ -2,11 +2,11 @@
 
 ## 1. Executive Summary & Application Scope
 
-The **`rag-ingestion-manager`** is a dedicated full-stack management application focused entirely on document ingestion, directory navigation, connector synchronization, multi-sink Knowledge Store profile management, and chunked resumable file uploads.
+The **`rag-ingestion-manager`** is a dedicated full-stack management application focused on document ingestion, directory navigation, connector synchronization, multi-sink Knowledge Store profile management, and chunked resumable file uploads.
 
 - **Frontend UI Port**: `5173` (`http://localhost:5173`)
 - **Backend API Port**: `8007` (`http://localhost:8007`)
-- **Vite Proxy Rule**: `/api` -> `http://localhost:8007`
+- **Vite Proxy Rule**: `/api` -> `http://127.0.0.1:8007`
 - **Domain Boundary**: Restricted strictly to 5 ingestion-specific navigation pages.
 
 ---
@@ -21,91 +21,49 @@ The **`rag-ingestion-manager`** is a dedicated full-stack management application
 ├───────────────────┼─────────────────────────────────────────────────────────────────────────┤
 │ 1. Overview       │ /                  - Key ingestion metrics & system health summary      │
 │ 2. Folders        │ /browse            - MinIO bucket directory structure & file browser    │
-│ 3. Sources        │ /sources           - Data source CRUD & Airbyte/NiFi connector sync     │
-│ 4. Knowledge Store│ /knowledge-store   - Multi-source to multi-destination fanout engine    │
+│ 3. Sources        │ /sources           - Data source CRUD & Google Drive/S3/NiFi connector sync │
+│ 4. Knowledge Store│ /knowledge-store   - Multi-source to 5 multi-destination fanout engine   │
 │ 5. Upload         │ /upload            - Resumable 5MB chunked document uploader            │
 └───────────────────┴─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Database Schema & Data Models
+## 3. Database Schema & Core Data Models
 
 ### 3.1. `sources` Table
 | Column | Type | Description |
-| :--- | :--- | :--- |
-| `id` | UUID (PK) | Primary unique identifier |
-| `name` | String(255) | User-friendly source display name |
-| `minio_bucket` | String(255) | Dedicated MinIO S3 bucket name (e.g. `bucket-source-123`) |
-| `connector_type` | String(100) | Primary connector type (e.g. `google_drive`, `s3`, `local_directory`) |
-| `config` | JSONB | Connector credentials and configuration dictionary |
-| `status` | String(50) | Ingestion state: `created`, `active`, `syncing`, `failed`, `disabled` |
-| `created_at` | DateTime | Creation timestamp |
+|---|---|---|
+| `id` | `UUID` | Primary key identifier |
+| `name` | `VARCHAR(255)` | User-assigned source display name |
+| `minio_bucket` | `VARCHAR(255)` | Unique MinIO S3 bucket locator (`source-<name>-<hash>`) |
+| `status` | `VARCHAR(50)` | Source sync state (`idle`, `syncing`, `error`) |
+| `total_files` | `INTEGER` | Count of active documents synced in the source bucket |
+| `total_size_bytes` | `BIGINT` | Total storage volume in bytes across synced files |
+| `created_at` | `TIMESTAMP` | Record creation timestamp |
+| `updated_at` | `TIMESTAMP` | Last metadata or sync update timestamp |
 
 ### 3.2. `source_connectors` Table
-Supports multi-connector attachments to a single MinIO source bucket.
 | Column | Type | Description |
-| :--- | :--- | :--- |
-| `id` | UUID (PK) | Unique connector instance identifier |
-| `source_id` | UUID (FK) | Reference to `sources.id` |
-| `connector_type` | String(100) | Airbyte/NiFi connector type |
-| `enabled` | Boolean | Whether active or disabled |
-| `config` | JSONB | Connector-specific sync configuration |
-
-### 3.3. `knowledge_profiles` & `knowledge_destinations` Tables
-Drives the Universal Multi-Sink Fanout Engine.
-- **Profiles**: Groups multiple MinIO source buckets into unified knowledge units.
-- **Destinations**: Maps profiles into target database sinks:
-  - `vector_search` -> Qdrant Vector DB
-  - `relational_db` -> PostgreSQL
-  - `document_store` -> Elasticsearch / MongoDB
-  - `graph_db` -> Neo4j
-  - `data_lake` -> Snowflake / Parquet
+|---|---|---|
+| `id` | `UUID` | Primary key identifier |
+| `source_id` | `UUID` | Foreign key referencing `sources.id` |
+| `connector_type` | `VARCHAR(50)` | Connector implementation type (`google_drive`, `s3`, `azure_blob`, `local_folder`) |
+| `config` | `JSON` | Encrypted credential payload (Service Account JSON, OAuth, Folder URL/ID) |
+| `monitor_mode` | `VARCHAR(50)` | Execution trigger policy (`live`, `scheduled`, `manual`) |
+| `sync_interval_minutes`| `INTEGER` | Polling schedule interval for scheduled mode |
+| `status` | `VARCHAR(50)` | Connector execution status (`synced`, `syncing`, `error`) |
+| `last_sync_at` | `TIMESTAMP` | Timestamp of last successful sync execution |
 
 ---
 
-## 4. Backend API Routes Reference (`http://localhost:8007`)
+## 4. Ingestion Engine Architecture
 
-| Method | Endpoint Path | Description |
-| :--- | :--- | :--- |
-| `GET` | `/health` | Ingestion API health check endpoint |
-| `GET` | `/api/sources` | List all configured data sources & connector counts |
-| `POST` | `/api/sources` | Create a new data source & provision MinIO bucket |
-| `GET` | `/api/sources/connectors` | Fetch available connector options catalog |
-| `POST` | `/api/sources/{id}/sync` | Trigger asynchronous background document sync |
-| `DELETE` | `/api/sources/{id}` | Delete source bucket and associated metadata |
-| `GET` | `/api/directories` | List root virtual directory summaries |
-| `GET` | `/api/directories/{name}/files` | List files within a specified virtual directory |
-| `PATCH` | `/api/files/{id}` | Rename a file record |
-| `DELETE` | `/api/files/{id}` | Delete a file from MinIO and PostgreSQL |
-| `POST` | `/api/uploads/init` | Initialize resumable multi-chunk upload session |
-| `PUT` | `/api/uploads/{id}/chunks/{i}` | Upload chunk `i` (5MB payload) |
-| `POST` | `/api/uploads/{id}/complete` | Assemble chunks and finalize file record |
-| `GET` | `/api/knowledge/profiles` | List all knowledge profiles & destinations |
-| `POST` | `/api/knowledge/profiles` | Create new multi-sink knowledge profile |
-| `GET` | `/api/knowledge/destinations/options` | Fetch available destination sink options |
-
----
-
-## 5. How to Run `rag-ingestion-manager` in a New Environment
-
-### 5.1. Start Infrastructure & Backend API
-```bash
-# 1. Start Docker services (Postgres, MinIO, Redis)
-cd new-multi-rag/ingestion-workspace
-docker-compose up -d postgres minio redis
-
-# 2. Run backend migrations and start server on port 8007
-cd ingestion-backend
-source .venv/bin/activate
-alembic upgrade head
-uvicorn apps.api.main:app --host 0.0.0.0 --port 8007 --reload
-```
-
-### 5.2. Start Ingestion Manager Frontend
-```bash
-cd rag-ingestion-manager/frontend
-npm install
-npm run dev
-# Server will listen on http://localhost:5173
-```
+- **Threaded MinIO S3 Operations (`s3_client.py`)**: Synchronous `boto3` operations wrapped in `asyncio.to_thread` for non-blocking execution and event loop stability under Windows asyncio.
+- **Google Drive Sync Engine (`gdrive_sync.py`)**: Direct Drive API integration with `asyncio.to_thread` execution for recursive folder listing and file downloads into MinIO.
+- **Universal Multi-Sink Fanout Engine (`universal_fanout.py`)**: Fans out documents across 5 destinations:
+  1. Qdrant (Dense & Sparse Vector Store)
+  2. OpenSearch (Lexical BM25 & SPLADE)
+  3. Neo4j (Knowledge Graphs & Entities)
+  4. PostgreSQL (`pgvector` / `pgvectorscale`)
+  5. RedisVL (Semantic Cache & Summary Maps)

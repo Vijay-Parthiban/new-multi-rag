@@ -8,23 +8,24 @@ The **Knowledge Store** (`/knowledge-store`) page manages the **Universal Multi-
 
 ## 2. Supported Destination Categories
 
-1. **Vector Search**: Qdrant Vector Database (Dense embeddings + BM25 sparse vectors).
-2. **Relational Database**: PostgreSQL structured data extraction.
-3. **Document Store**: Elasticsearch / MongoDB document collection.
-4. **Graph Database**: Neo4j knowledge graphs.
-5. **Data Lake**: Snowflake / Parquet files in S3.
+1. **Vector Engine**: Qdrant Vector Database (Dense embeddings + BM25 sparse vectors).
+2. **Lexical Engine**: OpenSearch (BM25 + Sparse SPLADE lexical search).
+3. **Knowledge Graph Store**: Neo4j (Entities, Triplets & GraphRAG summaries).
+4. **Multi-Model Relational Database**: PostgreSQL (`pgvector` / `pgvectorscale`).
+5. **Semantic Cache & Summary Stores**: RedisVL (RAPTOR summary trees & parent-child document maps).
 
 ---
 
 ## 3. Key UI Modules & Features
 
-1. **Knowledge Profiles Grid**: Displays profiles with associated source buckets, destination sinks, and sync statuses (`operational`, `syncing`, `error`).
-2. **Create Knowledge Profile Wizard**:
-   - Step 1: Set Profile Name & Description.
-   - Step 2: Select MinIO Source Buckets to include.
-   - Step 3: Configure Destination Sinks & parameters (e.g. Qdrant collection name, vector dimension).
+1. **Knowledge Profiles Grid**: Displays profiles with associated source buckets, active destination sinks, enabled toggle statuses, and fanout sync statuses (`idle`, `syncing`, `error`).
+2. **Create / Edit Knowledge Profile Modal**:
+   - Set Profile Name & Description.
+   - Select linked MinIO Data Source Buckets.
+   - Configure Destination Sinks & parameters (Qdrant collection, OpenSearch index, Neo4j graph URI, PostgreSQL vector table, RedisVL cache index).
 3. **Profile Sync Actions**:
-   - `Sync All Sinks`: Triggers full fanout execution across all attached destinations.
+   - `Trigger Fanout Sync`: Runs `execute_universal_fanout_sync` across all enabled destination sinks.
+   - `Toggle Status`: Enables or disables fanout indexing for target profiles.
    - `Delete Profile`: Removes profile configuration without deleting underlying source buckets.
 
 ---
@@ -36,6 +37,8 @@ The **Knowledge Store** (`/knowledge-store`) page manages the **Universal Multi-
 - **`getKnowledgeDestinationOptions()`**: `GET /api/knowledge/destinations/options`
   - Fetches configuration schemas for supported destination types.
 - **`createKnowledgeProfile(payload)`**: `POST /api/knowledge/profiles`
-  - Registers a new multi-sink fanout profile.
+  - Persists new profile definition and links associated sources.
 - **`triggerKnowledgeProfileSync(profileId)`**: `POST /api/knowledge/profiles/{id}/sync`
-  - Dispatches multi-destination fanout worker jobs.
+  - Dispatches multi-sink fanout pipeline execution (`universal_fanout.py`).
+- **`deleteKnowledgeProfile(profileId)`**: `DELETE /api/knowledge/profiles/{id}`
+  - Deletes knowledge profile record.
