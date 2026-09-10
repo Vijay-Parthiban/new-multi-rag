@@ -421,6 +421,19 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           </div>
         </div>
 
+        <div className="stats-overview-card">
+          <div>
+            <div className="stats-overview-label">Total Synced Files</div>
+            <div className="stats-overview-value">{source.total_files ?? 0}</div>
+            <div className="stats-overview-subtext">
+              {source.total_size_bytes ? `${(source.total_size_bytes / 1024).toFixed(1)} KB total size` : "In MinIO storage"}
+            </div>
+          </div>
+          <div className="stats-overview-icon stats-icon--blue">
+            <IconFile size={22} />
+          </div>
+        </div>
+
       </div>
 
       {/* Tab Navigation */}

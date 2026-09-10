@@ -146,7 +146,15 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
             connector.status = "error"
             connector.error_message = str(exc)
             await db.commit()
-    # Update source status
+    # Update source status and file counts from MinIO bucket
+    try:
+        from src.shared.storage.s3_client import list_objects
+        all_objs = await list_objects(source.minio_bucket)
+        source.total_files = len(all_objs)
+        source.total_size_bytes = sum(o.size for o in all_objs)
+    except Exception as exc:
+        logger.warning("Failed computing total_files for source %s: %s", source.id, exc)
+
     source.status = "idle"
     source.last_sync_at = datetime.now(UTC)
     logger.info(

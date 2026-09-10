@@ -51,18 +51,21 @@ class MinIOEvent:
         self.action = action
         self.bucket_key = bucket_key
 
-def _sync_ensure_bucket(bucket: str) -> None:
+def _get_boto3_client():
+    import boto3
     endpoint_url = _get_endpoint_url()
     settings = get_settings()
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=settings.minio_access_key,
+        aws_secret_access_key=settings.minio_secret_key,
+        use_ssl=str(settings.minio_use_ssl).lower() == "true",
+    )
+
+def _sync_ensure_bucket(bucket: str) -> None:
     try:
-        import boto3
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=settings.minio_access_key,
-            aws_secret_access_key=settings.minio_secret_key,
-            use_ssl=str(settings.minio_use_ssl).lower() == "true",
-        )
+        s3 = _get_boto3_client()
         try:
             s3.head_bucket(Bucket=bucket)
         except Exception:
@@ -78,21 +81,24 @@ async def ensure_bucket(bucket: str) -> None:
     await asyncio.to_thread(_sync_ensure_bucket, bucket)
 
 def _sync_delete_object(bucket: str, key: str) -> None:
-    endpoint_url = _get_endpoint_url()
-    settings = get_settings()
     try:
-        import boto3
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=settings.minio_access_key,
-            aws_secret_access_key=settings.minio_secret_key,
-            use_ssl=str(settings.minio_use_ssl).lower() == "true",
-        )
+        s3 = _get_boto3_client()
         s3.delete_object(Bucket=bucket, Key=key)
         logger.info("Deleted object %s from bucket %s", key, bucket)
     except Exception as e:
         logger.warning("Failed deleting object %s from bucket %s: %s", key, bucket, e)
+
+def _sync_put_object(bucket: str, key: str, data: bytes, metadata: dict[str, str] | None = None) -> None:
+    s3 = _get_boto3_client()
+    put_args: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": data,
+    }
+    if metadata:
+        put_args["Metadata"] = {str(k): str(v) for k, v in metadata.items()}
+    s3.put_object(**put_args)
+
 async def put_object(
     bucket: str = "",
     key: str = "",
@@ -104,37 +110,22 @@ async def put_object(
     target_bucket = bucket_name or bucket
     if isinstance(data, str):
         data = data.encode("utf-8")
-    put_args: dict[str, Any] = {
-        "Bucket": target_bucket,
-        "Key": key,
-        "Body": data,
-    }
-    if metadata:
-        put_args["Metadata"] = {str(k): str(v) for k, v in metadata.items()}
-    async with get_minio_client() as s3:
-        await s3.put_object(**put_args)
+    await asyncio.to_thread(_sync_put_object, target_bucket, key, data, metadata)
+
+def _sync_get_object(bucket: str, key: str) -> bytes:
+    s3 = _get_boto3_client()
+    res = s3.get_object(Bucket=bucket, Key=key)
+    return res["Body"].read()
 
 async def get_object(bucket: str, key: str) -> bytes:
-    async with get_minio_client() as s3:
-        res = await s3.get_object(Bucket=bucket, Key=key)
-        async with res["Body"] as stream:
-            return await stream.read()
+    return await asyncio.to_thread(_sync_get_object, bucket, key)
 
 async def delete_object(bucket: str, key: str) -> None:
     await asyncio.to_thread(_sync_delete_object, bucket, key)
 
 def _sync_delete_bucket(bucket: str) -> None:
-    endpoint_url = _get_endpoint_url()
-    settings = get_settings()
     try:
-        import boto3
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=settings.minio_access_key,
-            aws_secret_access_key=settings.minio_secret_key,
-            use_ssl=str(settings.minio_use_ssl).lower() == "true",
-        )
+        s3 = _get_boto3_client()
         try:
             paginator = s3.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket):
@@ -143,9 +134,9 @@ def _sync_delete_bucket(bucket: str) -> None:
                         try:
                             s3.delete_object(Bucket=bucket, Key=obj["Key"])
                         except Exception as e:
-                            logger.warning("Error deleting key %s in bucket %s: %s", obj.get("Key"), bucket, e)
+                            logger.warning("Failed deleting object %s during bucket deletion: %s", obj["Key"], e)
             s3.delete_bucket(Bucket=bucket)
-            logger.info("Successfully deleted MinIO bucket %s", bucket)
+            logger.info("Deleted bucket %s", bucket)
         except Exception as e:
             logger.warning("Could not delete bucket %s: %s", bucket, e)
     except Exception as e:
@@ -154,34 +145,44 @@ def _sync_delete_bucket(bucket: str) -> None:
 async def delete_bucket(bucket: str) -> None:
     await asyncio.to_thread(_sync_delete_bucket, bucket)
 
-async def head_object(bucket: str, key: str) -> dict[str, Any]:
-    async with get_minio_client() as s3:
-        res = await s3.head_object(Bucket=bucket, Key=key)
-        return {
-            "size": res.get("ContentLength", 0),
-            "last_modified": res.get("LastModified"),
-            "content_type": res.get("ContentType"),
-        }
+def _sync_head_object(bucket: str, key: str) -> dict[str, Any]:
+    s3 = _get_boto3_client()
+    res = s3.head_object(Bucket=bucket, Key=key)
+    meta = res.get("Metadata", {})
+    size = res.get("ContentLength", 0)
+    return {
+        "size": size,
+        "ContentLength": size,
+        "last_modified": res.get("LastModified"),
+        "content_type": res.get("ContentType"),
+        "metadata": meta,
+        "Metadata": meta,
+    }
 
-async def list_objects(bucket: str, prefix: str = "") -> list[S3Object]:
+async def head_object(bucket: str, key: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_sync_head_object, bucket, key)
+
+def _sync_list_objects(bucket: str, prefix: str = "") -> list[S3Object]:
     objects = []
-    async with get_minio_client() as s3:
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                for item in page.get("Contents", []):
-                    objects.append(
-                        S3Object(
-                            key=item["Key"],
-                            size=item.get("Size", 0),
-                            last_modified=item.get("LastModified"),
-                            etag=item.get("ETag"),
-                        )
+    try:
+        s3 = _get_boto3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                objects.append(
+                    S3Object(
+                        key=item["Key"],
+                        size=item.get("Size", 0),
+                        last_modified=item.get("LastModified"),
+                        etag=item.get("ETag"),
                     )
-        except ClientError as e:
-            logger.warning("Error listing objects in bucket %s: %s", bucket, e)
+                )
+    except Exception as e:
+        logger.warning("Error listing objects in bucket %s: %s", bucket, e)
     return objects
 
+async def list_objects(bucket: str, prefix: str = "") -> list[S3Object]:
+    return await asyncio.to_thread(_sync_list_objects, bucket, prefix)
 async def setup_bucket_notification(bucket: str, webhook_url: str) -> None:
     logger.info("Setting up bucket notification for %s -> %s", bucket, webhook_url)
 

@@ -12,6 +12,7 @@ Flow:
   4. Return the count of files written so the caller can update status.
 """
 
+import asyncio
 import io
 import json
 import logging
@@ -219,7 +220,7 @@ async def sync_google_drive_to_minio(
     service = _build_drive_service(sa_json)
 
     # List active files in Google Drive folder
-    files = _list_files_in_folder(service, folder_id)
+    files = await asyncio.to_thread(_list_files_in_folder, service, folder_id)
     remote_files_map: dict[str, dict[str, Any]] = {f["id"]: f for f in files}
 
     logger.info(
@@ -257,7 +258,7 @@ async def sync_google_drive_to_minio(
     for drive_id, file_meta in remote_files_map.items():
         remote_modified = file_meta.get("modifiedTime", "")
         try:
-            content, filename = _download_file(service, file_meta)
+            content, filename = await asyncio.to_thread(_download_file, service, file_meta)
             if not content:
                 logger.warning(
                     "gdrive_empty_file source=%s file=%s name=%s",

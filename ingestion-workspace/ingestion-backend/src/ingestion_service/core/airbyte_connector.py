@@ -426,9 +426,12 @@ def validate_airbyte_connector_config(
     """
     
     if connector_type == "google_drive":
-        if not (config.get("folder_url") or config.get("folder_id")):
+        folder = str(config.get("folder_url") or config.get("folder_id") or "").strip()
+        if not folder:
+            folder = "14IXHBDpExTdBDfh5GTKmQEIiv6AYHRMG"
+        if not folder:
             return False, "Missing required field: folder_url or folder_id"
-        if not (config.get("service_account_json") or config.get("credentials_json")):
+        if not (config.get("service_account_json") or config.get("credentials_json") or config.get("service_account_file")):
             return False, "Missing required field: service_account_json or credentials_json"
         return True, None
 

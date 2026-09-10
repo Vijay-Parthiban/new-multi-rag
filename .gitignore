@@ -48,5 +48,6 @@ temp/
 .DS_Store
 Thumbs.db
 
+*.db
 # Keys & Secrets
 sanguine-robot-*.json

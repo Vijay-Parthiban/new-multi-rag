@@ -708,9 +708,9 @@ async def list_source_files(
     from src.shared.storage import list_objects as s3_list
 
     try:
-        files = await asyncio.wait_for(s3_list(source.minio_bucket, prefix=prefix), timeout=2.0)
+        files = await s3_list(source.minio_bucket, prefix=prefix)
     except Exception as exc:
-        logger.warning("Failed or timed out listing MinIO files for bucket %s: %s", source.minio_bucket, exc)
+        logger.warning("Failed listing MinIO files for bucket %s: %s", source.minio_bucket, exc)
         files = []
 
     return {
