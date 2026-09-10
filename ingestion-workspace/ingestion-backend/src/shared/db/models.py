@@ -1,8 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.compiler import compiles
@@ -181,6 +180,8 @@ class Source(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    total_files: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    total_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
