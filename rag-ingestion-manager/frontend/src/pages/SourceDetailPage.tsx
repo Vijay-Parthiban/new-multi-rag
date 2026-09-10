@@ -289,8 +289,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   if (!source) return null;
 
   const connectorCount = source.connectors?.length ?? 0;
-  const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-");
-  const filteredCatalog = EXTENDED_CATALOG.filter(
+  const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-") || source.is_local;
+  const isManualMinioSource = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
     (item) => categoryFilter === "all" || item.category === categoryFilter
   );
   return (
@@ -311,7 +311,28 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             <StatusBadge status={source.status || "idle"} />
 
             {/* Bucket / Local Storage Pill */}
-            {source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-") ? (
+            {isManualMinioSource ? (
+              <div
+                onClick={handleCopyBucket}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  padding: "0.25rem 0.65rem",
+                  borderRadius: "999px",
+                  background: "rgba(56, 189, 248, 0.15)",
+                  border: "1px solid rgba(56, 189, 248, 0.3)",
+                  color: "#38bdf8",
+                  fontSize: "0.8rem",
+                  cursor: "pointer",
+                }}
+                title="MinIO Bucket (Manual Uploads)"
+              >
+                <IconBucket size={14} />
+                <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
+                <span style={{ fontSize: "0.7rem", opacity: 0.8 }}>{copiedBucket ? "✓ Copied" : "📋"}</span>
+              </div>
+            ) : isLocalSource ? (
               <div
                 style={{
                   display: "inline-flex",
@@ -435,6 +456,33 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
         </div>
 
       </div>
+      {/* MinIO Manual Source Information Banner */}
+      {isManualMinioSource && (
+        <div
+          style={{
+            padding: "1rem 1.25rem",
+            borderRadius: "10px",
+            background: "rgba(56, 189, 248, 0.1)",
+            border: "1px solid rgba(56, 189, 248, 0.25)",
+            color: "#38bdf8",
+            marginBottom: "1.5rem",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.75rem",
+          }}
+        >
+          <span style={{ fontSize: "1.4rem" }}>🪣</span>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
+              MinIO Manual File Upload Manager (Direct S3 Bucket)
+            </div>
+            <div style={{ fontSize: "0.82rem", color: "#7dd3fc", marginTop: "0.15rem" }}>
+              Files are stored directly in MinIO S3 bucket <code>{source.minio_bucket}</code>. Use the <strong>Files &amp; Uploads</strong> tab to manage files.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Local File System Information Banner */}
       {isLocalSource && (
         <div
@@ -453,16 +501,17 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           <span style={{ fontSize: "1.4rem" }}>📁</span>
           <div>
             <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
-              Local File System Source (Manual Uploads Only)
+              Legacy Local File System Source
             </div>
             <div style={{ fontSize: "0.82rem", color: "#a5d6a7", marginTop: "0.15rem" }}>
               Files are stored locally in <code>storage/local_sources/{(source.config?.folder_name as string) || source.minio_bucket.replace("local-", "")}</code>.
-              Pathway CRUD monitoring automatically watches this folder and syncs changes to all linked Knowledge Store destinations. Connectors are disabled for local sources.
             </div>
           </div>
         </div>
       )}
 
+      {/* Tab Navigation (Hidden for Local FS & MinIO Manual sources) */}
+      {!isLocalSource && !isManualMinioSource && (
       {/* Tab Navigation (Hidden for Local FS sources) */}
       {!isLocalSource && (
         <div
@@ -552,7 +601,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
       )}
 
       {/* TAB 1: CONNECTORS CATALOGUE & ACTIVE CONNECTORS */}
-      {!isLocalSource && activeTab === "connectors" && (
+      {!isLocalSource && !isManualMinioSource && activeTab === "connectors" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
           {/* Active Attached Connectors Section */}
           <div>
@@ -744,12 +793,12 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
       )}
 
       {/* TAB 2: BUCKET STORAGE FILES */}
-      {activeTab === "files" && (
+      {(isLocalSource || isManualMinioSource || activeTab === "files") && (
         <FileBrowser
           sourceId={source?.id ?? id ?? ""}
           bucketName={source?.minio_bucket ?? ""}
           files={files}
-          allowUpload={isLocalSource}
+          allowUpload={isLocalSource || isManualMinioSource}
           allowDelete={true}
           onError={(err) => setError(err)}
           onInfo={(msg) => console.log(msg)}

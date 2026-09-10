@@ -1076,7 +1076,9 @@ export interface SourceConnectorRecord {
 export interface SourceRecord {
   id: string;
   name: string;
-  source_type?: "minio" | "local_filesystem" | string;
+  source_type?: "minio" | "minio_manual" | "local_filesystem" | string;
+  is_manual?: boolean;
+  is_local?: boolean;
   local_path?: string | null;
   connector_type: string | null;
   config: Record<string, unknown> | null;
@@ -1104,7 +1106,7 @@ export interface PipelineLinkInfo {
 
 export interface SourceCreateRequest {
   name: string;
-  source_type?: "minio" | "local_filesystem" | string;
+  source_type?: "minio" | "minio_manual" | "local_filesystem" | string;
   connector_type?: string;
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";

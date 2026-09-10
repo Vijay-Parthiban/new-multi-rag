@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 settings = get_settings()
 
 CONNECTOR_OPTIONS = [
-    {"id": "local_filesystem", "label": "Local File System", "description": "Local workspace folder storage"},
+    {"id": "manual_upload", "label": "MinIO Manual File Upload", "description": "Manual file upload directly to dedicated MinIO bucket"},
     {"id": "google_drive", "label": "Google Drive", "description": "Sync files from Google Drive"},
     {"id": "google_sheets", "label": "Google Sheets", "description": "Sync spreadsheets from Google Sheets"},
     {"id": "gcs", "label": "Google Cloud Storage", "description": "Sync files from GCS buckets"},
@@ -76,7 +76,7 @@ class ConnectorUpdateRequest(BaseModel):
 
 class SourceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    source_type: Literal["minio", "local_filesystem"] | str | None = Field(default="minio")
+    source_type: Literal["minio", "minio_manual", "local_filesystem"] | str | None = Field(default="minio")
     # Legacy single-connector fields (backward compat)
     connector_type: str | None = Field(default=None, max_length=64)
     config: dict = Field(default_factory=dict)
@@ -155,6 +155,15 @@ def _is_local_source(s: Source) -> bool:
     return False
 
 
+def _is_manual_minio_source(s: Source) -> bool:
+    if s.connector_type in ("manual_upload", "minio_manual"):
+        return True
+    if (s.config or {}).get("source_type") == "minio_manual":
+        return True
+    if (s.config or {}).get("mode") == "manual_upload":
+        return True
+    return False
+
 async def _cleanup_orphaned_local_sources(db: AsyncSession) -> None:
     """Purge local_sources folders on disk that no longer have a corresponding active DB source."""
     try:
@@ -184,11 +193,11 @@ def _trigger_sync_in_background(source: Source) -> None:
         from src.ingestion_service.core.pathway_sync import _trigger_pipeline_syncs
         try:
             async with AsyncSessionLocal() as db_session:
-                s = await db_session.get(Source, source.id)
-                if s:
-                    await _trigger_pipeline_syncs(db_session, s)
+                db_source = await db_session.get(Source, source.id)
+                if db_source:
+                    await _trigger_pipeline_syncs(db_source, db_session)
         except Exception as exc:
-            logger.warning("background_fanout_sync_failed source=%s error=%s", source.id, exc)
+            logger.error("Background sync trigger failed for source %s: %s", source.id, exc)
     asyncio.create_task(_runner())
 
 
@@ -201,17 +210,20 @@ async def _source_to_dict(s: Source) -> dict:
         connectors = s.connectors or []
     except Exception:
         connectors = []
+
     is_local = _is_local_source(s)
+    is_manual = _is_manual_minio_source(s)
+    source_type = "local_filesystem" if is_local else ("minio_manual" if is_manual else "minio")
+
     return {
         "id": str(s.id),
         "name": s.name,
-        "source_type": "local_filesystem" if is_local else "minio",
+        "source_type": source_type,
+        "is_manual": is_manual,
+        "is_local": is_local,
         "local_path": (s.config or {}).get("local_path") if is_local else None,
-        # Legacy fields
         "connector_type": s.connector_type,
         "config": s.config or {},
-        "monitor_mode": s.connector_monitor_mode.value if s.connector_monitor_mode else "live",
-        # New multi-connector fields
         "connector_monitor_mode": s.connector_monitor_mode.value if s.connector_monitor_mode else "live",
         "connector_sync_interval_minutes": s.connector_sync_interval_minutes,
         "pipeline_monitor_mode": s.pipeline_monitor_mode.value if s.pipeline_monitor_mode else "live",
@@ -224,6 +236,7 @@ async def _source_to_dict(s: Source) -> dict:
         "total_files": getattr(s, "total_files", 0) or 0,
         "total_size_bytes": getattr(s, "total_size_bytes", 0) or 0,
         "error_message": s.error_message,
+        "pipeline_ids": [str(ps.pipeline_id) for ps in pipelines],
         "pipeline_links": [
             {
                 "pipeline_id": str(ps.pipeline_id),
@@ -237,7 +250,6 @@ async def _source_to_dict(s: Source) -> dict:
         "created_at": s.created_at.isoformat(),
         "updated_at": s.updated_at.isoformat(),
     }
-
 
 def _make_bucket_name(source_id: str, name: str) -> str:
     """Generate a deterministic MinIO bucket name for a source."""
@@ -267,34 +279,13 @@ async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
         .order_by(Source.created_at.desc())
     )
     sources = result.scalars().all()
-    return {"sources": [await _source_to_dict(s) for s in sources]}
-# ── Connector catalog ────────────────────────────────────────────────────
-
-
-@router.get("/connectors", status_code=200)
-async def list_connectors():
-    """Return available Airbyte connector types."""
-    return {"connectors": CONNECTOR_OPTIONS}
-
-
-# ── Source CRUD ───────────────────────────────────────────────────────────
-
-
-@router.get("", status_code=200)
-async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
-    from sqlalchemy.orm import selectinload
-    result = await db.execute(
-        select(Source)
-        .options(selectinload(Source.pipelines), selectinload(Source.connectors))
-        .order_by(Source.created_at.desc())
-    )
-    return [await _source_to_dict(s) for s in result.scalars().all()]
-
+    return [await _source_to_dict(s) for s in sources]
 @router.post("", status_code=201)
 async def create_source(
     body: SourceCreateRequest, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Create a new external data source or local filesystem source."""
+    """Create a new MinIO connector source or MinIO manual upload source."""
+    is_manual = body.source_type == "minio_manual" or body.connector_type in ("manual_upload", "minio_manual")
     is_local = body.source_type == "local_filesystem" or body.connector_type == "local_filesystem"
 
     # Check name uniqueness
@@ -304,7 +295,35 @@ async def create_source(
 
     source_id = uuid.uuid4()
 
-    if is_local:
+    if is_manual:
+        bucket = _make_bucket_name(str(source_id), body.name.strip())
+        config = body.config or {}
+        config["source_type"] = "minio_manual"
+        config["mode"] = "manual_upload"
+
+        source = Source(
+            id=source_id,
+            name=body.name.strip(),
+            connector_type="manual_upload",
+            config=config,
+            connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
+            connector_sync_interval_minutes=body.connector_sync_interval_minutes,
+            pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
+            pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
+            minio_bucket=bucket,
+            status="synced",
+            sync_interval_minutes=body.sync_interval_minutes,
+        )
+        db.add(source)
+        await db.commit()
+        await ensure_bucket(bucket)
+        res = await db.execute(
+            select(Source)
+            .options(selectinload(Source.pipelines), selectinload(Source.connectors))
+            .where(Source.id == source_id)
+        )
+        refreshed_source = res.scalar_one()
+        return await _source_to_dict(refreshed_source)
         import re
         safe_name = re.sub(r"[^a-z0-9_-]", "_", body.name.strip().lower())
         if not safe_name:

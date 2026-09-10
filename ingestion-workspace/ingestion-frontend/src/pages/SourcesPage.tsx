@@ -99,9 +99,9 @@ function SourceCard({
 }) {
   const [copied, setCopied] = useState(false);
   const connectorCount = source.connectors?.length ?? 0;
-  const isLocal = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-");
+  const isLocal = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-") || source.is_local;
+  const isManual = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
   const folderName = (source.config?.folder_name as string) || source.minio_bucket.replace("local-", "");
-
 
   const handleCopyBucket = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -152,7 +152,12 @@ function SourceCard({
       {/* Meta Stats & MinIO Bucket Tag */}
       {/* Meta Stats & MinIO Bucket / Local FS Tag */}
       <div className="source-card-meta">
-        {isLocal ? (
+        {isManual ? (
+          <div className="source-card-stat">
+            <span className="source-card-stat-value" style={{ color: "#38bdf8", fontSize: "0.85rem" }}>MinIO</span>
+            <span className="source-card-stat-label">Manual Upload</span>
+          </div>
+        ) : isLocal ? (
           <div className="source-card-stat">
             <span className="source-card-stat-value" style={{ color: "#7ee787", fontSize: "0.85rem" }}>📁 FS</span>
             <span className="source-card-stat-label">Local System</span>
@@ -193,9 +198,15 @@ function SourceCard({
 
       {/* Attached Connectors Brand Badges Row */}
       <div style={{ marginTop: "0.85rem", marginBottom: "0.85rem" }}>
-        {isLocal ? (
+        {isManual ? (
+          <div className="source-card-empty-connectors" style={{ borderColor: "rgba(56, 189, 248, 0.25)", background: "rgba(56, 189, 248, 0.08)" }}>
+            <span style={{ color: "#38bdf8", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+              <IconUpload size={13} /> MinIO Manual File Upload Manager (Direct S3 Bucket)
+            </span>
+          </div>
+        ) : isLocal ? (
           <div className="source-card-empty-connectors" style={{ borderColor: "rgba(46, 160, 67, 0.25)", background: "rgba(46, 160, 67, 0.08)" }}>
-            <span style={{ color: "#7ee787", fontWeight: 500 }}>📁 Manual File Uploads Only (No Connectors)</span>
+            <span style={{ color: "#7ee787", fontWeight: 500 }}>📁 Legacy Local File System</span>
           </div>
         ) : connectorCount === 0 ? (
           <div className="source-card-empty-connectors">
@@ -518,7 +529,7 @@ export default function SourcesPage() {
   const handleNavigate = useCallback(
     (sourceId: string) => {
       navigate(`/sources/${sourceId}`);
-    },
+  const [selectedSourceType, setSelectedSourceType] = useState<"minio" | "minio_manual">("minio");
     [navigate]
   );
 
@@ -604,9 +615,11 @@ export default function SourcesPage() {
   const activeCount = sources.filter((s) => s.enabled !== false).length;
   const syncingCount = sources.filter((s) => s.status === "syncing" || s.status === "processing").length;
   const errorCount = sources.filter((s) => s.status === "error" || s.status === "failed" || !!s.error_message).length;
-
-  return (
-    <div className="page">
+        const created = await createSource({
+          name: nameToCreate,
+          source_type: typeToCreate,
+          connector_type: typeToCreate === "minio_manual" ? "manual_upload" : "minio",
+        });
       {/* Top Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
         <div>
@@ -914,12 +927,46 @@ export default function SourcesPage() {
                       color: selectedSourceType === "local_filesystem" ? "#7ee787" : "#8b949e",
                       textAlign: "left",
                       cursor: "pointer",
+                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                  Source Option *
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceType("minio")}
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: selectedSourceType === "minio" ? "1px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
+                      background: selectedSourceType === "minio" ? "rgba(56, 139, 253, 0.15)" : "rgba(17, 21, 30, 0.6)",
+                      color: selectedSourceType === "minio" ? "#58a6ff" : "#8b949e",
+                      textAlign: "left",
+                      cursor: "pointer",
                     }}
                   >
                     <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                      📁 Local File System
+                      <IconBucket size={14} /> MinIO Connector Source
                     </div>
-                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>storage/local_sources/</div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>Airbyte / Pathway connectors</div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceType("minio_manual")}
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "8px",
+                      border: selectedSourceType === "minio_manual" ? "1px solid #38bdf8" : "1px solid rgba(255,255,255,0.1)",
+                      background: selectedSourceType === "minio_manual" ? "rgba(56, 189, 248, 0.15)" : "rgba(17, 21, 30, 0.6)",
+                      color: selectedSourceType === "minio_manual" ? "#38bdf8" : "#8b949e",
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                      <IconUpload size={14} /> MinIO Manual Source
+                    </div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>Manual UI upload to MinIO</div>
                   </button>
                 </div>
               </div>
@@ -930,32 +977,25 @@ export default function SourcesPage() {
                   style={{
                     padding: "0.85rem 1rem",
                     borderRadius: "8px",
-                    background: selectedSourceType === "local_filesystem" ? "rgba(46, 160, 67, 0.1)" : "rgba(56, 139, 253, 0.08)",
-                    border: selectedSourceType === "local_filesystem" ? "1px solid rgba(46, 160, 67, 0.3)" : "1px solid rgba(56, 139, 253, 0.25)",
+                    background: "rgba(56, 139, 253, 0.08)",
+                    border: "1px solid rgba(56, 139, 253, 0.25)",
                     marginBottom: "1.25rem",
                   }}
                 >
                   <div style={{ fontSize: "0.75rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-                    {selectedSourceType === "local_filesystem" ? "Local Storage Path:" : "Auto-generated MinIO Bucket:"}
+                    Auto-generated MinIO Bucket:
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                    {selectedSourceType === "local_filesystem" ? (
-                      <span style={{ fontSize: "0.9rem" }}>📁</span>
-                    ) : (
-                      <IconBucket size={14} style={{ color: "#58a6ff" }} />
-                    )}
-                    <code style={{ fontSize: "0.85rem", color: selectedSourceType === "local_filesystem" ? "#7ee787" : "#58a6ff", fontWeight: 600 }}>
-                      {selectedSourceType === "local_filesystem"
-                        ? `storage/local_sources/${newSourceName.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`
-                        : `source-${newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`}
+                    <IconBucket size={14} style={{ color: "#58a6ff" }} />
+                    <code style={{ fontSize: "0.85rem", color: "#58a6ff", fontWeight: 600 }}>
+                      source-{newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}
                     </code>
+                  </div>
+                  <div style={{ fontSize: "0.72rem", color: "#8b949e", marginTop: "0.4rem" }}>
+                    Type: {selectedSourceType === "minio_manual" ? "MinIO Bucket (Manual File Upload)" : "MinIO Bucket (Connector Based)"}
                   </div>
                 </div>
               )}
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
                   className="btn btn-secondary"
                   onClick={() => setShowCreateForm(false)}
                 >
