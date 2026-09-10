@@ -21,6 +21,9 @@ logger = logging.getLogger("api")
 async def lifespan(_app: FastAPI):
     ensure_storage_layout()
     await init_db()
+    from src.ingestion_service.core.pathway_sync import init_all_source_pollers
+    import asyncio
+    asyncio.create_task(init_all_source_pollers())
     yield
     await close_redis()
     await close_db()

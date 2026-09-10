@@ -1,8 +1,8 @@
-# 10. AI Guardrails Benchmark Evaluation Page (`/guard-eval`)
+# 10. AI Guardrails Benchmark Evaluation Page (`/guardrails-evaluation`)
 
 ## 1. Page Purpose & Summary
 
-The **AI Guardrails Evaluation** (`/guard-eval`) page enables safety researchers to execute automated adversarial red-teaming benchmarks against configured guardrail policies to measure precision, recall, and false-positive rates.
+The **AI Guardrails Evaluation** (`/guardrails-evaluation`) page enables safety researchers to execute automated adversarial red-teaming benchmarks against configured guardrail policies to measure precision, recall, and false-positive rates.
 
 ---
 
@@ -17,5 +17,5 @@ The **AI Guardrails Evaluation** (`/guard-eval`) page enables safety researchers
 
 ## 3. API Endpoint Reference
 
-- **`triggerGuardrailsEvaluation(payload)`**: `POST /api/guardrails/evaluate`
-- **`getGuardrailsEvalResults(runId)`**: `GET /api/guardrails/evaluate/{runId}`
+- **`triggerGuardrailsEvaluation(payload)`**: `POST /api/guardrails/evaluate` — Dispatches automated red-teaming benchmark evaluation run.
+- **`getGuardrailsEvalResults(runId)`**: `GET /api/guardrails/evaluate/{runId}` — Retrieves evaluation results, confusion matrix, and failure cases.

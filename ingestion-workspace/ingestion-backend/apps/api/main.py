@@ -24,6 +24,9 @@ async def lifespan(_app: FastAPI):
         await init_db()
     except Exception as e:
         print(f"Warning: init_db failed: {e}")
+    from src.ingestion_service.core.pathway_sync import init_all_source_pollers
+    import asyncio
+    asyncio.create_task(init_all_source_pollers())
     yield
     await close_redis()
     await close_db()

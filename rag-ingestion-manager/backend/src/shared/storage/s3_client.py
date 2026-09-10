@@ -79,6 +79,17 @@ def _sync_ensure_bucket(bucket: str) -> None:
 
 async def ensure_bucket(bucket: str) -> None:
     await asyncio.to_thread(_sync_ensure_bucket, bucket)
+def _sync_bucket_exists(bucket: str) -> bool:
+    try:
+        s3 = _get_boto3_client()
+        s3.head_bucket(Bucket=bucket)
+        return True
+    except Exception:
+        return False
+
+async def bucket_exists(bucket: str) -> bool:
+    return await asyncio.to_thread(_sync_bucket_exists, bucket)
+
 
 def _sync_delete_object(bucket: str, key: str) -> None:
     try:

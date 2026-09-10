@@ -2,7 +2,7 @@
 
 ## 1. Page Purpose & Summary
 
-The **RAG Pipelines** (`/pipelines`) page allows administrators to configure hybrid vector retrieval strategies, create Qdrant collection mappings, select dense/sparse embedding models, tune chunking strategies, and monitor vector index status.
+The **RAG Pipelines** (`/pipelines`) page allows administrators to configure hybrid vector retrieval strategies, map Qdrant collections, select dense and sparse embedding models, set chunk size/overlap parameters, and manage vector index collections.
 
 ---
 
@@ -18,18 +18,18 @@ The **RAG Pipelines** (`/pipelines`) page allows administrators to configure hyb
 
 ## 3. Key UI Modules & Features
 
-1. **Pipeline Strategy Table**: Displays active pipelines, Qdrant collection names, dense embedding model (`BAAI/bge-large-en-v1.5`, `text-embedding-3-large`), sparse model (`Qdrant/bm25`), and chunk size settings.
+1. **Pipeline Strategy Table**: Displays configured pipelines, Qdrant collection names, dense embedding models, sparse models, chunk size, and chunk overlap settings.
 2. **Create Pipeline Wizard**:
    - Step 1: Strategy Selection & Collection Name.
    - Step 2: Dense & Sparse Embedding Model configuration.
    - Step 3: Chunking & Overlap Parameters (e.g. 512 tokens with 64 token overlap).
-3. **Pipeline Sync & Index Actions**: Trigger re-indexing or purge vector collections.
+3. **Pipeline Index & Sync Controls**: Re-index trigger and collection deletion capabilities.
 
 ---
 
 ## 4. API Endpoint Reference
 
-- **`listPipelines()`**: `GET /api/rag/pipelines`
-- **`getPipelineOptions()`**: `GET /api/rag/pipelines/options`
-- **`createPipeline(body)`**: `POST /api/rag/pipelines`
-- **`deletePipeline(id)`**: `DELETE /api/rag/pipelines/:id`
+- **`listPipelines()`**: `GET /api/rag/pipelines` — Returns list of configured pipelines and Qdrant collections.
+- **`getPipelineOptions()`**: `GET /api/rag/pipelines/options` — Returns available embedding models and strategies.
+- **`createPipeline(body)`**: `POST /api/rag/pipelines` — Creates pipeline configuration in database and provisions Qdrant collection.
+- **`deletePipeline(id)`**: `DELETE /api/rag/pipelines/{id}` — Removes pipeline configuration and purges collection.

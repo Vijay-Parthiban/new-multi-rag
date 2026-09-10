@@ -1,8 +1,8 @@
-# 09. AI Guardrails Traces Page (`/guard-traces`)
+# 09. AI Guardrails Traces Page (`/guardrails-traces`)
 
 ## 1. Page Purpose & Summary
 
-The **AI Guardrails Traces** (`/guard-traces`) page provides security auditing logs of all moderation decisions evaluated by the Guardrails Service (Port 8002).
+The **AI Guardrails Traces** (`/guardrails-traces`) page provides security auditing logs of all moderation decisions evaluated by the Guardrails Service (Port 8002).
 
 ---
 
@@ -21,4 +21,4 @@ The **AI Guardrails Traces** (`/guard-traces`) page provides security auditing l
 
 ## 3. API Endpoint Reference
 
-- **`listGuardrailsTraces(limit)`**: `GET /api/guardrails/traces?limit=100`
+- **`listGuardrailsTraces(limit)`**: `GET /api/guardrails/traces?limit=100` — Fetches security moderation audit log events.

@@ -1,8 +1,8 @@
-# 08. AI Guardrails Policy Config Page (`/guard-config`)
+# 08. AI Guardrails Policy Config Page (`/guardrails-config`)
 
 ## 1. Page Purpose & Summary
 
-The **AI Guardrails Policy Config** (`/guard-config`) page manages safety policies, toxicity filters, PII redaction, topic restrictions, and hallucination checks enforced by the Guardrails Service (Port 8002).
+The **AI Guardrails Policy Config** (`/guardrails-config`) page manages safety policies, toxicity filters, PII redaction, topic restrictions, and hallucination checks enforced by the Guardrails Service (Port 8002).
 
 ---
 
@@ -29,5 +29,5 @@ The **AI Guardrails Policy Config** (`/guard-config`) page manages safety polici
 
 ## 4. API Endpoint Reference
 
-- **`getGuardrailsConfig()`**: `GET /api/guardrails/config`
-- **`updateGuardrailsConfig(body)`**: `POST /api/guardrails/config`
+- **`getGuardrailsConfig()`**: `GET /api/guardrails/config` — Retrieves active guardrails configuration.
+- **`updateGuardrailsConfig(body)`**: `POST /api/guardrails/config` — Updates safety rules and threshold settings.

@@ -1,8 +1,8 @@
-# 05. Real-Time Monitoring Page (`/monitoring`)
+# 05. Real-Time Monitoring Page (`/evaluations`)
 
 ## 1. Page Purpose & Summary
 
-The **Real-Time Monitoring** (`/monitoring`) page provides live operational metrics, query latency telemetry, vector DB performance, and system throughput monitoring for the RAG query engine.
+The **Real-Time Monitoring** (`/evaluations`) page provides live operational metrics, query latency breakdown telemetry, vector DB performance, and system throughput monitoring for the RAG query engine.
 
 ---
 
@@ -22,5 +22,5 @@ The **Real-Time Monitoring** (`/monitoring`) page provides live operational metr
 
 ## 3. Data Fetching & API Interactions
 
-- Integrates directly with OpenTelemetry traces emitted by `@trace_span` in `rag-app-workspace/libs/shared`.
-- Polling Endpoint: `GET /api/rag/monitoring/metrics`
+- Integrates with OpenTelemetry traces and telemetry stats emitted during pipeline execution.
+- Polling Endpoint: `GET /api/rag/evaluations/metrics` or `GET /api/rag/evaluations`

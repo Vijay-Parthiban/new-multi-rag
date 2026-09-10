@@ -2,7 +2,7 @@
 
 ## 1. Page Purpose & Summary
 
-The **Tracking & Execution Traces** (`/tracking`) page provides end-to-end distributed tracing inspection for every RAG request processed by the platform.
+The **Tracking & Execution Traces** (`/tracking`) page provides end-to-end distributed tracing inspection for every RAG query request processed by the system.
 
 ---
 
@@ -27,5 +27,5 @@ The **Tracking & Execution Traces** (`/tracking`) page provides end-to-end distr
 
 ## 3. Data Fetching & API Interactions
 
-- **`listTraces(limit)`**: `GET /api/rag/traces?limit=100`
-- **`getTraceDetail(traceId)`**: `GET /api/rag/traces/{traceId}`
+- **`listTraces(limit)`**: `GET /api/rag/traces?limit=100` — Fetches OpenTelemetry trace logs.
+- **`getTraceDetail(traceId)`**: `GET /api/rag/traces/{traceId}` — Retrieves detailed span tree and metadata for a trace.

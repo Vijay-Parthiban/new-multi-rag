@@ -1,27 +1,27 @@
-# 01. Retrieval & Chat Overview Page (`/`)
+# 01. Overview Dashboard Page (`/`)
 
 ## 1. Page Purpose & Summary
 
-The **Retrieval & Chat Overview Dashboard** (`/`) is the central landing page for the `rag-retrieval-chat-manager` application. It provides real-time visibility into active RAG pipeline strategies, query volume, sub-second latency trends, AI guardrails safety status, and LLM token metrics.
+The **Overview Dashboard** (`/`) is the central landing screen of the `rag-retrieval-chat-manager` application. It provides real-time query performance metrics, RAG pipeline status, prompt repository summaries, guardrails safety status, and quick shortcuts to all 11 system components.
 
 ---
 
 ## 2. Key UI Modules & Widgets
 
-1. **System Operational Status Header**: Health indicators for RAG Query API (Port 8001), Guardrails Service (Port 8002), and Qdrant Vector Engine (Port 6333).
-2. **Key Metric Summary Cards**:
-   - **Active RAG Pipelines**: Total configured vector strategies & Qdrant collections.
-   - **Total Chat Sessions**: Cumulative interactive query sessions logged.
-   - **Avg Retrieval Latency**: Sub-second dense/sparse vector search duration (ms).
-   - **Guardrails Violations**: Count of blocked toxic or halluncinated prompts.
-3. **Recent Chat Activity**: Snapshot of latest user queries, generation model used, and rerank scores.
-4. **Quick Navigation Links**: Direct action cards to launch RAG Chat (`/chat`), edit Prompts (`/prompts`), or configure Guardrails (`/guard-config`).
+1. **System Health Status Banner**: Displays live service connectivity indicators for the RAG Query API (Port 8001), Guardrails Moderation Service (Port 8002), and Ingestion Backend (Port 8007).
+2. **Key Operational Metrics Summary**:
+   - **Active RAG Pipelines**: Total configured vector retrieval pipelines and Qdrant collection mappings.
+   - **System Prompts Registered**: Count of customizable prompt templates across `generation_core` and `rag_core`.
+   - **Recent Chat Sessions**: Active user conversation threads.
+   - **Guardrail Interceptions**: Total moderation safety blocks triggered.
+3. **Quick Navigation Cards**: Direct shortcuts to Chat (`/chat`), Pipelines (`/pipelines`), Real Time Monitoring (`/evaluations`), Offline Evaluation (`/golden-evaluations`), and Guardrails Config (`/guardrails-config`).
 
 ---
 
 ## 3. Data Fetching & API Interactions
 
-- **`GET /api/rag/pipelines`**: Retrieves list of active vector search collections.
-- **`GET /api/rag/chat/sessions`**: Fetches recent query activity logs.
-- **`GET /api/guardrails/config`**: Checks safety policy enforcement status.
-- **`GET /health`**: Validates backend service health.
+- **`GET /api/rag/pipelines`**: Fetches pipeline strategy configurations.
+- **`GET /api/rag/chat/sessions`**: Fetches recent chat session statistics.
+- **`GET /api/prompts`**: Fetches active prompt template list.
+- **`GET /api/guardrails/config`**: Fetches active safety moderation rules.
+- **`GET /health`**: Health check polling confirming service availability.

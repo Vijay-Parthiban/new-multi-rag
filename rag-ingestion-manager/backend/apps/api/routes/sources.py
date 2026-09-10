@@ -28,6 +28,7 @@ from src.shared.db.session import get_db
 from src.shared.storage import ensure_bucket
 from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource, KnowledgeProfileSource
 from src.shared.config.settings import get_settings
+from src.ingestion_service.core.pathway_sync import register_source_poller, stop_source_poller
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 settings = get_settings()
 
@@ -421,6 +422,7 @@ async def create_source(
         .where(Source.id == source.id)
     )
     refreshed_source = result.scalar_one()
+    await register_source_poller(refreshed_source.id)
     return await _source_to_dict(refreshed_source)
 
 
@@ -493,6 +495,7 @@ async def update_source(
             logger.warning("bucket_notification_update_failed source=%s error=%s", source.id, exc)
 
     source = await db.get(Source, source.id)
+    await register_source_poller(source_id)
     return await _source_to_dict(source)
 
 
@@ -526,6 +529,7 @@ async def delete_source(
     await db.delete(source)
     await db.commit()
     await _cleanup_orphaned_local_sources(db)
+    stop_source_poller(source_id)
     return {"status": "deleted", "id": str(source_id)}
 
 @router.post("/{source_id}/connectors", status_code=201)
@@ -573,6 +577,7 @@ async def add_source_connector(
         except Exception:
             pass
 
+    await register_source_poller(source_id)
     return _connector_to_dict(connector)
 
 
@@ -612,6 +617,7 @@ async def update_source_connector(
 
     await db.commit()
     connector = await db.get(SourceConnector, connector_id)
+    await register_source_poller(source_id)
     return _connector_to_dict(connector)
 
 
@@ -628,6 +634,7 @@ async def delete_source_connector(
 
     await db.delete(connector)
     await db.commit()
+    await register_source_poller(source_id)
     return {"status": "deleted", "connector_id": str(connector_id), "source_id": str(source_id)}
 
 
@@ -875,25 +882,33 @@ async def upload_source_file(
             "files": saved_files,
         }
     # MinIO upload path
-    upload = raw_uploads[0]
-    data = await upload.read()
-    if not data:
-        raise ValidationError("EMPTY_FILE", "Uploaded file is empty.")
-
-    key = sanitize_file_name(getattr(upload, "filename", "file"))
     from src.shared.storage import ensure_bucket, put_object
 
     await ensure_bucket(source.minio_bucket)
-    await put_object(source.minio_bucket, key, data)
-    logger.info("source_file_uploaded source=%s bucket=%s key=%s bytes=%d", source.id, source.minio_bucket, key, len(data))
+    saved_files = []
+    for upload in raw_uploads:
+        if not hasattr(upload, "filename") or not upload.filename:
+            continue
+        data = await upload.read()
+        if not data:
+            continue
+        key = sanitize_file_name(getattr(upload, "filename", "file"))
+        await put_object(source.minio_bucket, key, data)
+        saved_files.append({"key": key, "size": len(data)})
+
+    if not saved_files:
+        raise ValidationError("EMPTY_FILE", "No valid non-empty files were uploaded.")
+
+    logger.info("source_files_uploaded source=%s bucket=%s count=%d", source.id, source.minio_bucket, len(saved_files))
     await _update_source_metrics(db, source)
     _trigger_sync_in_background(source)
     return {
         "status": "uploaded",
         "source_id": str(source_id),
         "bucket": source.minio_bucket,
-        "key": key,
-        "size": len(data),
+        "key": saved_files[0]["key"],
+        "size": saved_files[0]["size"],
+        "files": saved_files,
     }
 
 @router.delete("/{source_id}/files", status_code=200)

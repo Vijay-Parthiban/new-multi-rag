@@ -2,7 +2,7 @@
 
 ## 1. Page Purpose & Summary
 
-The **Knowledge Store Proxy** (`/knowledge-store`) page in `rag-retrieval-chat-manager` provides a read-only view of the multi-sink Knowledge Profiles and destination sinks configured inside `rag-ingestion-manager`.
+The **Knowledge Store Proxy** (`/knowledge-store`) page in `rag-retrieval-chat-manager` provides a read-only proxy view of the multi-sink Knowledge Profiles and destination sinks configured inside `rag-ingestion-manager`.
 
 ---
 

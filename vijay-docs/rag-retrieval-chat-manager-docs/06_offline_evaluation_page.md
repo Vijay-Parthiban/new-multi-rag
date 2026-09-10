@@ -1,8 +1,8 @@
-# 06. Offline Evaluation Page (`/evaluation`)
+# 06. Offline Evaluation Page (`/golden-evaluations`)
 
 ## 1. Page Purpose & Summary
 
-The **Offline Evaluation** (`/evaluation`) page manages batch evaluation of RAG pipelines against benchmark evaluation datasets using industry-standard Ragas and DeepEval metrics.
+The **Offline Evaluation** (`/golden-evaluations`) page manages batch evaluation of RAG pipelines against ground-truth evaluation datasets using industry-standard Ragas and DeepEval benchmark metrics.
 
 ---
 
@@ -27,7 +27,7 @@ The **Offline Evaluation** (`/evaluation`) page manages batch evaluation of RAG 
 
 ## 4. API Endpoint Reference
 
-- **`listEvaluationDatasets()`**: `GET /api/rag/evaluations/datasets`
-- **`createEvaluationDataset(body)`**: `POST /api/rag/evaluations/datasets`
-- **`listEvaluationRuns()`**: `GET /api/rag/evaluations/runs`
-- **`triggerEvaluationRun(body)`**: `POST /api/rag/evaluations/runs`
+- **`listEvaluationDatasets()`**: `GET /api/rag/evaluations/datasets` — Retrieves benchmark datasets.
+- **`createEvaluationDataset(body)`**: `POST /api/rag/evaluations/datasets` — Uploads or creates benchmark test set.
+- **`listEvaluationRuns()`**: `GET /api/rag/evaluations/runs` — Lists batch evaluation execution runs.
+- **`triggerEvaluationRun(body)`**: `POST /api/rag/evaluations/runs` — Dispatches background evaluation task to `eval-worker` queue.

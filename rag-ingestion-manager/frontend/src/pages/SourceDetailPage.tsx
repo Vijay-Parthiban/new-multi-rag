@@ -137,7 +137,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
         if (!mounted) return;
         setSource(srcData);
         setCatalog(catData);
-        if (srcData.connector_type === "local_filesystem" || srcData.source_type === "local_filesystem" || srcData.minio_bucket?.startsWith("local-")) {
+        if (srcData.connector_type === "local_filesystem" || srcData.source_type === "local_filesystem" || srcData.minio_bucket?.startsWith("local-") || srcData.source_type === "minio_manual" || srcData.connector_type === "manual_upload") {
           setActiveTab("files");
         }
 

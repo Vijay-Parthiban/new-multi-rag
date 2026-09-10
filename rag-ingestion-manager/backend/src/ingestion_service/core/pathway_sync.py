@@ -420,52 +420,118 @@ async def sync_local_dir_to_minio(
     }
 
 
-_LIVE_POLLE_TASKS: dict[uuid.UUID, asyncio.Task] = {}
+_SOURCE_POLLER_TASKS: dict[uuid.UUID, asyncio.Task] = {}
+
+def stop_source_poller(source_id: uuid.UUID) -> None:
+    """Stop and cancel any active background poller task for a source."""
+    task = _SOURCE_POLLER_TASKS.pop(source_id, None)
+    if task and not task.done():
+        task.cancel()
+        logger.info("Stopped background poller task for source %s", source_id)
 
 def start_live_sync_poller(source_id: uuid.UUID, poll_interval_seconds: int = 3) -> None:
-    """Start continuous background polling for live-mode sources (default 3s interval for <5s latency)."""
-    import asyncio
-    from src.shared.db.session import AsyncSessionLocal
+    """Legacy alias for register_source_poller."""
+    asyncio.create_task(register_source_poller(source_id))
 
-    if source_id in _LIVE_POLLE_TASKS and not _LIVE_POLLE_TASKS[source_id].done():
-        return
-
-    async def _poller_loop():
-        logger.info("live_sync_poller_started source=%s interval=%ds", source_id, poll_interval_seconds)
-        while True:
-            try:
-                await asyncio.sleep(poll_interval_seconds)
-                async with AsyncSessionLocal() as db:
-                    await sync_source_from_pathway(db, source_id)
-            except asyncio.CancelledError:
-                logger.info("live_sync_poller_cancelled source=%s", source_id)
-                break
-            except Exception as exc:
-                logger.error("live_sync_poller_error source=%s error=%s", source_id, exc)
-
-    task = asyncio.create_task(_poller_loop())
-    _LIVE_POLLE_TASKS[source_id] = task
-
-
-async def init_all_live_sync_pollers() -> None:
-    """Initialize live sync background pollers for all sources configured in LIVE mode."""
+async def register_source_poller(source_id: uuid.UUID) -> None:
+    """Register or update continuous live/scheduled background polling for a source."""
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
     from src.shared.db.session import AsyncSessionLocal
     from src.shared.db.models import Source, SourceConnector, SourceMonitorMode
 
+    async with AsyncSessionLocal() as db:
+        source = await db.get(
+            Source,
+            source_id,
+            options=(selectinload(Source.connectors),),
+        )
+        if not source or not source.enabled:
+            stop_source_poller(source_id)
+            return
+
+        connectors = source.connectors or []
+        is_live = (source.connector_monitor_mode == SourceMonitorMode.LIVE) or any(
+            c.monitor_mode == SourceMonitorMode.LIVE for c in connectors
+        )
+
+        stop_source_poller(source_id)
+
+        if is_live:
+            poll_interval_seconds = 3
+            logger.info("Starting INSTANTANEOUS LIVE background poller for source %s (interval=%ds)", source_id, poll_interval_seconds)
+
+            async def _live_loop():
+                while True:
+                    try:
+                        await asyncio.sleep(poll_interval_seconds)
+                        async with AsyncSessionLocal() as db_inner:
+                            await sync_source_from_pathway(db_inner, source_id)
+                    except asyncio.CancelledError:
+                        logger.info("Live poller task cancelled for source %s", source_id)
+                        break
+                    except Exception as exc:
+                        logger.error("Live poller loop error for source %s: %s", source_id, exc)
+
+            task = asyncio.create_task(_live_loop())
+            _SOURCE_POLLER_TASKS[source_id] = task
+
+        else:
+            # SCHEDULED mode
+            interval_minutes = source.connector_sync_interval_minutes
+            if not interval_minutes:
+                for c in connectors:
+                    if c.sync_interval_minutes:
+                        interval_minutes = c.sync_interval_minutes
+                        break
+            if not interval_minutes:
+                interval_minutes = 5  # default 5 minutes
+
+            interval_seconds = max(1, interval_minutes * 60)
+            logger.info("Starting PRECISE SCHEDULED background poller for source %s (interval=%d minutes)", source_id, interval_minutes)
+
+            async def _scheduled_loop():
+                while True:
+                    try:
+                        await asyncio.sleep(interval_seconds)
+                        async with AsyncSessionLocal() as db_inner:
+                            await sync_source_from_pathway(db_inner, source_id)
+                    except asyncio.CancelledError:
+                        logger.info("Scheduled poller task cancelled for source %s", source_id)
+                        break
+                    except Exception as exc:
+                        logger.error("Scheduled poller loop error for source %s: %s", source_id, exc)
+
+            task = asyncio.create_task(_scheduled_loop())
+            _SOURCE_POLLER_TASKS[source_id] = task
+
+        # Trigger immediate initial sync on registration
+        asyncio.create_task(_trigger_initial_sync(source_id))
+
+async def _trigger_initial_sync(source_id: uuid.UUID) -> None:
+    """Run immediate initial sync on source registration so new/updated sources don't wait for sleep."""
+    try:
+        from src.shared.db.session import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            await sync_source_from_pathway(db, source_id)
+    except Exception as exc:
+        logger.warning("Initial background sync error for source %s: %s", source_id, exc)
+
+async def init_all_source_pollers() -> None:
+    """Initialize background pollers (live & scheduled) for all enabled sources on server startup."""
+    from sqlalchemy import select
+    from src.shared.db.session import AsyncSessionLocal
+    from src.shared.db.models import Source
+
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Source).where(Source.enabled.is_(True)))
-            sources = result.scalars().all()
-            for source in sources:
-                conn_res = await db.execute(
-                    select(SourceConnector).where(SourceConnector.source_id == source.id)
-                )
-                connectors = conn_res.scalars().all()
-                is_live = (source.connector_monitor_mode == SourceMonitorMode.LIVE) or any(
-                    c.monitor_mode == SourceMonitorMode.LIVE for c in connectors
-                )
-                if is_live:
-                    start_live_sync_poller(source.id, poll_interval_seconds=3)
+            res = await db.execute(select(Source).where(Source.enabled.is_(True)))
+            sources = res.scalars().all()
+            for s in sources:
+                await register_source_poller(s.id)
     except Exception as exc:
-        logger.error("init_all_live_sync_pollers_error: %s", exc)
+        logger.error("init_all_source_pollers startup error: %s", exc)
+
+async def init_all_live_sync_pollers() -> None:
+    """Legacy alias for init_all_source_pollers."""
+    await init_all_source_pollers()

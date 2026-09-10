@@ -21,55 +21,57 @@ The **Universal Multi-RAG Ecosystem** (`new-multi-rag`) is an enterprise-grade, 
 │  Vite Proxy: /api -> 127.0.0.1:8007    │                     │  Guardrails API: http://localhost:8002   │
 │                                        │                     │  Vite Proxy: /api -> 8007, /api/rag -> 8001│
 │  Scope: Document Ingestion & Storage   │                     │  Scope: Retrieval, Chat, Monitoring, Eval│
-│  Pages (5):                            │                     │  Pages (11):                             │
+│  Main Navigation (4 Tabs + Subpages): │                     │  Main Navigation (11 Items):             │
 │   1. Overview (/)                      │                     │   1. Overview (/)                        │
-│   2. Folders (/browse)                 │                     │   2. RAG Pipelines (/pipelines)          │
-│   3. Data Sources (/sources)           │                     │   3. RAG Chat (/chat)                    │
-│   4. Knowledge Store (/knowledge-store)│                     │   4. Prompts (/prompts)                  │
-│   5. Upload (/upload)                  │                     │   5. Realtime Monitoring (/monitoring)   │
-│                                        │                     │   6. Offline Evaluation (/evaluation)    │
-│                                        │                     │   7. Tracking & Traces (/tracking)       │
-│                                        │                     │   8. Guard Config (/guard-config)        │
-│                                        │                     │   9. Guard Traces (/guard-traces)        │
-│                                        │                     │  10. Guard Evaluation (/guard-eval)     │
-│                                        │                     │  11. Knowledge Store (/knowledge-store)  │
+│   2. Folders (/browse)                 │                     │   2. Knowledge Store (/knowledge-store)  │
+│   3. Sources (/sources)                │                     │   3. Pipelines (/pipelines)              │
+│   4. Knowledge Store (/knowledge-store)│                     │   4. Chat (/chat)                        │
+│   + Upload (/upload)                   │                     │   5. Prompts (/prompts)                  │
+│   + Source Detail (/sources/:id)       │                     │   6. Real Time Monitoring (/evaluations) │
+│                                        │                     │   7. Offline Evaluation (/golden-evals)  │
+│                                        │                     │   8. Tracking (/tracking)                │
+│                                        │                     │   9. Guard Config (/guardrails-config)   │
+│                                        │                     │   10. Guard Traces (/guardrails-traces)  │
+│                                        │                     │   11. Guard Eval (/guardrails-eval)      │
 └────────────────────────────────────────┘                     └──────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Platform Architecture & Data Flow
+## 2. Core Operational Capabilities & Polling Synchronizations
 
-### 2.1. Ingestion Pipeline & Storage Layer (`rag-ingestion-manager`)
-1. **Source Connectors**: Connects to Google Drive, S3, Azure Blob, Google Sheets, SQL DBs, Web Scrapers, or Local Filesystem.
-2. **Sync Engine (`gdrive_sync.py` & `pathway_sync.py`)**: Runs connector downloads in `asyncio.to_thread` and uploads files directly into dedicated MinIO S3 buckets (`source-<name>-<hash>`).
-3. **Threaded MinIO S3 Client (`s3_client.py`)**: Executes all S3 operations using synchronous `boto3` inside `asyncio.to_thread` for non-blocking execution and event loop stability under Windows asyncio. Automatically calculates `total_files` and `total_size_bytes` per source.
-4. **Universal Multi-Sink Fanout Engine (`universal_fanout.py`)**: Processes documents into 5 destination sinks:
-   - **Qdrant**: Vector embeddings & BM25 sparse vectors.
-   - **OpenSearch**: Lexical BM25 & SPLADE indices.
-   - **Neo4j**: GraphRAG entity-relation summaries & graph triplets.
-   - **PostgreSQL**: `pgvector` / `pgvectorscale` tables.
-   - **RedisVL**: Semantic summary maps & RAPTOR trees.
+### 2.1. Ingestion Manager (`rag-ingestion-manager`)
+- **MinIO Dedicated Source Buckets**: Every source maps to a dedicated MinIO S3 bucket (`source-<name>-<hash>`) or local filesystem directory (`storage/local_sources/<folder>`).
+- **Automatic Live & Scheduled Background Polling**:
+  - **Live Mode**: Instantaneous continuous background polling loop (3-second sleep interval for <5s sync latency).
+  - **Scheduled Mode**: Precise background polling loop running every `connector_sync_interval_minutes` or connector `sync_interval_minutes`.
+  - **Automatic Initialization**: Background pollers start automatically on server startup via `init_all_source_pollers()` called within FastAPI `lifespan` in `apps/api/main.py`.
+  - **Dynamic Task Lifecycle**: Pollers register dynamically (`register_source_poller`) on source creation, update, or connector modification, trigger an immediate initial background sync (`_trigger_initial_sync`), and stop cleanly (`stop_source_poller`) on source deletion.
+  - **Manual Sync**: Manual "Sync Now" trigger remains available as an optional manual action alongside continuous polling.
+- **Universal Multi-Sink Fanout Engine**: Distributes ingested source documents across 5 enterprise destination types (Qdrant, OpenSearch, Neo4j, PostgreSQL, RedisVL) via Knowledge Profiles.
+- **Resumable 5MB Chunked Uploads**: Client-side SHA256 hashing and sequential/parallel 5MB chunk streaming with server-side MinIO object assembly.
 
-### 2.2. Retrieval, Chat & Monitoring Layer (`rag-retrieval-chat-manager`)
-1. **Hybrid Vector Search**: Combines Qdrant dense vector search with OpenSearch BM25 sparse keyword search using Reciprocal Rank Fusion (RRF).
-2. **Cross-Encoder Reranking**: Re-ranks top candidate chunks to surface relevant context.
-3. **RAG Chat & Citation Engine**: Synthesizes answers using customizable prompt templates and streams responses with inline source citations.
-4. **AI Guardrails Moderation**: Filters input queries and output responses using NeMo / LlamaGuard safety policies.
-5. **Telemetry & Offline Evaluation**: Tracks request traces, token usage, latency distribution, and RAGAS offline evaluation metrics.
+### 2.2. Retrieval & Chat Manager (`rag-retrieval-chat-manager`)
+- **Hybrid Retrieval Engine**: Combines dense vector similarity (Qdrant) with sparse lexical search (BM25 FastEmbed) and Cross-Encoder reranking.
+- **RAG Strategy Catalog**: Naive, HyDE, Multi-Query Fusion, Parent-Child Chunking, and GraphRAG.
+- **System Prompt Registry**: Dynamic live template overrides and packaged fallbacks across `generation_core` and `rag_core`.
+- **AI Guardrails Moderation Engine (Port 8002)**: Input/output toxicity checking, PII redaction, prompt injection defense, hallucination detection, and red-teaming evaluations.
+- **Comprehensive Monitoring & Tracing**: Real-time sub-second latency waterfall, token usage tracking, and benchmark evaluation execution using Ragas/DeepEval metrics.
 
 ---
 
-## 3. Port & Service Summary
+## 3. System Architecture Mapping
 
-| Service | Host Port | Protocol / Proxy | Purpose |
-|---|---|---|---|
-| Ingestion Manager Frontend | `5173` | HTTP / React (Vite) | Ingestion Dashboard, Sources, Folders, Knowledge Store, Upload UI |
-| Ingestion Manager API | `8007` | FastHTTP / FastAPI | Sources, Connectors, MinIO S3 Storage, Directories, Fanout Engine |
-| Retrieval Chat Frontend | `5174` | HTTP / React (Vite) | Chat UI, Pipelines, Prompts, Monitoring, Traces, Guardrails UI |
-| Retrieval Chat API | `8001` | FastAPI / Python | RAG Querying, Hybrid Search, Chat Sessions, Prompts, RAGAS Eval |
-| Guardrails API | `8002` | FastAPI / Python | Safety Moderation, PII Detection, Guardrails Traces & Evaluation |
-| MinIO S3 Console & API | `9000` / `9001` | S3 API / HTTP | Physical object storage buckets for document sources |
-| Qdrant Vector DB | `6333` / `6334` | HTTP / gRPC | High-performance vector embeddings & payload storage |
-| PostgreSQL DB | `5432` | PostgreSQL Protocol | Metadata persistence, pipeline sync queue, chat sessions, trace logs |
-| Redis Cache | `6379` | Redis Protocol | Async task queue, semantic cache, RAPTOR trees |
+### 3.1. Infrastructure Services
+- **PostgreSQL**: Stores sources, connectors, directories, files, sync jobs, knowledge profiles, pipelines, chat sessions, traces, and guardrail rules.
+- **MinIO S3**: Manages document buckets (`source-*`, `local-*`) and raw file chunks (`uploads/`).
+- **Qdrant Vector Database**: Stores dense vector embeddings and BM25 sparse payloads across collections.
+- **Redis**: Coordinates RQ evaluation worker queues and RedisVL semantic caches.
+
+---
+
+## 4. Documentation Index
+
+The complete documentation suite in `vijay-docs/` is split into two specialized subfolders:
+1. `rag-ingestion-manager-docs/`: 5 detailed page specifications covering document ingestion, folders, data sources & automatic background polling, knowledge profiles, and chunked uploads.
+2. `rag-retrieval-chat-manager-docs/`: 11 detailed page specifications covering overview, pipelines, chat, prompts, real-time monitoring, offline evaluations, tracking traces, AI guardrails configuration, guardrails traces, guardrails red-teaming evaluation, and knowledge store proxy.
