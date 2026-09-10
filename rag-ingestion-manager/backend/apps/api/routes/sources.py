@@ -8,7 +8,9 @@ Two monitoring modes at two points:
 
 import asyncio
 import logging
+import os
 import shutil
+import stat
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,14 +130,53 @@ def _connector_to_dict(c: SourceConnector) -> dict:
     }
 
 
+def _force_rmtree(path: Path) -> None:
+    """Recursively delete a directory on Windows/POSIX, handling read-only files."""
+    if not path.exists():
+        return
+    def _on_error(func, path_str, exc_info):
+        try:
+            os.chmod(path_str, stat.S_IWRITE)
+            func(path_str)
+        except Exception as exc:
+            logger.warning("force_rmtree_error path=%s error=%s", path_str, exc)
+    shutil.rmtree(path, onerror=_on_error)
+
+
 def _is_local_source(s: Source) -> bool:
     if s.connector_type == "local_filesystem":
         return True
     if (s.config or {}).get("source_type") == "local_filesystem":
         return True
-    if s.minio_bucket and s.minio_bucket.startswith("local-"):
+    if (s.config or {}).get("folder_name"):
+        return True
+    if s.minio_bucket and (s.minio_bucket.startswith("local-") or "local" in s.minio_bucket):
         return True
     return False
+
+
+async def _cleanup_orphaned_local_sources(db: AsyncSession) -> None:
+    """Purge local_sources folders on disk that no longer have a corresponding active DB source."""
+    try:
+        local_root = storage_root() / "local_sources"
+        if not local_root.exists():
+            return
+        result = await db.execute(select(Source))
+        sources = result.scalars().all()
+        active_folders = set()
+        for s in sources:
+            if _is_local_source(s):
+                fn = (s.config or {}).get("folder_name") or (s.minio_bucket.replace("local-", "") if s.minio_bucket else None)
+                if fn:
+                    active_folders.add(fn)
+        def _scan_and_remove():
+            for child in local_root.iterdir():
+                if child.is_dir() and child.name not in active_folders:
+                    logger.info("Removing orphaned local source directory: %s", child)
+                    _force_rmtree(child)
+        await asyncio.to_thread(_scan_and_remove)
+    except Exception as exc:
+        logger.warning("Failed running orphaned local sources cleanup: %s", exc)
 
 def _trigger_sync_in_background(source: Source) -> None:
     async def _runner():
@@ -205,6 +246,28 @@ def _make_bucket_name(source_id: str, name: str) -> str:
     return f"{settings.minio_bucket_prefix}-{safe_name}-{short_id}"
 
 
+# ── Connector catalog ────────────────────────────────────────────────────
+
+
+@router.get("/connectors", status_code=200)
+async def list_connectors():
+    """Return available Airbyte connector types."""
+    return {"connectors": CONNECTOR_OPTIONS}
+
+
+# ── Source CRUD ───────────────────────────────────────────────────────────
+
+
+@router.get("", status_code=200)
+async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
+    await _cleanup_orphaned_local_sources(db)
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.pipelines), selectinload(Source.connectors))
+        .order_by(Source.created_at.desc())
+    )
+    sources = result.scalars().all()
+    return {"sources": [await _source_to_dict(s) for s in sources]}
 # ── Connector catalog ────────────────────────────────────────────────────
 
 
@@ -424,15 +487,15 @@ async def delete_source(
 
     await db.execute(delete(KnowledgeProfileSource).where(KnowledgeProfileSource.source_id == source_id))
     await db.execute(delete(PipelineSource).where(PipelineSource.source_id == source_id))
-
     is_local = _is_local_source(source)
     if is_local:
         try:
-            folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
-            local_dir = storage_root() / "local_sources" / folder_name
-            if local_dir.exists():
-                await asyncio.to_thread(shutil.rmtree, local_dir, True)
-                logger.info("Deleted local source directory %s for source %s", local_dir, source_id)
+            folder_name = (source.config or {}).get("folder_name") or (source.minio_bucket.replace("local-", "") if source.minio_bucket else "")
+            if folder_name:
+                local_dir = storage_root() / "local_sources" / folder_name
+                if local_dir.exists():
+                    await asyncio.to_thread(_force_rmtree, local_dir)
+                    logger.info("Deleted local source directory %s for source %s", local_dir, source_id)
         except Exception as exc:
             logger.error("Failed deleting local source directory for source %s: %s", source_id, exc)
     elif source.minio_bucket:
@@ -443,22 +506,8 @@ async def delete_source(
             logger.error("Failed deleting MinIO bucket %s for source %s: %s", source.minio_bucket, source_id, exc)
     await db.delete(source)
     await db.commit()
+    await _cleanup_orphaned_local_sources(db)
     return {"status": "deleted", "id": str(source_id)}
-
-
-@router.get("/{source_id}/connectors")
-async def list_source_connectors(
-    source_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
-):
-    """List all connectors for a source."""
-    source = await db.get(Source, source_id)
-    result = await db.execute(
-        select(SourceConnector)
-        .where(SourceConnector.source_id == source_id)
-        .order_by(SourceConnector.created_at.desc())
-    )
-    return [_connector_to_dict(c) for c in result.scalars().all()]
-
 
 @router.post("/{source_id}/connectors", status_code=201)
 async def add_source_connector(
@@ -466,7 +515,7 @@ async def add_source_connector(
     body: ConnectorCreateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Add a new connector to an existing source."""
+    """Attach a new connector to a source."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
