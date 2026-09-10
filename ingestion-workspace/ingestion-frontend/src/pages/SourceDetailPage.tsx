@@ -291,6 +291,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   const connectorCount = source.connectors?.length ?? 0;
   const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-") || source.is_local;
   const isManualMinioSource = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
+  const filteredCatalog = EXTENDED_CATALOG.filter(
     (item) => categoryFilter === "all" || item.category === categoryFilter
   );
   return (

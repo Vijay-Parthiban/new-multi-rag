@@ -14,6 +14,7 @@ import {
   IconSources,
   IconSync,
   IconTrash,
+  IconUpload,
 } from "../components/Icons";
 import {
   ApiError,
@@ -240,39 +241,6 @@ function SourceCard({
         )}
       </div>
 
-      {/* Attached Connectors Brand Badges Row */}
-      <div style={{ marginTop: "0.85rem", marginBottom: "0.85rem" }}>
-        {connectorCount === 0 ? (
-          <div className="source-card-empty-connectors">
-            <span>+ No connectors configured</span>
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
-            {source.connectors?.slice(0, 4).map((c) => (
-              <span
-                key={c.id}
-                style={{
-                  fontSize: "0.75rem",
-                  padding: "0.2rem 0.55rem",
-                  borderRadius: "6px",
-                  background: "rgba(255, 255, 255, 0.05)",
-                  border: "1px solid rgba(255, 255, 255, 0.1)",
-                  color: "#c9d1d9",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.3rem",
-                }}
-              >
-                <span>{getConnectorIcon(c.connector_type)}</span>
-                <span style={{ fontWeight: 500 }}>{c.connector_type.replace(/_/g, " ")}</span>
-              </span>
-            ))}
-            {connectorCount > 4 && (
-              <span style={{ fontSize: "0.75rem", color: "#8b949e" }}>+{connectorCount - 4} more</span>
-            )}
-          </div>
-        )}
-      </div>
 
       {/* Actions Toolbar */}
       <div className="source-card-actions" onClick={(e) => e.stopPropagation()}>
@@ -992,36 +960,6 @@ export default function SourcesPage() {
                   </div>
                   <div style={{ fontSize: "0.72rem", color: "#8b949e", marginTop: "0.4rem" }}>
                     Type: {selectedSourceType === "minio_manual" ? "MinIO Bucket (Manual File Upload)" : "MinIO Bucket (Connector Based)"}
-                  </div>
-                </div>
-              )}
-              </div>
-
-              {/* Storage Location Preview Card */}
-              {newSourceName.trim() && (
-                <div
-                  style={{
-                    padding: "0.85rem 1rem",
-                    borderRadius: "8px",
-                    background: selectedSourceType === "local_filesystem" ? "rgba(46, 160, 67, 0.1)" : "rgba(56, 139, 253, 0.08)",
-                    border: selectedSourceType === "local_filesystem" ? "1px solid rgba(46, 160, 67, 0.3)" : "1px solid rgba(56, 139, 253, 0.25)",
-                    marginBottom: "1.25rem",
-                  }}
-                >
-                  <div style={{ fontSize: "0.75rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-                    {selectedSourceType === "local_filesystem" ? "Local Storage Path:" : "Auto-generated MinIO Bucket:"}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                    {selectedSourceType === "local_filesystem" ? (
-                      <span style={{ fontSize: "0.9rem" }}>📁</span>
-                    ) : (
-                      <IconBucket size={14} style={{ color: "#58a6ff" }} />
-                    )}
-                    <code style={{ fontSize: "0.85rem", color: selectedSourceType === "local_filesystem" ? "#7ee787" : "#58a6ff", fontWeight: 600 }}>
-                      {selectedSourceType === "local_filesystem"
-                        ? `storage/local_sources/${newSourceName.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`
-                        : `source-${newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`}
-                    </code>
                   </div>
                 </div>
               )}

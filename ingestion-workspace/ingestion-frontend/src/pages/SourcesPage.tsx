@@ -14,6 +14,7 @@ import {
   IconSources,
   IconSync,
   IconTrash,
+  IconUpload,
 } from "../components/Icons";
 import {
   ApiError,
@@ -996,6 +997,9 @@ export default function SourcesPage() {
                   </div>
                 </div>
               )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+                <button
+                  type="button"
                   className="btn btn-secondary"
                   onClick={() => setShowCreateForm(false)}
                 >
