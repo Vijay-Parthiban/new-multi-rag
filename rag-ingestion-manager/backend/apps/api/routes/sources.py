@@ -8,6 +8,7 @@ Two monitoring modes at two points:
 
 import asyncio
 import logging
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -179,8 +180,9 @@ async def _source_to_dict(s: Source) -> dict:
         "enabled": s.enabled,
         "last_sync_at": s.last_sync_at.isoformat() if s.last_sync_at else None,
         "status": s.status,
+        "total_files": getattr(s, "total_files", 0) or 0,
+        "total_size_bytes": getattr(s, "total_size_bytes", 0) or 0,
         "error_message": s.error_message,
-        "pipeline_ids": [str(ps.pipeline_id) for ps in pipelines],
         "pipeline_links": [
             {
                 "pipeline_id": str(ps.pipeline_id),
@@ -429,7 +431,8 @@ async def delete_source(
             folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
             local_dir = storage_root() / "local_sources" / folder_name
             if local_dir.exists():
-                shutil.rmtree(local_dir)
+                await asyncio.to_thread(shutil.rmtree, local_dir, True)
+                logger.info("Deleted local source directory %s for source %s", local_dir, source_id)
         except Exception as exc:
             logger.error("Failed deleting local source directory for source %s: %s", source_id, exc)
     elif source.minio_bucket:
@@ -725,6 +728,36 @@ async def list_source_files(
             for f in files
         ],
     }
+
+async def _update_source_metrics(db: AsyncSession, source: Source) -> None:
+    """Recalculate total_files and total_size_bytes for a source and update DB."""
+    try:
+        total_files = 0
+        total_size = 0
+        is_local = _is_local_source(source)
+        if is_local:
+            folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+            local_dir = storage_root() / "local_sources" / folder_name
+            if local_dir.exists() and local_dir.is_dir():
+                for p in local_dir.rglob("*"):
+                    if p.is_file():
+                        total_files += 1
+                        total_size += p.stat().st_size
+        elif source.minio_bucket:
+            from src.shared.storage import list_objects as s3_list
+            try:
+                objects = await s3_list(source.minio_bucket)
+                total_files = len(objects)
+                total_size = sum(obj.size for obj in objects)
+            except Exception as exc:
+                logger.warning("Failed listing MinIO bucket %s for metrics: %s", source.minio_bucket, exc)
+
+        source.total_files = total_files
+        source.total_size_bytes = total_size
+        await db.commit()
+    except Exception as exc:
+        logger.error("Failed updating metrics for source %s: %s", source.id, exc)
+
 @router.post("/{source_id}/files", status_code=201)
 async def upload_source_file(
     source_id: uuid.UUID,
@@ -763,6 +796,7 @@ async def upload_source_file(
             saved_files.append({"key": clean_name, "size": len(data)})
 
         logger.info("local_source_file_uploaded source=%s folder=%s count=%d", source.id, folder_name, len(saved_files))
+        await _update_source_metrics(db, source)
         _trigger_sync_in_background(source)
         return {
             "status": "uploaded",
@@ -784,6 +818,7 @@ async def upload_source_file(
     await ensure_bucket(source.minio_bucket)
     await put_object(source.minio_bucket, key, data)
     logger.info("source_file_uploaded source=%s bucket=%s key=%s bytes=%d", source.id, source.minio_bucket, key, len(data))
+    await _update_source_metrics(db, source)
     _trigger_sync_in_background(source)
     return {
         "status": "uploaded",
@@ -812,6 +847,7 @@ async def delete_source_file(
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
         logger.info("local_source_file_deleted source=%s folder=%s key=%s", source.id, folder_name, key)
+        await _update_source_metrics(db, source)
         _trigger_sync_in_background(source)
         return {
             "status": "deleted",
@@ -823,6 +859,7 @@ async def delete_source_file(
     from src.shared.storage import delete_object
     await delete_object(source.minio_bucket, key)
     logger.info("source_file_deleted source=%s bucket=%s key=%s", source.id, source.minio_bucket, key)
+    await _update_source_metrics(db, source)
     _trigger_sync_in_background(source)
     return {
         "status": "deleted",

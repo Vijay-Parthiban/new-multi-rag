@@ -6,6 +6,7 @@ import {
   deleteSourceFile,
   listSourceFiles,
   uploadSourceFile,
+  uploadSourceFiles,
   type SourceFileEntry,
 } from "../../api";
 import "./FileBrowser.css";
@@ -118,22 +119,28 @@ export default function FileBrowser({
 
   /* ── Upload handlers ── */
 
+  const uploadSelectedFiles = useCallback(
+    async (selectedFiles: File[]) => {
+      if (!sourceId || selectedFiles.length === 0) return;
+      setUploading(true);
+      try {
+        await uploadSourceFiles(sourceId, selectedFiles);
+        onInfo?.(`Uploaded ${selectedFiles.length} file(s) to ${bucketName || "source"}.`);
+        setUploadFiles([]);
+        await loadFiles(prefix);
+      } catch (err) {
+        onError?.(toApiError(err, "UPLOAD_FAILED"));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [sourceId, bucketName, prefix, loadFiles, onInfo, onError],
+  );
+
   const handleUpload = useCallback(async () => {
     if (uploadFiles.length === 0) return;
-    setUploading(true);
-    try {
-      for (const file of uploadFiles) {
-        await uploadSourceFile(sourceId, file);
-      }
-      onInfo?.(`Uploaded ${uploadFiles.length} file(s) to ${bucketName}.`);
-      setUploadFiles([]);
-      await loadFiles(prefix);
-    } catch (err) {
-      onError?.(toApiError(err, "UPLOAD_FAILED"));
-    } finally {
-      setUploading(false);
-    }
-  }, [uploadFiles, sourceId, bucketName, prefix, loadFiles, onInfo, onError]);
+    await uploadSelectedFiles(uploadFiles);
+  }, [uploadFiles, uploadSelectedFiles]);
 
   const handleDrop = useCallback(
     (e: DragEvent<HTMLDivElement>) => {
@@ -141,10 +148,10 @@ export default function FileBrowser({
       setDragActive(false);
       const dropped = Array.from(e.dataTransfer.files);
       if (dropped.length > 0) {
-        setUploadFiles((prev) => [...prev, ...dropped]);
+        void uploadSelectedFiles(dropped);
       }
     },
-    [],
+    [uploadSelectedFiles],
   );
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -157,14 +164,17 @@ export default function FileBrowser({
     setDragActive(false);
   }, []);
 
-  const handleFileSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files ?? []);
-    if (selected.length > 0) {
-      setUploadFiles((prev) => [...prev, ...selected]);
-    }
-    // Reset input so the same file can be selected again
-    e.target.value = "";
-  }, []);
+  const handleFileSelect = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const selected = Array.from(e.target.files ?? []);
+      if (selected.length > 0) {
+        void uploadSelectedFiles(selected);
+      }
+      // Reset input so the same file can be selected again
+      e.target.value = "";
+    },
+    [uploadSelectedFiles],
+  );
 
   /* ── Delete handler ── */
 

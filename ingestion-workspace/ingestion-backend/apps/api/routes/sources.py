@@ -8,6 +8,7 @@ Two monitoring modes at two points:
 
 import asyncio
 import logging
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,79 +36,55 @@ CONNECTOR_OPTIONS = [
     {"id": "gcs", "label": "Google Cloud Storage", "description": "Sync files from GCS buckets"},
     {"id": "s3", "label": "Amazon S3", "description": "Sync files from S3 buckets"},
     {"id": "azure_blob", "label": "Azure Blob Storage", "description": "Sync files from Azure Blob"},
-    {"id": "azure", "label": "Azure Blob Storage", "description": "Sync files from Azure Blob"},
-    {"id": "onedrive", "label": "OneDrive", "description": "Sync files from OneDrive"},
-    {"id": "microsoft_onedrive", "label": "OneDrive", "description": "Sync files from Microsoft OneDrive"},
-    {"id": "sharepoint", "label": "SharePoint", "description": "Sync files from SharePoint"},
-    {"id": "dropbox", "label": "Dropbox", "description": "Sync files from Dropbox"},
-    {"id": "postgres", "label": "PostgreSQL", "description": "Sync data from PostgreSQL tables"},
-    {"id": "mysql", "label": "MySQL", "description": "Sync data from MySQL tables"},
-    {"id": "mongodb", "label": "MongoDB", "description": "Sync documents from MongoDB collections"},
-    {"id": "github", "label": "GitHub", "description": "Sync from GitHub repositories"},
-    {"id": "slack", "label": "Slack", "description": "Sync messages from Slack channels"},
-    {"id": "confluence", "label": "Confluence", "description": "Sync pages from Confluence"},
-    {"id": "sftp", "label": "SFTP", "description": "Sync files via SFTP"},
-    {"id": "http_api", "label": "HTTP API", "description": "Sync data from REST APIs"},
+    {"id": "onedrive", "label": "Microsoft OneDrive", "description": "Sync files from OneDrive"},
+    {"id": "sharepoint", "label": "Microsoft SharePoint", "description": "Sync files from SharePoint"},
+    {"id": "postgres", "label": "PostgreSQL", "description": "CDC sync from PostgreSQL database"},
+    {"id": "web_scrape", "label": "Web Scraper", "description": "Crawl & extract content from websites"},
 ]
-
-VALID_CONNECTOR_IDS = {c["id"] for c in CONNECTOR_OPTIONS}
-
-
-# ── Pydantic request models ──────────────────────────────────────────────
-
-
-class ConnectorCreateRequest(BaseModel):
-    connector_type: str = Field(min_length=1, max_length=64)
-    config: dict = Field(default_factory=dict)
-    monitor_mode: Literal["live", "scheduled"] = "live"
-    sync_interval_minutes: int | None = Field(default=None, ge=1)
-    enabled: bool = True
-
-
-class ConnectorUpdateRequest(BaseModel):
-    config: dict | None = None
-    monitor_mode: Literal["live", "scheduled"] | None = None
-    sync_interval_minutes: int | None = Field(default=None, ge=1)
-    enabled: bool | None = None
 
 
 class SourceCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=128)
-    source_type: Literal["minio", "local_filesystem"] | str | None = Field(default="minio")
-    # Legacy single-connector fields (backward compat)
-    connector_type: str | None = Field(default=None, max_length=64)
+    name: str = Field(..., min_length=1, max_length=128)
+    source_type: Literal["minio", "local_filesystem"] = "minio"
+    connector_type: str = "local_filesystem"
     config: dict = Field(default_factory=dict)
-    # Multi-connector: initial connectors to add
-    connectors: list[ConnectorCreateRequest] = Field(default_factory=list)
-    # Source-level monitoring defaults
-    connector_monitor_mode: Literal["live", "scheduled"] = "live"
-    connector_sync_interval_minutes: int | None = Field(default=None, ge=1)
-    pipeline_monitor_mode: Literal["live", "scheduled"] = "live"
-    pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1)
-    # Legacy compat
-    monitor_mode: Literal["live", "scheduled"] = "live"
-    sync_interval_minutes: int | None = Field(default=None, ge=1)
+    connector_monitor_mode: str = "live"
+    connector_sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    pipeline_monitor_mode: str = "live"
+    pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    # Legacy fallback field
+    monitor_mode: str | None = None
+    sync_interval_minutes: int | None = None
 
 
 class SourceUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    connector_monitor_mode: str | None = None
+    connector_sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    pipeline_monitor_mode: str | None = None
+    pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     config: dict | None = None
-    connector_monitor_mode: Literal["live", "scheduled"] | None = None
-    connector_sync_interval_minutes: int | None = Field(default=None, ge=1)
-    pipeline_monitor_mode: Literal["live", "scheduled"] | None = None
-    pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1)
+    # Legacy fallbacks
+    monitor_mode: str | None = None
+    sync_interval_minutes: int | None = None
+
+
+class ConnectorCreateRequest(BaseModel):
+    connector_type: str
+    config: dict = Field(default_factory=dict)
+    enabled: bool = True
+    sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+
+
+class ConnectorUpdateRequest(BaseModel):
+    config: dict | None = None
     enabled: bool | None = None
-    # Legacy compat
-    monitor_mode: Literal["live", "scheduled"] | None = None
-    sync_interval_minutes: int | None = Field(default=None, ge=1)
+    sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
-class LinkPipelineRequest(BaseModel):
-    monitor_mode: Literal["live", "scheduled"] | None = None
-    sync_interval_minutes: int | None = Field(default=None, ge=1)
-
-
-# ── Serialization helpers ─────────────────────────────────────────────────
+class SourcePipelineLinkRequest(BaseModel):
+    monitor_mode: str | None = None
+    sync_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 def _connector_to_dict(c: SourceConnector) -> dict:
@@ -116,11 +93,10 @@ def _connector_to_dict(c: SourceConnector) -> dict:
         "source_id": str(c.source_id),
         "connector_type": c.connector_type,
         "config": c.config or {},
-        "monitor_mode": c.monitor_mode.value if c.monitor_mode else "live",
-        "sync_interval_minutes": c.sync_interval_minutes,
         "enabled": c.enabled,
-        "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         "status": c.status,
+        "sync_interval_minutes": c.sync_interval_minutes,
+        "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         "error_message": c.error_message,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
@@ -179,6 +155,8 @@ async def _source_to_dict(s: Source) -> dict:
         "enabled": s.enabled,
         "last_sync_at": s.last_sync_at.isoformat() if s.last_sync_at else None,
         "status": s.status,
+        "total_files": getattr(s, "total_files", 0) or 0,
+        "total_size_bytes": getattr(s, "total_size_bytes", 0) or 0,
         "error_message": s.error_message,
         "pipeline_ids": [str(ps.pipeline_id) for ps in pipelines],
         "pipeline_links": [
@@ -223,7 +201,9 @@ async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
         .options(selectinload(Source.pipelines), selectinload(Source.connectors))
         .order_by(Source.created_at.desc())
     )
-    return [await _source_to_dict(s) for s in result.scalars().all()]
+    sources = result.scalars().all()
+    return {"sources": [await _source_to_dict(s) for s in sources]}
+
 
 @router.post("", status_code=201)
 async def create_source(
@@ -265,79 +245,62 @@ async def create_source(
             pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
             minio_bucket=bucket,
             status="synced",
-            sync_interval_minutes=body.sync_interval_minutes,
+            total_files=0,
+            total_size_bytes=0,
         )
-        db.add(source)
-        await db.commit()
-        res = await db.execute(
-            select(Source)
-            .options(selectinload(Source.pipelines), selectinload(Source.connectors))
-            .where(Source.id == source_id)
-        )
-        refreshed_source = res.scalar_one()
-        return await _source_to_dict(refreshed_source)
+    else:
+        # MinIO bucket source
+        bucket = _make_bucket_name(str(source_id), body.name)
+        try:
+            await ensure_bucket(bucket)
+        except Exception as exc:
+            logger.error("Failed creating MinIO bucket %s: %s", bucket, exc)
+            raise ValidationError("STORAGE_ERROR", f"Failed to provision bucket '{bucket}': {exc}")
 
-    # MinIO / Multi-connector source path
-    connector_requests: list[ConnectorCreateRequest] = []
-    if body.connectors:
-        connector_requests = body.connectors
-    elif body.connector_type and body.connector_type not in ("minio", "local_filesystem"):
-        connector_requests = [
-            ConnectorCreateRequest(
+        # Handle legacy monitor_mode / sync_interval_minutes fallbacks
+        conn_mode = body.connector_monitor_mode or body.monitor_mode or "live"
+        conn_interval = body.connector_sync_interval_minutes or body.sync_interval_minutes
+        pipe_mode = body.pipeline_monitor_mode or "live"
+
+        source = Source(
+            id=source_id,
+            name=body.name.strip(),
+            connector_type=body.connector_type,
+            config=body.config,
+            connector_monitor_mode=SourceMonitorMode(conn_mode),
+            connector_sync_interval_minutes=conn_interval,
+            pipeline_monitor_mode=SourceMonitorMode(pipe_mode),
+            pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
+            minio_bucket=bucket,
+            status="disconnected",
+            total_files=0,
+            total_size_bytes=0,
+        )
+
+        # Create auto-configured primary connector if connector_type is a specific provider
+        if body.connector_type and body.connector_type not in ("none", "local_filesystem", "minio"):
+            connector = SourceConnector(
+                id=uuid.uuid4(),
+                source_id=source_id,
                 connector_type=body.connector_type,
-                config=body.config,
-                monitor_mode=body.monitor_mode,
-                sync_interval_minutes=body.sync_interval_minutes,
+                config=body.config or {},
+                enabled=True,
+                status="disconnected",
+                sync_interval_minutes=conn_interval,
             )
-        ]
+            db.add(connector)
 
-    for cr in connector_requests:
-        if cr.connector_type not in VALID_CONNECTOR_IDS:
-            raise ValidationError(
-                "INVALID_CONNECTOR",
-                f"Unknown connector type '{cr.connector_type}'. "
-                f"Valid options: {sorted(VALID_CONNECTOR_IDS)}",
-            )
-
-    bucket = _make_bucket_name(str(source_id), body.name.strip())
-
-    source = Source(
-        id=source_id,
-        name=body.name.strip(),
-        connector_type=body.connector_type,
-        config=body.config,
-        connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
-        connector_sync_interval_minutes=body.connector_sync_interval_minutes,
-        pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
-        pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
-        minio_bucket=bucket,
-        sync_interval_minutes=body.sync_interval_minutes,
-    )
     db.add(source)
-
-    for cr in connector_requests:
-        connector = SourceConnector(
-            source_id=source_id,
-            connector_type=cr.connector_type,
-            config=cr.config,
-            monitor_mode=SourceMonitorMode(cr.monitor_mode),
-            sync_interval_minutes=cr.sync_interval_minutes,
-            enabled=cr.enabled,
-        )
-        db.add(connector)
-
     await db.commit()
-    source = await db.get(Source, source.id)
 
-    await ensure_bucket(bucket)
-
+    # Re-fetch with relationships loaded
     result = await db.execute(
         select(Source)
         .options(selectinload(Source.pipelines), selectinload(Source.connectors))
-        .where(Source.id == source.id)
+        .where(Source.id == source_id)
     )
-    refreshed_source = result.scalar_one()
-    return await _source_to_dict(refreshed_source)
+    created = result.scalar_one()
+    return await _source_to_dict(created)
 
 
 @router.get("/{source_id}", status_code=200)
@@ -352,6 +315,7 @@ async def get_source(source_id: uuid.UUID, db: Annotated[AsyncSession, Depends(g
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
     return await _source_to_dict(source)
+
 
 @router.patch("/{source_id}", status_code=200)
 async def update_source(
@@ -389,27 +353,20 @@ async def update_source(
         source.pipeline_monitor_mode = SourceMonitorMode(body.pipeline_monitor_mode)
     if body.pipeline_sync_interval_minutes is not None:
         source.pipeline_sync_interval_minutes = body.pipeline_sync_interval_minutes
-    if body.enabled is not None:
-        source.enabled = body.enabled
 
     await db.commit()
 
-    # Handle pipeline monitor mode changes (bucket notifications)
-    if body.pipeline_monitor_mode is not None and old_pipeline_mode != source.pipeline_monitor_mode:
-        try:
-            from src.shared.storage.s3_client import setup_bucket_notification
-            if source.pipeline_monitor_mode == SourceMonitorMode.LIVE:
-                api_base = getattr(settings, "internal_api_url", "http://localhost:8000")
-                webhook_url = f"{api_base}/api/sources/{source.id}/events"
-                await setup_bucket_notification(source.minio_bucket, webhook_url)
-                logger.info("bucket_notification_enabled source=%s", source.id)
-            else:
-                logger.info("monitor_mode_changed_to_scheduled source=%s", source.id)
-        except Exception as exc:
-            logger.warning("bucket_notification_update_failed source=%s error=%s", source.id, exc)
+    # If pipeline monitor mode changed to/from continuous, notify background monitors
+    if old_pipeline_mode != source.pipeline_monitor_mode:
+        _trigger_sync_in_background(source)
 
-    source = await db.get(Source, source.id)
-    return await _source_to_dict(source)
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.pipelines), selectinload(Source.connectors))
+        .where(Source.id == source_id)
+    )
+    updated = result.scalar_one()
+    return await _source_to_dict(updated)
 
 
 @router.delete("/{source_id}", status_code=200)
@@ -429,7 +386,8 @@ async def delete_source(
             folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
             local_dir = storage_root() / "local_sources" / folder_name
             if local_dir.exists():
-                shutil.rmtree(local_dir)
+                await asyncio.to_thread(shutil.rmtree, local_dir, True)
+                logger.info("Deleted local source directory %s for source %s", local_dir, source_id)
         except Exception as exc:
             logger.error("Failed deleting local source directory for source %s: %s", source_id, exc)
     elif source.minio_bucket:
@@ -449,6 +407,8 @@ async def list_source_connectors(
 ):
     """List all connectors for a source."""
     source = await db.get(Source, source_id)
+    if not source:
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
     result = await db.execute(
         select(SourceConnector)
         .where(SourceConnector.source_id == source_id)
@@ -463,7 +423,7 @@ async def add_source_connector(
     body: ConnectorCreateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Add a new connector to an existing source."""
+    """Attach a new connector to a source."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
@@ -474,47 +434,18 @@ async def add_source_connector(
             "Local File System sources do not support connectors."
         )
 
-    if body.connector_type not in VALID_CONNECTOR_IDS:
-        raise ValidationError(
-            "INVALID_CONNECTOR",
-            f"Unknown connector type '{body.connector_type}'. "
-            f"Valid options: {sorted(VALID_CONNECTOR_IDS)}",
-        )
-
     connector = SourceConnector(
+        id=uuid.uuid4(),
         source_id=source_id,
         connector_type=body.connector_type,
         config=body.config,
-        monitor_mode=SourceMonitorMode(body.monitor_mode),
-        sync_interval_minutes=body.sync_interval_minutes,
         enabled=body.enabled,
+        status="disconnected",
+        sync_interval_minutes=body.sync_interval_minutes,
     )
     db.add(connector)
     await db.commit()
-
-    connector = await db.get(SourceConnector, connector.id)
-
-    # Trigger initial sync if enabled
-    if connector.enabled:
-        try:
-            from src.shared.queue.client import enqueue_pathway_sync
-            await enqueue_pathway_sync(source_id)
-        except Exception:
-            pass
-
-    return _connector_to_dict(connector)
-
-
-@router.get("/{source_id}/connectors/{connector_id}", status_code=200)
-async def get_source_connector(
-    source_id: uuid.UUID,
-    connector_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
-    """Get a specific connector."""
-    connector = await db.get(SourceConnector, connector_id)
-    if not connector or connector.source_id != source_id:
-        raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found.")
+    await db.refresh(connector)
     return _connector_to_dict(connector)
 
 
@@ -525,22 +456,26 @@ async def update_source_connector(
     body: ConnectorUpdateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Update a connector's config, monitor mode, or enabled status."""
-    connector = await db.get(SourceConnector, connector_id)
-    if not connector or connector.source_id != source_id:
-        raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found.")
+    """Update a connector's config, enabled state, or sync interval."""
+    result = await db.execute(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if not connector:
+        raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found for this source.")
 
     if body.config is not None:
         connector.config = body.config
-    if body.monitor_mode is not None:
-        connector.monitor_mode = SourceMonitorMode(body.monitor_mode)
-    if body.sync_interval_minutes is not None:
-        connector.sync_interval_minutes = body.sync_interval_minutes
     if body.enabled is not None:
         connector.enabled = body.enabled
+    if body.sync_interval_minutes is not None:
+        connector.sync_interval_minutes = body.sync_interval_minutes
 
     await db.commit()
-    connector = await db.get(SourceConnector, connector_id)
+    await db.refresh(connector)
     return _connector_to_dict(connector)
 
 
@@ -551,13 +486,19 @@ async def delete_source_connector(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Remove a connector from a source."""
-    connector = await db.get(SourceConnector, connector_id)
-    if not connector or connector.source_id != source_id:
-        raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found.")
+    result = await db.execute(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if not connector:
+        raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found for this source.")
 
     await db.delete(connector)
     await db.commit()
-    return {"status": "deleted", "connector_id": str(connector_id), "source_id": str(source_id)}
+    return {"status": "deleted", "id": str(connector_id)}
 
 
 @router.post("/{source_id}/connectors/{connector_id}/sync", status_code=200)
@@ -566,40 +507,40 @@ async def trigger_connector_sync(
     connector_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Manually trigger sync for a specific connector."""
-    connector = await db.get(SourceConnector, connector_id)
-    if not connector or connector.source_id != source_id:
+    """Manually trigger a sync for a specific connector."""
+    result = await db.execute(
+        select(SourceConnector).where(
+            SourceConnector.id == connector_id,
+            SourceConnector.source_id == source_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if not connector:
         raise NotFoundError("CONNECTOR_NOT_FOUND", "Connector not found.")
 
     if not connector.enabled:
-        return {"status": "error", "message": "Connector is disabled"}
+        raise ValidationError("CONNECTOR_DISABLED", "Cannot sync a disabled connector.")
 
     connector.status = "syncing"
-    connector.error_message = None
+    connector.last_sync_at = datetime.now(timezone.utc)
     await db.commit()
 
-    from src.shared.queue.client import enqueue_pathway_sync
-    await enqueue_pathway_sync(source_id)
+    # Trigger background sync job
+    source = await db.get(Source, source_id)
+    if source:
+        _trigger_sync_in_background(source)
 
-    return {
-        "status": "triggered",
-        "connector_id": str(connector_id),
-        "source_id": str(source_id),
-        "connector_type": connector.connector_type,
-    }
-
-
-# ── Pipeline linking ──────────────────────────────────────────────────────
+    return _connector_to_dict(connector)
 
 
 @router.post("/{source_id}/pipeline/{pipeline_id}", status_code=200)
 async def link_source_to_pipeline(
     source_id: uuid.UUID,
     pipeline_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    body: LinkPipelineRequest | None = None,
+    body: SourcePipelineLinkRequest | None = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
-    """Link a source to a pipeline with optional per-link monitoring config."""
+    """Link a source to a pipeline with optional custom monitor mode overrides."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
@@ -609,35 +550,36 @@ async def link_source_to_pipeline(
 
     existing = await db.execute(
         select(PipelineSource).where(
-            PipelineSource.source_id == source_id,
             PipelineSource.pipeline_id == pipeline_id,
+            PipelineSource.source_id == source_id,
         )
     )
-    if existing.scalar_one_or_none():
-        raise ConflictError("LINK_EXISTS", "This source is already linked to this pipeline.")
+    link = existing.scalar_one_or_none()
 
-    link = PipelineSource(
-        source_id=source_id,
-        pipeline_id=pipeline_id,
-        monitor_mode=SourceMonitorMode(body.monitor_mode) if body and body.monitor_mode else None,
-        sync_interval_minutes=body.sync_interval_minutes if body else None,
-    )
-    db.add(link)
+    monitor_mode = SourceMonitorMode(body.monitor_mode) if body and body.monitor_mode else None
+    sync_interval = body.sync_interval_minutes if body else None
+
+    if link:
+        link.monitor_mode = monitor_mode
+        link.sync_interval_minutes = sync_interval
+    else:
+        link = PipelineSource(
+            pipeline_id=pipeline_id,
+            source_id=source_id,
+            monitor_mode=monitor_mode,
+            sync_interval_minutes=sync_interval,
+        )
+        db.add(link)
+
     await db.commit()
-
-    try:
-        from src.ingestion_service.core.pathway_sync import start_minio_monitor
-        start_minio_monitor(source_id)
-    except Exception as exc:
-        logger.warning("failed_starting_minio_monitor source=%s err=%s", source_id, exc)
-
-    try:
-        from src.shared.queue.client import enqueue_sync_run
-        await enqueue_sync_run(pipeline_id)
-    except Exception as exc:
-        logger.warning("failed_enqueue_sync_run pipeline=%s err=%s", pipeline_id, exc)
-
-    return {"status": "linked", "source_id": str(source_id), "pipeline_id": str(pipeline_id)}
+    _trigger_sync_in_background(source)
+    return {
+        "status": "linked",
+        "source_id": str(source_id),
+        "pipeline_id": str(pipeline_id),
+        "monitor_mode": monitor_mode.value if monitor_mode else None,
+        "sync_interval_minutes": sync_interval,
+    }
 
 
 @router.delete("/{source_id}/pipeline/{pipeline_id}", status_code=200)
@@ -646,29 +588,20 @@ async def unlink_source_from_pipeline(
     pipeline_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Remove a source-pipeline link."""
-    existing = await db.execute(
+    """Unlink a source from a pipeline."""
+    result = await db.execute(
         select(PipelineSource).where(
-            PipelineSource.source_id == source_id,
             PipelineSource.pipeline_id == pipeline_id,
+            PipelineSource.source_id == source_id,
         )
     )
-    link = existing.scalar_one_or_none()
+    link = result.scalar_one_or_none()
     if not link:
-        raise NotFoundError("LINK_NOT_FOUND", "This source is not linked to this pipeline.")
+        raise NotFoundError("LINK_NOT_FOUND", "Link between source and pipeline not found.")
+
     await db.delete(link)
     await db.commit()
-
-    try:
-        from src.shared.queue.client import enqueue_sync_run
-        await enqueue_sync_run(pipeline_id)
-    except Exception as exc:
-        logger.warning("failed_enqueue_sync_run pipeline=%s err=%s", pipeline_id, exc)
-
     return {"status": "unlinked", "source_id": str(source_id), "pipeline_id": str(pipeline_id)}
-
-
-# ── Source files ──────────────────────────────────────────────────────────
 
 
 @router.get("/{source_id}/files", status_code=200)
@@ -720,11 +653,43 @@ async def list_source_files(
             {
                 "key": f.key,
                 "size": f.size,
-                "last_modified": f.last_modified,
+                "last_modified": f.last_modified.isoformat() if f.last_modified else None,
             }
             for f in files
         ],
     }
+
+
+async def _update_source_metrics(db: AsyncSession, source: Source) -> None:
+    """Recalculate total_files and total_size_bytes for a source and update DB."""
+    try:
+        total_files = 0
+        total_size = 0
+        is_local = _is_local_source(source)
+        if is_local:
+            folder_name = (source.config or {}).get("folder_name") or source.minio_bucket.replace("local-", "")
+            local_dir = storage_root() / "local_sources" / folder_name
+            if local_dir.exists() and local_dir.is_dir():
+                for p in local_dir.rglob("*"):
+                    if p.is_file():
+                        total_files += 1
+                        total_size += p.stat().st_size
+        elif source.minio_bucket:
+            from src.shared.storage import list_objects as s3_list
+            try:
+                objects = await s3_list(source.minio_bucket)
+                total_files = len(objects)
+                total_size = sum(obj.size for obj in objects)
+            except Exception as exc:
+                logger.warning("Failed listing MinIO bucket %s for metrics: %s", source.minio_bucket, exc)
+
+        source.total_files = total_files
+        source.total_size_bytes = total_size
+        await db.commit()
+    except Exception as exc:
+        logger.error("Failed updating metrics for source %s: %s", source.id, exc)
+
+
 @router.post("/{source_id}/files", status_code=201)
 async def upload_source_file(
     source_id: uuid.UUID,
@@ -763,6 +728,7 @@ async def upload_source_file(
             saved_files.append({"key": clean_name, "size": len(data)})
 
         logger.info("local_source_file_uploaded source=%s folder=%s count=%d", source.id, folder_name, len(saved_files))
+        await _update_source_metrics(db, source)
         _trigger_sync_in_background(source)
         return {
             "status": "uploaded",
@@ -772,6 +738,7 @@ async def upload_source_file(
             "size": saved_files[0]["size"] if saved_files else 0,
             "files": saved_files,
         }
+
     # MinIO upload path
     upload = raw_uploads[0]
     data = await upload.read()
@@ -784,6 +751,7 @@ async def upload_source_file(
     await ensure_bucket(source.minio_bucket)
     await put_object(source.minio_bucket, key, data)
     logger.info("source_file_uploaded source=%s bucket=%s key=%s bytes=%d", source.id, source.minio_bucket, key, len(data))
+    await _update_source_metrics(db, source)
     _trigger_sync_in_background(source)
     return {
         "status": "uploaded",
@@ -792,6 +760,7 @@ async def upload_source_file(
         "key": key,
         "size": len(data),
     }
+
 
 @router.delete("/{source_id}/files", status_code=200)
 async def delete_source_file(
@@ -812,6 +781,7 @@ async def delete_source_file(
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
         logger.info("local_source_file_deleted source=%s folder=%s key=%s", source.id, folder_name, key)
+        await _update_source_metrics(db, source)
         _trigger_sync_in_background(source)
         return {
             "status": "deleted",
@@ -823,6 +793,7 @@ async def delete_source_file(
     from src.shared.storage import delete_object
     await delete_object(source.minio_bucket, key)
     logger.info("source_file_deleted source=%s bucket=%s key=%s", source.id, source.minio_bucket, key)
+    await _update_source_metrics(db, source)
     _trigger_sync_in_background(source)
     return {
         "status": "deleted",
@@ -838,15 +809,10 @@ async def get_source_file_content(
     db: Annotated[AsyncSession, Depends(get_db)],
     key: str = Query(..., min_length=1),
 ):
-    """Fetch the content of a file stored in the source."""
+    """Fetch the content of a file stored in the source (MinIO bucket or Local File System)."""
     source = await db.get(Source, source_id)
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
-
-    import mimetypes
-    content_type, _ = mimetypes.guess_type(key)
-    if not content_type:
-        content_type = "application/octet-stream"
 
     is_local = _is_local_source(source)
     if is_local:
@@ -855,32 +821,54 @@ async def get_source_file_content(
         file_path = local_dir / key
         if not file_path.exists() or not file_path.is_file():
             raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}'")
-        content = file_path.read_bytes()
-        return Response(content=content, media_type=content_type)
+        data = file_path.read_bytes()
+        media_type = "application/octet-stream"
+        ext = file_path.suffix.lower()
+        if ext in (".txt", ".log"):
+            media_type = "text/plain; charset=utf-8"
+        elif ext == ".json":
+            media_type = "application/json"
+        elif ext == ".pdf":
+            media_type = "application/pdf"
+        elif ext in (".png", ".jpg", ".jpeg"):
+            media_type = f"image/{ext.lstrip('.')}"
+        return Response(content=data, media_type=media_type)
 
     from src.shared.storage import get_object
+
     try:
         data = await get_object(source.minio_bucket, key)
-    except Exception as e:
-        raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}': {str(e)}")
+    except Exception as exc:
+        raise NotFoundError("FILE_NOT_FOUND", f"Could not retrieve file '{key}' from MinIO: {exc}")
 
-    return Response(content=data, media_type=content_type)
+    media_type = "application/octet-stream"
+    ext = key.split(".")[-1].lower() if "." in key else ""
+    if ext in ("txt", "log"):
+        media_type = "text/plain; charset=utf-8"
+    elif ext == "json":
+        media_type = "application/json"
+    elif ext == "pdf":
+        media_type = "application/pdf"
+    elif ext in ("png", "jpg", "jpeg"):
+        media_type = f"image/{ext}"
 
-
-
-# ── Sync triggers ─────────────────────────────────────────────────────────
+    return Response(content=data, media_type=media_type)
 
 
 @router.post("/{source_id}/sync", status_code=200)
 async def trigger_source_sync(
     source_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Manually trigger a sync for all connectors of a source."""
-    from src.ingestion_service.clients.source_sync import trigger_source_sync as do_sync
-    return await do_sync(db, source_id)
+    """Manually trigger sync for all connectors and linked pipelines of a source."""
+    source = await db.get(Source, source_id)
+    if not source:
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
-
-# ── MinIO event webhook ──────────────────────────────────────────────────
+    _trigger_sync_in_background(source)
+    source.last_sync_at = datetime.now(timezone.utc)
+    source.status = "synced"
+    await db.commit()
+    return {"status": "sync_triggered", "source_id": str(source_id)}
 
 
 @router.post("/{source_id}/events", status_code=200)
@@ -889,58 +877,12 @@ async def receive_source_events(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Webhook endpoint to receive MinIO bucket notification events.
-
-    Called by MinIO when objects are created/removed in the source's bucket.
-    For live monitoring mode, this triggers an immediate pipeline sync for affected files.
-    """
+    """Webhook endpoint for MinIO bucket notification events."""
     source = await db.get(Source, source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
-    if not source.enabled:
-        return {"status": "ignored", "reason": "source disabled"}
-
-    # Check if any pipeline link has live mode
-    live_pipeline_ids = []
-    for ps in (source.pipelines or []):
-        effective_mode = ps.monitor_mode or source.pipeline_monitor_mode
-        if effective_mode == SourceMonitorMode.LIVE:
-            live_pipeline_ids.append(str(ps.pipeline_id))
-
-    if not live_pipeline_ids:
-        return {"status": "ignored", "reason": "no live pipeline links"}
-
-    # Parse MinIO event notification
-    try:
-        payload = await request.json()
-    except Exception:
-        return {"status": "error", "reason": "invalid json"}
-
-    records = payload.get("Records", [])
-    if not records:
-        return {"status": "ok", "records": 0}
-
-    affected_keys: set[str] = set()
-    for record in records:
-        s3 = record.get("s3", {})
-        obj = s3.get("object", {})
-        key = obj.get("key")
-        if key:
-            affected_keys.add(key)
-
-    logger.info(
-        "source_events_received source=%s bucket=%s events=%d keys=%d pipelines=%d",
-        source.id, source.minio_bucket, len(records), len(affected_keys), len(live_pipeline_ids),
-    )
-
-    from src.shared.queue.client import enqueue_sync_run
-    for pipeline_id in live_pipeline_ids:
-        await enqueue_sync_run(uuid.UUID(pipeline_id))
-
-    return {
-        "status": "ok",
-        "records": len(records),
-        "affected_keys": list(affected_keys),
-        "pipelines_triggered": live_pipeline_ids,
-    }
+    body = await request.json()
+    logger.info("MinIO bucket event received for source %s: %s", source_id, body)
+    _trigger_sync_in_background(source)
+    return {"status": "event_processed", "source_id": str(source_id)}
