@@ -69,3 +69,23 @@ async def init_db() -> None:
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            _ensure_sqlite_columns(sqlite_path)
+
+def _ensure_sqlite_columns(sqlite_path) -> None:
+    import sqlite3
+    try:
+        conn = sqlite3.connect(sqlite_path)
+        cur = conn.cursor()
+        for col_def in [
+            "total_files INTEGER DEFAULT 0",
+            "total_size_bytes INTEGER DEFAULT 0",
+            "error_message TEXT",
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE sources ADD COLUMN {col_def}")
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass

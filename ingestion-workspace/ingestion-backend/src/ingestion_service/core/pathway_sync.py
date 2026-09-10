@@ -520,10 +520,10 @@ async def init_all_source_pollers() -> None:
 
     try:
         async with AsyncSessionLocal() as db:
-            res = await db.execute(select(Source).where(Source.enabled.is_(True)))
-            sources = res.scalars().all()
-            for s in sources:
-                await register_source_poller(s.id)
+            res = await db.execute(select(Source.id).where(Source.enabled.is_(True)))
+            source_ids = res.scalars().all()
+            for sid in source_ids:
+                await register_source_poller(sid)
     except Exception as exc:
         logger.error("init_all_source_pollers startup error: %s", exc)
 
