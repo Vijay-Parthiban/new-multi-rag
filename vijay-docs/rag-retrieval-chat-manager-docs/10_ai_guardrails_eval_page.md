@@ -1,21 +1,11 @@
-# 10. AI Guardrails Benchmark Evaluation Page (`/guardrails-evaluation`)
+# AI Guardrails Evaluation Page
 
-## 1. Page Purpose & Summary
+## Route
+`/guardrails/evaluation`
 
-The **AI Guardrails Evaluation** (`/guardrails-evaluation`) page enables safety researchers to execute automated adversarial red-teaming benchmarks against configured guardrail policies to measure precision, recall, and false-positive rates.
+## Features
+Specifically runs evaluations on the security and formatting checks implemented in the pipeline. It uploads test datasets mapping inputs specifically meant to break formatting or policies to see if the Guardrail correctly triggers.
 
----
-
-## 2. Key UI Modules & Features
-
-1. **Safety Benchmark Suite Selector**: Select test suites (e.g. `Adversarial Injection Benchmark v2`, `PII Masking Suite`, `Hallucination Challenge Set`).
-2. **Evaluation Execution Trigger**: Start batch safety evaluation runs across test datasets.
-3. **Safety Accuracy Dashboard**: Visual metrics showing Precision (true blocks vs false blocks), Recall (caught attacks vs missed attacks), and F1 Safety Score.
-4. **Adversarial Failure Case Breakdown**: List of prompt attacks that successfully bypassed moderation rules for policy tuning.
-
----
-
-## 3. API Endpoint Reference
-
-- **`triggerGuardrailsEvaluation(payload)`**: `POST /api/guardrails/evaluate` — Dispatches automated red-teaming benchmark evaluation run.
-- **`getGuardrailsEvalResults(runId)`**: `GET /api/guardrails/evaluate/{runId}` — Retrieves evaluation results, confusion matrix, and failure cases.
+## Backend APIs Used
+- `POST /api/datasets/upload` (Guardrail route context)
+- `GET /api/runs/{run_id}/items`

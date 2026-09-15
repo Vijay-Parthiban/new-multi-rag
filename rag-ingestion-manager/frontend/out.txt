@@ -1,0 +1,49 @@
+  bucketName = "",
+  files: propFiles,
+  onDelete: propOnDelete,
+  onError,
+  onInfo,
+  allowUpload = false,
+  allowDelete = false,
+}: FileBrowserProps) {
+  const [files, setFiles] = useState<SourceFileEntry[]>(propFiles ?? []);
+  const [prefix, setPrefix] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<"flat" | "tree">("flat");
+
+  useEffect(() => {
+    if (propFiles !== undefined) {
+      setFiles(propFiles);
+    }
+  }, [propFiles]);
+
+  // Upload state
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sort
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const loadFiles = useCallback(
+    async (p: string) => {
+      if (!sourceId) return;
+      setLoading(true);
+      try {
+        const res = await listSourceFiles(sourceId, p);
+        setFiles(res.files);
+        setPrefix(p);
+      } catch (err) {
+        onError?.(toApiError(err, "LIST_FILES_FAILED"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sourceId, onError],
+  );
+
+  useEffect(() => {
+    void loadFiles("");
+  }, [loadFiles]);
+
+  /* ── Upload handlers ── */

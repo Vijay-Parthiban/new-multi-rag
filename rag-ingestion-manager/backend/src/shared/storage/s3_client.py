@@ -53,6 +53,7 @@ class MinIOEvent:
 
 def _get_boto3_client():
     import boto3
+    from botocore.config import Config
     endpoint_url = _get_endpoint_url()
     settings = get_settings()
     return boto3.client(
@@ -61,8 +62,8 @@ def _get_boto3_client():
         aws_access_key_id=settings.minio_access_key,
         aws_secret_access_key=settings.minio_secret_key,
         use_ssl=str(settings.minio_use_ssl).lower() == "true",
+        config=Config(connect_timeout=1, read_timeout=1, retries={"max_attempts": 1}),
     )
-
 def _sync_ensure_bucket(bucket: str) -> None:
     try:
         s3 = _get_boto3_client()

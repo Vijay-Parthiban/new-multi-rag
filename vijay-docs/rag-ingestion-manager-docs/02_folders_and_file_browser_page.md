@@ -1,35 +1,18 @@
-# 02. Folders & Directory File Browser Page (`/browse`)
+# Folders & File Browser Page
 
-## 1. Page Purpose & Summary
+## Route
+`/browse`
 
-The **Folders & Directory File Browser** (`/browse`) page provides interactive navigation of the virtual directory hierarchy stored within PostgreSQL metadata and MinIO S3 object storage. Administrators can browse folders, view document details, perform client-side text filtering, create directories, rename files, and delete documents.
+## Component
+`BrowsePage.tsx` / `DirectoryPage.tsx` / `FileViewerPage.tsx`
 
----
+## Features
+Provides S3/MinIO bucket exploration capabilities:
+- **MinIO Source Selector**: Dropdown to select an active data source bucket (e.g., `source-v-res-5d2edc8f`).
+- **File Explorer**: Lists raw files synced into the MinIO bucket. Displays item counts and allows refreshing the bucket structure.
+- **File Viewer**: A sub-route feature (`/browse/:name/view/:fileId`) that visualizes the content of a specific indexed file directly from object storage.
 
-## 2. Key UI Modules & Features
-
-1. **Virtual Directory Navigation Sidebar / Grid**: Lists top-level folders with document counts and creation timestamps.
-2. **Directory File List Table**: Displays files within the active folder:
-   - File Name & Unique File ID
-   - SHA256 Content Hash
-   - Storage Size (formatted KB/MB)
-   - MIME / Content Type
-   - Inline Actions: Download, Rename, Delete File.
-3. **Directory Creation Modal**: Dialog for creating a new named virtual directory folder.
-4. **File Search & Extension Filter**: Instant client-side text filter by file name or extension.
-
----
-
-## 3. Data Fetching & API Interactions
-
-- **`listDirectories()`**: `GET /api/directories` — Fetches virtual directory summary objects (`id`, `name`, `file_count`, `created_at`).
-- **`listDirectoryFiles(directoryName)`**: `GET /api/directories/{name}/files` — Returns file records contained in the specified folder.
-- **`renameFile(fileId, newName)`**: `PATCH /api/files/{id}` — Updates file display name in PostgreSQL.
-- **`deleteFile(fileId)`**: `DELETE /api/files/{id}` — Deletes file object from MinIO S3 and removes metadata record from PostgreSQL.
-
----
-
-## 4. Operational & Storage Invariants
-
-- Virtual directory names are sanitized (`sanitize_directory_name`) to prevent invalid path sequences or key collision in MinIO S3.
-- Document deletions cleanly purge object bytes from MinIO and cascade metadata deletions in PostgreSQL.
+## Backend APIs Used
+- `GET /api/directories/{name}/files`
+- `GET /api/sources/{source_id}/files`
+- `GET /api/files/{file_id}` 

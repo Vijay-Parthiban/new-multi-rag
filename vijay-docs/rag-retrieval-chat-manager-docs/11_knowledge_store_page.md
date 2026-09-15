@@ -1,22 +1,12 @@
-# 11. Knowledge Store Proxy Page (`/knowledge-store`)
+# Knowledge Store Page
 
-## 1. Page Purpose & Summary
+## Route
+`/knowledge-store`
 
-The **Knowledge Store Proxy** (`/knowledge-store`) page in `rag-retrieval-chat-manager` provides a read-only proxy view of the multi-sink Knowledge Profiles and destination sinks configured inside `rag-ingestion-manager`.
+## Features
+Sync configuration mimicking the Ingestion knowledge store, allowing the Retrieval application to formally register definitions of Sinks outputted by Ingestion (e.g., matching the Postgres or Qdrant connection schemas) avoiding cross-talk.
 
----
-
-## 2. Architectural Role & Boundary
-
-To preserve strict domain separation between document ingestion and retrieval/chat management, retrieval engineers can view existing Knowledge Store profiles and target Qdrant collection mappings without mutating ingestion settings.
-
-- **Vite Proxy Path**: `/api/knowledge/profiles` -> `http://localhost:8007/api/knowledge/profiles`
-- **Access Mode**: Read-Only (Creation and deletion actions are redirected to the Ingestion Manager UI on Port 5173).
-
----
-
-## 3. Key UI Modules & Features
-
-1. **Proxy Profiles Table**: Displays active Knowledge Profiles, source buckets included, and target vector collection destinations.
-2. **Target Qdrant Collection Mapper**: Direct link to open the corresponding RAG Pipeline configuration in `/pipelines`.
-3. **Ingestion Manager Navigation Banner**: Prompt guiding users to open `http://localhost:5173/knowledge-store` if full editing rights are needed.
+## Backend APIs Used
+- `GET /api/{profile_id}`
+- `POST /api/{profile_id}/sync`
+- `POST /api/{profile_id}/test-connection`

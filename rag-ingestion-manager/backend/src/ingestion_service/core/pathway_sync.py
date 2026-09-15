@@ -9,18 +9,17 @@ from sqlalchemy.orm import selectinload
 from src.shared.config.settings import get_settings
 from src.shared.db.models import Source, SourceConnector, SourceMonitorMode
 from src.ingestion_service.core.gdrive_sync import sync_google_drive_to_minio
-from src.ingestion_service.core.airbyte_connector import (
-    sync_airbyte_connector_to_minio,
-    validate_airbyte_connector_config,
-    AIRBYTE_CONNECTOR_MAP
-)
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 import httpx
+from src.ingestion_service.core.airbyte_connector import validate_airbyte_connector_config
 from src.shared.queue.client import enqueue_sync_run
 from src.shared.storage.s3_client import get_minio_client, watch_minio_bucket
 logger = logging.getLogger(__name__)
 
 _SYNCING_SOURCES: set[uuid.UUID] = set()
-
+_MINIO_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
+_LOCAL_FS_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
 async def sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -> None:
     """Sync a source through Pathway Airbyte connector."""
     if source_id in _SYNCING_SOURCES:
@@ -34,14 +33,25 @@ async def sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -> No
         _SYNCING_SOURCES.discard(source_id)
 
 async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -> None:
+    print(f"==== ENTERED do_sync with source_id={source_id} ====")
     source = await db.get(
         Source,
         source_id,
-        options=(
-            selectinload(Source.pipelines),
-            selectinload(Source.connectors),
-        ),
+        options=[selectinload(Source.connectors), selectinload(Source.pipelines)]
     )
+    if not source:
+        print(f"==== SOURCE {source_id} NOT FOUND ====")
+        logger.error("Source %s not found during pathway sync", source_id)
+        return
+    
+    print(f"==== SOURCE FOUND {source.id} status={source.status} enabled={source.enabled} ====")
+    
+    if not source.enabled:
+        logger.warning(
+            "Source %s is disabled, skipping sync",
+            source.id
+        )
+        return
     if not source:
         logger.error("pathway_sync_source_not_found source=%s", source_id)
         return
@@ -143,7 +153,6 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
         source.total_size_bytes = sum(o.size for o in all_objs)
     except Exception as exc:
         logger.warning("Failed computing total_files for source %s: %s", source.id, exc)
-
     source.status = "idle"
     source.last_sync_at = datetime.now(UTC)
     logger.info(
@@ -152,9 +161,15 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
         files_synced_total,
         bytes_transferred_total
     )
+    print("==== BEFORE COMMIT IDLE ====")
     await db.commit()
+    print("==== AFTER COMMIT IDLE ====")
     # Trigger pipeline re-indexing for all linked pipelines
-    await _trigger_pipeline_syncs(db, source)
+    try:
+        print("==== TRIGGERING PIPELINE SYNC ====")
+        await _trigger_pipeline_syncs(db, source)
+    except Exception as exc:
+        logger.exception("pipeline_syncs_trigger_failed source=%s error=%s", source.id, str(exc))
 
     # Start monitoring MinIO for file changes in background
     start_minio_monitor(source_id)
@@ -187,45 +202,44 @@ async def _run_airbyte_connector(config: dict) -> dict:
 
 async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
     """Trigger Knowledge Profile fanout sync and pipeline re-indexing for linked source."""
-    from sqlalchemy import select
-    from src.shared.db.models import KnowledgeProfile, KnowledgeProfileSource
-    from src.ingestion_service.core.universal_fanout import execute_universal_fanout_sync
-
-    # 1. Trigger universal fanout sync across Knowledge Destinations for linked profiles
     try:
-        stmt = select(KnowledgeProfileSource).where(KnowledgeProfileSource.source_id == source.id)
+        from src.ingestion_service.core.universal_fanout import execute_universal_fanout_sync
+        
+        # Find matching knowledge profiles linked to this source
+        from sqlalchemy import select
+        from src.shared.db.models import KnowledgeProfileSource
+        
+        stmt = select(KnowledgeProfileSource.knowledge_profile_id).where(KnowledgeProfileSource.source_id == source.id)
         res = await db.execute(stmt)
-        kp_sources = res.scalars().all()
-        for kp_src in kp_sources:
-            profile = await db.get(KnowledgeProfile, kp_src.knowledge_profile_id)
-            if profile and profile.enabled:
-                logger.info("triggering_universal_fanout_sync profile_id=%s source_id=%s", profile.id, source.id)
-                await execute_universal_fanout_sync(db, profile)
+        kp_ids = res.scalars().all()
+        
+        for kp_id in kp_ids:
+            await execute_universal_fanout_sync(db, kp_id)
     except Exception as exc:
-        logger.error("knowledge_profile_fanout_sync_failed source=%s error=%s", source.id, str(exc))
+        logger.error(
+            "knowledge_profile_fanout_sync_failed source=%s error=%s",
+            source.id,
+            str(exc)
+        )
 
-    # 2. Trigger legacy pipeline sync runs
-    pipeline_ids = [p.id for p in (source.pipelines or [])]
-    for pipeline_id in pipeline_ids:
-        try:
-            await db.execute(
-                text(
-                    """
-                    INSERT INTO pipeline_sync_queue (pipeline_id, source_id, created_at)
-                    VALUES (:pipeline_id, :source_id, :created_at)
-                    ON CONFLICT DO NOTHING
-                    """
-                ),
-                {
-                    "pipeline_id": pipeline_id,
-                    "source_id": source.id,
-                    "created_at": datetime.utcnow(),
-                },
-            )
-            await db.commit()
-            await enqueue_sync_run(pipeline_id)
-        except Exception as exc:
-            logger.error("pipeline_sync_enqueue_failed pipeline=%s source=%s error=%s", pipeline_id, source.id, str(exc))
+    try:
+        print("==== CHECKING LINKED PIPELINES ====")
+        if not source.pipelines:
+            print("==== NO LINKED PIPELINES ====")
+            return
+            
+        from src.shared.queue.client import enqueue_sync_run
+        for p_link in source.pipelines:
+            pipeline_id = p_link.pipeline_id
+            logger.info("pipeline_sync_triggered pipeline=%s source=%s", pipeline_id, source.id)
+            print(f"==== ENQUEUING PIPELINE SYNC {pipeline_id} ====")
+            try:
+                await enqueue_sync_run(pipeline_id)
+            except Exception as exc:
+                logger.error("pipeline_sync_enqueue_failed pipeline=%s source=%s error=%s", pipeline_id, source.id, str(exc))
+    except Exception as exc:
+        print(f"==== PIPELINE TRIGGER FAILED: {exc} ====")
+        logger.error("pipeline_syncs_trigger_failed loop error=%s", str(exc))
 
 def start_minio_monitor(source_id: uuid.UUID) -> None:
     """Start background watch task on source MinIO bucket without holding DB sessions."""
@@ -260,7 +274,6 @@ def start_minio_monitor(source_id: uuid.UUID) -> None:
 
     task = asyncio.create_task(_monitor_loop())
     _MINIO_MONITOR_TASKS[source_id] = task
-_LOCAL_FS_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
 
 
 def start_local_fs_monitor(source_id: uuid.UUID) -> None:

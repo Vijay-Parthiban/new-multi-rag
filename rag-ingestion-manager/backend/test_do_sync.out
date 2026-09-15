@@ -1,0 +1,9 @@
+==== STARTING DB SESSION ====
+==== ENTERED do_sync with source_id=d9aa52ff-8019-4952-8130-00a9f1174b2d ====
+==== SOURCE FOUND d9aa52ff-8019-4952-8130-00a9f1174b2d status=syncing enabled=True ====
+==== BEFORE COMMIT IDLE ====
+==== AFTER COMMIT IDLE ====
+==== TRIGGERING PIPELINE SYNC ====
+==== CHECKING LINKED PIPELINES ====
+==== NO LINKED PIPELINES ====
+==== FINISHED DO SYNC ====

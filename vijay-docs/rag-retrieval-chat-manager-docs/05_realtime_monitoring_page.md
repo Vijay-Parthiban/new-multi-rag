@@ -1,26 +1,11 @@
-# 05. Real-Time Monitoring Page (`/evaluations`)
+# Real Time Monitoring Page
 
-## 1. Page Purpose & Summary
+## Route
+`/evaluations`
 
-The **Real-Time Monitoring** (`/evaluations`) page provides live operational metrics, query latency breakdown telemetry, vector DB performance, and system throughput monitoring for the RAG query engine.
+## Features
+Dashboards focusing on in-flight telemetry of generations and retrieval steps. Observes the context limits, latency bounds, and token usage from LLM execution spanning retrieval and semantic reranking pipelines.
 
----
-
-## 2. Key Metrics & Telemetry Breakdown
-
-1. **Sub-Second Latency Waterfall**:
-   - **Guardrails Pre-Check**: Latency (ms) to validate prompt safety.
-   - **Vector Dense Search**: Qdrant embedding lookup duration.
-   - **BM25 Sparse Search**: Sparse index search duration.
-   - **Cross-Encoder Rerank**: Reranker model execution time.
-   - **LLM First-Token Time (TTFT)**: Time to start streaming response.
-   - **Total Generation Duration**: Total latency to complete response.
-2. **Throughput Charts**: Queries Per Second (QPS), Active Streaming Connections, Error Rates (4xx/5xx).
-3. **Token Usage Metrics**: Input tokens, output tokens, total cost estimation ($).
-
----
-
-## 3. Data Fetching & API Interactions
-
-- Integrates with OpenTelemetry traces and telemetry stats emitted during pipeline execution.
-- Polling Endpoint: `GET /api/rag/evaluations/metrics` or `GET /api/rag/evaluations`
+## Backend APIs Used
+- `GET /api/stats`
+- `GET /api/runs/{run_id}`

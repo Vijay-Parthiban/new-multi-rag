@@ -1,66 +1,25 @@
-# rag-retrieval-chat-manager — Detailed System Documentation
+# RAG Retrieval & Chat Manager - Overall Architecture
 
-## 1. Executive Summary & Application Scope
+The Retrieval & Chat Manager focuses strictly on query execution, LLM generation, dynamic prompt management, and AI guardrails evaluation. It sits downstream from the Ingestion Manager.
 
-The **`rag-retrieval-chat-manager`** is a dedicated full-stack management application focused on hybrid vector retrieval, interactive RAG chat testing, prompt template engineering, real-time performance trace monitoring, Ragas/DeepEval offline evaluation execution, AI guardrails safety moderation, and proxy viewing of knowledge store resources.
+## Architecture Components
 
-- **Frontend UI Port**: `5174` (`http://localhost:5174`)
-- **RAG Query API Port**: `8001` (`http://localhost:8001`)
-- **Guardrails Service Port**: `8002` (`http://localhost:8002`)
-- **Vite Proxy Rules**:
-  - `/api/rag` -> `http://localhost:8001`
-  - `/api/evaluations` -> `http://localhost:8001`
-  - `/api/prompts` -> `http://localhost:8001`
-  - `/api/guardrails` -> `http://localhost:8002`
-  - `/api` -> `http://localhost:8007` (Knowledge Store read-only proxy)
+1. **Frontend (`/frontend`)**
+   - React UI using Vite (`npm run dev`).
+   - Unified persistent-page Single Page Application layout managed by `AppLayout.tsx`.
+   - Complete navigation suite orchestrating pipelines, chat, prompts, traces, and guardrail validations natively.
 
----
+2. **Backend (`/backend`)**
+   - Heavily modularized Python codebase split into isolated domains:
+     - **Apps**: `rag-api` (Main RAG API), `eval-worker` (Evaluation tasks).
+     - **Libs**: `database`, `retrieval-core`, `generation-core`, `vector-core`, `reranker-core`, `eval-core`.
+   - Fully decoupled logic: separating retrieval (Vector/Graph/BM25) from Generation (LLM endpoints, Streaming).
 
-## 2. Navigation Structure (11 Items)
+3. **Backend RAG Endpoints (`rag-api`)**
+   - Generation: `POST /api/chat/stream`, `POST /api/generate`, `DELETE /api/chat/messages/{message_id}`
+   - Retrieval/Search: `GET /api/search`, `POST /api/scrapes/query`, `POST /api/rerank`
+   - Evaluation & Testing: `/api/runs`, `/api/datasets`, `/api/datasets/upload`
+   - Guardrails: `/api/guards`, `/api/traces`, `/api/configs`
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│                             RAG RETRIEVAL CHAT MANAGER UI (5174)                            │
-├───────────────────────┬─────────────────────────────────────────────────────────────────────┤
-│ Sidebar Link          │ Route Path & Description                                            │
-├───────────────────────┼─────────────────────────────────────────────────────────────────────┤
-│ 1. Overview           │ /                      - Retrieval system stats & query volume      │
-│ 2. Knowledge Store    │ /knowledge-store       - Read-only proxy view of Knowledge Profiles │
-│ 3. Pipelines          │ /pipelines             - RAG pipeline strategies & Qdrant mappings  │
-│ 4. Chat               │ /chat                  - Interactive RAG query testing & citations  │
-│ 5. Prompts            │ /prompts               - System prompt template engineering         │
-│ 6. Real Time Monitoring│ /evaluations           - Sub-second latency breakdown & telemetry    │
-│ 7. Offline Evaluation │ /golden-evaluations    - Benchmark test sets & offline eval runs    │
-│ 8. Tracking           │ /tracking              - OpenTelemetry execution traces & token cost │
-│ 9. Guardrails Config  │ /guardrails-config     - AI Guardrails moderation policy rules      │
-│ 10. Guardrails Traces │ /guardrails-traces     - Safety inspection logs & policy violations  │
-│ 11. Guardrails Eval   │ /guardrails-evaluation - Automated red-teaming & guardrail metrics  │
-└───────────────────────┴─────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. Core Technical Architecture & Hybrid Retrieval Engine
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                   HYBRID RETRIEVAL PIPELINE                                 │
-├─────────────────────────────────────────────────────────────────────────────────────────────┤
-│ 1. User Query -> Input Guardrails Moderation Check (Port 8002)                              │
-│ 2. Hybrid Retrieval Execution (Port 8001):                                                  │
-│    - Dense Search: Qdrant Vector DB (SentenceTransformers / OpenAI embeddings)              │
-│    - Sparse Search: BM25 FastEmbed text index                                               │
-│    - Reciprocal Rank Fusion (RRF) & Cross-Encoder Reranking                                 │
-│ 3. Prompt Template Assembly (`generation_core` & `rag_core` overrides)                      │
-│ 4. LLM Generation & Output Guardrails Verification                                          │
-│ 5. Response Streaming with Source Citations & Telemetry Tracing                             │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 4. API Routes Overview
-
-- **RAG & Search API (Port 8001)**: `/api/rag/chat`, `/api/rag/pipelines`, `/api/rag/prompts`, `/api/rag/evaluations`, `/api/rag/traces`.
-- **Guardrails API (Port 8002)**: `/api/guardrails/config`, `/api/guardrails/traces`, `/api/guardrails/evaluate`.
-- **Ingestion Proxy Path (Port 8007)**: `/api/knowledge-profiles` -> Proxying calls to Ingestion Manager backend.
+4. **Integration via Shared Contracts**
+   - Depends statically on `shared-contracts` package for definitions ensuring consistency with the upstream Ingestion Pipeline outputs (especially chunk schemas and knowledge store configuration objects).

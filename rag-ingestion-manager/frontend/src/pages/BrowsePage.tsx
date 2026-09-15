@@ -34,16 +34,14 @@ export default function BrowsePage() {
       setLoadingSources(true);
       const res = await listSources();
       setSources(res);
-      if (res.length > 0 && !selectedSourceId) {
-        setSelectedSourceId(res[0].id);
-      }
+      setSelectedSourceId((prev) => (prev ? prev : res.length > 0 ? res[0].id : ""));
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err : null);
     } finally {
       setLoadingSources(false);
     }
-  }, [selectedSourceId]);
+  }, []);
 
   const loadFiles = useCallback(async (sourceId: string) => {
     if (!sourceId) return;
