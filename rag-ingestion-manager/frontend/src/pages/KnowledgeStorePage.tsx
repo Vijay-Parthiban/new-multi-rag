@@ -24,6 +24,8 @@ import {
   IconZap,
 } from "../components/Icons";
 
+import { DestinationVisualizerModal } from "../components/visualizers/DestinationVisualizerModal";
+
 export default function KnowledgeStorePage() {
   const [profiles, setProfiles] = useState<KnowledgeProfile[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
@@ -45,6 +47,16 @@ export default function KnowledgeStorePage() {
   >({});
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Visualizer Modal State
+  const [visualizerProfile, setVisualizerProfile] = useState<KnowledgeProfile | null>(null);
+  const [visualizerDestType, setVisualizerDestType] = useState<string>("vector_qdrant");
+  const [isVisualizerOpen, setIsVisualizerOpen] = useState<boolean>(false);
+
+  const handleOpenVisualizer = (profile: KnowledgeProfile, destType: string = "vector_qdrant") => {
+    setVisualizerProfile(profile);
+    setVisualizerDestType(destType);
+    setIsVisualizerOpen(true);
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -492,6 +504,24 @@ export default function KnowledgeStorePage() {
                       <IconZap style={{ width: "15px", height: "15px" }} />
                       {isSyncing ? "Syncing Sinks..." : "Sync All Sinks"}
                     </button>
+                    <button
+                      onClick={() => handleOpenVisualizer(profile, "vector_qdrant")}
+                      className="btn"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "8px 16px",
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        background: "linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)",
+                        border: "1px solid rgba(139, 92, 246, 0.4)",
+                        color: "#c084fc",
+                        cursor: "pointer",
+                      }}
+                    >
+                      🔭 Multi-Sink Visualizer
+                    </button>
 
                     <button
                       onClick={() => openEditModal(profile)}
@@ -677,7 +707,7 @@ export default function KnowledgeStorePage() {
                             </div>
                           )}
 
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                             <button
                               onClick={() => handleTestConnection(profile.id, opt.id, destCfg?.config || opt.default_config)}
                               disabled={isTesting || !isEnabled}
@@ -691,8 +721,26 @@ export default function KnowledgeStorePage() {
                                 cursor: "pointer",
                               }}
                             >
-                              {isTesting ? "Testing..." : "Test Connection"}
+                              {isTesting ? "Testing..." : "Test Link"}
                             </button>
+
+                            {isEnabled && (
+                              <button
+                                onClick={() => handleOpenVisualizer(profile, opt.id)}
+                                style={{
+                                  background: "rgba(56, 189, 248, 0.15)",
+                                  border: "1px solid rgba(56, 189, 248, 0.4)",
+                                  borderRadius: "6px",
+                                  color: "#38bdf8",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  padding: "4px 10px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                🔭 Inspect Store
+                              </button>
+                            )}
 
                             {testRes && (
                               <span
@@ -1142,6 +1190,14 @@ export default function KnowledgeStorePage() {
           </div>
         </div>
       )}
+
+      {/* 5 Destination Sink Visualizer Modal */}
+      <DestinationVisualizerModal
+        isOpen={isVisualizerOpen}
+        onClose={() => setIsVisualizerOpen(false)}
+        profile={visualizerProfile}
+        initialDestinationType={visualizerDestType}
+      />
     </div>
   );
 }

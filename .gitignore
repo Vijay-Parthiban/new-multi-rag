@@ -51,3 +51,5 @@ Thumbs.db
 *.db
 # Keys & Secrets
 sanguine-robot-*.json
+sa.json
+**/sa.json

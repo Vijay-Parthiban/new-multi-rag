@@ -1,86 +1,117 @@
-# RAG Ingestion Manager - Overall Architecture
+# Overall Architecture — RAG Ingestion Manager
 
-The RAG Ingestion Manager is a FastAPI and React based autonomous microservice cluster responsible for data onboarding, chunking, and knowledge storage delivery (fanout).
+## 1. System Overview
+`rag-ingestion-manager` is the enterprise document ingestion, storage management, parsing, and multi-sink synchronization engine of the `new-multi-rag` platform. It bridges unstructured documents residing in external systems (Google Drive, S3, Azure, SFTP, Web Scrapers, MinIO) into a unified MinIO object store and orchestrates parallel fanout into **5 enterprise RAG storage destinations**: **Qdrant Vector DB**, **OpenSearch BM25**, **Neo4j Knowledge Graph**, **PostgreSQL Relational Chunks**, and **RedisVL Semantic Cache**.
 
-## Architecture Components
+---
 
-1. **Frontend (`/frontend`)**
-   - React UI using Vite (port 5173).
-   - Sidebar navigation with isolated views: Overview, Folders, Sources, Knowledge Store.
-   - Persistent state across route transitions via custom `<PersistentPage>` component.
+## 2. Full Architecture Topology
 
-2. **Backend (`/backend`)**
-   - Python FastAPI (Uvicorn, port 8007).
-   - Routes: `/pipelines`, `/sources`, `/knowledge-profiles`, `/uploads`, `/directories`, `/files`.
-   - SQLAlchemy (async) + Alembic migrations on Postgres.
-   - Background worker loop pulls from three Redis queues: `file_manager:jobs`, `ingestion:pipeline:jobs`, `ingestion:sync:jobs`.
+```
++---------------------------------------------------------------------------------------------------+
+|                                  DATA INGESTION PERIMETER                                         |
+|  [ MinIO Buckets ] [ Manual Uploads ] [ Google Drive ] [ S3 / Azure ] [ SFTP ] [ Web Scrapers ]   |
++-------------------------------------------------+-------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+|                                 RAG INGESTION MANAGER BACKEND                                     |
+|  +---------------------------+  +-------------------------------+  +---------------------------+  |
+|  | Fast-API REST Gateway     |  | Background Sync Runners       |  | Document Processing Core  |  |
+|  | - /api/sources            |  | - sync_runner.py              |  | - pypdf / python-docx     |  |
+|  | - /api/directories        |  | - pathway_sync.py             |  | - recursive text chunker  |  |
+|  | - /api/knowledge-profiles |  | - airbyte_connector.py        |  | - SHA256 deduplication    |  |
+|  | - /api/uploads            |  | - gdrive_sync.py              |  | - Embedding Client (384D) |  |
+|  +---------------------------+  +-------------------------------+  +---------------------------+  |
++-------------------------------------------------+-------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+|                              UNIVERSAL 5-SINK FANOUT ENGINE                                       |
+|                                  (universal_fanout.py)                                            |
+|  Executes concurrent, idempotent writes to all 5 storage layers per Knowledge Routing Profile:    |
+|                                                                                                   |
+|  +--------------------+  +--------------------+  +--------------------+  +--------------------+   |
+|  | 🔮 Qdrant Vector   |  | 🔍 OpenSearch BM25 |  | 🕸️ Neo4j Graph     |  | 🐘 PostgreSQL Chunks|   |
+|  | - Dense Embeddings |  | - Inverted Index   |  | - Entity Extraction|  | - Relational Chunk  |   |
+|  | - HNSW Index       |  | - Keyword Scoring  |  | - Doc-Chunk Graph  |  |   Persistence       |   |
+|  +--------------------+  +--------------------+  +--------------------+  +--------------------+   |
+|                                 +--------------------+                                            |
+|                                 | ⚡ RedisVL Cache   |                                            |
+|                                 | - Semantic Query   |                                            |
+|                                 |   Deduplication    |                                            |
+|                                 +--------------------+                                            |
++-------------------------------------------------+-------------------------------------------------+
+                                                  |
+                                                  v
++---------------------------------------------------------------------------------------------------+
+|                                RAG INGESTION MANAGER FRONTEND                                     |
+|  +--------------------+  +--------------------+  +--------------------+  +--------------------+   |
+|  | Ingestion Overview |  | Folders & Files    |  | Data Sources       |  | Knowledge Store    |   |
+|  | Dashboard          |  | Browser & Viewer   |  | Manager            |  | Fanout Visualizer  |   |
+|  +--------------------+  +--------------------+  +--------------------+  +--------------------+   |
++---------------------------------------------------------------------------------------------------+
+```
 
-3. **Storage & State Infrastructure**
-   - **MinIO**: S3-compatible blob store. Raw source files land in isolated `source-[uuid]` buckets. Console at port 9001, API at 9000.
-   - **Postgres**: Source config, metadata, indexed file records, knowledge profile definitions.
-   - **Redis**: Queue broker for all three background job types.
-   - **Qdrant**: Dense vector search engine (port 6333, dashboard at /dashboard).
-   - **OpenSearch**: Lexical + sparse vector search engine (port 9200).
-   - **Neo4j**: Knowledge graph store for GraphRAG entity triples (ports 7474 browser, 7687 bolt).
+---
 
-4. **Integration via Shared Contracts**
-   - `shared-contracts` Python library defines Pydantic models: `SourceRecordBase`, `KnowledgeProfileBase`, `KnowledgeDestinationConfigBase`.
-   - Ensures consistent serialization between ingestion and retrieval pipelines.
+## 3. Directory & Codebase Structure
+```
+rag-ingestion-manager/
+├── backend/
+│   ├── apps/
+│   │   ├── api/
+│   │   │   ├── routes/
+│   │   │   │   ├── sources.py          # Data source CRUD, testing, and sync triggers
+│   │   │   │   ├── knowledge.py        # Knowledge profile CRUD, fanout sync, and 5-sink inspect APIs
+│   │   │   │   ├── directories.py      # Virtual workspace directory management
+│   │   │   │   ├── files.py            # File metadata and chunk operations
+│   │   │   │   └── uploads.py          # Multipart browser file upload handler
+│   │   │   └── main.py                 # FastAPI application assembly and CORS middleware
+│   │   ├── pathway_worker/             # Real-time streaming synchronization worker
+│   │   └── worker/                     # Scheduled background worker for periodic connector polling
+│   └── src/
+│       ├── ingestion_service/
+│       │   ├── core/
+│       │   │   ├── universal_fanout.py # 5-destination fanout sync engine
+│       │   │   ├── sync_runner.py      # Source-to-staging synchronization worker
+│       │   │   ├── pathway_sync.py     # Streaming connector manager
+│       │   │   ├── gdrive_sync.py      # Google Drive OAuth / service account connector
+│       │   │   ├── airbyte_connector.py# Airbyte integration client
+│       │   │   └── indexer.py          # Text extraction and vector embedding generator
+│       │   ├── embeddings/
+│       │   │   ├── client.py           # Dense embedding client (HuggingFace / Ollama / OpenAI)
+│       │   │   └── sparse_client.py    # BM25 / SPLADE sparse vector client
+│       │   └── vector/
+│       │       └── qdrant_store.py     # Qdrant client wrapper and collection management
+│       └── shared/
+│           ├── db/
+│           │   └── models.py           # SQLAlchemy models: Source, KnowledgeProfile, Directory, File
+│           └── storage/
+│               └── s3_client.py        # MinIO S3 client wrapper
+└── frontend/
+    └── src/
+        ├── api.ts                      # Typed API client for all backend endpoints
+        ├── pages/
+        │   ├── HomePage.tsx            # Overview dashboard with metrics & quick actions
+        │   ├── BrowsePage.tsx          # Folders & file explorer with document preview
+        │   ├── SourcesPage.tsx         # Connector management and MinIO bucket configuration
+        │   ├── SourceDetailPage.tsx    # Detailed file list & sync logs for individual source
+        │   ├── KnowledgeStorePage.tsx  # Knowledge profile manager & visualizer trigger hub
+        │   └── DirectoryPage.tsx       # Folder workspace browser
+        └── components/
+            └── visualizers/            # 5 interactive live inspection visualizers
+                ├── DestinationVisualizerModal.tsx # Tabbed visualizer modal wrapper
+                ├── VectorVisualizer.tsx           # 2D PCA vector cluster visualizer
+                ├── LexicalVisualizer.tsx          # OpenSearch term frequency & BM25 explorer
+                ├── GraphVisualizer.tsx            # Neo4j force-directed entity graph
+                ├── RelationalVisualizer.tsx       # PostgreSQL chunk tabular inspector
+                └── CacheVisualizer.tsx            # RedisVL semantic cache metrics & key explorer
+```
 
-## Data Flow: Source to MinIO to Universal Fanout to 5 Sinks
+---
 
-1. **Connector Extraction** (`apps/worker/main.py`)
-   - Worker dequeues from Redis `ingestion:sync:jobs`.
-   - Calls `sync_source_from_pathway()` in `pathway_sync.py`.
-
-2. **NiFi Pipeline** (`src/ingestion_service/core/pathway_sync.py`)
-   - Validates connector config via `validate_airbyte_connector_config()`.
-   - Routes through `sync_connector_via_nifi()` to pull data from external sources (Google Drive, Local FS, APIs).
-   - Transfers raw bytes into the source-specific MinIO bucket.
-   - After all connectors finish, updates source status to `idle` and calls `_trigger_pipeline_syncs()`.
-
-3. **Fanout Trigger** (`src/ingestion_service/core/universal_fanout.py`)
-   - `execute_universal_fanout_sync()` loads the linked `KnowledgeProfile` and its enabled destinations.
-   - Downloads raw blobs from MinIO via `list_objects()` + `get_object()`.
-
-4. **Parsing and Embedding**
-   - `iter_file_pages()` from `page_yielder.py` chunks documents into structured `FilePage` segments.
-   - `EmbeddingClient` generates dense vectors using configured model (nvidia-embed-passage / fastembed).
-
-5. **Multi-Sink Broadcast**
-   - Parallel fanout to all enabled destinations in the Knowledge Profile:
-     - **Qdrant**: Dense HNSW vectors into `knowledge_qdrant_collection`.
-     - **OpenSearch**: BM25 + SPLADE sparse vectors into `knowledge_lexical_index`.
-     - **PostgreSQL**: pgvector embeddings + metadata into `knowledge_vector_records`.
-     - **RedisVL**: Semantic cache + RAPTOR parent-child trees under prefix `knowledge_cache`.
-     - **Neo4j**: Entity-relationship triples for multi-hop GraphRAG (bolt://localhost:7687).
-
-## Live Docker Services (2026-09-16)
-
-| Service         | Port       | Status          |
-|-----------------|------------|-----------------|
-| Frontend        | 5173       | Running         |
-| API             | 8007       | Running         |
-| Postgres        | 5432       | Running (healthy)|
-| Redis           | 6379       | Running (healthy)|
-| MinIO Console   | 9001       | Running         |
-| MinIO API       | 9000       | Running         |
-| Qdrant          | 6333       | Running         |
-| Neo4j Browser   | 7474       | Running         |
-| Neo4j Bolt      | 7687       | Running         |
-| OpenSearch      | 9200       | Running         |
-| NiFi            | 8443       | Configured      |
-
-## Active Knowledge Profile: Multi-RAG Master Profile
-
-Created: 2026-09-16
-Linked Sources:
-- `v-res` (MinIO bucket: source-v-res-5d2edc8f)
-- `manual-vj` (MinIO bucket: source-manual-vj-5f4d24f4)
-
-Enabled Sinks (5/5):
-1. Qdrant - Dense vector similarity search (HNSW + scalar/binary quantization)
-2. OpenSearch - BM25 keyword matching + SPLADE/BGE-M3 learned sparse vector indexing
-3. Neo4j - Entity-relationship extraction + hierarchical GraphRAG community summaries
-4. PostgreSQL - ACID-compliant co-located metadata, ACLs, and pgvector embeddings
-5. RedisVL - Semantic prompt cache + RAPTOR recursive summary trees
+## 4. Key Engineering Invariants
+1. **Idempotent Ingestion**: File deduplication via SHA-256 prevents redundant chunking and embedding operations across repeated sync cycles.
+2. **Decoupled 5-Sink Fanout**: A sync failure in one non-critical sink does not abort writes to the other 4 destinations; errors are captured per sink in `KnowledgeProfile.last_sync_error`.
+3. **Live Inspectability**: All 5 destination stores expose live read-back APIs (`/api/knowledge-profiles/{id}/inspect/{destination_type}`) powering zero-latency visual validation directly inside the UI.

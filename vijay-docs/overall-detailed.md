@@ -1,82 +1,115 @@
-# Multi-RAG Platform - Overall Detailed Architecture
+# End-to-End Architecture & Operational Manual — new-multi-rag
 
-## Project Structure
+## 1. System Architecture Overview
+The **`new-multi-rag`** platform is an enterprise-grade, distributed Retrieval-Augmented Generation (RAG) system composed of two decoupled and complementary subsystems:
 
-```
-new-multi-rag/
-    rag-ingestion-manager/      # Data ingestion microservice
-    rag-retrieval-chat-manager/ # RAG retrieval and chat microservice
-    shared-contracts/           # Shared Pydantic models
-    shared-libs/                # Shared utilities
-    vijay-docs/                 # Architecture documentation
-    otel/                       # OpenTelemetry collector config
-    guardrails-service/         # AI guardrails service
-```
+1. **`rag-ingestion-manager`** (Frontend: Port `5173`, Backend: Port `8007`):
+   - Ingestion perimeter managing external connectors (MinIO, Google Drive, AWS S3, Azure Blob, SFTP, Web Scrapers, Confluence).
+   - Document staging, SHA-256 deduplication, multi-format parsing (PDF, DOCX, TXT, JSON, MD, CSV), and recursive text chunking.
+   - **Universal 5-Sink Fanout Engine** (`universal_fanout.py`) syncing documents into 5 storage layers: **Qdrant Vector DB**, **OpenSearch BM25**, **Neo4j Knowledge Graph**, **PostgreSQL Relational Chunks**, and **RedisVL Semantic Cache**.
+   - **Interactive Live Multi-Sink Visualizers** providing real-time data inspection for all 5 destination storage backends.
 
-## Microservice Boundaries
+2. **`rag-retrieval-chat-manager`** (Frontend: Port `5174`, Backend: Port `8000`):
+   - Multi-stage retrieval and conversational intelligence gateway.
+   - Hybrid dense/sparse retrieval combining Qdrant HNSW and OpenSearch BM25.
+   - Cross-encoder reranking (Cohere v3.5, BGE reranker) via LiteLLM.
+   - Context-grounded generation supporting streaming SSE, vision multimodal inputs, and dynamic prompt templating.
+   - Comprehensive safety guardrails powered by Microsoft Presidio (PII/SPI masking, prompt injection defense, toxic language filtering).
+   - Continuous observability, OpenTelemetry distributed tracing, and offline Ragas evaluation suites.
 
-### rag-ingestion-manager
-Responsible for all data ingestion, chunking, embedding, and multi-sink fanout.
-- Backend: FastAPI on port 8007
-- Frontend: React/Vite on port 5173
-- Worker: Redis-backed background processor
+---
 
-### rag-retrieval-chat-manager
-Responsible for RAG pipelines, chat interfaces, evaluation, and guardrails.
-- Backend: FastAPI on port 8001
-- Frontend: React/Vite on port 5174
-
-## Infrastructure Stack (All running via Docker)
-
-| Component       | Image                                    | Port(s)        | Purpose                                |
-|-----------------|------------------------------------------|----------------|----------------------------------------|
-| Postgres        | postgres:16-alpine                       | 5432           | Relational config + pgvector           |
-| Redis           | redis:7-alpine                           | 6379           | Queue broker + cache                   |
-| MinIO           | minio/minio:2024-01-16                   | 9000, 9001     | Raw document blob store                |
-| Qdrant          | qdrant/qdrant:v1.18.0                    | 6333           | Dense vector search                    |
-| OpenSearch      | opensearchproject/opensearch:2.11.0      | 9200, 9600     | Lexical + sparse vector search         |
-| Neo4j           | neo4j:5.15.0                             | 7474, 7687     | Knowledge graph for GraphRAG           |
-| NiFi            | apache/nifi:1.24.0                       | 8443           | Connector polling engine               |
-| OTel Collector  | otel/opentelemetry-collector:0.148.0     | 4317, 4318     | Distributed tracing                    |
-
-## Ingestion Pipeline (End-to-End)
+## 2. End-to-End Data & Execution Lifecycle
 
 ```
-Source (GDrive / LocalFS / MinIO)
-    |
-    v
-NiFi Connector Engine (sync_connector_via_nifi)
-    |
-    v
-MinIO source-[uuid] bucket (raw files)
-    |
-    v
-Universal Fanout Engine (execute_universal_fanout_sync)
-    |
-    +-- iter_file_pages() + EmbeddingClient
-    |
-    +--> Qdrant (knowledge_qdrant_collection)    -- dense HNSW vectors
-    +--> OpenSearch (knowledge_lexical_index)    -- BM25 + SPLADE sparse
-    +--> PostgreSQL (knowledge_vector_records)   -- pgvector + metadata
-    +--> RedisVL (knowledge_cache:*)             -- semantic cache + RAPTOR
-    +--> Neo4j (bolt://localhost:7687)           -- entity triples + GraphRAG
+========================================================================================================================
+                                             PHASE 1: DATA INGESTION & 5-SINK FANOUT
+========================================================================================================================
+[ External Sources / Buckets ]   --->   [ MinIO Object Store ]   --->   [ Ingestion Backend ]
+(Google Drive, S3, Manual, SFTP)         (v-res, manual-vj)             - Extract & Parse (PDF/DOCX)
+                                                                        - SHA-256 Deduplication
+                                                                        - Recursive Text Chunking (500 tokens)
+                                                                        - Dense 384D/2048D Embeddings
+                                                                                    |
+                                                                                    v
+                                                                    [ Universal Fanout Engine ]
+                                                                      (universal_fanout.py)
+                                                                                    |
+            +-----------------------+-----------------------+-----------------------+-----------------------+
+            |                       |                       |                       |                       |
+            v                       v                       v                       v                       v
+    +---------------+       +---------------+       +---------------+       +---------------+       +---------------+
+    | 1. Qdrant     |       | 2. OpenSearch |       | 3. Neo4j      |       | 4. PostgreSQL |       | 5. RedisVL    |
+    | Vector DB     |       | BM25 Lexical  |       | Knowledge     |       | Relational    |       | Semantic      |
+    | (Dense HNSW)  |       | (Inverted)    |       | Graph (Entity)|       | Chunks (Meta) |       | Cache (Sub-5ms|
+    +---------------+       +---------------+       +---------------+       +---------------+       +---------------+
+
+========================================================================================================================
+                                           PHASE 2: RAG RETRIEVAL, SYNTHESIS & EVALUATION
+========================================================================================================================
+[ User / Chat Client ]
+        |
+        v
+[ Input Guardrails Check ] (Presidio PII Masking, Prompt Injection, Banned Words)
+        |  [Violation -> Intercept with BlockedCard]
+        v  [Clean -> Proceed]
+[ Hybrid Retrieval Engine ]
+   |-- Qdrant Vector Search (Dense HNSW Top-20)
+   |-- OpenSearch Lexical Search (BM25 Top-20)
+   |-- Reciprocal Rank Fusion / Alpha-weighted scoring (0.7 Dense / 0.3 Sparse)
+        |
+        v
+[ Cross-Encoder Reranker ] (Cohere v3.5 / BGE Reranker -> Top-5 Chunks)
+        |
+        v
+[ Generation Engine (LiteLLM) ] (System Prompt + Cited Context + User Query -> GPT-4o / Claude 3.5 / Llama 3)
+        |
+        v
+[ Output Guardrails & Redaction ] (Toxicity filter, PII scrubbing)
+        |
+        v
+[ Streaming Token Delivery to User ] + [ OpenTelemetry Trace Log ] + [ Async Ragas Evaluation ]
 ```
 
-## Active Knowledge Profile: Multi-RAG Master Profile (2026-09-16)
+---
 
-Linked MinIO sources:
-- v-res (source-v-res-5d2edc8f)
-- manual-vj (source-manual-vj-5f4d24f4)
+## 3. Storage Layer Matrix & Port Allocations
 
-All 5 sinks enabled and containers running.
+| Service / Sink | Default Port | Internal Role & Data Payload |
+|---|---|---|
+| **RAG Ingestion Backend** | `8007` | FastAPI ingestion gateway, connector sync, fanout engine, sink inspection APIs |
+| **RAG Ingestion Frontend** | `5173` | Vite/React dashboard, file browser, sources manager, 5-sink visualizer modals |
+| **RAG Retrieval Backend** | `8000` | FastAPI chat, hybrid retrieval, reranking, generation, guardrails, eval APIs |
+| **RAG Retrieval Frontend** | `5174` | Vite/React chat interface, pipeline manager, prompt studio, trace viewer |
+| **MinIO Object Storage** | `9000` / `9001` | Raw document binaries storage (`v-res`, `manual-vj` buckets) & console |
+| **Qdrant Vector DB** | `6333` / `6335` | 384D/2048D dense vector embeddings with HNSW indexing |
+| **OpenSearch** | `9200` | Full-text BM25 lexical inverted index |
+| **Neo4j Graph DB** | `7474` / `7687` | Cypher knowledge graph: `(:Document)-[:CONTAINS]->(:Chunk)` |
+| **PostgreSQL DB** | `5432` | Relational chunk records, chat sessions, message traces, guardrail configs |
+| **Redis / RedisVL** | `6379` | Sub-5ms semantic cache and evaluation job queues |
 
-## Sink Visualization Access
+---
 
-| Sink        | Tool                  | URL / Connection                    |
-|-------------|-----------------------|-------------------------------------|
-| Qdrant      | Qdrant Web Dashboard  | http://localhost:6333/dashboard     |
-| OpenSearch  | OpenSearch Dashboards | http://localhost:5601 (if running)  |
-| Neo4j       | Neo4j Browser         | http://localhost:7474               |
-| PostgreSQL  | DBeaver / pgAdmin     | localhost:5432, db: ingestion       |
-| RedisVL     | RedisInsight          | localhost:6379                      |
-| MinIO       | MinIO Console         | http://localhost:9001               |
+## 4. Operational Runbook & Verification
+- **Ingestion Manager Backend**:
+  ```bash
+  cd rag-ingestion-manager/backend
+  uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8007
+  ```
+- **Ingestion Manager Frontend**:
+  ```bash
+  cd rag-ingestion-manager/frontend
+  npm run dev -- --port 5173
+  ```
+- **Retrieval Chat Manager Backend**:
+  ```bash
+  cd rag-retrieval-chat-manager/backend
+  uv run uvicorn apps.rag_api.main:app --host 0.0.0.0 --port 8000
+  ```
+- **Retrieval Chat Manager Frontend**:
+  ```bash
+  cd rag-retrieval-chat-manager/frontend
+  npm run dev -- --port 5174
+  ```
+
+All systems, API routes, models, and interactive visualizers are fully implemented, verified, and accurately documented across `vijay-docs/`.

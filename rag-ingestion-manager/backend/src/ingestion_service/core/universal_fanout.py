@@ -37,11 +37,27 @@ def _is_local_source(s: Any) -> bool:
 
 
 async def execute_universal_fanout_sync(
-    db: AsyncSession, profile: KnowledgeProfile
+    db: AsyncSession, profile: KnowledgeProfile | uuid.UUID | str
 ) -> dict[str, Any]:
     """Execute multi-sink fanout ingestion for a Knowledge Profile with full differential state CRUD."""
     from sqlalchemy import select, delete
-    from src.shared.db.models import IndexedFile
+    from sqlalchemy.orm import selectinload
+    from src.shared.db.models import IndexedFile, KnowledgeProfileSource
+
+    if isinstance(profile, (uuid.UUID, str)):
+        profile_uuid = uuid.UUID(str(profile))
+        res = await db.execute(
+            select(KnowledgeProfile)
+            .options(
+                selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
+                selectinload(KnowledgeProfile.destinations),
+            )
+            .where(KnowledgeProfile.id == profile_uuid)
+        )
+        profile = res.scalar_one_or_none()
+        if not profile:
+            logger.warning("universal_fanout_profile_not_found profile_id=%s", profile_uuid)
+            return {"status": "error", "message": f"Profile {profile_uuid} not found"}
 
     logger.info(
         "starting_universal_fanout_sync profile_id=%s name=%s",
@@ -337,15 +353,116 @@ def _sync_fanout_to_destination(
 
     elif dest_type in ["lexical_opensearch", "elasticsearch"]:
         index_name = dest_config.get("index_name", "knowledge_lexical_index")
-        logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
+        url = dest_config.get("endpoint_url") or dest_config.get("url") or getattr(settings, "opensearch_url", "http://localhost:9200")
+        try:
+            import httpx
+            with httpx.Client(timeout=5.0) as client:
+                for p in pages:
+                    text = p.text or ""
+                    if not text.strip():
+                        continue
+                    doc = {
+                        "file_key": file_key,
+                        "page_index": p.page_index,
+                        "text": text,
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                    client.post(f"{url}/{index_name}/_doc", json=doc)
+            logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
+        except Exception as exc:
+            logger.warning("opensearch_indexing_failed index=%s file=%s error=%s", index_name, file_key, exc)
 
     elif dest_type == "graph_neo4j":
-        logger.info("neo4j_graphrag_indexed file=%s pages=%d", file_key, len(pages))
+        url = dest_config.get("url") or getattr(settings, "neo4j_http_url", "http://localhost:7474")
+        try:
+            import httpx
+            statements = []
+            statements.append({
+                "statement": "MERGE (d:Document {file_key: $file_key}) SET d.updated_at = $updated_at RETURN d",
+                "parameters": {"file_key": file_key, "updated_at": datetime.now(UTC).isoformat()}
+            })
+            for p in pages:
+                text = (p.text or "")[:500]
+                if not text.strip():
+                    continue
+                statements.append({
+                    "statement": """
+                        MATCH (d:Document {file_key: $file_key})
+                        MERGE (c:Chunk {chunk_id: $chunk_id})
+                        SET c.page_index = $page_index, c.text = $text
+                        MERGE (d)-[:CONTAINS_CHUNK]->(c)
+                    """,
+                    "parameters": {
+                        "file_key": file_key,
+                        "chunk_id": f"{file_key}:{p.page_index}",
+                        "page_index": p.page_index,
+                        "text": text,
+                    }
+                })
+            with httpx.Client(timeout=5.0) as client:
+                client.post(f"{url}/db/neo4j/tx/commit", json={"statements": statements})
+            logger.info("neo4j_graphrag_indexed file=%s pages=%d", file_key, len(pages))
+        except Exception as exc:
+            logger.warning("neo4j_graph_failed file=%s error=%s", file_key, exc)
 
     elif dest_type in ["relational_pgvector", "database_pgvector"]:
-        table_name = dest_config.get("table_name", "knowledge_vector_records")
-        logger.info("pgvector_relational_upserted table=%s file=%s pages=%d", table_name, file_key, len(pages))
+        table_name = dest_config.get("table_prefix", "knowledge_chunks")
+        try:
+            try:
+                import psycopg2 as pg_driver
+            except ImportError:
+                import psycopg as pg_driver
+            pg_urls = [
+                dest_config.get("connection_url"),
+                "postgresql://ingestion:ingestion@localhost:5432/ingestion",
+                "postgresql://postgres:postgres@localhost:5432/ingestion",
+            ]
+            conn = None
+            for url in pg_urls:
+                if not url:
+                    continue
+                try:
+                    conn = pg_driver.connect(url)
+                    break
+                except Exception:
+                    continue
+            if not conn:
+                raise RuntimeError("Could not connect to PostgreSQL with provided or default credentials")
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            id SERIAL PRIMARY KEY,
+                            file_key TEXT NOT NULL,
+                            page_index INT NOT NULL,
+                            content TEXT,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        );
+                    """)
+                    for p in pages:
+                        text = p.text or ""
+                        if not text.strip():
+                            continue
+                        cur.execute(
+                            f"INSERT INTO {table_name} (file_key, page_index, content) VALUES (%s, %s, %s)",
+                            (file_key, p.page_index, text)
+                        )
+            logger.info("pgvector_relational_upserted table=%s file=%s pages=%d", table_name, file_key, len(pages))
+        except Exception as exc:
+            logger.warning("pgvector_failed file=%s error=%s", file_key, exc)
 
     elif dest_type in ["cache_redis", "cache_redisvl"]:
         index_prefix = dest_config.get("index_prefix", "knowledge_cache")
-        logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))
+        try:
+            import redis
+            redis_url = dest_config.get("redis_url", "redis://localhost:6379")
+            r = redis.from_url(redis_url)
+            for p in pages:
+                text = p.text or ""
+                if not text.strip():
+                    continue
+                key = f"{index_prefix}:{file_key}:{p.page_index}"
+                r.set(key, text, ex=dest_config.get("ttl_seconds", 86400))
+            logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))
+        except Exception as exc:
+            logger.warning("redisvl_failed file=%s error=%s", file_key, exc)

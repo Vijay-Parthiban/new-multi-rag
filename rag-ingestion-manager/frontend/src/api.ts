@@ -431,6 +431,78 @@ export async function syncKnowledgeProfile(profileId: string): Promise<Knowledge
   });
 }
 
+export interface DestinationInspectData {
+  destination_type: string;
+  error?: string;
+  // Vector Qdrant
+  collection_name?: string;
+  total_points?: number;
+  status?: string;
+  points?: Array<{
+    id: string;
+    x: number;
+    y: number;
+    z: number;
+    payload: Record<string, any>;
+    vector_len: number;
+  }>;
+  // OpenSearch
+  index_name?: string;
+  total_docs?: number;
+  terms?: Array<{ text: string; value: number }>;
+  documents?: Array<{
+    id: string;
+    file_key?: string;
+    page_index?: number;
+    content?: string;
+    score?: number;
+  }>;
+  // Neo4j
+  nodes?: Array<{
+    id: string;
+    label: string;
+    type: string;
+    color: string;
+    snippet?: string;
+  }>;
+  links?: Array<{
+    source: string;
+    target: string;
+    label: string;
+  }>;
+  total_nodes?: number;
+  total_edges?: number;
+  // PGVector Relational
+  table_name?: string;
+  total_rows?: number;
+  rows?: Array<{
+    id: number;
+    file_key: string;
+    page_index: number;
+    content: string;
+    created_at: string;
+  }>;
+  // Redis Cache
+  prefix?: string;
+  total_cached_keys?: number;
+  used_memory_human?: string;
+  cache_hit_rate?: number;
+  keys?: Array<{
+    key: string;
+    ttl: number;
+    type: string;
+  }>;
+}
+
+export async function inspectDestinationStore(
+  profileId: string,
+  destinationType: string
+): Promise<DestinationInspectData> {
+  return apiFetch<DestinationInspectData>(
+    `/api/knowledge-profiles/${profileId}/inspect/${destinationType}`
+  );
+}
+
 export async function startPipelineRun(pipelineId: string): Promise<PipelineRunRecord> {
   return apiFetch<PipelineRunRecord>(`/api/pipelines/${pipelineId}/run`, { method: "POST" });
 }

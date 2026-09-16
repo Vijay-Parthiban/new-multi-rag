@@ -1,58 +1,142 @@
-# Knowledge Store Page
+# 04 — Knowledge Store Fanout & Multi-Sink Visualizer Page
 
-## Route
-`/knowledge-store`
+## 1. Executive Summary & Page Purpose
+The **Knowledge Store Fanout Page** (`KnowledgeStorePage.tsx`, route: `/knowledge-store`) is the multi-sink orchestration hub of the RAG ingestion pipeline. It allows administrators to bind source document repositories (MinIO buckets, directory workspaces) to **5 enterprise destination sinks**, execute parallel fanout synchronizations via `universal_fanout.py`, and inspect live indexed representations using dedicated **Interactive Visualizer Modals** for Vector, Lexical, Graph, Relational, and Semantic Cache layers.
 
-## Component
-`KnowledgeStorePage.tsx`
+---
 
-## Features
+## 2. 5-Destination Universal Fanout Architecture
 
-Orchestrates downstream sync of ingested content into retrieval-ready backends via the Universal RAG Ingestion Multi-Sink Fanout Engine.
+```
+                                  +-----------------------+
+                                  |  MinIO Object Store   |
+                                  |  (v-res & manual-vj)  |
+                                  +-----------+-----------+
+                                              |
+                                              v
+                              +-------------------------------+
+                              |  Universal Fanout Engine      |
+                              |  (universal_fanout.py)        |
+                              |  - Markdown Parsing           |
+                              |  - Recursive Text Chunking    |
+                              |  - Dense 384/2048D Embeddings |
+                              +---------------+---------------+
+                                              |
+      +-------------------+-------------------+-------------------+-------------------+-------------------+
+      |                   |                   |                   |                   |                   |
+      v                   v                   v                   v                   v                   v
++------------+     +---------------+     +-----------+     +---------------+     +---------------+
+| 1. Qdrant  |     | 2. OpenSearch |     | 3. Neo4j  |     | 4. PostgreSQL |     | 5. RedisVL    |
+| Vector DB  |     | BM25 Lexical  |     | Knowledge |     | Relational    |     | Semantic      |
+| (Dense HNSW|     | (Inverted     |     | Graph     |     | Chunks        |     | Cache (Sub-5ms|
+| Embeddings)|     | Index)        |     | (Entities)|     | (Metadata)    |     | Exact Match)  |
++------------+     +---------------+     +-----------+     +---------------+     +---------------+
+```
 
-- **Universal Multi-Sink Fanout Engine**: Routes parsed/chunked document streams concurrently to 5 destinations: Qdrant, OpenSearch, Neo4j, Postgres, and RedisVL.
-- **Knowledge Profiles**: Lists distinct routing configurations. Shows `IDLE` / `SYNCING` status, linked MinIO buckets, and configured destination sinks.
-- **Connection Testing**: Pings each configured sink endpoint before saving (Qdrant REST, Neo4j bolt, OpenSearch HTTP, Postgres TCP, Redis ping).
-- **Sync Execution**: "Sync All Sinks" triggers `POST /api/knowledge-profiles/{profile_id}/sync`, which queues `_background_fanout_sync(profile_id)` on the worker calling `execute_universal_fanout_sync()`.
+### Destination Sink Details
+1. **Qdrant Vector DB (`vector_qdrant`)**:
+   - **Role**: Dense vector similarity search via HNSW indexing.
+   - **Dimensions**: 384D (`BAAI/bge-small-en-v1.5` / `all-MiniLM-L6-v2`) or 2048D multimodal.
+   - **Collection**: `rag_documents_vres` / `documents_vres`.
+2. **OpenSearch Lexical Search (`lexical_opensearch`)**:
+   - **Role**: Full-text BM25 keyword retrieval, analyzer tokenization, and exact term frequency matching.
+   - **Index**: `rag_lexical_vres` / `documents_vres`.
+3. **Neo4j Knowledge Graph (`graph_neo4j`)**:
+   - **Role**: Entity relationship extraction, Document-Chunk hierarchies, and graph traversal.
+   - **Cypher Labels**: `(:Document {id, name, path}) -[:CONTAINS]-> (:Chunk {index, text, hash})`.
+4. **PostgreSQL / PGVector (`relational_pgvector`)**:
+   - **Role**: Relational persistence of raw chunk text, metadata JSONB, token counts, and relational queries.
+   - **Table**: `knowledge_chunks` / `document_chunks`.
+5. **RedisVL Semantic Cache (`cache_redisvl`)**:
+   - **Role**: Sub-5ms low-latency semantic cache and query deduplication.
+   - **Index / Prefix**: `rag_cache:*` with semantic distance thresholds.
 
-## Active Profile: Multi-RAG Master Profile
+---
 
-| Destination | Type            | Endpoint                  | Config Key                  |
-|-------------|-----------------|---------------------------|-----------------------------|
-| Qdrant      | Vector Engine   | http://localhost:6333     | `knowledge_qdrant_collection` |
-| OpenSearch  | Lexical Engine  | http://localhost:9200     | `knowledge_lexical_index`     |
-| Neo4j       | Graph Store     | bolt://localhost:7687     | -                             |
-| PostgreSQL  | DB + pgvector   | localhost:5432            | `knowledge_vector_records`    |
-| RedisVL     | Semantic Cache  | redis://localhost:6379    | `knowledge_cache`             |
+## 3. UI Layout & Visual Components
 
-## Sink-Specific Config Defaults (from `knowledge.py` route defaults)
+```
++-------------------------------------------------------------------------------------------------------+
+|  Knowledge Store Manager                                                                              |
+|  Universal Multi-Sink Fanout Engine — Route MinIO documents to 5 enterprise RAG destinations.         |
+|  [ + New Knowledge Profile ]  [ Refresh ]                                                             |
++-------------------------------------------------------------------------------------------------------+
+|  Metric Banner: [ Total Profiles: 1 ] [ Connected Buckets: 2 ] [ Active Sinks: 5 ] [ Sinks: 5 Sinks ] |
++-------------------------------------------------------------------------------------------------------+
+|  Profile: Enterprise Multi-RAG Fanout Profile                       Status: [ SUCCESS / SYNCED ]      |
+|  Sources: [ 🪣 v-res (10 files) ]  [ 📁 manual-vj (1 file) ]                                         |
+|  Actions: [ ⚡ Sync All Sinks ]  [ 🔭 Multi-Sink Visualizer ]  [ ✏️ Edit ]  [ 🗑️ Delete ]             |
+|                                                                                                       |
+|  Configured Destination Sinks:                                                                        |
+|  +------------------------+  +------------------------+  +------------------------+                   |
+|  | 🔮 Qdrant Vector DB    |  | 🔍 OpenSearch BM25     |  | 🕸️ Neo4j Graph        |                   |
+|  | Host: localhost:6333   |  | Host: localhost:9200   |  | URI: bolt://...:7687   |                   |
+|  | Collection: v-res      |  | Index: rag_lexical     |  | Database: neo4j        |                   |
+|  | [Test Link] [🔭Inspect]|  | [Test Link] [🔭Inspect]|  | [Test Link] [🔭Inspect]|                   |
+|  +------------------------+  +------------------------+  +------------------------+                   |
+|  +------------------------+  +------------------------+                                               |
+|  | 🐘 PostgreSQL Chunks   |  | ⚡ RedisVL Cache       |                                               |
+|  | Table: knowledge_chunks|  | Prefix: rag_cache:*    |                                               |
+|  | [Test Link] [🔭Inspect]|  | [Test Link] [🔭Inspect]|                                               |
+|  +------------------------+  +------------------------+                                               |
++-------------------------------------------------------------------------------------------------------+
+```
 
-**Qdrant**
-- vector_size: 384
-- distance: Cosine
-- hnsw_m: 16
-- hnsw_ef_construct: 100
-- quantization: int8_scalar
+---
 
-**OpenSearch**
-- bm25_k1: 1.2
-- bm25_b: 0.75
-- sparse_model: bge-m3-sparse
+## 4. Live Multi-Sink Visualizers
 
-**PostgreSQL**
-- index_algorithm: DiskANN
-- distance_op: vector_cosine_ops
-- schema_name: public
+When clicking **"🔭 Multi-Sink Visualizer"** or **"🔭 Inspect Store"**, the interactive visualizer modal (`DestinationVisualizerModal.tsx`) launches with 5 tabbed inspectors:
 
-**RedisVL**
-- similarity_threshold: 0.15
-- ttl_seconds: 86400
-- parent_child_mapping: true
+1. **Vector Search (Qdrant) Visualizer (`VectorVisualizer.tsx`)**:
+   - Displays real-time vector point count, collection status, and vector dimensions.
+   - Computes a 2D PCA/Scatter projection with interactive cluster point inspection and hover tooltips.
+   - Lists point payloads, chunk IDs, source document names, and vector distances.
+2. **Lexical Search (OpenSearch) Visualizer (`LexicalVisualizer.tsx`)**:
+   - Shows index document counts, store size, and primary shard allocations.
+   - Displays top keyword terms and BM25 term frequency histograms.
+   - Allows interactive keyword search testing with highlighted lexical matches.
+3. **Knowledge Graph (Neo4j) Visualizer (`GraphVisualizer.tsx`)**:
+   - Force-directed interactive canvas rendering Document nodes, Chunk nodes, and Entity links.
+   - Drag, zoom, node selection, and side-panel inspection of node properties and Cypher relationships.
+4. **Relational Chunks (PostgreSQL) Visualizer (`RelationalVisualizer.tsx`)**:
+   - Tabular view of raw partitioned chunk records.
+   - Columns: Chunk Index, Document ID, Token Count, Content Excerpt, and Creation Timestamp.
+   - Text search filter and raw JSON metadata explorer.
+5. **Semantic Cache (RedisVL) Visualizer (`CacheVisualizer.tsx`)**:
+   - Real-time cache metrics: Memory used, total cached keys, and hit rate gauge.
+   - Key explorer listing cached prompt-response pairs, TTLs, and vector similarity thresholds.
 
-## Backend APIs Used
+---
 
-- `GET /api/knowledge-profiles`
-- `GET /api/knowledge-profiles/{profile_id}`
-- `GET /api/knowledge-profiles/destinations/options`
-- `POST /api/knowledge-profiles/{profile_id}/test-connection`
-- `POST /api/knowledge-profiles/{profile_id}/sync`
+## 5. Backend APIs & Inspection Contracts
+
+| Method | Endpoint | Description | Response Model |
+|---|---|---|---|
+| `GET` | `/api/knowledge-profiles` | Lists all routing profiles with sink configs | `list[KnowledgeProfile]` |
+| `POST` | `/api/knowledge-profiles` | Creates a new fanout routing profile | `KnowledgeProfileCreate` |
+| `POST` | `/api/knowledge-profiles/{id}/sync` | Triggers parallel universal fanout sync across 5 sinks | `{"status": "success", "synced_files": int}` |
+| `POST` | `/api/knowledge-profiles/{id}/test/{dest_type}` | Tests connection credentials for a specific sink | `{"status": "success" \| "error"}` |
+| `GET` | `/api/knowledge-profiles/{id}/inspect/{dest_type}` | Retrieves live sink data for the UI visualizer | `SinkInspectionPayload` |
+
+### Sample Live Inspection Output (`GET /inspect/vector_qdrant`)
+```json
+{
+  "destination_type": "vector_qdrant",
+  "collection_name": "documents_vres",
+  "total_points": 73,
+  "status": "green",
+  "points": [
+    {
+      "id": "c6239121-0e10-4107-8898-d89069d3e8e1",
+      "vector": [0.0381, -0.0124, 0.0912, "...", -0.0418],
+      "payload": {
+        "document_name": "resume_alex_chen.pdf",
+        "chunk_index": 0,
+        "text": "Alex Chen — Senior AI Engineer with extensive experience in Qdrant and LLM orchestration...",
+        "source_id": "2da1c0d5-5727-4632-9cb9-009c91d4e0e4"
+      }
+    }
+  ]
+}
+```
