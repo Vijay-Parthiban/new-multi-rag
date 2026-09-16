@@ -1,23 +1,13 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconBrowse, IconHome, IconIngestion, IconSources, IconUpload } from "./Icons";
+import { IconBrowse, IconDatabase, IconHome, IconIngestion, IconSources, IconUpload } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import DirectoryPage from "../pages/DirectoryPage";
 import FileViewerPage from "../pages/FileViewerPage";
-import PipelinesPage from "../pages/PipelinesPage";
-import TrackingPage from "../pages/TrackingPage";
-import ChatPage from "../pages/ChatPage";
-import EvaluationsPage from "../pages/EvaluationsPage";
-import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
-import PromptsPage from "../pages/PromptsPage";
-import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
-import GuardrailsTracesPage from "../pages/GuardrailsTracesPage";
-import GuardrailsEvaluationPage from "../pages/GuardrailsEvaluationPage";
 import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
 import KnowledgeStorePage from "../pages/KnowledgeStorePage";
-import { IconDatabase } from "./Icons";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
@@ -105,15 +95,6 @@ export default function AppLayout() {
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isSourcesExact = path === "/sources";
   const isKnowledgeStore = path === "/knowledge-store";
-  const isPipelines = path === "/pipelines";
-  const isChat = path === "/chat";
-  const isPrompts = path === "/prompts";
-  const isEvaluations = path === "/evaluations";
-  const isGoldenEvaluations = path === "/golden-evaluations";
-  const isTracking = path === "/tracking";
-  const isGuardrailsConfig = path === "/guardrails/config";
-  const isGuardrailsTraces = path === "/guardrails/traces";
-  const isGuardrailsEvaluation = path === "/guardrails/evaluation";
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
   const isSourceDetail = params.type === "source-detail";
@@ -166,44 +147,6 @@ export default function AppLayout() {
         <PersistentPage visible={isKnowledgeStore}>
           <KnowledgeStorePage />
         </PersistentPage>
-
-
-        <PersistentPage visible={isPipelines}>
-          <PipelinesPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isChat}>
-          <ChatPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isPrompts}>
-          <PromptsPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isEvaluations}>
-          <EvaluationsPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isGoldenEvaluations}>
-          <GoldenEvaluationsPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isTracking}>
-          <TrackingPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isGuardrailsConfig}>
-          <GuardrailsConfigPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isGuardrailsTraces}>
-          <GuardrailsTracesPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isGuardrailsEvaluation}>
-          <GuardrailsEvaluationPage />
-        </PersistentPage>
-
         {/* Dynamic-param pages: re-mount when params change via key */}
         {isDirectory && params.name && (
           <PersistentPage visible={true}>

@@ -94,7 +94,7 @@ export default function HomePage() {
 
       <section className="quick-grid">
         {QUICK_LINKS.map(({ to, title, description, icon: Icon, cta }) => (
-          <Link key={to} to={to} className="quick-card">
+          <Link key={title} to={to} className="quick-card">
             <div className="quick-card-icon">
               <Icon size={22} />
             </div>
