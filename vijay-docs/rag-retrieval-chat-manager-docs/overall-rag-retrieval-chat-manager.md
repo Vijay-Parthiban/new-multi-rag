@@ -1,25 +1,60 @@
 # RAG Retrieval & Chat Manager - Overall Architecture
 
-The Retrieval & Chat Manager focuses strictly on query execution, LLM generation, dynamic prompt management, and AI guardrails evaluation. It sits downstream from the Ingestion Manager.
+The Retrieval & Chat Manager focuses on query execution, LLM generation, prompt management, evaluation, and AI guardrails. It sits downstream from the Ingestion Manager.
 
 ## Architecture Components
 
 1. **Frontend (`/frontend`)**
-   - React UI using Vite (`npm run dev`).
-   - Unified persistent-page Single Page Application layout managed by `AppLayout.tsx`.
-   - Complete navigation suite orchestrating pipelines, chat, prompts, traces, and guardrail validations natively.
+   - React + Vite SPA managed by `AppLayout.tsx`.
+   - All pages rendered under a single persistent layout; navigation does not unmount active components.
+   - Sidebar routes (from `AppLayout.tsx` NAV array):
+     - `/` Overview
+     - `/knowledge-store` Knowledge Store
+     - `/pipelines` Pipelines
+     - `/chat` Chat
+     - `/prompts` Prompts
+     - `/evaluations` Real Time Monitoring
+     - `/golden-evaluations` Offline Evaluation
+     - `/tracking` Tracking
+     - `/guardrails/config` Guard Config
+     - `/guardrails/traces` Guard Traces
+     - `/guardrails/evaluation` Guard Evaluation
 
 2. **Backend (`/backend`)**
-   - Heavily modularized Python codebase split into isolated domains:
-     - **Apps**: `rag-api` (Main RAG API), `eval-worker` (Evaluation tasks).
-     - **Libs**: `database`, `retrieval-core`, `generation-core`, `vector-core`, `reranker-core`, `eval-core`.
-   - Fully decoupled logic: separating retrieval (Vector/Graph/BM25) from Generation (LLM endpoints, Streaming).
+   - Python FastAPI on port 8001 (`apps/rag-api`).
+   - Background eval worker (`apps/eval-worker`).
+   - Route modules: `chat`, `retrieve`, `search`, `rerank`, `generate`, `prompts`, `evaluate`, `guardrails`, `guardrails_evaluate`, `knowledge`.
 
-3. **Backend RAG Endpoints (`rag-api`)**
-   - Generation: `POST /api/chat/stream`, `POST /api/generate`, `DELETE /api/chat/messages/{message_id}`
-   - Retrieval/Search: `GET /api/search`, `POST /api/scrapes/query`, `POST /api/rerank`
-   - Evaluation & Testing: `/api/runs`, `/api/datasets`, `/api/datasets/upload`
-   - Guardrails: `/api/guards`, `/api/traces`, `/api/configs`
+3. **Lib Modules**
+   - `database` - SQLAlchemy models: `chat`, `evaluation`, `guardrails`, `prompts`, `pipelines`
+   - `retrieval-core` - Vector, graph, BM25 retrieval strategies
+   - `generation-core` - LLM streaming and synchronous generation
+   - `vector-core` - Qdrant vector operations
+   - `reranker-core` - Cross-encoder reranking
+   - `eval-core` - RAGAS-based evaluation metrics
 
 4. **Integration via Shared Contracts**
-   - Depends statically on `shared-contracts` package for definitions ensuring consistency with the upstream Ingestion Pipeline outputs (especially chunk schemas and knowledge store configuration objects).
+   - `shared-contracts` Pydantic models ensure chunk schemas and knowledge store config objects match ingestion pipeline outputs.
+
+## Backend API Surface
+
+| Module | Prefix | Key Endpoints |
+|--------|--------|---------------|
+| chat | - | `POST /chat`, `POST /chat/stream`, `GET /chat/stats`, `GET /chat/sessions` |
+| evaluate | /evaluate | `POST /datasets`, `POST /datasets/upload`, `GET /datasets`, `POST /runs` |
+| guardrails | /guardrails | `GET /guards`, `POST /configs`, `GET /traces`, `POST /evaluate` |
+| prompts | /prompts | CRUD for prompt templates |
+| retrieve | /retrieve | Vector/graph/hybrid retrieval |
+| search | /search | Keyword and semantic search |
+| rerank | /rerank | Cross-encoder reranking |
+| knowledge | /knowledge | Knowledge profile registration from ingestion |
+
+## Docker Services
+
+| Service | Port | Status |
+|---------|------|--------|
+| rag-api | 8001 | Configured (not started) |
+| eval-worker | - | Configured (not started) |
+| Postgres (shared) | 5432 | Running (healthy) |
+| Redis (shared) | 6379 | Running (healthy) |
+| Qdrant (shared) | 6333 | Running |

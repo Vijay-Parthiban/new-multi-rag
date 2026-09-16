@@ -3,9 +3,19 @@
 ## Route
 `/evaluations`
 
+## Component
+`EvaluationsPage.tsx`
+
 ## Features
-Dashboards focusing on in-flight telemetry of generations and retrieval steps. Observes the context limits, latency bounds, and token usage from LLM execution spanning retrieval and semantic reranking pipelines.
+
+Live monitoring of active RAG pipeline evaluation runs.
+
+- **Active Runs Table**: Lists in-progress and recently completed evaluation runs with status, dataset name, and metric scores.
+- **RAGAS Metrics**: Faithfulness, answer relevancy, context precision, context recall displayed per run.
+- **Run Trigger**: Launch a new evaluation run against a dataset from the UI.
 
 ## Backend APIs Used
-- `GET /api/stats`
-- `GET /api/runs/{run_id}`
+
+- `GET /api/evaluate/runs`
+- `POST /api/evaluate/runs`
+- `GET /api/evaluate/runs/{run_id}`

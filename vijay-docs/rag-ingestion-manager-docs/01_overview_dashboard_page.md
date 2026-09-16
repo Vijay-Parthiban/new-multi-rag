@@ -1,15 +1,21 @@
-# Overview / Dashboard Page
+# Overview Dashboard Page
 
 ## Route
-`/` (default route)
+`/`
 
 ## Component
-`HomePage.tsx`
+`OverviewPage.tsx`
 
 ## Features
-Displays high-level operational statistics and access cards for the workspace:
-- **Metrics Bar**: Shows aggregated counts for Connected Data Sources, Workspace Folders, Ingested Files, and Knowledge Profiles.
-- **Section Cards**: Quick navigation entry points to `Sources`, `Folders & Files`, `External Connectors`, and `Knowledge Store Fanout`.
-- Designed as a static launching pad pointing users to the actual management domains (e.g. `source-*, pipelines`).
 
-*Note: There are no specific backend API routes for this page alone, it aggregates metadata likely fetched downstream by individual page components.*
+Landing page giving a bird's-eye view of the ingestion system health.
+
+- **System Stats Cards**: Total sources, active Knowledge Profiles, files ingested, bytes stored.
+- **Sink Status Indicators**: Quick health check display for all 5 downstream sinks (Qdrant, OpenSearch, Neo4j, Postgres, RedisVL).
+- **Recent Activity Feed**: Last N sync events drawn from the backend activity log.
+- **Quick Actions**: Shortcuts to create a new source, upload a document, or create a Knowledge Profile.
+
+## Backend APIs Used
+
+- `GET /api/overview/stats`
+- `GET /api/overview/recent-activity`

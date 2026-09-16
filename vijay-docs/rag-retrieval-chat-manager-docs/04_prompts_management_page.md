@@ -3,8 +3,20 @@
 ## Route
 `/prompts`
 
-## Features
-Manages the prompt matrices sent to generation LLMs (`generation-core`). Defines dynamic system strings, prompt templating, and versioning used as inputs to the RAG LLM engine before chunk context is injected.
+## Component
+`PromptsPage.tsx`
 
-## Backend APIs Supported
-- Generation config routes integrated through `POST /api/generate` metadata contexts.
+## Features
+
+CRUD interface for managing reusable LLM prompt templates.
+
+- **Prompt Library**: Lists saved prompt templates with name, version, and usage count.
+- **Template Editor**: Create/edit prompts with variable placeholders (e.g. `{context}`, `{question}`).
+- **Active Prompt Selection**: Mark a prompt as active to use it in the chat pipeline.
+
+## Backend APIs Used
+
+- `GET /api/prompts`
+- `POST /api/prompts`
+- `PUT /api/prompts/{id}`
+- `DELETE /api/prompts/{id}`

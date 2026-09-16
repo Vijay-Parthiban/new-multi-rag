@@ -1,14 +1,19 @@
-# Document Upload Page
+# Document Upload
 
 ## Status in Current Implementation
-**Embedded / No Dedicated Page**
 
-Based strictly on the current React Router definitions and frontend codebase, there is no isolated, standalone top-level route (e.g. `/upload`) for documents.
+No standalone top-level route (`/upload`) exists in the React Router config. Upload functionality is embedded within the Sources and pipeline management interfaces.
 
-## Backend Architecture Support
-While a standalone page is missing, the backend actively supports robust mutli-part and chunked uploads via:
-- `POST /api/uploads/init`
-- `PUT /api/uploads/{upload_id}/chunks/{chunk_index}`
-- `POST /api/uploads/{upload_id}/complete`
+## Backend Upload APIs (fully implemented)
 
-Any frontend interaction is managed inline via existing Source or Dataset interfaces rather than a dedicated application page.
+Chunked multipart upload is supported end-to-end via:
+
+- `POST /api/uploads/init` - Initialise a new upload session, returns `upload_id`
+- `PUT /api/uploads/{upload_id}/chunks/{chunk_index}` - Upload individual chunk
+- `POST /api/uploads/{upload_id}/complete` - Finalise and assemble chunks in MinIO
+
+Completed uploads land in the source-specific MinIO bucket and trigger the standard ingestion pipeline: NiFi connector sync -> universal fanout -> all 5 sinks.
+
+## Manual Upload via MinIO Console
+
+Files can also be dropped directly into a source bucket via the MinIO Console at `http://localhost:9001`. The live MinIO monitor (`watch_minio_bucket`) detects new objects and triggers `enqueue_sync_run()` automatically.

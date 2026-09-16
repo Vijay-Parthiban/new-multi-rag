@@ -3,11 +3,27 @@
 ## Route
 `/chat`
 
+## Component
+`ChatPage.tsx`
+
 ## Features
-The core chat playground testing retrieval accuracy against the language model generation.
-- Real-time streaming UI connecting to the actual RAG engine.
-- Supports deletion of specific conversational messages (`DELETE /api/chat/messages/{message_id}`).
+
+Full conversational interface backed by the RAG pipeline.
+
+- **Streaming Chat**: `POST /chat/stream` returns a Server-Sent Events stream for token-by-token LLM output.
+- **Source Citations**: Each response includes source document references drawn from retrieval traces.
+- **Session Management**: Chat history grouped by session. Sessions listed via `GET /chat/sessions`.
+- **Message Metrics**: Per-message latency, retrieval scores, and reranker metrics via `GET /chat/messages/{id}/metrics`.
+- **Guardrails Integration**: Pre- and post-retrieval guardrail checks run inline via `_run_guardrails()`. Blocked responses return a safe fallback answer.
+- **Chat Stats**: Aggregate stats across all sessions via `GET /chat/stats`.
 
 ## Backend APIs Used
-- `POST /api/chat/stream`
-- `DELETE /api/chat/messages/{message_id}`
+
+- `POST /chat`
+- `POST /chat/stream`
+- `GET /chat/stats`
+- `GET /chat/sessions`
+- `GET /chat/sessions/{session_id}/messages`
+- `DELETE /chat/sessions/{session_id}`
+- `DELETE /chat/messages/{message_id}`
+- `GET /chat/messages/{message_id}/metrics`

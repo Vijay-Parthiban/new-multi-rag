@@ -3,6 +3,22 @@
 ## Route
 `/pipelines`
 
+## Component
+`PipelinesPage.tsx`
+
 ## Features
-A configuration interface for assembling Retrieval Pipelines. Links retrieving algorithms (e.g. dense vectors via Qdrant, sparse text with OpenSearch, graph retrieval via Neo4j) with reranking strategies.
-Users review their active knowledge connections pulled via shared schemas into distinct functional RAG pipelines.
+
+Configuration interface for assembling RAG retrieval pipelines. Links retrieval algorithms with reranking strategies and LLM generation configs.
+
+- **Pipeline Builder**: Compose retrieval strategy (dense vector via Qdrant, BM25 via OpenSearch, graph traversal via Neo4j, or hybrid combinations).
+- **Reranker Config**: Attach cross-encoder reranking step post-retrieval via `reranker-core`.
+- **Knowledge Store Binding**: Associate pipeline with a registered Knowledge Profile from the Ingestion Manager.
+- **Pipeline Execution**: Trigger test runs against configured sinks.
+
+## Backend APIs Used
+
+- `GET /api/pipelines`
+- `POST /api/pipelines`
+- `PUT /api/pipelines/{id}`
+- `DELETE /api/pipelines/{id}`
+- `POST /api/pipelines/{id}/run`
