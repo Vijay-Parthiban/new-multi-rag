@@ -80,10 +80,14 @@ class QdrantVectorStore:
                         f"'{DENSE_VECTOR_NAME}'"
                     )
                 if dense.size != vector_size:
-                    raise ValueError(
-                        f"Collection {self._collection} dense vector size mismatch "
-                        f"(expected {vector_size}, got {dense.size})"
+                    logger.warning(
+                        "Collection %s dense vector size mismatch (existing=%d, new=%d); recreating collection...",
+                        self._collection,
+                        dense.size,
+                        vector_size,
                     )
+                    self._client.delete_collection(self._collection)
+                    return self.ensure_collection(vector_size, enable_sparse=enable_sparse)
                 if enable_sparse:
                     sparse_vectors = info.config.params.sparse_vectors or {}
                     if SPARSE_VECTOR_NAME not in sparse_vectors:
@@ -102,10 +106,14 @@ class QdrantVectorStore:
                         )
             else:
                 if vectors.size != vector_size:
-                    raise ValueError(
-                        f"Qdrant collection {self._collection} vector size {vectors.size} "
-                        f"does not match embedding size {vector_size}"
+                    logger.warning(
+                        "Collection %s vector size mismatch (existing=%d, new=%d); recreating collection...",
+                        self._collection,
+                        vectors.size,
+                        vector_size,
                     )
+                    self._client.delete_collection(self._collection)
+                    return self.ensure_collection(vector_size, enable_sparse=enable_sparse)
                 if enable_sparse:
                     raise ValueError(
                         f"Qdrant collection {self._collection} uses a legacy single-vector schema. "
