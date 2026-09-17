@@ -11,10 +11,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 # Build context is the monorepo root so shared-libs is available.
 # Path deps in libs/*/pyproject.toml resolve ../../../shared-libs → /shared-libs.
 COPY shared-libs /shared-libs
-COPY rag-app-workspace/pyproject.toml rag-app-workspace/uv.lock ./
-COPY rag-app-workspace/libs ./libs
-COPY rag-app-workspace/apps ./apps
-COPY rag-app-workspace/scripts ./scripts
+COPY rag-retrieval-chat-manager/backend/pyproject.toml rag-retrieval-chat-manager/backend/uv.lock ./
+COPY rag-retrieval-chat-manager/backend/libs ./libs
+COPY rag-retrieval-chat-manager/backend/apps ./apps
+COPY rag-retrieval-chat-manager/backend/scripts ./scripts
 
 RUN uv sync --all-packages \
     && sed -i 's/\r$//' /app/scripts/*.sh \

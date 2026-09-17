@@ -7,9 +7,16 @@ import { formatRelativeTime } from "../utils/format";
 
 const QUICK_LINKS = [
   {
+    to: "/upload",
+    title: "Document Upload",
+    description: "Upload PDF, DOCX, CSV, JSON, Markdown, and text files to source buckets or folders.",
+    icon: IconUpload,
+    cta: "Upload Files",
+  },
+  {
     to: "/sources",
     title: "Data Sources & Storage",
-    description: "Manage local storage folders, object buckets, and multi-format document uploads.",
+    description: "Manage local storage folders, object buckets, and connector-backed source buckets.",
     icon: IconSources,
     cta: "Manage Sources",
   },

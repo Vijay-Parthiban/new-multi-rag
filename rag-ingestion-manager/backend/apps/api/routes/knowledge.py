@@ -44,7 +44,7 @@ DESTINATION_TYPES = [
             "url": "http://localhost:6333",
             "api_key": "qdrant",
             "collection_name": "knowledge_qdrant_collection",
-            "vector_size": 384,
+            "vector_size": 2048,
             "distance": "Cosine",
             "hnsw_m": 16,
             "hnsw_ef_construct": 100,
@@ -151,9 +151,13 @@ async def _profile_to_dict(profile: KnowledgeProfile) -> dict[str, Any]:
                 {
                     "source_id": str(s_link.source.id),
                     "name": s_link.source.name,
+                    "source_type": (s_link.source.config or {}).get("source_type") or s_link.source.connector_type,
                     "connector_type": s_link.source.connector_type,
                     "minio_bucket": s_link.source.minio_bucket,
                     "status": s_link.source.status,
+                    "config": s_link.source.config or {},
+                    "file_count": s_link.source.total_files or 0,
+                    "last_sync_at": s_link.source.last_sync_at.isoformat() if s_link.source.last_sync_at else None,
                 }
             )
 
@@ -228,6 +232,7 @@ async def list_knowledge_profiles(db: AsyncSession = Depends(get_db)):
         .options(
             selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
             selectinload(KnowledgeProfile.destinations),
+            selectinload(KnowledgeProfile.pipelines),
         )
         .order_by(KnowledgeProfile.created_at.desc())
     )
@@ -286,6 +291,7 @@ async def create_knowledge_profile(
         .options(
             selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
             selectinload(KnowledgeProfile.destinations),
+            selectinload(KnowledgeProfile.pipelines),
         )
         .where(KnowledgeProfile.id == profile.id)
     )
@@ -301,6 +307,7 @@ async def get_knowledge_profile(profile_id: uuid.UUID, db: AsyncSession = Depend
         .options(
             selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
             selectinload(KnowledgeProfile.destinations),
+            selectinload(KnowledgeProfile.pipelines),
         )
         .where(KnowledgeProfile.id == profile_id)
     )
@@ -381,6 +388,7 @@ async def update_knowledge_profile(
         .options(
             selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
             selectinload(KnowledgeProfile.destinations),
+            selectinload(KnowledgeProfile.pipelines),
         )
         .where(KnowledgeProfile.id == profile_id)
     )
@@ -390,14 +398,29 @@ async def update_knowledge_profile(
 
 @router.delete("/{profile_id}")
 async def delete_knowledge_profile(profile_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Delete a Knowledge Profile."""
-    profile = await db.get(KnowledgeProfile, profile_id)
+    """Delete a Knowledge Profile and purge indexed artifacts from all enabled destinations."""
+    res = await db.execute(
+        select(KnowledgeProfile)
+        .options(
+            selectinload(KnowledgeProfile.sources).selectinload(KnowledgeProfileSource.source),
+            selectinload(KnowledgeProfile.destinations),
+        )
+        .where(KnowledgeProfile.id == profile_id)
+    )
+    profile = res.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail=f"Knowledge Profile '{profile_id}' not found.")
 
+    from src.ingestion_service.core.universal_fanout import purge_knowledge_profile
+
+    purge_summary = await purge_knowledge_profile(db, profile)
     await db.delete(profile)
     await db.commit()
-    return {"status": "deleted", "profile_id": str(profile_id)}
+    return {
+        "status": "deleted",
+        "profile_id": str(profile_id),
+        "purge_summary": purge_summary,
+    }
 
 
 @router.post("/{profile_id}/test-connection")
@@ -649,7 +672,7 @@ async def inspect_destination_store(
 
     elif destination_type == "lexical_opensearch":
         import httpx
-        url = cfg.get("endpoint_url") or "http://localhost:9200"
+        url = cfg.get("endpoint_url") or cfg.get("url") or settings.opensearch_url
         index_name = cfg.get("index_name", "knowledge_lexical_index")
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
@@ -663,7 +686,8 @@ async def inspect_destination_store(
                 # Aggregate token frequencies for term cloud / distribution
                 term_counts: dict[str, int] = {}
                 for h in hits:
-                    content = h.get("_source", {}).get("content", "")
+                    source_doc = h.get("_source", {})
+                    content = source_doc.get("content") or source_doc.get("text") or ""
                     words = [w.lower().strip(".,;:!?()[]\"'") for w in content.split() if len(w) > 3]
                     for w in words[:40]:
                         term_counts[w] = term_counts.get(w, 0) + 1
@@ -678,7 +702,7 @@ async def inspect_destination_store(
                         "id": h.get("_id"),
                         "file_key": h.get("_source", {}).get("file_key"),
                         "page_index": h.get("_source", {}).get("page_index"),
-                        "content": h.get("_source", {}).get("content"),
+                        "content": h.get("_source", {}).get("content") or h.get("_source", {}).get("text"),
                         "score": h.get("_score"),
                     } for h in hits],
                 }
@@ -688,10 +712,12 @@ async def inspect_destination_store(
     elif destination_type == "graph_neo4j":
         import httpx
         import base64
-        url = cfg.get("url") or "http://localhost:7474"
-        user = cfg.get("username", "neo4j")
-        pwd = cfg.get("password", "password")
-        auth_hdr = "Basic " + base64.b64encode(f"{user}:{pwd}".encode()).decode()
+        url = cfg.get("http_url") or cfg.get("url") or settings.neo4j_http_url
+        user = cfg.get("username", settings.neo4j_user)
+        pwd = cfg.get("password", settings.neo4j_password)
+        auth_hdr = None
+        if not settings.neo4j_auth_disabled:
+            auth_hdr = "Basic " + base64.b64encode(f"{user}:{pwd}".encode()).decode()
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
                 query_stmt = {
@@ -699,9 +725,12 @@ async def inspect_destination_store(
                         {"statement": "MATCH (d:Document) OPTIONAL MATCH (d)-[r:CONTAINS_CHUNK]->(c:Chunk) RETURN d.file_key as doc, c.chunk_id as chunk, c.page_index as page, substring(c.text, 0, 80) as snippet LIMIT 60"}
                     ]
                 }
+                headers = {"Content-Type": "application/json"}
+                if auth_hdr:
+                    headers["Authorization"] = auth_hdr
                 n_resp = await client.post(
                     f"{url}/db/neo4j/tx/commit",
-                    headers={"Authorization": auth_hdr, "Content-Type": "application/json"},
+                    headers=headers,
                     json=query_stmt,
                 )
                 rows = n_resp.json().get("results", [])[0].get("data", []) if n_resp.status_code == 200 else []
@@ -743,8 +772,8 @@ async def inspect_destination_store(
             import psycopg2 as pg_driver
         except ImportError:
             import psycopg as pg_driver
-        pg_url = cfg.get("connection_url") or "postgresql://ingestion:ingestion@localhost:5432/ingestion"
-        table_name = cfg.get("table_prefix", "knowledge_chunks")
+        pg_url = (cfg.get("connection_url") or settings.database_url).replace("+asyncpg", "")
+        table_name = cfg.get("table_name") or cfg.get("table_prefix") or "knowledge_chunks"
         try:
             with pg_driver.connect(pg_url) as conn:
                 with conn.cursor() as cur:

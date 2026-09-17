@@ -20,11 +20,66 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.ingestion_service.core.page_yielder import FilePage, iter_file_pages
 from src.ingestion_service.embeddings.client import EmbeddingClient
+from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
 from src.ingestion_service.vector.qdrant_store import QdrantVectorStore
 from src.shared.config.settings import get_settings
 from src.shared.db.models import KnowledgeProfile
 from src.shared.storage.s3_client import get_object, list_objects
+
 logger = logging.getLogger(__name__)
+
+
+def _resolve_opensearch_url(dest_config: dict[str, Any], settings: Any) -> str:
+    return (
+        dest_config.get("endpoint_url")
+        or dest_config.get("url")
+        or settings.opensearch_url
+    ).rstrip("/")
+
+
+def _resolve_neo4j_bolt_uri(dest_config: dict[str, Any], settings: Any) -> str:
+    return dest_config.get("bolt_uri") or dest_config.get("url") or settings.neo4j_bolt_uri
+
+
+def _resolve_neo4j_http_url(dest_config: dict[str, Any], settings: Any) -> str:
+    return dest_config.get("http_url") or dest_config.get("url") or settings.neo4j_http_url
+
+
+def _resolve_pg_table(dest_config: dict[str, Any]) -> str:
+    return dest_config.get("table_name") or dest_config.get("table_prefix") or "knowledge_chunks"
+
+
+def _normalize_pg_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    return url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
+
+
+def _build_fanout_payload(
+    *,
+    source_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    file_key: str,
+    page: FilePage,
+) -> dict[str, Any]:
+    file_name = Path(file_key).name
+    content = (page.text or "").strip()
+    return {
+        "source_type": FILE_INGEST_SOURCE_TYPE,
+        "source_id": str(source_id),
+        "source_locator": file_key,
+        "file_key": file_key,
+        "file_name": file_name,
+        "original_name": file_name,
+        "title": file_name,
+        "page_index": page.page_index,
+        "chunk_index": page.page_index,
+        "type": "text",
+        "content": content,
+        "text": content,
+        "knowledge_profile_id": str(profile_id),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
 
 def _is_local_source(s: Any) -> bool:
     if getattr(s, "connector_type", None) == "local_filesystem":
@@ -88,8 +143,11 @@ async def execute_universal_fanout_sync(
     total_pages = 0
     destinations_synced = []
 
+    profile_id = profile.id
+
     # Process files from linked sources (MinIO buckets or Local File Systems)
     for source in linked_sources:
+        bucket_label = source.minio_bucket or str(source.id)
         is_local = _is_local_source(source)
         if is_local:
             from src.shared.storage import storage_root
@@ -155,19 +213,31 @@ async def execute_universal_fanout_sync(
                         total_files += 1
                         total_pages += len(pages)
 
-                        # Fan out to all enabled destinations
-                        for dest in enabled_destinations:
-                            dest_type = dest.destination_type
-                            dest_cfg = dest.config or {}
-
-                            await _fanout_to_destination(
-                                dest_type=dest_type,
-                                dest_config=dest_cfg,
-                                file_key=key,
-                                pages=pages,
-                            )
-                            if dest_type not in destinations_synced:
-                                destinations_synced.append(dest_type)
+                        fanout_results = await asyncio.gather(
+                            *[
+                                _fanout_to_destination(
+                                    dest_type=dest.destination_type,
+                                    dest_config=dest.config or {},
+                                    source_id=source.id,
+                                    profile_id=profile_id,
+                                    file_key=key,
+                                    pages=pages,
+                                )
+                                for dest in enabled_destinations
+                            ],
+                            return_exceptions=True,
+                        )
+                        for dest, result in zip(enabled_destinations, fanout_results, strict=True):
+                            if isinstance(result, Exception):
+                                logger.error(
+                                    "fanout_destination_failed dest=%s file=%s error=%s",
+                                    dest.destination_type,
+                                    key,
+                                    result,
+                                )
+                                continue
+                            if dest.destination_type not in destinations_synced:
+                                destinations_synced.append(dest.destination_type)
 
                         # Update or insert IndexedFile tracking record
                         if existing_rec:
@@ -186,7 +256,12 @@ async def execute_universal_fanout_sync(
                     if tmp_path.exists():
                         tmp_path.unlink()
             except Exception as exc:
-                logger.error("fanout_file_processing_failed bucket=%s key=%s error=%s", bucket, key, str(exc))
+                logger.error(
+                    "fanout_file_processing_failed bucket=%s key=%s error=%s",
+                    bucket_label,
+                    key,
+                    str(exc),
+                )
 
         # 2. Handle DELETE (Files removed from MinIO bucket)
         for file_key, rec in existing_records.items():
@@ -223,11 +298,47 @@ async def execute_universal_fanout_sync(
 async def _fanout_to_destination(
     dest_type: str,
     dest_config: dict[str, Any],
+    source_id: uuid.UUID,
+    profile_id: uuid.UUID,
     file_key: str,
     pages: list[FilePage],
 ) -> None:
     """Fan out page content and embeddings to a specific destination engine."""
-    await asyncio.to_thread(_sync_fanout_to_destination, dest_type, dest_config, file_key, pages)
+    await asyncio.to_thread(
+        _sync_fanout_to_destination,
+        dest_type,
+        dest_config,
+        str(source_id),
+        str(profile_id),
+        file_key,
+        pages,
+    )
+
+
+async def purge_knowledge_profile(db: AsyncSession, profile: KnowledgeProfile) -> dict[str, Any]:
+    """Purge all indexed artifacts for a profile's linked sources across enabled destinations."""
+    from sqlalchemy import select
+
+    from src.shared.db.models import IndexedFile
+
+    source_ids = [link.source_id for link in (profile.sources or [])]
+    purged_files = 0
+
+    for source_id in source_ids:
+        res = await db.execute(select(IndexedFile).where(IndexedFile.source_id == source_id))
+        records = list(res.scalars().all())
+        for rec in records:
+            if rec.file_key:
+                await purge_file_from_destinations(profile, rec.file_key)
+                purged_files += 1
+            await db.delete(rec)
+
+    await db.commit()
+    return {
+        "purged_files": purged_files,
+        "source_ids": [str(sid) for sid in source_ids],
+        "destinations": [d.destination_type for d in (profile.destinations or []) if d.enabled],
+    }
 
 
 async def purge_file_from_destinations(
@@ -266,18 +377,28 @@ def _sync_purge_file_from_destination(dest_type: str, dest_config: dict[str, Any
 
     elif dest_type in ["lexical_opensearch", "elasticsearch"]:
         index_name = dest_config.get("index_name", "knowledge_lexical_index")
-        url = dest_config.get("url") or getattr(settings, "opensearch_url", "http://opensearch:9200")
+        url = _resolve_opensearch_url(dest_config, settings)
         try:
             import httpx
-            with httpx.Client(timeout=5.0) as client:
-                query = {"query": {"term": {"file_key.keyword": file_key}}}
+            with httpx.Client(timeout=10.0) as client:
+                query = {
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"term": {"file_key.keyword": file_key}},
+                                {"match_phrase": {"file_key": file_key}},
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    }
+                }
                 client.post(f"{url}/{index_name}/_delete_by_query", json=query)
             logger.info("opensearch_docs_deleted index=%s file_key=%s", index_name, file_key)
         except Exception as exc:
             logger.warning("opensearch_purge_failed file_key=%s error=%s", file_key, exc)
 
-    elif dest_type == "cache_redis":
-        url = dest_config.get("url") or settings.redis_url
+    elif dest_type in ["cache_redis", "cache_redisvl"]:
+        url = dest_config.get("redis_url") or dest_config.get("url") or settings.redis_url
         try:
             import redis
             r = redis.Redis.from_url(url)
@@ -289,22 +410,65 @@ def _sync_purge_file_from_destination(dest_type: str, dest_config: dict[str, Any
             logger.warning("redis_purge_failed file_key=%s error=%s", file_key, exc)
 
     elif dest_type == "graph_neo4j":
-        url = dest_config.get("url") or getattr(settings, "neo4j_url", "bolt://neo4j:7687")
-        user = dest_config.get("username") or getattr(settings, "neo4j_user", "neo4j")
-        password = dest_config.get("password") or getattr(settings, "neo4j_password", "password")
+        bolt_uri = _resolve_neo4j_bolt_uri(dest_config, settings)
+        user = dest_config.get("username") or settings.neo4j_user
+        password = dest_config.get("password") or settings.neo4j_password
+        auth = None if settings.neo4j_auth_disabled else (user, password)
         try:
             from neo4j import GraphDatabase
-            with GraphDatabase.driver(url, auth=(user, password)) as driver:
+
+            with GraphDatabase.driver(bolt_uri, auth=auth) as driver:
                 with driver.session() as session:
-                    session.run("MATCH (n) WHERE n.file_key = $file_key DETACH DELETE n", file_key=file_key)
+                    session.run(
+                        """
+                        MATCH (d:Document {file_key: $file_key})
+                        OPTIONAL MATCH (d)-[:CONTAINS_CHUNK]->(c:Chunk)
+                        DETACH DELETE d, c
+                        """,
+                        file_key=file_key,
+                    )
+                    session.run(
+                        "MATCH (c:Chunk) WHERE c.chunk_id STARTS WITH $prefix DETACH DELETE c",
+                        prefix=f"{file_key}:",
+                    )
             logger.info("neo4j_nodes_deleted file_key=%s", file_key)
         except Exception as exc:
             logger.warning("neo4j_purge_failed file_key=%s error=%s", file_key, exc)
+
+    elif dest_type in ["relational_pgvector", "database_pgvector"]:
+        table_name = _resolve_pg_table(dest_config)
+        try:
+            try:
+                import psycopg2 as pg_driver
+            except ImportError:
+                import psycopg as pg_driver
+            pg_urls = [
+                _normalize_pg_url(dest_config.get("connection_url")),
+                settings.database_url.replace("+asyncpg", ""),
+            ]
+            conn = None
+            for pg_url in pg_urls:
+                if not pg_url:
+                    continue
+                try:
+                    conn = pg_driver.connect(pg_url)
+                    break
+                except Exception:
+                    continue
+            if conn:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f"DELETE FROM {table_name} WHERE file_key = %s", (file_key,))
+                logger.info("postgres_rows_deleted table=%s file_key=%s", table_name, file_key)
+        except Exception as exc:
+            logger.warning("postgres_purge_failed file_key=%s error=%s", file_key, exc)
 
 
 def _sync_fanout_to_destination(
     dest_type: str,
     dest_config: dict[str, Any],
+    source_id: str,
+    profile_id: str,
     file_key: str,
     pages: list[FilePage],
 ) -> None:
@@ -329,12 +493,12 @@ def _sync_fanout_to_destination(
                 continue
             emb = embedder.embed_passage(text)
             pt_id = str(uuid.uuid4())
-            payload = {
-                "file_key": file_key,
-                "page_index": p.page_index,
-                "text": text[:1000],
-                "created_at": datetime.now(UTC).isoformat(),
-            }
+            payload = _build_fanout_payload(
+                source_id=uuid.UUID(source_id),
+                profile_id=uuid.UUID(profile_id),
+                file_key=file_key,
+                page=p,
+            )
             points.append({
                 "point_id": pt_id,
                 "dense_vector": emb,
@@ -353,7 +517,7 @@ def _sync_fanout_to_destination(
 
     elif dest_type in ["lexical_opensearch", "elasticsearch"]:
         index_name = dest_config.get("index_name", "knowledge_lexical_index")
-        url = dest_config.get("endpoint_url") or dest_config.get("url") or getattr(settings, "opensearch_url", "http://localhost:9200")
+        url = _resolve_opensearch_url(dest_config, settings)
         try:
             import httpx
             with httpx.Client(timeout=5.0) as client:
@@ -361,11 +525,20 @@ def _sync_fanout_to_destination(
                     text = p.text or ""
                     if not text.strip():
                         continue
+                    payload = _build_fanout_payload(
+                        source_id=uuid.UUID(source_id),
+                        profile_id=uuid.UUID(profile_id),
+                        file_key=file_key,
+                        page=p,
+                    )
                     doc = {
                         "file_key": file_key,
                         "page_index": p.page_index,
-                        "text": text,
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "content": payload["content"],
+                        "text": payload["content"],
+                        "source_id": payload["source_id"],
+                        "source_locator": payload["source_locator"],
+                        "created_at": payload["created_at"],
                     }
                     client.post(f"{url}/{index_name}/_doc", json=doc)
             logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
@@ -373,49 +546,52 @@ def _sync_fanout_to_destination(
             logger.warning("opensearch_indexing_failed index=%s file=%s error=%s", index_name, file_key, exc)
 
     elif dest_type == "graph_neo4j":
-        url = dest_config.get("url") or getattr(settings, "neo4j_http_url", "http://localhost:7474")
+        bolt_uri = _resolve_neo4j_bolt_uri(dest_config, settings)
+        user = dest_config.get("username") or settings.neo4j_user
+        password = dest_config.get("password") or settings.neo4j_password
+        auth = None if settings.neo4j_auth_disabled else (user, password)
         try:
-            import httpx
-            statements = []
-            statements.append({
-                "statement": "MERGE (d:Document {file_key: $file_key}) SET d.updated_at = $updated_at RETURN d",
-                "parameters": {"file_key": file_key, "updated_at": datetime.now(UTC).isoformat()}
-            })
-            for p in pages:
-                text = (p.text or "")[:500]
-                if not text.strip():
-                    continue
-                statements.append({
-                    "statement": """
-                        MATCH (d:Document {file_key: $file_key})
-                        MERGE (c:Chunk {chunk_id: $chunk_id})
-                        SET c.page_index = $page_index, c.text = $text
-                        MERGE (d)-[:CONTAINS_CHUNK]->(c)
-                    """,
-                    "parameters": {
-                        "file_key": file_key,
-                        "chunk_id": f"{file_key}:{p.page_index}",
-                        "page_index": p.page_index,
-                        "text": text,
-                    }
-                })
-            with httpx.Client(timeout=5.0) as client:
-                client.post(f"{url}/db/neo4j/tx/commit", json={"statements": statements})
+            from neo4j import GraphDatabase
+
+            with GraphDatabase.driver(bolt_uri, auth=auth) as driver:
+                with driver.session() as session:
+                    session.run(
+                        "MERGE (d:Document {file_key: $file_key}) SET d.updated_at = $updated_at",
+                        file_key=file_key,
+                        updated_at=datetime.now(UTC).isoformat(),
+                    )
+                    for p in pages:
+                        text = (p.text or "")[:500]
+                        if not text.strip():
+                            continue
+                        session.run(
+                            """
+                            MATCH (d:Document {file_key: $file_key})
+                            MERGE (c:Chunk {chunk_id: $chunk_id})
+                            SET c.page_index = $page_index, c.text = $text, c.content = $content
+                            MERGE (d)-[:CONTAINS_CHUNK]->(c)
+                            """,
+                            file_key=file_key,
+                            chunk_id=f"{file_key}:{p.page_index}",
+                            page_index=p.page_index,
+                            text=text,
+                            content=text,
+                        )
             logger.info("neo4j_graphrag_indexed file=%s pages=%d", file_key, len(pages))
         except Exception as exc:
             logger.warning("neo4j_graph_failed file=%s error=%s", file_key, exc)
 
     elif dest_type in ["relational_pgvector", "database_pgvector"]:
-        table_name = dest_config.get("table_prefix", "knowledge_chunks")
+        table_name = _resolve_pg_table(dest_config)
         try:
             try:
                 import psycopg2 as pg_driver
             except ImportError:
                 import psycopg as pg_driver
             pg_urls = [
-                dest_config.get("connection_url"),
+                _normalize_pg_url(dest_config.get("connection_url")),
+                settings.database_url.replace("+asyncpg", ""),
                 "postgresql://ingestion:ingestion@localhost:5432/ingestion",
-                "postgresql://postgres:postgres@localhost:5432/ingestion",
             ]
             conn = None
             for url in pg_urls:

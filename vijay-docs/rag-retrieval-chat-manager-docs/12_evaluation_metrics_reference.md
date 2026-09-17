@@ -1,4 +1,6 @@
-# RAG Evaluation Metrics — Reference Guide
+# 12 — RAG Evaluation Metrics Reference Guide
+
+**Last updated:** 2026-09-17
 
 This document explains every metric computed by the evaluation pipeline, when it is computed, and how data flows from the RAG pipeline through to the UI for both **Live Chat** and **Offline (Golden Dataset)** evaluations.
 

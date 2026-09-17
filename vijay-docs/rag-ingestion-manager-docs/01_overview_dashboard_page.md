@@ -1,5 +1,7 @@
 # 01 — Ingestion Overview Dashboard Page
 
+**Last updated:** 2026-09-17
+
 ## 1. Executive Summary & Page Purpose
 The **Ingestion Overview Dashboard** (`HomePage.tsx`, route: `/`) serves as the central mission control and real-time operational dashboard for the `rag-ingestion-manager` application. It provides engineering teams and data administrators with an immediate, high-level pulse on connected data sources, directory workspaces, indexed file counts, and active multi-sink Knowledge Store routing profiles.
 
@@ -9,7 +11,7 @@ The **Ingestion Overview Dashboard** (`HomePage.tsx`, route: `/`) serves as the 
 
 ```
 +---------------------------------------------------------------------------------------+
-|  Ingestion Manager   |  Overview  |  Folders  |  Sources  |  Knowledge Store  |  Theme  |
+|  Ingestion Manager   |  Overview  |  Folders  |  Upload  |  Sources  |  Knowledge Store  |
 +---------------------------------------------------------------------------------------+
 |  Ingestion Overview                                                                   |
 |  Ingest documents, manage connected data sources, and orchestrate 5-sink Knowledge    |
@@ -18,8 +20,8 @@ The **Ingestion Overview Dashboard** (`HomePage.tsx`, route: `/`) serves as the 
 |  [ Metric Cards: Connected Sources | Workspace Folders | Indexed Files | Profiles ]   |
 +---------------------------------------------------------------------------------------+
 |  Quick Launch Workspaces:                                                             |
-|  [ 📁 Data Sources & Storage ]   [ 📂 Folders & Files ]                              |
-|  [ 🌐 External Connectors    ]   [ 🗄️ Knowledge Store Fanout ]                        |
+|  [ 📤 Document Upload ]   [ 📁 Data Sources & Storage ]   [ 📂 Folders & Files ]      |
+|  [ 🌐 External Connectors ]   [ 🗄️ Knowledge Store Fanout ]                          |
 +---------------------------------------------------------------------------------------+
 |  Connected Sources Summary Table                                                      |
 |  Source Name      | Type     | Bucket / Path | Files | Last Sync | Status             |
@@ -36,11 +38,12 @@ The **Ingestion Overview Dashboard** (`HomePage.tsx`, route: `/`) serves as the 
   - **Workspace Folders**: Count of virtual directory workspaces managed in the metadata store.
   - **Indexed Files**: Aggregated count of documents processed and tracked across all directories.
   - **Knowledge Profiles**: Number of configured 5-destination multi-vector routing profiles.
-- **Quick Action Grid**:
-  - `Data Sources & Storage`: Quick jump to `/sources` to manage buckets and uploads.
-  - `Folders & Files`: Direct navigation to `/browse` for directory tree exploration and document previews.
-  - `External Connectors`: Access connector setup for S3, Azure Blob, SFTP, Confluence, and Web Scrapers.
-  - `Knowledge Store Fanout`: Link to `/knowledge-store` for 5-sink sync orchestration and live inspection visualizers.
+- **Quick Action Grid** (`HomePage.tsx` → `QUICK_LINKS`):
+  - `Document Upload` (`/upload`): Upload PDF, DOCX, CSV, JSON, Markdown, and text to buckets or folders.
+  - `Data Sources & Storage` (`/sources`): Manage MinIO buckets and connector-backed sources.
+  - `Folders & Files` (`/browse`): Directory workspace and file preview.
+  - `External Connectors` (`/sources`): S3, Azure Blob, SFTP, Confluence, and Web Scrapers.
+  - `Knowledge Store Fanout` (`/knowledge-store`): 5-sink sync orchestration and live visualizers.
 - **Connected Sources Table**: Real-time listing of active data sources with sync timestamps, document counts, and health status badges.
 
 ---

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import HTTPException, Request, Security, status
+from fastapi import HTTPException, Query, Request, Security, status
 from fastapi.security import APIKeyHeader
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+_api_key_query = Query(None, alias="api_key")
 
 # Paths that remain reachable when API_KEY is configured (probes / docs).
 _PUBLIC_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
@@ -18,6 +19,7 @@ def make_verify_api_key(get_expected_key: Callable[[], str]) -> Callable[..., st
     def verify_api_key(
         request: Request,
         api_key: str | None = Security(_api_key_header),
+        api_key_query: str | None = _api_key_query,
     ) -> str:
         if request.url.path in _PUBLIC_PATHS:
             return ""
@@ -25,7 +27,8 @@ def make_verify_api_key(get_expected_key: Callable[[], str]) -> Callable[..., st
         expected = get_expected_key()
         if not expected:
             return ""
-        if not api_key or api_key != expected:
+        provided = api_key or api_key_query
+        if not provided or provided != expected:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or missing API key",

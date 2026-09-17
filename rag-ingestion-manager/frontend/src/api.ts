@@ -105,6 +105,7 @@ export async function uploadFileChunked(
 
     const res = await fetch(`${API_URL}/api/uploads/${init.upload_id}/chunks/${i}`, {
       method: "PUT",
+      headers: authHeaders(API_KEY),
       body: form,
     });
     if (!res.ok) await parseError(res);
@@ -1325,12 +1326,17 @@ export async function deleteSourceFile(sourceId: string, key: string): Promise<{
 }
 export function getSourceFileContentUrl(sourceId: string, key: string): string {
   const params = new URLSearchParams({ key });
+  if (API_KEY) {
+    params.set("api_key", API_KEY);
+  }
   return `${API_URL}/api/sources/${sourceId}/files/content?${params.toString()}`;
 }
 
 export async function getSourceFileContent(sourceId: string, key: string): Promise<string> {
-  const url = getSourceFileContentUrl(sourceId, key);
-  const res = await fetch(url);
+  const params = new URLSearchParams({ key });
+  const res = await fetch(`${API_URL}/api/sources/${sourceId}/files/content?${params.toString()}`, {
+    headers: authHeaders(API_KEY),
+  });
   if (!res.ok) {
     throw new Error(`Failed to fetch file content: ${res.statusText}`);
   }

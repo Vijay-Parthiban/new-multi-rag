@@ -1,5 +1,7 @@
 # 04 — Knowledge Store Fanout & Multi-Sink Visualizer Page
 
+**Last updated:** 2026-09-17
+
 ## 1. Executive Summary & Page Purpose
 The **Knowledge Store Fanout Page** (`KnowledgeStorePage.tsx`, route: `/knowledge-store`) is the multi-sink orchestration hub of the RAG ingestion pipeline. It allows administrators to bind source document repositories (MinIO buckets, directory workspaces) to **5 enterprise destination sinks**, execute parallel fanout synchronizations via `universal_fanout.py`, and inspect live indexed representations using dedicated **Interactive Visualizer Modals** for Vector, Lexical, Graph, Relational, and Semantic Cache layers.
 
@@ -19,7 +21,7 @@ The **Knowledge Store Fanout Page** (`KnowledgeStorePage.tsx`, route: `/knowledg
                               |  (universal_fanout.py)        |
                               |  - Markdown Parsing           |
                               |  - Recursive Text Chunking    |
-                              |  - Dense 384/2048D Embeddings |
+                              |  - Dense 2048D Embeddings     |
                               +---------------+---------------+
                                               |
       +-------------------+-------------------+-------------------+-------------------+-------------------+
@@ -36,7 +38,7 @@ The **Knowledge Store Fanout Page** (`KnowledgeStorePage.tsx`, route: `/knowledg
 ### Destination Sink Details
 1. **Qdrant Vector DB (`vector_qdrant`)**:
    - **Role**: Dense vector similarity search via HNSW indexing.
-   - **Dimensions**: 384D (`BAAI/bge-small-en-v1.5` / `all-MiniLM-L6-v2`) or 2048D multimodal.
+   - **Dimensions**: 2048D default (`nvidia-embed-passage`). Collections auto-recreate when stored size mismatches config (`platform_common/vector/qdrant_store.py`).
    - **Collection**: `rag_documents_vres` / `documents_vres`.
 2. **OpenSearch Lexical Search (`lexical_opensearch`)**:
    - **Role**: Full-text BM25 keyword retrieval, analyzer tokenization, and exact term frequency matching.
@@ -117,13 +119,28 @@ When clicking **"🔭 Multi-Sink Visualizer"** or **"🔭 Inspect Store"**, the 
 | `POST` | `/api/knowledge-profiles` | Creates a new fanout routing profile | `KnowledgeProfileCreate` |
 | `POST` | `/api/knowledge-profiles/{id}/sync` | Triggers parallel universal fanout sync across 5 sinks | `{"status": "success", "synced_files": int}` |
 | `POST` | `/api/knowledge-profiles/{id}/test/{dest_type}` | Tests connection credentials for a specific sink | `{"status": "success" \| "error"}` |
+| `DELETE` | `/api/knowledge-profiles/{id}` | Deletes profile and purges indexed data from all enabled sinks via `purge_knowledge_profile()` | `{"status": "deleted", "purge_summary": {...}}` |
 | `GET` | `/api/knowledge-profiles/{id}/inspect/{dest_type}` | Retrieves live sink data for the UI visualizer | `SinkInspectionPayload` |
+
+### Fanout Payload Contract (retrieval-aligned)
+
+Each chunk written by `universal_fanout.py` uses `_build_fanout_payload()`:
+
+| Field | Purpose |
+|---|---|
+| `source_type` | `file_ingest` constant for file-based sources |
+| `source_id` | UUID of the linked `Source` |
+| `source_locator` | MinIO object key (e.g. `resumes/resume_alex.pdf`) |
+| `content` / `text` | Chunk text used by retrieval and visualizers |
+| `chunk_index` / `page_index` | Page or chunk position within the file |
+| `file_name` | Basename for display and hit mapping |
+| `knowledge_profile_id` | Profile that indexed this chunk |
 
 ### Sample Live Inspection Output (`GET /inspect/vector_qdrant`)
 ```json
 {
   "destination_type": "vector_qdrant",
-  "collection_name": "documents_vres",
+  "collection_name": "knowledge_qdrant_collection",
   "total_points": 73,
   "status": "green",
   "points": [
@@ -131,12 +148,25 @@ When clicking **"🔭 Multi-Sink Visualizer"** or **"🔭 Inspect Store"**, the 
       "id": "c6239121-0e10-4107-8898-d89069d3e8e1",
       "vector": [0.0381, -0.0124, 0.0912, "...", -0.0418],
       "payload": {
-        "document_name": "resume_alex_chen.pdf",
+        "source_type": "file_ingest",
+        "source_id": "2da1c0d5-5727-4632-9cb9-009c91d4e0e4",
+        "source_locator": "resumes/resume_alex_chen.pdf",
+        "file_name": "resume_alex_chen.pdf",
         "chunk_index": 0,
-        "text": "Alex Chen — Senior AI Engineer with extensive experience in Qdrant and LLM orchestration...",
-        "source_id": "2da1c0d5-5727-4632-9cb9-009c91d4e0e4"
+        "content": "Alex Chen — Senior AI Engineer with extensive experience in Qdrant and LLM orchestration..."
       }
     }
   ]
 }
 ```
+
+## 6. Profile Lifecycle & Purge Behavior
+
+1. **Sync**: `POST /api/knowledge-profiles/{id}/sync` reads files from linked sources, parses via `page_yielder.py`, embeds, and fans out to all enabled destinations in parallel.
+2. **Delete**: `DELETE /api/knowledge-profiles/{id}` removes the profile record and calls `purge_knowledge_profile()`:
+   - **Qdrant**: delete points by `source_locator` / `file_key`
+   - **OpenSearch**: `term` and `match_phrase` delete queries
+   - **Neo4j**: detach/delete `Document` and `Chunk` nodes for the file keys
+   - **PostgreSQL**: `DELETE FROM {table} WHERE file_key = %s`
+   - **RedisVL**: delete keys under the configured prefix
+3. **Verify**: Use `scripts/e2e_knowledge_fanout.py` or inspect APIs to confirm counts return to zero after delete.

@@ -1,19 +1,28 @@
 # 05 — Document Upload & Staging Manager
 
+**Last updated:** 2026-09-17
+
 ## 1. Executive Summary & Page Purpose
-The **Document Upload & Staging Manager** (`UploadPage.tsx` and upload modal workflows across `BrowsePage.tsx` and `SourcesPage.tsx`) handles multi-format document ingestion from client web browsers into MinIO object storage buckets. It provides client-side drag-and-drop file ingestion, file integrity validation (SHA-256 deduplication), format parsing (PDF, DOCX, TXT, JSON, MD, CSV), and automatic post-upload indexing.
+The **Document Upload & Staging Manager** (`UploadPage.tsx`, route: `/upload`) handles multi-format document ingestion from the browser into MinIO object storage buckets or virtual folder workspaces. It provides drag-and-drop upload, SHA-256 integrity validation, chunked transfer with API key auth on each chunk, and post-upload availability for Knowledge Store fanout sync.
+
+The Upload page is linked from the sidebar navigation and the Overview dashboard quick links.
 
 ---
 
 ## 2. Supported Formats & Parsing Engine
 
-| Format | Extension | Extractor Engine | Parsing Strategy |
+Parsing is implemented in `src/ingestion_service/core/page_yielder.py` (`iter_file_pages`):
+
+| Format | Extension / MIME | Extractor | Strategy |
 |---|---|---|---|
-| **PDF** | `.pdf` | `pypdf` / `pdfplumber` / OCR fallback | Text stream extraction, table preservation, metadata harvesting |
-| **Word** | `.docx`, `.doc` | `python-docx` | Heading hierarchy, paragraph structure, inline tables |
-| **Markdown** | `.md`, `.markdown` | Python `markdown` / AST parser | Semantic section headers, code fence preservation |
-| **Plain Text** | `.txt`, `.log` | UTF-8 Stream Parser | Fixed/Sliding window chunking with sentence boundary preservation |
-| **Structured** | `.json`, `.csv` | `json` / `pandas` | Key-value flattening, row-based serialization for embedding |
+| **PDF** | `.pdf`, `application/pdf` | PyMuPDF (`fitz`) | One page per yield; optional page PNG for multimodal |
+| **Word** | `.docx` | `python-docx` | Paragraph text joined into a single document page |
+| **CSV** | `.csv`, `text/csv` | `csv` module | Rows serialized as comma-separated lines |
+| **JSON** | `.json` | `json` module | Array items yield one page each; objects yield formatted JSON |
+| **Markdown / Text** | `.md`, `.txt`, `.log`, `text/*` | UTF-8 read | Single page with full file content |
+| **Unknown** | other | UTF-8 fallback | Logged warning; best-effort text read |
+
+Unit tests: `backend/tests/test_page_yielder.py`
 
 ---
 
@@ -21,36 +30,30 @@ The **Document Upload & Staging Manager** (`UploadPage.tsx` and upload modal wor
 
 ```
 +-------------------------------------------------------------------------------+
-|  User Browser: Drag & Drop Files (PDF, DOCX, TXT, MD, JSON)                   |
+|  User Browser: Drag & Drop Files (PDF, DOCX, TXT, MD, JSON, CSV)              |
 +---------------------------------------+---------------------------------------+
                                         |
                                         v
 +-------------------------------------------------------------------------------+
 |  1. SHA-256 Checksum Calculation & File Type Validation                       |
-|     - Detect duplicates in target MinIO bucket / directory                    |
 +---------------------------------------+---------------------------------------+
                                         |
                                         v
 +-------------------------------------------------------------------------------+
-|  2. Direct Multipart Streaming to Backend (`POST /api/uploads/file`)          |
+|  2. Chunked Upload to Backend                                               |
+|     POST /api/uploads/init  ->  PUT /api/uploads/{id}/chunks/{n} (auth hdr) |
+|     ->  POST /api/uploads/{id}/complete                                     |
 +---------------------------------------+---------------------------------------+
                                         |
                                         v
 +-------------------------------------------------------------------------------+
 |  3. MinIO S3 Object Store Placement (`s3://<bucket>/<file_key>`)               |
-|     - Metadata DB Record Creation (`FileRecord`, `Directory`)                 |
 +---------------------------------------+---------------------------------------+
                                         |
                                         v
 +-------------------------------------------------------------------------------+
-|  4. Async Document Parsing & Chunking Pipeline                                |
-|     - Recursive text splitter (chunk size: 500 tokens, overlap: 50 tokens)    |
-|     - Store chunk metadata in SQLite / PostgreSQL                             |
-+---------------------------------------+---------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|  5. Knowledge Store Fanout Trigger (Optional Auto-Sync)                       |
+|  4. Knowledge Store Fanout (manual or scheduled sync on linked profile)       |
+|     page_yielder -> embed -> parallel fanout to 5 sinks                       |
 +-------------------------------------------------------------------------------+
 ```
 
@@ -58,24 +61,25 @@ The **Document Upload & Staging Manager** (`UploadPage.tsx` and upload modal wor
 
 ## 4. Backend APIs & Contracts
 
-| Method | Endpoint | Description | Request / Response |
-|---|---|---|---|
-| `POST` | `/api/uploads/file` | Uploads a single document file to MinIO staging | `Multipart Form` -> `UploadFileResponse` |
-| `POST` | `/api/uploads/batch` | Uploads multiple files in parallel | `Multipart Form` -> `BatchUploadResponse` |
-| `POST` | `/api/sources/{source_id}/upload` | Uploads directly into a specific MinIO source bucket | `Multipart Form` -> `SourceFileEntry` |
-| `GET` | `/api/uploads/status/{task_id}` | Polls async parsing and chunking progress | `UploadTaskStatus` |
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/uploads/init` | Start chunked upload session |
+| `PUT` | `/api/uploads/{id}/chunks/{n}` | Upload one chunk (requires `X-API-Key` when auth enabled) |
+| `POST` | `/api/uploads/{id}/complete` | Stitch, verify hash, enqueue storage job |
+| `POST` | `/api/sources/{source_id}/upload` | Upload directly into a source bucket |
 
-### Sample Response (`POST /api/uploads/file`)
-```json
-{
-  "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-  "filename": "resume_alex_chen.pdf",
-  "size": 49356,
-  "content_type": "application/pdf",
-  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "bucket": "v-res",
-  "key": "resumes/resume_alex_chen.pdf",
-  "status": "ready",
-  "chunks_count": 8
-}
-```
+### Frontend API client notes (`frontend/src/api.ts`)
+- Chunk PUT requests include `authHeaders(API_KEY)`.
+- `getSourceFileContentUrl()` and `getSourceFileContent()` pass `api_key` query param for authenticated file preview.
+
+---
+
+## 5. Navigation & Routes
+
+| Path | Component | Description |
+|---|---|---|
+| `/upload` | `UploadPage.tsx` | Primary upload UI |
+| `/browse/:name` | `DirectoryPage.tsx` | Browse uploaded files in a folder workspace |
+| `/sources` | `SourcesPage.tsx` | Manage buckets and connector-backed sources |
+
+Legacy redirects: `/directories/*` → `/browse/*`

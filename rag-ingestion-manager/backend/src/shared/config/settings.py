@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     scraper_api_key: str = ""
     api_key: str = ""
 
+    opensearch_url: str = "http://opensearch:9200"
+    neo4j_bolt_uri: str = "bolt://neo4j:7687"
+    neo4j_http_url: str = "http://neo4j:7474"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
+    neo4j_auth_disabled: bool = True
+
     @property
     def embedding_model_options(self) -> list[str]:
         return [

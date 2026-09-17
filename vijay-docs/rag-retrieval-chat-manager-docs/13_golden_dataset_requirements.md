@@ -1,6 +1,8 @@
-# Golden Dataset Evaluation - Implementation Requirements
+# 13 — Golden Dataset Evaluation Requirements
 
-Here is the complete breakdown of everything needed to fully implement the platform.
+**Last updated:** 2026-09-17
+
+Implementation contract for offline golden-dataset evaluation in `rag-retrieval-chat-manager`.
 
 ## 1. Golden Dataset Schema & Upload
 *   **JSON Format**: The system must support importing Golden Datasets in the following format:
@@ -63,7 +65,7 @@ Here is the complete breakdown of everything needed to fully implement the platf
 *   **Config & Pipeline Propagation**:
     *   `POST /evaluate/runs` -> Accepts an `EvalRunConfig` linking to the user's selected Pipeline parameters. This guarantees that Golden Dataset evaluation retrieves chunks exactly like the live Chat interface for that pipeline. The configuration must include the target `collection`, `embedding_model`, `sparse_embedding_model` (for dense vs hybrid vs sparse retrieval), and `rerank` settings.
 
-## 5. Frontend (`ingestion-frontend`)
+## 5. Frontend (`rag-retrieval-chat-manager/frontend`)
 *   **API Client (`api.ts`)**: Wire up `ragFetch` endpoints. Ensure `FormData` headers are left untouched (`Content-Type: multipart/form-data`) so file uploads succeed properly.
 *   **New Route and Page**:
     *   Create a dedicated file `GoldenEvaluationsPage.tsx` exclusively for this feature.
@@ -96,4 +98,4 @@ To avoid reading the entire project, restrict your investigation and integration
     *   `libs/database/src/rag_db/repositories/evaluation_repository.py` → Logic for `aggregate_run_metrics` and skipping/paginating evaluations.
 *   **API & Frontend**:
     *   `apps/rag-api/src/rag_api/routes/evaluate.py` → The FastAPI endpoints to intercept uploads and API configurations.
-    *   `ingestion-workspace/ingestion-frontend/src/api.ts` → Contains `ragFetch` configuration that must not strip `FormData` headers.
+    *   `rag-retrieval-chat-manager/frontend/src/api.ts` → Contains `ragFetch` configuration that must not strip `FormData` headers.

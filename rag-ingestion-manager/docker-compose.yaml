@@ -247,7 +247,7 @@ services:
   rag-migrate:
     build:
       context: ..
-      dockerfile: rag-app-workspace/Dockerfile
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
     command:
       - sh
       - /app/scripts/run-migrate.sh
@@ -260,7 +260,7 @@ services:
   rag-api:
     build:
       context: ..
-      dockerfile: rag-app-workspace/Dockerfile
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
     command:
       - sh
       - /app/scripts/run-api.sh
@@ -283,7 +283,7 @@ services:
   eval-worker:
     build:
       context: ..
-      dockerfile: rag-app-workspace/Dockerfile
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
     command:
       - sh
       - /app/scripts/run-worker.sh

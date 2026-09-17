@@ -1,0 +1,5 @@
+﻿# Token Efficiency Rules
+When executing shell/terminal commands to inspect files, searches, diffs, or tests, invoke RTK directly:
+- Git: `rtk git status`, `rtk git diff`, `rtk git log -n 15`
+- Files: `rtk read <file>`, `rtk grep "<query>"`, `rtk ls`
+- Testing/Linting: `rtk pytest`, `rtk ruff check`

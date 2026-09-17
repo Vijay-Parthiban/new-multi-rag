@@ -1,5 +1,7 @@
 # Overall Architecture — RAG Retrieval & Chat Manager
 
+**Last updated:** 2026-09-17
+
 ## 1. System Overview
 `rag-retrieval-chat-manager` is the intelligent querying, retrieval orchestration, reranking, generation, safety guardrail, and evaluation platform in the `new-multi-rag` ecosystem. It leverages hybrid vector retrieval (Qdrant HNSW + OpenSearch BM25), LiteLLM cross-encoder rerankers, LiteLLM/Ollama generator models, Microsoft Presidio guardrail safety checks, and continuous Ragas offline evaluation suites.
 
@@ -65,3 +67,8 @@ The backend is structured into modular Python libraries:
 1. **Safety Interception First**: Guardrail safety checks run before vector search, preventing unauthorized prompt injection attacks from consuming embedding or LLM compute.
 2. **Deterministic Offline Evaluation**: Golden dataset benchmarks evaluate fixed context sets to produce stable, reproducible Ragas metric baselines.
 3. **End-to-End Tracing**: Every conversational exchange produces a complete span tree recording execution times across retrieval, reranking, generation, and guardrails.
+
+## 5. Related Documentation
+- [12 — Evaluation Metrics Reference](./12_evaluation_metrics_reference.md)
+- [13 — Golden Dataset Requirements](./13_golden_dataset_requirements.md)
+- [06 — Offline Evaluation Page](./06_offline_evaluation_page.md)
