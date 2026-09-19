@@ -1,13 +1,9 @@
-import { computeFileHash } from "./hash";
-
 export const API_URL = import.meta.env.VITE_API_URL ?? "";
 export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://localhost:8000";
 export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://localhost:8001";
 export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
 export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;
-
-export const CHUNK_SIZE = 5 * 1024 * 1024;
 
 function authHeaders(apiKey: string = API_KEY): HeadersInit {
   return apiKey ? { "X-API-Key": apiKey } : {};
@@ -57,63 +53,6 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) await parseError(res);
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
-}
-
-export interface InitUploadResponse {
-  upload_id: string;
-  directory_name: string;
-  file_name: string;
-}
-
-export interface CompleteUploadResponse {
-  file_id: string;
-  job_id: string | null;
-  status: string;
-  content_hash?: string;
-  client_content_hash?: string;
-  hash_verified?: boolean;
-  duplicate_of_file_id?: string;
-  duplicate_of_file_name?: string;
-}
-
-export async function uploadFileChunked(
-  directoryName: string,
-  file: File,
-): Promise<CompleteUploadResponse> {
-  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-  const clientContentHash = await computeFileHash(file);
-
-  const init = await apiFetch<InitUploadResponse>("/api/uploads/init", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      directory_name: directoryName,
-      file_name: file.name,
-      total_chunks: totalChunks,
-      total_size: file.size,
-      mime_type: file.type || null,
-      client_content_hash: clientContentHash,
-    }),
-  });
-
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const blob = file.slice(start, end);
-    const form = new FormData();
-    form.append("chunk", blob, file.name);
-
-    const res = await fetch(`${API_URL}/api/uploads/${init.upload_id}/chunks/${i}`, {
-      method: "PUT",
-      headers: authHeaders(API_KEY),
-      body: form,
-    });
-    if (!res.ok) await parseError(res);
-  }
-
-  return apiFetch<CompleteUploadResponse>(`/api/uploads/${init.upload_id}/complete`, {
-    method: "POST",
-  });
 }
 
 export interface FileRecord {
@@ -309,12 +248,45 @@ export async function getPipelineStats(pipelineId: string): Promise<PipelineStat
 export async function triggerPipelineSync(pipelineId: string): Promise<{ status: string, pipeline_id: string }> {
   return apiFetch<{ status: string, pipeline_id: string }>(`/api/pipelines/${pipelineId}/sync`, { method: "POST" });
 }
+export interface KnowledgeDestinationFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface KnowledgeDestinationField {
+  key: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "password" | "select" | "model";
+  description?: string;
+  required?: boolean;
+  group?: string;
+  placeholder?: string | null;
+  model_kind?: "embedding" | "chat" | "sparse" | null;
+  options?: KnowledgeDestinationFieldOption[];
+  min?: number | null;
+  max?: number | null;
+  advanced?: boolean;
+}
+
 export interface KnowledgeDestinationOption {
   id: string;
   name: string;
   category: string;
   description: string;
   default_config: Record<string, unknown>;
+  fields?: KnowledgeDestinationField[];
+}
+
+export interface LiteLLMModelOption {
+  id: string;
+  kind: "embedding" | "chat" | "sparse";
+}
+
+export interface LiteLLMModelsResponse {
+  source: "litellm" | "fallback";
+  litellm_base_url: string;
+  models: LiteLLMModelOption[];
+  warning?: string;
 }
 
 export interface KnowledgeDestinationConfig {
@@ -330,9 +302,13 @@ export interface KnowledgeDestinationConfig {
 export interface KnowledgeProfileSource {
   source_id: string;
   name: string;
+  source_type?: string | null;
   connector_type?: string | null;
   minio_bucket: string;
+  config?: Record<string, unknown> | null;
+  file_count?: number;
   status?: string;
+  last_sync_at?: string | null;
 }
 
 export interface KnowledgeProfile {
@@ -377,6 +353,10 @@ export interface KnowledgeSyncResponse {
 }
 export async function getDestinationOptions(): Promise<KnowledgeDestinationOption[]> {
   return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-profiles/destinations/options");
+}
+
+export async function getLiteLLMModels(modelKind: "all" | "embedding" | "chat" | "sparse" = "all"): Promise<LiteLLMModelsResponse> {
+  return apiFetch<LiteLLMModelsResponse>(`/api/knowledge-profiles/config/litellm-models?model_kind=${modelKind}`);
 }
 
 export async function listKnowledgeProfiles(): Promise<KnowledgeProfile[]> {
@@ -1138,6 +1118,7 @@ export interface SourceConnectorRecord {
   config: Record<string, unknown>;
   monitor_mode: "live" | "scheduled";
   sync_interval_minutes: number | null;
+  sync_interval_seconds: number | null;
   enabled: boolean;
   last_sync_at: string | null;
   status: string;
@@ -1157,15 +1138,19 @@ export interface SourceRecord {
   config: Record<string, unknown> | null;
   connector_monitor_mode: "live" | "scheduled";
   connector_sync_interval_minutes: number | null;
+  connector_sync_interval_seconds?: number | null;
   pipeline_monitor_mode: "live" | "scheduled";
   pipeline_sync_interval_minutes: number | null;
   minio_bucket: string;
   enabled: boolean;
   last_sync_at: string | null;
   status: string;
+  total_files?: number | null;
+  total_size_bytes?: number | null;
   error_message: string | null;
   pipelines: PipelineLinkInfo[];
   connectors: SourceConnectorRecord[];
+  connector_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1184,6 +1169,7 @@ export interface SourceCreateRequest {
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";
   sync_interval_minutes?: number | null;
+  sync_interval_seconds?: number | null;
 }
 
 export interface SourceUpdateRequest {
@@ -1191,6 +1177,7 @@ export interface SourceUpdateRequest {
   config?: Record<string, unknown>;
   connector_monitor_mode?: "live" | "scheduled";
   connector_sync_interval_minutes?: number | null;
+  connector_sync_interval_seconds?: number | null;
   pipeline_monitor_mode?: "live" | "scheduled";
   pipeline_sync_interval_minutes?: number | null;
   enabled?: boolean;
@@ -1201,6 +1188,7 @@ export interface ConnectorCreateRequest {
   config?: Record<string, unknown>;
   monitor_mode?: "live" | "scheduled";
   sync_interval_minutes?: number | null;
+  sync_interval_seconds?: number | null;
   enabled?: boolean;
 }
 

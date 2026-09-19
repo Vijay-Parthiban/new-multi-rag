@@ -4,6 +4,7 @@ import {
   deleteKnowledgeProfile,
   deletePipeline,
   getDestinationOptions,
+  getLiteLLMModels,
   listKnowledgeProfiles,
   listSources,
   syncKnowledgeProfile,
@@ -11,8 +12,10 @@ import {
   updateKnowledgeProfile,
   KnowledgeDestinationOption,
   KnowledgeProfile,
+  LiteLLMModelOption,
   SourceRecord,
 } from "../api";
+import DestinationConfigFields from "../components/DestinationConfigFields";
 import {
   IconClose,
   IconDatabase,
@@ -47,6 +50,8 @@ export default function KnowledgeStorePage() {
   >({});
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [litellmModels, setLitellmModels] = useState<LiteLLMModelOption[]>([]);
+  const [litellmWarning, setLitellmWarning] = useState<string | null>(null);
   // Visualizer Modal State
   const [visualizerProfile, setVisualizerProfile] = useState<KnowledgeProfile | null>(null);
   const [visualizerDestType, setVisualizerDestType] = useState<string>("vector_qdrant");
@@ -80,43 +85,54 @@ export default function KnowledgeStorePage() {
     loadData();
   }, []);
 
-  const openCreateModal = () => {
+  const buildInitialDestConfigs = (profile?: KnowledgeProfile | null) => {
+    const initialDest: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
+    destinationOptions.forEach((opt) => {
+      const existing = profile?.destinations.find((d) => d.destination_type === opt.id);
+      initialDest[opt.id] = {
+        enabled: existing ? existing.enabled : true,
+        config: {
+          ...opt.default_config,
+          ...(existing?.config || {}),
+        },
+      };
+    });
+    return initialDest;
+  };
+
+  const loadLiteLLMModels = async () => {
+    try {
+      const response = await getLiteLLMModels("all");
+      setLitellmModels(response.models);
+      setLitellmWarning(response.warning || null);
+    } catch {
+      setLitellmModels([]);
+      setLitellmWarning("Could not load LiteLLM models. You can still type model names manually.");
+    }
+  };
+
+  const openCreateModal = async () => {
     setEditingProfile(null);
     setFormName("");
     setFormDescription("");
     setFormEnabled(true);
     setSelectedSourceIds(sources.map((s) => s.id));
-
-    const initialDest: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
-    destinationOptions.forEach((opt) => {
-      initialDest[opt.id] = {
-        enabled: true,
-        config: { ...opt.default_config },
-      };
-    });
-    setDestConfigs(initialDest);
+    setDestConfigs(buildInitialDestConfigs());
     setErrorMsg(null);
     setIsModalOpen(true);
+    await loadLiteLLMModels();
   };
 
-  const openEditModal = (profile: KnowledgeProfile) => {
+  const openEditModal = async (profile: KnowledgeProfile) => {
     setEditingProfile(profile);
     setFormName(profile.name);
     setFormDescription(profile.description || "");
     setFormEnabled(profile.enabled);
     setSelectedSourceIds(profile.sources.map((s) => s.source_id));
-
-    const currentDestMap: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
-    destinationOptions.forEach((opt) => {
-      const existing = profile.destinations.find((d) => d.destination_type === opt.id);
-      currentDestMap[opt.id] = {
-        enabled: existing ? existing.enabled : true,
-        config: existing ? { ...existing.config } : { ...opt.default_config },
-      };
-    });
-    setDestConfigs(currentDestMap);
+    setDestConfigs(buildInitialDestConfigs(profile));
     setErrorMsg(null);
     setIsModalOpen(true);
+    await loadLiteLLMModels();
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -959,6 +975,15 @@ export default function KnowledgeStorePage() {
                   />
                 </div>
 
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={formEnabled}
+                    onChange={(e) => setFormEnabled(e.target.checked)}
+                  />
+                  <span style={{ fontSize: "13px", color: "#cbd5e1" }}>Profile enabled</span>
+                </label>
+
                 <div>
                   <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
                     Description
@@ -1073,8 +1098,18 @@ export default function KnowledgeStorePage() {
               {/* 5 Universal RAG Destination Configurations */}
               <div style={{ marginBottom: "32px" }}>
                 <label style={{ display: "block", fontSize: "14px", fontWeight: 700, color: "#cbd5e1", marginBottom: "12px" }}>
-                  Configure 5 Universal 2026 RAG Destination Stores
+                  Configure 5 Universal RAG Destination Stores
                 </label>
+                {litellmWarning && (
+                  <div style={{ fontSize: "12px", color: "#fbbf24", marginBottom: "10px" }}>
+                    {litellmWarning}
+                  </div>
+                )}
+                {litellmModels.length > 0 && (
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
+                    LiteLLM models loaded: {litellmModels.length} available for embedding, chat, and sparse fields.
+                  </div>
+                )}
 
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                   {destinationOptions.map((opt) => {
@@ -1122,40 +1157,21 @@ export default function KnowledgeStorePage() {
                         </div>
 
                         {current.enabled && (
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" }}>
-                            {Object.entries(current.config).map(([cfgKey, cfgVal]) => (
-                              <div key={cfgKey}>
-                                <label style={{ display: "block", fontSize: "11px", color: "#94a3b8", marginBottom: "4px" }}>
-                                  {cfgKey}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={typeof cfgVal === "object" ? JSON.stringify(cfgVal) : String(cfgVal)}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    setDestConfigs({
-                                      ...destConfigs,
-                                      [opt.id]: {
-                                        ...current,
-                                        config: {
-                                          ...current.config,
-                                          [cfgKey]: val === "true" ? true : val === "false" ? false : isNaN(Number(val)) ? val : Number(val),
-                                        },
-                                      },
-                                    });
-                                  }}
-                                  style={{
-                                    width: "100%",
-                                    padding: "6px 10px",
-                                    borderRadius: "6px",
-                                    background: "rgba(15, 23, 42, 0.8)",
-                                    border: "1px solid rgba(255, 255, 255, 0.1)",
-                                    color: "#e2e8f0",
-                                    fontSize: "12px",
-                                  }}
-                                />
-                              </div>
-                            ))}
+                          <div style={{ marginTop: "12px" }}>
+                            <DestinationConfigFields
+                              option={opt}
+                              config={current.config}
+                              litellmModels={litellmModels}
+                              onChange={(nextConfig) => {
+                                setDestConfigs({
+                                  ...destConfigs,
+                                  [opt.id]: {
+                                    ...current,
+                                    config: nextConfig,
+                                  },
+                                });
+                              }}
+                            />
                           </div>
                         )}
                       </div>

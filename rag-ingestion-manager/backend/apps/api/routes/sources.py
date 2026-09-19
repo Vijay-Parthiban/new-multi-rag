@@ -32,26 +32,12 @@ from src.ingestion_service.core.pathway_sync import register_source_poller, stop
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 settings = get_settings()
 
+# Apache NiFi connector catalog. Only these connectors have a NiFi sync path that
+# lands objects in the source MinIO bucket.
 CONNECTOR_OPTIONS = [
-    {"id": "manual_upload", "label": "MinIO Manual File Upload", "description": "Manual file upload directly to dedicated MinIO bucket"},
-    {"id": "google_drive", "label": "Google Drive", "description": "Sync files from Google Drive"},
-    {"id": "google_sheets", "label": "Google Sheets", "description": "Sync spreadsheets from Google Sheets"},
-    {"id": "gcs", "label": "Google Cloud Storage", "description": "Sync files from GCS buckets"},
-    {"id": "s3", "label": "Amazon S3", "description": "Sync files from S3 buckets"},
-    {"id": "azure_blob", "label": "Azure Blob Storage", "description": "Sync files from Azure Blob"},
-    {"id": "azure", "label": "Azure Blob Storage", "description": "Sync files from Azure Blob"},
-    {"id": "onedrive", "label": "OneDrive", "description": "Sync files from OneDrive"},
-    {"id": "microsoft_onedrive", "label": "OneDrive", "description": "Sync files from Microsoft OneDrive"},
-    {"id": "sharepoint", "label": "SharePoint", "description": "Sync files from SharePoint"},
-    {"id": "dropbox", "label": "Dropbox", "description": "Sync files from Dropbox"},
-    {"id": "postgres", "label": "PostgreSQL", "description": "Sync data from PostgreSQL tables"},
-    {"id": "mysql", "label": "MySQL", "description": "Sync data from MySQL tables"},
-    {"id": "mongodb", "label": "MongoDB", "description": "Sync documents from MongoDB collections"},
-    {"id": "github", "label": "GitHub", "description": "Sync from GitHub repositories"},
-    {"id": "slack", "label": "Slack", "description": "Sync messages from Slack channels"},
-    {"id": "confluence", "label": "Confluence", "description": "Sync pages from Confluence"},
-    {"id": "sftp", "label": "SFTP", "description": "Sync files via SFTP"},
-    {"id": "http_api", "label": "HTTP API", "description": "Sync data from REST APIs"},
+    {"id": "google_drive", "label": "Google Drive", "description": "Sync documents and folders from Google Drive"},
+    {"id": "s3", "label": "Amazon S3", "description": "Sync objects from an Amazon S3 bucket"},
+    {"id": "azure_blob", "label": "Azure Blob Storage", "description": "Sync blobs from an Azure storage container"},
 ]
 
 VALID_CONNECTOR_IDS = {c["id"] for c in CONNECTOR_OPTIONS}
@@ -65,6 +51,7 @@ class ConnectorCreateRequest(BaseModel):
     config: dict = Field(default_factory=dict)
     monitor_mode: Literal["live", "scheduled"] = "live"
     sync_interval_minutes: int | None = Field(default=None, ge=1)
+    sync_interval_seconds: int | None = Field(default=None, ge=5, le=86400)
     enabled: bool = True
 
 
@@ -72,6 +59,7 @@ class ConnectorUpdateRequest(BaseModel):
     config: dict | None = None
     monitor_mode: Literal["live", "scheduled"] | None = None
     sync_interval_minutes: int | None = Field(default=None, ge=1)
+    sync_interval_seconds: int | None = Field(default=None, ge=5, le=86400)
     enabled: bool | None = None
 
 
@@ -86,6 +74,7 @@ class SourceCreateRequest(BaseModel):
     # Source-level monitoring defaults
     connector_monitor_mode: Literal["live", "scheduled"] = "live"
     connector_sync_interval_minutes: int | None = Field(default=None, ge=1)
+    connector_sync_interval_seconds: int | None = Field(default=None, ge=5, le=86400)
     pipeline_monitor_mode: Literal["live", "scheduled"] = "live"
     pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1)
     # Legacy compat
@@ -98,6 +87,7 @@ class SourceUpdateRequest(BaseModel):
     config: dict | None = None
     connector_monitor_mode: Literal["live", "scheduled"] | None = None
     connector_sync_interval_minutes: int | None = Field(default=None, ge=1)
+    connector_sync_interval_seconds: int | None = Field(default=None, ge=5, le=86400)
     pipeline_monitor_mode: Literal["live", "scheduled"] | None = None
     pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
@@ -122,6 +112,7 @@ def _connector_to_dict(c: SourceConnector) -> dict:
         "config": c.config or {},
         "monitor_mode": c.monitor_mode.value if c.monitor_mode else "live",
         "sync_interval_minutes": c.sync_interval_minutes,
+        "sync_interval_seconds": getattr(c, "sync_interval_seconds", None),
         "enabled": c.enabled,
         "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         "status": c.status,
@@ -227,6 +218,7 @@ async def _source_to_dict(s: Source) -> dict:
         "config": s.config or {},
         "connector_monitor_mode": s.connector_monitor_mode.value if s.connector_monitor_mode else "live",
         "connector_sync_interval_minutes": s.connector_sync_interval_minutes,
+        "connector_sync_interval_seconds": getattr(s, "connector_sync_interval_seconds", None),
         "pipeline_monitor_mode": s.pipeline_monitor_mode.value if s.pipeline_monitor_mode else "live",
         "pipeline_sync_interval_minutes": s.pipeline_sync_interval_minutes,
         "minio_bucket": s.minio_bucket,
@@ -264,7 +256,7 @@ def _make_bucket_name(source_id: str, name: str) -> str:
 
 @router.get("/connectors", status_code=200)
 async def list_connectors():
-    """Return available Airbyte connector types."""
+    """Return the Apache NiFi connector catalog."""
     return {"connectors": CONNECTOR_OPTIONS}
 
 
@@ -285,9 +277,8 @@ async def list_sources(db: Annotated[AsyncSession, Depends(get_db)]):
 async def create_source(
     body: SourceCreateRequest, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    """Create a new MinIO connector source or MinIO manual upload source."""
+    """Create a new NiFi connector source or MinIO manual upload source."""
     is_manual = body.source_type == "minio_manual" or body.connector_type in ("manual_upload", "minio_manual")
-    is_local = body.source_type == "local_filesystem" or body.connector_type == "local_filesystem"
 
     # Check name uniqueness
     existing = await db.execute(select(Source).where(Source.name == body.name.strip()))
@@ -309,6 +300,7 @@ async def create_source(
             config=config,
             connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
             connector_sync_interval_minutes=body.connector_sync_interval_minutes,
+            connector_sync_interval_seconds=body.connector_sync_interval_seconds,
             pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
             pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
             minio_bucket=bucket,
@@ -318,42 +310,6 @@ async def create_source(
         db.add(source)
         await db.commit()
         await ensure_bucket(bucket)
-        res = await db.execute(
-            select(Source)
-            .options(selectinload(Source.pipelines), selectinload(Source.connectors))
-            .where(Source.id == source_id)
-        )
-        refreshed_source = res.scalar_one()
-        return await _source_to_dict(refreshed_source)
-        import re
-        safe_name = re.sub(r"[^a-z0-9_-]", "_", body.name.strip().lower())
-        if not safe_name:
-            safe_name = "local_source"
-        folder_name = f"{safe_name}-{str(source_id)[:8]}"
-        local_dir = storage_root() / "local_sources" / folder_name
-        local_dir.mkdir(parents=True, exist_ok=True)
-
-        bucket = f"local-{folder_name}"
-        config = body.config or {}
-        config["source_type"] = "local_filesystem"
-        config["folder_name"] = folder_name
-        config["local_path"] = str(local_dir)
-
-        source = Source(
-            id=source_id,
-            name=body.name.strip(),
-            connector_type="local_filesystem",
-            config=config,
-            connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
-            connector_sync_interval_minutes=body.connector_sync_interval_minutes,
-            pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
-            pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
-            minio_bucket=bucket,
-            status="synced",
-            sync_interval_minutes=body.sync_interval_minutes,
-        )
-        db.add(source)
-        await db.commit()
         res = await db.execute(
             select(Source)
             .options(selectinload(Source.pipelines), selectinload(Source.connectors))
@@ -373,6 +329,7 @@ async def create_source(
                 config=body.config,
                 monitor_mode=body.monitor_mode,
                 sync_interval_minutes=body.sync_interval_minutes,
+                sync_interval_seconds=body.connector_sync_interval_seconds,
             )
         ]
 
@@ -393,6 +350,7 @@ async def create_source(
         config=body.config,
         connector_monitor_mode=SourceMonitorMode(body.connector_monitor_mode),
         connector_sync_interval_minutes=body.connector_sync_interval_minutes,
+        connector_sync_interval_seconds=body.connector_sync_interval_seconds,
         pipeline_monitor_mode=SourceMonitorMode(body.pipeline_monitor_mode),
         pipeline_sync_interval_minutes=body.pipeline_sync_interval_minutes,
         minio_bucket=bucket,
@@ -407,6 +365,7 @@ async def create_source(
             config=cr.config,
             monitor_mode=SourceMonitorMode(cr.monitor_mode),
             sync_interval_minutes=cr.sync_interval_minutes,
+            sync_interval_seconds=cr.sync_interval_seconds,
             enabled=cr.enabled,
         )
         db.add(connector)
@@ -471,6 +430,8 @@ async def update_source(
         source.connector_monitor_mode = SourceMonitorMode(body.connector_monitor_mode)
     if body.connector_sync_interval_minutes is not None:
         source.connector_sync_interval_minutes = body.connector_sync_interval_minutes
+    if body.connector_sync_interval_seconds is not None:
+        source.connector_sync_interval_seconds = body.connector_sync_interval_seconds
     if body.pipeline_monitor_mode is not None:
         source.pipeline_monitor_mode = SourceMonitorMode(body.pipeline_monitor_mode)
     if body.pipeline_sync_interval_minutes is not None:
@@ -562,6 +523,7 @@ async def add_source_connector(
         config=body.config,
         monitor_mode=SourceMonitorMode(body.monitor_mode),
         sync_interval_minutes=body.sync_interval_minutes,
+        sync_interval_seconds=body.sync_interval_seconds,
         enabled=body.enabled,
     )
     db.add(connector)
@@ -612,6 +574,8 @@ async def update_source_connector(
         connector.monitor_mode = SourceMonitorMode(body.monitor_mode)
     if body.sync_interval_minutes is not None:
         connector.sync_interval_minutes = body.sync_interval_minutes
+    if body.sync_interval_seconds is not None:
+        connector.sync_interval_seconds = body.sync_interval_seconds
     if body.enabled is not None:
         connector.enabled = body.enabled
 

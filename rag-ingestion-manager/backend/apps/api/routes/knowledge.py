@@ -14,12 +14,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.api.routes.knowledge_destination_schemas import (
+    build_destination_types,
+    merge_destination_config,
+    normalize_destination_payload,
+)
 from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     KnowledgeDestinationConfig,
@@ -34,80 +40,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/knowledge-profiles", tags=["knowledge-profiles"])
 settings = get_settings()
 
-DESTINATION_TYPES = [
-    {
-        "id": "vector_qdrant",
-        "name": "Qdrant",
-        "category": "Vector Engine",
-        "description": "Dense vector similarity search with HNSW graph indexing & scalar/binary quantization",
-        "default_config": {
-            "url": "http://localhost:6333",
-            "api_key": "qdrant",
-            "collection_name": "knowledge_qdrant_collection",
-            "vector_size": 2048,
-            "distance": "Cosine",
-            "hnsw_m": 16,
-            "hnsw_ef_construct": 100,
-            "quantization": "int8_scalar",
-        },
-    },
-    {
-        "id": "lexical_opensearch",
-        "name": "OpenSearch",
-        "category": "Lexical & Sparse Search",
-        "description": "BM25 keyword matching & SPLADE/BGE-M3 learned sparse vector inverted indexing",
-        "default_config": {
-            "endpoint_url": "http://localhost:9200",
-            "index_name": "knowledge_lexical_index",
-            "bm25_k1": 1.2,
-            "bm25_b": 0.75,
-            "sparse_model": "bge-m3-sparse",
-            "auth_type": "none",
-        },
-    },
-    {
-        "id": "graph_neo4j",
-        "name": "Neo4j (GraphRAG)",
-        "category": "Knowledge Graph Store",
-        "description": "Entity-relationship extraction & hierarchical community report summaries for multi-hop GraphRAG",
-        "default_config": {
-            "bolt_uri": "bolt://localhost:7687",
-            "username": "neo4j",
-            "password": "password",
-            "database": "neo4j",
-            "entity_extraction_model": "gpt-4o-mini",
-            "community_reports_enabled": True,
-            "entity_resolution_mode": "exact_match",
-        },
-    },
-    {
-        "id": "relational_pgvector",
-        "name": "PostgreSQL (pgvector/pgvectorscale)",
-        "category": "Multi-Model Relational DB",
-        "description": "ACID-compliant co-located metadata, document ownership, ACLs, and vector embedding tables",
-        "default_config": {
-            "connection_url": "postgresql+asyncpg://postgres:postgres@localhost:5432/multi_rag",
-            "table_name": "knowledge_vector_records",
-            "index_algorithm": "DiskANN",
-            "distance_op": "vector_cosine_ops",
-            "schema_name": "public",
-        },
-    },
-    {
-        "id": "cache_redisvl",
-        "name": "RedisVL",
-        "category": "Semantic Cache & Summary Store",
-        "description": "Parent-child chunk mapping, RAPTOR recursive summary trees & semantic prompt caching",
-        "default_config": {
-            "redis_url": "redis://localhost:6379",
-            "index_prefix": "knowledge_cache",
-            "similarity_threshold": 0.15,
-            "ttl_seconds": 86400,
-            "parent_child_mapping": True,
-            "raptor_summaries": True,
-        },
-    },
-]
+def _destination_types() -> list[dict[str, Any]]:
+    return build_destination_types(settings)
 
 
 # ── Pydantic Request Models ──────────────────────────────────────────────────
@@ -220,8 +154,74 @@ async def _profile_to_dict(profile: KnowledgeProfile) -> dict[str, Any]:
 
 @router.get("/destinations/options")
 async def get_destination_options():
-    """Return all available destination types and their default 2026 configurations."""
-    return DESTINATION_TYPES
+    """Return destination types with Docker-aware defaults and typed field schemas."""
+    return _destination_types()
+
+
+@router.get("/config/litellm-models")
+async def list_litellm_models(
+    model_kind: Literal["all", "embedding", "chat", "sparse"] = Query("all"),
+):
+    """List models from the LiteLLM proxy (/v1/models) with env-based fallback."""
+    fallback_embedding = settings.unique_embedding_models
+    fallback_chat = [settings.embedding_model, "gpt-4o-mini", "gpt-4o"]
+    fallback_sparse = [settings.sparse_embedding_model]
+
+    def _classify_model(model_id: str) -> str:
+        lowered = model_id.lower()
+        if any(token in lowered for token in ("embed", "embedding", "nvidia-embed", "bge", "e5")):
+            return "embedding"
+        if any(token in lowered for token in ("bm25", "sparse", "splade")):
+            return "sparse"
+        return "chat"
+
+    try:
+        base = settings.litellm_base_url.rstrip("/")
+        headers = {}
+        if settings.openai_api_key:
+            headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base}/v1/models", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        raw_models = payload.get("data") or payload.get("models") or []
+        models: list[dict[str, str]] = []
+        for item in raw_models:
+            if isinstance(item, str):
+                model_id = item
+            else:
+                model_id = item.get("id") or item.get("model_name") or ""
+            if not model_id:
+                continue
+            kind = _classify_model(model_id)
+            if model_kind != "all" and kind != model_kind:
+                continue
+            models.append({"id": model_id, "kind": kind})
+        if models:
+            return {
+                "source": "litellm",
+                "litellm_base_url": settings.litellm_base_url,
+                "models": models,
+            }
+    except Exception as exc:
+        logger.warning("litellm_models_fetch_failed error=%s", exc)
+
+    fallback_map = {
+        "embedding": fallback_embedding,
+        "chat": fallback_chat,
+        "sparse": fallback_sparse,
+        "all": fallback_embedding + fallback_chat + fallback_sparse,
+    }
+    models = [
+        {"id": model_id, "kind": _classify_model(model_id)}
+        for model_id in dict.fromkeys(fallback_map[model_kind])
+    ]
+    return {
+        "source": "fallback",
+        "litellm_base_url": settings.litellm_base_url,
+        "models": models,
+        "warning": "Could not reach LiteLLM proxy; showing environment defaults.",
+    }
 
 
 @router.get("")
@@ -272,13 +272,17 @@ async def create_knowledge_profile(
         except ValueError:
             continue
 
-    # Add destination configurations
-    for dest in req.destinations:
+    # Add destination configurations (merge with typed defaults)
+    normalized_destinations = normalize_destination_payload(
+        [dest.model_dump() for dest in req.destinations],
+        settings,
+    )
+    for dest in normalized_destinations:
         d_cfg = KnowledgeDestinationConfig(
             knowledge_profile_id=profile.id,
-            destination_type=dest.destination_type,
-            enabled=dest.enabled,
-            config=dest.config,
+            destination_type=dest["destination_type"],
+            enabled=dest["enabled"],
+            config=dest["config"],
             status="idle",
         )
         db.add(d_cfg)
@@ -364,18 +368,28 @@ async def update_knowledge_profile(
 
     # Update destination configs if supplied
     if req.destinations is not None:
+        normalized_destinations = normalize_destination_payload(
+            [dest.model_dump() for dest in req.destinations],
+            settings,
+        )
         existing_dest_map = {d.destination_type: d for d in profile.destinations}
-        for dest_in in req.destinations:
-            if dest_in.destination_type in existing_dest_map:
-                d_obj = existing_dest_map[dest_in.destination_type]
-                d_obj.enabled = dest_in.enabled
-                d_obj.config = dest_in.config
+        for dest_in in normalized_destinations:
+            dest_type = dest_in["destination_type"]
+            merged_config = merge_destination_config(
+                dest_type,
+                dest_in["config"],
+                settings,
+            )
+            if dest_type in existing_dest_map:
+                d_obj = existing_dest_map[dest_type]
+                d_obj.enabled = dest_in["enabled"]
+                d_obj.config = merged_config
             else:
                 d_obj = KnowledgeDestinationConfig(
                     knowledge_profile_id=profile.id,
-                    destination_type=dest_in.destination_type,
-                    enabled=dest_in.enabled,
-                    config=dest_in.config,
+                    destination_type=dest_type,
+                    enabled=dest_in["enabled"],
+                    config=merged_config,
                     status="idle",
                 )
                 db.add(d_obj)

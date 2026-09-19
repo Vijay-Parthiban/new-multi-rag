@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { IconError, IconUpload } from "../Icons";
 
 interface ConnectorConfigFormProps {
   connectorType: string;
@@ -206,7 +207,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             transition: "all 0.15s ease",
           }}
         >
-          {showRawJson ? "📋 Switch to GUI Form" : "⚙️ Advanced: Edit Raw JSON"}
+          {showRawJson ? "Switch to GUI Form" : "Advanced: Edit Raw JSON"}
         </button>
       </div>
 
@@ -224,7 +225,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             gap: "0.5rem",
           }}
         >
-          <span>⚠️</span>
+          <IconError size={15} />
           <span>{errorMsg}</span>
         </div>
       )}
@@ -389,7 +390,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                       onChange={handleFileSelect}
                       style={{ display: "none" }}
                     />
-                    <div style={{ fontSize: "1.75rem", marginBottom: "0.4rem" }}>📁</div>
+                    <div style={{ marginBottom: "0.4rem", color: "#58a6ff" }}><IconUpload size={26} /></div>
                     <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#e6edf3" }}>
                       Attach Service Account JSON Key
                     </div>
@@ -441,6 +442,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                     <button
                       type="button"
                       onClick={() => togglePasswordVisibility("secret_key")}
+                      aria-label={showPassword.secret_key ? "Hide secret access key" : "Show secret access key"}
+                      aria-pressed={!!showPassword.secret_key}
                       style={{
                         position: "absolute",
                         right: "0.6rem",
@@ -450,10 +453,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                         border: "none",
                         color: "#8b949e",
                         cursor: "pointer",
-                        fontSize: "0.85rem",
+                        fontSize: "0.75rem",
+                        fontWeight: 600,
                       }}
                     >
-                      {showPassword.secret_key ? "🙈" : "👁️"}
+                      {showPassword.secret_key ? "Hide" : "Show"}
                     </button>
                   </div>
                 </div>
@@ -517,6 +521,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   <button
                     type="button"
                     onClick={() => togglePasswordVisibility("azure_conn")}
+                    aria-label={showPassword.azure_conn ? "Hide connection string" : "Show connection string"}
+                    aria-pressed={!!showPassword.azure_conn}
                     style={{
                       position: "absolute",
                       right: "0.6rem",
@@ -526,10 +532,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                       border: "none",
                       color: "#8b949e",
                       cursor: "pointer",
-                      fontSize: "0.85rem",
+                      fontSize: "0.75rem",
+                      fontWeight: 600,
                     }}
                   >
-                    {showPassword.azure_conn ? "🙈" : "👁️"}
+                    {showPassword.azure_conn ? "Hide" : "Show"}
                   </button>
                 </div>
               </div>
@@ -611,6 +618,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                   <button
                     type="button"
                     onClick={() => togglePasswordVisibility("db_pass")}
+                    aria-label={showPassword.db_pass ? "Hide password" : "Show password"}
+                    aria-pressed={!!showPassword.db_pass}
                     style={{
                       position: "absolute",
                       right: "0.6rem",
@@ -620,10 +629,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
                       border: "none",
                       color: "#8b949e",
                       cursor: "pointer",
-                      fontSize: "0.85rem",
+                      fontSize: "0.75rem",
+                      fontWeight: 600,
                     }}
                   >
-                    {showPassword.db_pass ? "🙈" : "👁️"}
+                    {showPassword.db_pass ? "Hide" : "Show"}
                   </button>
                 </div>
               </div>

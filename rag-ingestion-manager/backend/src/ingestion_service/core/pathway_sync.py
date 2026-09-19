@@ -59,11 +59,14 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
         logger.info("pathway_sync_skipped_disabled source=%s", source.id)
         return
 
-    # Resolve connectors: prefer per-connector rows, fall back to legacy fields
+    # Resolve connectors: prefer per-connector rows, fall back to legacy fields.
+    # "minio" and "local_filesystem" are source markers, not connector ids, so
+    # they must not synthesize a connector that no NiFi sync path can serve.
     connectors: list[SourceConnector] = [
         c for c in (source.connectors or []) if c.enabled
     ]
-    if not connectors and source.connector_type:
+    marker_types = {"minio", "minio_manual", "manual_upload", "local_filesystem"}
+    if not connectors and source.connector_type and source.connector_type not in marker_types:
         # Legacy single-connector source — synthesize a connector row
         connectors = [
             SourceConnector(
@@ -72,6 +75,7 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
                 config=source.config or {},
                 monitor_mode=SourceMonitorMode(source.connector_monitor_mode),
                 sync_interval_minutes=source.connector_sync_interval_minutes,
+                sync_interval_seconds=getattr(source, "connector_sync_interval_seconds", None),
                 enabled=True,
             )
         ]
@@ -490,18 +494,26 @@ async def register_source_poller(source_id: uuid.UUID) -> None:
             _SOURCE_POLLER_TASKS[source_id] = task
 
         else:
-            # SCHEDULED mode
-            interval_minutes = source.connector_sync_interval_minutes
-            if not interval_minutes:
+            # SCHEDULED mode — seconds take priority over minutes.
+            interval_seconds = source.connector_sync_interval_seconds
+            if not interval_seconds:
                 for c in connectors:
-                    if c.sync_interval_minutes:
-                        interval_minutes = c.sync_interval_minutes
+                    if c.sync_interval_seconds:
+                        interval_seconds = c.sync_interval_seconds
                         break
-            if not interval_minutes:
-                interval_minutes = 5  # default 5 minutes
+            if not interval_seconds:
+                interval_minutes = source.connector_sync_interval_minutes
+                if not interval_minutes:
+                    for c in connectors:
+                        if c.sync_interval_minutes:
+                            interval_minutes = c.sync_interval_minutes
+                            break
+                if not interval_minutes:
+                    interval_minutes = 5  # default 5 minutes
+                interval_seconds = interval_minutes * 60
 
-            interval_seconds = max(1, interval_minutes * 60)
-            logger.info("Starting PRECISE SCHEDULED background poller for source %s (interval=%d minutes)", source_id, interval_minutes)
+            interval_seconds = max(5, interval_seconds)
+            logger.info("Starting PRECISE SCHEDULED background poller for source %s (interval=%ds)", source_id, interval_seconds)
 
             async def _scheduled_loop():
                 while True:

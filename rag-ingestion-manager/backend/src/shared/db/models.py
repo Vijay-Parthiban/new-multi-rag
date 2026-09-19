@@ -169,6 +169,7 @@ class Source(Base):
         default=SourceMonitorMode.LIVE,
     )
     connector_sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    connector_sync_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Source→Pipeline monitoring mode (default for all linked pipelines)
     pipeline_monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
         Enum(SourceMonitorMode, name="source_monitor_mode", values_callable=_enum_values, create_constraint=False),
@@ -218,6 +219,8 @@ class SourceConnector(Base):
         default=SourceMonitorMode.LIVE,
     )
     sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sub-minute scheduled polling. Takes priority over sync_interval_minutes when set.
+    sync_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="disconnected")

@@ -415,43 +415,46 @@ def validate_airbyte_connector_config(
     config: Dict[str, Any]
 ) -> tuple[bool, Optional[str]]:
     """
-    Validate connector configuration before sync.
-    
+    Validate the Apache NiFi connector config before sync.
+
+    Required fields must match the keys that the NiFi sync routines read:
+    - s3:         bucket + (access_key_id | aws_access_key_id) +
+                  (secret_access_key | aws_secret_access_key)
+    - azure_blob: container_name + (connection_string |
+                  (account_name + account_key))
+    - google_drive: folder_url | folder_id. Credentials fall back to the
+                  service account file configured on the server.
+
     Args:
         connector_type: Type of connector
         config: Configuration dictionary
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
-    
+
     if connector_type == "google_drive":
-        folder = str(config.get("folder_url") or config.get("folder_id") or "").strip()
-        if not folder:
-            folder = "14IXHBDpExTdBDfh5GTKmQEIiv6AYHRMG"
-        if not folder:
-            return False, "Missing required field: folder_url or folder_id"
-        if not (config.get("service_account_json") or config.get("credentials_json") or config.get("service_account_file")):
-            return False, "Missing required field: service_account_json or credentials_json"
+        if not (config.get("folder_url") or config.get("folder_id")):
+            return False, "Missing required field: folder_url"
         return True, None
 
-    # Required fields for each connector type
-    required_fields = {
-        "s3": ["bucket", "aws_access_key_id", "aws_secret_access_key"],
-        "gcs": ["bucket_name", "credentials_json"],
-        "azure_blob": ["account_name", "container_name"],
-        "azure": ["account_name", "container_name"],
-        "google_sheets": ["spreadsheet_id", "credentials_json"],
-        "onedrive": ["client_id", "client_secret", "tenant_id"],
-        "microsoft_onedrive": ["client_id", "client_secret", "tenant_id"],
-        "sharepoint": ["site_url", "client_id", "client_secret", "tenant_id"],
-        "postgres": ["host", "database", "user", "password"]
-    }
+    if connector_type in ("s3", "amazon_s3"):
+        if not config.get("bucket"):
+            return False, "Missing required field: bucket"
+        if not (config.get("access_key_id") or config.get("aws_access_key_id")):
+            return False, "Missing required field: access_key_id"
+        if not (config.get("secret_access_key") or config.get("aws_secret_access_key")):
+            return False, "Missing required field: secret_access_key"
+        return True, None
 
-    required = required_fields.get(connector_type, [])
-
-    for field in required:
-        if not config.get(field):
-            return False, f"Missing required field: {field}"
+    if connector_type in ("azure_blob", "azure"):
+        if not config.get("container_name"):
+            return False, "Missing required field: container_name"
+        has_auth = config.get("connection_string") or (
+            config.get("account_name") and config.get("account_key")
+        )
+        if not has_auth:
+            return False, "Missing required field: connection_string or account_name + account_key"
+        return True, None
 
     return True, None

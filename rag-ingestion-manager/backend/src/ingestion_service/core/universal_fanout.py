@@ -55,6 +55,73 @@ def _normalize_pg_url(url: str | None) -> str | None:
     return url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
 
 
+def _resolve_litellm(dest_config: dict[str, Any], settings: Any) -> tuple[str, str]:
+    base_url = dest_config.get("litellm_base_url") or settings.litellm_base_url
+    api_key = dest_config.get("litellm_api_key") or settings.openai_api_key
+    return base_url, api_key
+
+
+def _resolve_embedding_model(dest_config: dict[str, Any], settings: Any) -> str:
+    return dest_config.get("embedding_model") or settings.embedding_model
+
+
+def _qualified_pg_table(dest_config: dict[str, Any]) -> str:
+    schema_name = (dest_config.get("schema_name") or "public").strip()
+    table_name = _resolve_pg_table(dest_config)
+    if schema_name and schema_name != "public":
+        return f"{schema_name}.{table_name}"
+    return table_name
+
+
+def _opensearch_auth(dest_config: dict[str, Any]) -> tuple[str, str] | None:
+    auth_type = (dest_config.get("auth_type") or "none").lower()
+    if auth_type == "basic":
+        username = dest_config.get("username") or ""
+        password = dest_config.get("password") or ""
+        if username:
+            return username, password
+    return None
+
+
+def _extract_entities_via_litellm(text: str, dest_config: dict[str, Any], settings: Any) -> list[str]:
+    if not dest_config.get("entity_extraction_enabled"):
+        return []
+    model = dest_config.get("entity_extraction_model") or "gpt-4o-mini"
+    max_entities = int(dest_config.get("max_entities_per_chunk") or 10)
+    base_url, api_key = _resolve_litellm(dest_config, settings)
+    try:
+        import httpx
+
+        prompt = (
+            "Extract up to "
+            f"{max_entities} named entities from the text. "
+            "Return a JSON array of strings only."
+        )
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": text[:4000]},
+                    ],
+                    "temperature": 0,
+                },
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+        import json
+
+        parsed = json.loads(content)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()][:max_entities]
+    except Exception as exc:
+        logger.warning("entity_extraction_failed error=%s", exc)
+    return []
+
+
 def _build_fanout_payload(
     *,
     source_id: uuid.UUID,
@@ -436,7 +503,7 @@ def _sync_purge_file_from_destination(dest_type: str, dest_config: dict[str, Any
             logger.warning("neo4j_purge_failed file_key=%s error=%s", file_key, exc)
 
     elif dest_type in ["relational_pgvector", "database_pgvector"]:
-        table_name = _resolve_pg_table(dest_config)
+        table_name = _qualified_pg_table(dest_config)
         try:
             try:
                 import psycopg2 as pg_driver
@@ -479,11 +546,13 @@ def _sync_fanout_to_destination(
         collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
         url = dest_config.get("url") or settings.qdrant_url
         api_key = dest_config.get("api_key") or settings.qdrant_api_key
+        litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
+        embedding_model = _resolve_embedding_model(dest_config, settings)
 
         embedder = EmbeddingClient(
-            base_url=settings.litellm_base_url,
-            api_key=settings.openai_api_key,
-            model=settings.embedding_model,
+            base_url=litellm_base_url,
+            api_key=litellm_api_key,
+            model=embedding_model,
         )
 
         points = []
@@ -511,16 +580,34 @@ def _sync_fanout_to_destination(
                 collection=collection_name,
                 api_key=api_key,
             )
-            qdrant.ensure_collection(vector_size=len(points[0]["dense_vector"]), enable_sparse=False)
+            configured_size = dest_config.get("vector_size")
+            vector_size = int(configured_size) if configured_size else len(points[0]["dense_vector"])
+            qdrant.ensure_collection(vector_size=vector_size, enable_sparse=False)
             qdrant.upsert_batch(points)
-            logger.info("qdrant_fanout_complete collection=%s points_count=%d", collection_name, len(points))
+            logger.info(
+                "qdrant_fanout_complete collection=%s model=%s points_count=%d",
+                collection_name,
+                embedding_model,
+                len(points),
+            )
 
     elif dest_type in ["lexical_opensearch", "elasticsearch"]:
         index_name = dest_config.get("index_name", "knowledge_lexical_index")
         url = _resolve_opensearch_url(dest_config, settings)
+        auth = _opensearch_auth(dest_config)
         try:
             import httpx
             with httpx.Client(timeout=5.0) as client:
+                index_settings = {
+                    "settings": {
+                        "index": {
+                            "number_of_shards": dest_config.get("number_of_shards", 1),
+                            "number_of_replicas": dest_config.get("number_of_replicas", 0),
+                            "refresh_interval": dest_config.get("refresh_interval", "1s"),
+                        }
+                    }
+                }
+                client.put(f"{url}/{index_name}", json=index_settings, auth=auth)
                 for p in pages:
                     text = p.text or ""
                     if not text.strip():
@@ -539,8 +626,11 @@ def _sync_fanout_to_destination(
                         "source_id": payload["source_id"],
                         "source_locator": payload["source_locator"],
                         "created_at": payload["created_at"],
+                        "sparse_model": dest_config.get("sparse_model"),
+                        "bm25_k1": dest_config.get("bm25_k1"),
+                        "bm25_b": dest_config.get("bm25_b"),
                     }
-                    client.post(f"{url}/{index_name}/_doc", json=doc)
+                    client.post(f"{url}/{index_name}/_doc", json=doc, auth=auth)
             logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
         except Exception as exc:
             logger.warning("opensearch_indexing_failed index=%s file=%s error=%s", index_name, file_key, exc)
@@ -549,12 +639,14 @@ def _sync_fanout_to_destination(
         bolt_uri = _resolve_neo4j_bolt_uri(dest_config, settings)
         user = dest_config.get("username") or settings.neo4j_user
         password = dest_config.get("password") or settings.neo4j_password
-        auth = None if settings.neo4j_auth_disabled else (user, password)
+        auth_disabled = dest_config.get("auth_disabled", settings.neo4j_auth_disabled)
+        auth = None if auth_disabled else (user, password)
+        database = dest_config.get("database") or "neo4j"
         try:
             from neo4j import GraphDatabase
 
             with GraphDatabase.driver(bolt_uri, auth=auth) as driver:
-                with driver.session() as session:
+                with driver.session(database=database) as session:
                     session.run(
                         "MERGE (d:Document {file_key: $file_key}) SET d.updated_at = $updated_at",
                         file_key=file_key,
@@ -577,12 +669,32 @@ def _sync_fanout_to_destination(
                             text=text,
                             content=text,
                         )
-            logger.info("neo4j_graphrag_indexed file=%s pages=%d", file_key, len(pages))
+                        for entity_name in _extract_entities_via_litellm(text, dest_config, settings):
+                            session.run(
+                                """
+                                MATCH (c:Chunk {chunk_id: $chunk_id})
+                                MERGE (e:Entity {name: $entity_name})
+                                MERGE (c)-[:MENTIONS]->(e)
+                                """,
+                                chunk_id=f"{file_key}:{p.page_index}",
+                                entity_name=entity_name,
+                            )
+            logger.info("neo4j_graphrag_indexed file=%s pages=%d db=%s", file_key, len(pages), database)
         except Exception as exc:
             logger.warning("neo4j_graph_failed file=%s error=%s", file_key, exc)
 
     elif dest_type in ["relational_pgvector", "database_pgvector"]:
-        table_name = _resolve_pg_table(dest_config)
+        table_name = _qualified_pg_table(dest_config)
+        store_embeddings = bool(dest_config.get("store_embeddings", True))
+        litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
+        embedding_model = _resolve_embedding_model(dest_config, settings)
+        embedder = None
+        if store_embeddings:
+            embedder = EmbeddingClient(
+                base_url=litellm_base_url,
+                api_key=litellm_api_key,
+                model=embedding_model,
+            )
         try:
             try:
                 import psycopg2 as pg_driver
@@ -606,39 +718,98 @@ def _sync_fanout_to_destination(
                 raise RuntimeError("Could not connect to PostgreSQL with provided or default credentials")
             with conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"""
-                        CREATE TABLE IF NOT EXISTS {table_name} (
-                            id SERIAL PRIMARY KEY,
-                            file_key TEXT NOT NULL,
-                            page_index INT NOT NULL,
-                            content TEXT,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                        );
-                    """)
+                    if store_embeddings:
+                        cur.execute(f"""
+                            CREATE TABLE IF NOT EXISTS {table_name} (
+                                id SERIAL PRIMARY KEY,
+                                file_key TEXT NOT NULL,
+                                page_index INT NOT NULL,
+                                content TEXT,
+                                embedding vector({int(dest_config.get("vector_size") or 2048)}),
+                                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                            );
+                        """)
+                    else:
+                        cur.execute(f"""
+                            CREATE TABLE IF NOT EXISTS {table_name} (
+                                id SERIAL PRIMARY KEY,
+                                file_key TEXT NOT NULL,
+                                page_index INT NOT NULL,
+                                content TEXT,
+                                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                            );
+                        """)
                     for p in pages:
                         text = p.text or ""
                         if not text.strip():
                             continue
-                        cur.execute(
-                            f"INSERT INTO {table_name} (file_key, page_index, content) VALUES (%s, %s, %s)",
-                            (file_key, p.page_index, text)
-                        )
+                        if store_embeddings and embedder is not None:
+                            embedding = embedder.embed_passage(text)
+                            cur.execute(
+                                f"INSERT INTO {table_name} (file_key, page_index, content, embedding) VALUES (%s, %s, %s, %s)",
+                                (file_key, p.page_index, text, embedding),
+                            )
+                        else:
+                            cur.execute(
+                                f"INSERT INTO {table_name} (file_key, page_index, content) VALUES (%s, %s, %s)",
+                                (file_key, p.page_index, text),
+                            )
             logger.info("pgvector_relational_upserted table=%s file=%s pages=%d", table_name, file_key, len(pages))
         except Exception as exc:
             logger.warning("pgvector_failed file=%s error=%s", file_key, exc)
 
     elif dest_type in ["cache_redis", "cache_redisvl"]:
         index_prefix = dest_config.get("index_prefix", "knowledge_cache")
+        ttl_seconds = int(dest_config.get("ttl_seconds") or 86400)
+        parent_child_mapping = bool(dest_config.get("parent_child_mapping", True))
         try:
+            import json
             import redis
-            redis_url = dest_config.get("redis_url", "redis://localhost:6379")
+
+            redis_url = dest_config.get("redis_url", settings.redis_url)
             r = redis.from_url(redis_url)
             for p in pages:
                 text = p.text or ""
                 if not text.strip():
                     continue
                 key = f"{index_prefix}:{file_key}:{p.page_index}"
-                r.set(key, text, ex=dest_config.get("ttl_seconds", 86400))
+                payload = {
+                    "content": text,
+                    "file_key": file_key,
+                    "page_index": p.page_index,
+                    "similarity_threshold": dest_config.get("similarity_threshold"),
+                    "embedding_model": dest_config.get("embedding_model"),
+                }
+                if parent_child_mapping:
+                    payload["parent_key"] = f"{index_prefix}:{file_key}"
+                r.set(key, json.dumps(payload), ex=ttl_seconds)
+                if parent_child_mapping:
+                    r.sadd(f"{index_prefix}:{file_key}:children", key)
+            if dest_config.get("raptor_summaries"):
+                summary_model = dest_config.get("summary_model") or "gpt-4o-mini"
+                litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
+                combined = "\n".join((page.text or "")[:500] for page in pages if (page.text or "").strip())
+                if combined.strip():
+                    import httpx
+
+                    with httpx.Client(timeout=30.0) as client:
+                        response = client.post(
+                            f"{litellm_base_url.rstrip('/')}/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {litellm_api_key}"},
+                            json={
+                                "model": summary_model,
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": f"Summarize this document in 3 bullet points:\n{combined[:6000]}",
+                                    }
+                                ],
+                                "temperature": 0.2,
+                            },
+                        )
+                        response.raise_for_status()
+                        summary = response.json()["choices"][0]["message"]["content"]
+                        r.set(f"{index_prefix}:{file_key}:summary", summary, ex=ttl_seconds)
             logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))
         except Exception as exc:
             logger.warning("redisvl_failed file=%s error=%s", file_key, exc)

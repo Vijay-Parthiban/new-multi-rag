@@ -1,22 +1,15 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
-import { IconBrowse, IconDatabase, IconFolder, IconSources, IconUpload } from "../components/Icons";
+import { IconBrowse, IconDatabase, IconFolder, IconSources } from "../components/Icons";
 import { DirectorySummary, listDirectories, listKnowledgeProfiles, listSources } from "../api";
 import { formatRelativeTime } from "../utils/format";
 
 const QUICK_LINKS = [
   {
-    to: "/upload",
-    title: "Document Upload",
-    description: "Upload PDF, DOCX, CSV, JSON, Markdown, and text files to source buckets or folders.",
-    icon: IconUpload,
-    cta: "Upload Files",
-  },
-  {
     to: "/sources",
     title: "Data Sources & Storage",
-    description: "Manage local storage folders, object buckets, and connector-backed source buckets.",
+    description: "Create NiFi connector sources or manual upload sources. Each source gets its own MinIO bucket.",
     icon: IconSources,
     cta: "Manage Sources",
   },
@@ -30,7 +23,7 @@ const QUICK_LINKS = [
   {
     to: "/sources",
     title: "External Connectors",
-    description: "Connect Google Drive, S3, Azure Blob, SFTP, Web Scrapers, & Confluence data sources.",
+    description: "Sync Google Drive, Amazon S3, and Azure Blob Storage into MinIO buckets.",
     icon: IconSources,
     cta: "Manage Sources",
   },

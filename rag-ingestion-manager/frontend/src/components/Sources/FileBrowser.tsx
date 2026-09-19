@@ -5,7 +5,6 @@ import {
   ApiError,
   deleteSourceFile,
   listSourceFiles,
-  uploadSourceFile,
   uploadSourceFiles,
   type SourceFileEntry,
 } from "../../api";

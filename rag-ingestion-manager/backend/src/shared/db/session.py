@@ -69,20 +69,30 @@ async def init_db() -> None:
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            _ensure_sqlite_columns(sqlite_path)
+        _ensure_sqlite_columns(sqlite_path)
+        return
+
+    # Configured database is SQLite: create_all adds new tables but never new
+    # columns, so backfill them on every start.
+    settings = get_settings()
+    if "sqlite" in settings.async_database_url:
+        db_path = settings.async_database_url.split("///", 1)[-1]
+        _ensure_sqlite_columns(Path(db_path))
 
 def _ensure_sqlite_columns(sqlite_path) -> None:
     import sqlite3
     try:
         conn = sqlite3.connect(sqlite_path)
         cur = conn.cursor()
-        for col_def in [
-            "total_files INTEGER DEFAULT 0",
-            "total_size_bytes INTEGER DEFAULT 0",
-            "error_message TEXT",
+        for table, col_def in [
+            ("sources", "total_files INTEGER DEFAULT 0"),
+            ("sources", "total_size_bytes INTEGER DEFAULT 0"),
+            ("sources", "error_message TEXT"),
+            ("sources", "connector_sync_interval_seconds INTEGER"),
+            ("source_connectors", "sync_interval_seconds INTEGER"),
         ]:
             try:
-                cur.execute(f"ALTER TABLE sources ADD COLUMN {col_def}")
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             except Exception:
                 pass
         conn.commit()

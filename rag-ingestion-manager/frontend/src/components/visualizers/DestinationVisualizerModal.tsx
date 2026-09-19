@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { DestinationInspectData, inspectDestinationStore, KnowledgeProfile } from "../../api";
-import { IconClose, IconDatabase, IconRefresh, IconServer, IconZap } from "../Icons";
+import { IconClose, IconRefresh } from "../Icons";
 import { VectorVisualizer } from "./VectorVisualizer";
 import { LexicalVisualizer } from "./LexicalVisualizer";
 import { GraphVisualizer } from "./GraphVisualizer";

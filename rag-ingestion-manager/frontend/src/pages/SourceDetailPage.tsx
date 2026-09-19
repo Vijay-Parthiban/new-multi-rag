@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
+import ConfirmDialog from "../components/ConfirmDialog";
 import FileBrowser from "../components/Sources/FileBrowser";
 import ConnectorConfigForm, {
   defaultConfigFor,
@@ -8,14 +9,15 @@ import ConnectorConfigForm, {
 import {
   IconBucket,
   IconFile,
+  IconFolder,
   IconPlus,
+  IconServer,
   IconSources,
   IconSync,
   IconTrash,
   IconZap,
 } from "../components/Icons";
 import type {
-  ConnectorOption,
   SourceConnectorRecord,
   SourceFileEntry,
   SourceRecord,
@@ -25,7 +27,6 @@ import {
   addSourceConnector,
   deleteSourceConnector,
   getSource,
-  listConnectors,
   listSourceFiles,
   triggerConnectorSync,
   triggerSourceSync,
@@ -44,26 +45,38 @@ type TabId = "connectors" | "files";
 interface ConnectorCatalogItem {
   id: string;
   label: string;
-  category: "cloud" | "database" | "files" | "workspace";
-  icon: string;
+  icon: React.ReactNode;
   description: string;
-  badge?: string;
 }
 
+/**
+ * Apache NiFi connector catalogue. Every entry has a matching sync path in
+ * src/ingestion_service/core/nifi_sync.py that writes into the source bucket.
+ */
 const EXTENDED_CATALOG: ConnectorCatalogItem[] = [
-  { id: "google_drive", label: "Google Drive", category: "cloud", icon: "📁", description: "Sync documents, PDFs & folders directly from Google Drive" },
-  { id: "s3", label: "Amazon S3", category: "cloud", icon: "🪣", description: "Pull objects from AWS S3 buckets into MinIO namespace" },
-  { id: "azure_blob", label: "Azure Blob Storage", category: "cloud", icon: "☁️", description: "Stream files from Microsoft Azure Blob Storage containers" },
-  { id: "google_sheets", label: "Google Sheets", category: "files", icon: "📊", description: "Import tabular data & spreadsheets automatically" },
-  { id: "onedrive", label: "OneDrive", category: "cloud", icon: "💾", description: "Sync personal and enterprise Microsoft OneDrive files" },
-  { id: "sharepoint", category: "workspace", label: "SharePoint", icon: "🌐", description: "Connect enterprise SharePoint document libraries" },
-  { id: "postgres", label: "PostgreSQL Database", category: "database", icon: "🐘", description: "Ingest tables, schemas, or query results into vectors" },
-  { id: "mysql", label: "MySQL Database", category: "database", icon: "🐬", description: "Real-time CDC capture from MySQL database tables" },
-  { id: "mongodb", label: "MongoDB", category: "database", icon: "🍃", description: "Stream NoSQL documents and BSON collections" },
-  { id: "web_scraper", label: "Web Scraper / Crawler", category: "files", icon: "🕸️", description: "Crawl documentation sites, blogs & web APIs" },
-  { id: "confluence", label: "Confluence", category: "workspace", icon: "📘", description: "Extract space articles & wiki documents" },
-  { id: "sftp", label: "SFTP / FTP Server", category: "files", icon: "🔒", description: "Secure SSH File Transfer Protocol watcher" },
+  {
+    id: "google_drive",
+    label: "Google Drive",
+    icon: <IconFolder size={22} />,
+    description: "Pull documents and folders from a Google Drive folder into this MinIO bucket.",
+  },
+  {
+    id: "s3",
+    label: "Amazon S3",
+    icon: <IconBucket size={22} />,
+    description: "Copy objects from an Amazon S3 bucket into this MinIO bucket.",
+  },
+  {
+    id: "azure_blob",
+    label: "Azure Blob Storage",
+    icon: <IconServer size={22} />,
+    description: "Copy blobs from an Azure storage container into this MinIO bucket.",
+  },
 ];
+
+function catalogItemFor(connectorType: string): ConnectorCatalogItem | undefined {
+  return EXTENDED_CATALOG.find((item) => item.id === connectorType);
+}
 
 interface SourceDetailPageProps {
   routeSourceId?: string;
@@ -76,7 +89,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   const navigate = useNavigate();
 
   const [source, setSource] = useState<SourceRecord | null>(null);
-  const [, setCatalog] = useState<ConnectorOption[]>([]);
   const [files, setFiles] = useState<SourceFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
@@ -85,20 +97,23 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
   const [syncingAll, setSyncingAll] = useState(false);
   const [copiedBucket, setCopiedBucket] = useState(false);
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   // Connector Modal State
   const [connectorModalOpen, setConnectorModalOpen] = useState(false);
   const [editingConnector, setEditingConnector] = useState<SourceConnectorRecord | null>(null);
+  const [connectorToDelete, setConnectorToDelete] = useState<SourceConnectorRecord | null>(null);
+  const [deletingConnector, setDeletingConnector] = useState(false);
   const [connectorForm, setConnectorForm] = useState<{
     connectorType: string;
     config: Record<string, unknown>;
     monitorMode: "live" | "scheduled";
-    syncIntervalMinutes: string;
+    intervalValue: string;
+    intervalUnit: "seconds" | "minutes";
   }>({
     connectorType: "google_drive",
     config: defaultConfigFor("google_drive"),
     monitorMode: "live",
-    syncIntervalMinutes: "",
+    intervalValue: "",
+    intervalUnit: "seconds",
   });
   const [savingConnector, setSavingConnector] = useState(false);
 
@@ -130,13 +145,9 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     async function init() {
       setLoading(true);
       try {
-        const [srcData, catData] = await Promise.all([
-          getSource(id!),
-          listConnectors().catch(() => []),
-        ]);
+        const srcData = await getSource(id!);
         if (!mounted) return;
         setSource(srcData);
-        setCatalog(catData);
         if (srcData.connector_type === "local_filesystem" || srcData.source_type === "local_filesystem" || srcData.minio_bucket?.startsWith("local-") || srcData.source_type === "minio_manual" || srcData.connector_type === "manual_upload") {
           setActiveTab("files");
         }
@@ -189,18 +200,22 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
       connectorType: item.id,
       config: defaultConfigFor(item.id),
       monitorMode: "live",
-      syncIntervalMinutes: "",
+      intervalValue: "",
+      intervalUnit: "seconds",
     });
     setConnectorModalOpen(true);
   };
 
   const handleEditConnector = (conn: SourceConnectorRecord) => {
     setEditingConnector(conn);
+    const seconds = conn.sync_interval_seconds;
+    const minutes = conn.sync_interval_minutes;
     setConnectorForm({
       connectorType: conn.connector_type,
       config: conn.config ?? {},
       monitorMode: (conn.monitor_mode as "live" | "scheduled") ?? "live",
-      syncIntervalMinutes: conn.sync_interval_minutes?.toString() ?? "",
+      intervalValue: seconds ? String(seconds) : minutes ? String(minutes) : "",
+      intervalUnit: seconds ? "seconds" : "minutes",
     });
     setConnectorModalOpen(true);
   };
@@ -211,25 +226,28 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     setSavingConnector(true);
 
     try {
-      const syncInterval = connectorForm.syncIntervalMinutes
-        ? parseInt(connectorForm.syncIntervalMinutes, 10)
-        : undefined;
+      const isScheduled = connectorForm.monitorMode === "scheduled";
+      const parsed = isScheduled ? parseInt(connectorForm.intervalValue, 10) : NaN;
+      const hasInterval = Number.isFinite(parsed) && parsed > 0;
+      const useSeconds = connectorForm.intervalUnit === "seconds" && hasInterval;
+
+      const body = {
+        config: connectorForm.config,
+        monitor_mode: connectorForm.monitorMode,
+        sync_interval_seconds: useSeconds ? parsed : undefined,
+        sync_interval_minutes:
+          hasInterval && connectorForm.intervalUnit === "minutes" ? parsed : undefined,
+      };
 
       if (editingConnector) {
-        await updateSourceConnector(source.id, editingConnector.id, {
-          config: connectorForm.config,
-          monitor_mode: connectorForm.monitorMode,
-          sync_interval_minutes: syncInterval,
-        });
+        await updateSourceConnector(source.id, editingConnector.id, body);
         setInfo("Connector configuration updated.");
       } else {
         await addSourceConnector(source.id, {
           connector_type: connectorForm.connectorType,
-          config: connectorForm.config,
-          monitor_mode: connectorForm.monitorMode,
-          sync_interval_minutes: syncInterval,
+          ...body,
         });
-        setInfo("Connector attached successfully.");
+        setInfo("Connector attached. The first sync starts now.");
       }
       setConnectorModalOpen(false);
       await fetchSource();
@@ -240,15 +258,22 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     }
   };
 
-  const handleDeleteConnector = async (conn: SourceConnectorRecord) => {
-    if (!source) return;
-    if (!window.confirm(`Remove connector "${conn.connector_type}"?`)) return;
+  const handleDeleteConnector = (conn: SourceConnectorRecord) => {
+    setConnectorToDelete(conn);
+  };
+
+  const confirmDeleteConnector = async () => {
+    if (!source || !connectorToDelete) return;
+    setDeletingConnector(true);
     try {
-      await deleteSourceConnector(source.id, conn.id);
-      setInfo("Connector removed.");
+      await deleteSourceConnector(source.id, connectorToDelete.id);
+      setInfo("Connector removed. Files it already copied stay in the bucket.");
+      setConnectorToDelete(null);
       await fetchSource();
     } catch (err) {
       setError(toApiError(err, "DELETE_CONNECTOR_FAILED"));
+    } finally {
+      setDeletingConnector(false);
     }
   };
 
@@ -291,9 +316,6 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   const connectorCount = source.connectors?.length ?? 0;
   const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-") || source.is_local;
   const isManualMinioSource = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
-  const filteredCatalog = EXTENDED_CATALOG.filter(
-    (item) => categoryFilter === "all" || item.category === categoryFilter
-  );
   return (
     <div className="page">
       {/* Top Header */}
@@ -331,7 +353,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
               >
                 <IconBucket size={14} />
                 <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
-                <span style={{ fontSize: "0.7rem", opacity: 0.8 }}>{copiedBucket ? "✓ Copied" : "📋"}</span>
+                <span style={{ fontSize: "0.7rem", opacity: 0.8 }}>{copiedBucket ? "Copied" : "Copy"}</span>
               </div>
             ) : isLocalSource ? (
               <div
@@ -348,7 +370,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                 }}
                 title="Local Storage Path"
               >
-                <span>📁</span>
+                <IconFolder size={14} />
                 <code style={{ fontWeight: 600 }}>storage/local_sources/{(source.config?.folder_name as string) || source.minio_bucket.replace("local-", "")}</code>
               </div>
             ) : (
@@ -370,7 +392,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
               >
                 <IconBucket size={13} />
                 <code style={{ fontWeight: 600 }}>{source.minio_bucket}</code>
-                <span>{copiedBucket ? "✓" : "📋"}</span>
+                <span>{copiedBucket ? "Copied" : "Copy"}</span>
               </div>
             )}
           </div>
@@ -499,7 +521,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             gap: "0.75rem",
           }}
         >
-          <span style={{ fontSize: "1.4rem" }}>📁</span>
+          <IconFolder size={22} />
           <div>
             <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
               Legacy Local File System Source
@@ -612,7 +634,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
             {connectorCount === 0 ? (
               <div style={{ padding: "2.5rem 1.5rem", textAlign: "center", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
-                <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>⚡</div>
+                <IconZap size={32} style={{ color: "#58a6ff", marginBottom: "0.5rem" }} />
                 <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "#e6edf3", marginBottom: "0.25rem" }}>
                   No connectors attached to this source yet
                 </div>
@@ -638,15 +660,30 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                          <span style={{ fontSize: "1.5rem" }}>
-                            {EXTENDED_CATALOG.find((item) => item.id === conn.connector_type)?.icon || "⚡"}
+                          <span style={{ color: "#58a6ff", display: "inline-flex" }}>
+                            {catalogItemFor(conn.connector_type)?.icon ?? <IconZap size={22} />}
                           </span>
                           <div>
-                            <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3", textTransform: "capitalize" }}>
-                              {conn.connector_type.replace(/_/g, " ")}
+                            <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
+                              {catalogItemFor(conn.connector_type)?.label ??
+                                conn.connector_type.replace(/_/g, " ")}
                             </div>
                             <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
-                              Mode: <span style={{ color: "#58a6ff", fontWeight: 600 }}>{conn.monitor_mode === "scheduled" ? `${conn.sync_interval_minutes || 15}m interval` : "Live Webhooks / CDC"}</span>
+                              {conn.monitor_mode === "scheduled" ? (
+                                <>
+                                  Mode:{" "}
+                                  <span style={{ color: "#58a6ff", fontWeight: 600 }}>
+                                    Scheduled every{" "}
+                                    {conn.sync_interval_seconds
+                                      ? `${conn.sync_interval_seconds}s`
+                                      : `${conn.sync_interval_minutes || 5}m`}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  Mode: <span style={{ color: "#3fb950", fontWeight: 600 }}>Live polling</span>
+                                </>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -693,52 +730,20 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             )}
           </div>
 
-          {/* Categorized Connector Catalogue Grid */}
+          {/* Connector Catalogue Grid */}
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap", gap: "1rem" }}>
-              <div>
-                <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                  Integration Catalogue
-                </h2>
-                <div style={{ fontSize: "0.8rem", color: "#8b949e" }}>
-                  Attach external services to MinIO bucket <code>{source.minio_bucket}</code>
-                </div>
-              </div>
-
-              {/* Category Filter Pills */}
-              <div style={{ display: "flex", gap: "0.4rem" }}>
-                {[
-                  { id: "all", label: "All Connectors" },
-                  { id: "cloud", label: "Cloud Storage" },
-                  { id: "database", label: "Databases" },
-                  { id: "files", label: "Files & Web" },
-                  { id: "workspace", label: "Workspaces" },
-                ].map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => setCategoryFilter(cat.id)}
-                    style={{
-                      padding: "0.35rem 0.75rem",
-                      borderRadius: "6px",
-                      fontSize: "0.78rem",
-                      fontWeight: 600,
-                      border: "none",
-                      cursor: "pointer",
-                      background: categoryFilter === cat.id ? "#58a6ff" : "rgba(255, 255, 255, 0.06)",
-                      color: categoryFilter === cat.id ? "#0b0e14" : "#c9d1d9",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
+            <div style={{ marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                NiFi Connector Catalogue
+              </h2>
+              <div style={{ fontSize: "0.8rem", color: "#8b949e" }}>
+                Attach one or more connectors to MinIO bucket <code>{source.minio_bucket}</code>
               </div>
             </div>
 
             {/* Grid of Catalogue Connectors */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
-              {filteredCatalog.map((item) => (
+              {EXTENDED_CATALOG.map((item) => (
                 <div
                   key={item.id}
                   onClick={() => handleOpenCatalogueConnector(item)}
@@ -757,13 +762,10 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                 >
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.6rem" }}>
-                      <span style={{ fontSize: "1.75rem" }}>{item.icon}</span>
+                      <span style={{ color: "#58a6ff", display: "inline-flex" }}>{item.icon}</span>
                       <div>
                         <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#e6edf3" }}>
                           {item.label}
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: "#58a6ff", textTransform: "uppercase", fontWeight: 600 }}>
-                          {item.category}
                         </div>
                       </div>
                     </div>
@@ -774,7 +776,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "0.75rem", borderTop: "1px solid rgba(255, 255, 255, 0.06)" }}>
                     <span style={{ fontSize: "0.75rem", color: "#3fb950", fontWeight: 600 }}>
-                      ✓ CDC Poller Supported
+                      Live and scheduled polling
                     </span>
                     <button
                       type="button"
@@ -820,6 +822,12 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             padding: "1.5rem",
           }}
           onClick={() => setConnectorModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingConnector ? "Configure connector" : "Attach connector"}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setConnectorModalOpen(false);
+          }}
         >
           <div
             style={{
@@ -838,7 +846,9 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
               <div>
                 <h2 style={{ fontSize: "1.25rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                  {editingConnector ? `Configure ${editingConnector.connector_type}` : `Attach ${connectorForm.connectorType.replace(/_/g, " ")}`}
+                  {editingConnector
+                    ? `Configure ${catalogItemFor(editingConnector.connector_type)?.label ?? editingConnector.connector_type}`
+                    : `Attach ${catalogItemFor(connectorForm.connectorType)?.label ?? connectorForm.connectorType.replace(/_/g, " ")}`}
                 </h2>
                 <div style={{ fontSize: "0.78rem", color: "#8b949e" }}>
                   Destination MinIO Bucket: <code>{source.minio_bucket}</code>
@@ -847,7 +857,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
               <button
                 type="button"
                 onClick={() => setConnectorModalOpen(false)}
-                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+                aria-label="Close connector dialog"
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer", minWidth: "44px", minHeight: "44px" }}
               >
                 ✕
               </button>
@@ -889,8 +900,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                       onChange={() => setConnectorForm((prev) => ({ ...prev, monitorMode: "live" }))}
                     />
                     <div>
-                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Live Webhooks / CDC</div>
-                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Real-time change events</div>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Immediate live polling</div>
+                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Short-interval background poll</div>
                     </div>
                   </label>
 
@@ -914,8 +925,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                       onChange={() => setConnectorForm((prev) => ({ ...prev, monitorMode: "scheduled" }))}
                     />
                     <div>
-                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Scheduled Interval</div>
-                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Periodic background poll</div>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "#e6edf3" }}>Scheduled polling</div>
+                      <div style={{ fontSize: "0.72rem", color: "#8b949e" }}>Fixed interval in seconds or minutes</div>
                     </div>
                   </label>
                 </div>
@@ -923,24 +934,59 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
               {connectorForm.monitorMode === "scheduled" && (
                 <div>
-                  <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
-                    Sync Interval (Minutes)
+                  <label
+                    htmlFor="connector-interval"
+                    style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}
+                  >
+                    Polling interval *
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={connectorForm.syncIntervalMinutes}
-                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, syncIntervalMinutes: e.target.value }))}
-                    placeholder="15"
-                    style={{
-                      width: "100%",
-                      padding: "0.65rem 0.85rem",
-                      borderRadius: "8px",
-                      border: "1px solid rgba(56, 68, 100, 0.45)",
-                      background: "rgba(11, 14, 20, 0.6)",
-                      color: "#e6edf3",
-                    }}
-                  />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                    <input
+                      id="connector-interval"
+                      type="number"
+                      min={1}
+                      max={connectorForm.intervalUnit === "seconds" ? 86400 : 1440}
+                      value={connectorForm.intervalValue}
+                      onChange={(e) => setConnectorForm((prev) => ({ ...prev, intervalValue: e.target.value }))}
+                      placeholder={connectorForm.intervalUnit === "seconds" ? "30" : "15"}
+                      required
+                      style={{
+                        width: "100%",
+                        padding: "0.65rem 0.85rem",
+                        borderRadius: "8px",
+                        border: "1px solid rgba(56, 68, 100, 0.45)",
+                        background: "rgba(11, 14, 20, 0.6)",
+                        color: "#e6edf3",
+                      }}
+                    />
+                    <select
+                      aria-label="Polling interval unit"
+                      value={connectorForm.intervalUnit}
+                      onChange={(e) =>
+                        setConnectorForm((prev) => ({
+                          ...prev,
+                          intervalUnit: e.target.value as "seconds" | "minutes",
+                        }))
+                      }
+                      style={{
+                        width: "100%",
+                        padding: "0.65rem 0.85rem",
+                        borderRadius: "8px",
+                        border: "1px solid rgba(56, 68, 100, 0.45)",
+                        background: "rgba(11, 14, 20, 0.6)",
+                        color: "#e6edf3",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <option value="seconds">Seconds (minimum 5)</option>
+                      <option value="minutes">Minutes</option>
+                    </select>
+                  </div>
+                  <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "#8b949e" }}>
+                    {connectorForm.intervalUnit === "seconds"
+                      ? "The connector polls the remote service every few seconds. Minimum 5 seconds."
+                      : "The connector polls the remote service every few minutes."}
+                  </p>
                 </div>
               )}
 
@@ -967,6 +1013,27 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           </div>
         </div>
       )}
+
+      {/* REMOVE CONNECTOR CONFIRMATION */}
+      <ConfirmDialog
+        open={connectorToDelete !== null}
+        danger
+        title="Remove this connector?"
+        message={
+          connectorToDelete
+            ? `${catalogItemFor(connectorToDelete.connector_type)?.label ?? connectorToDelete.connector_type} stops polling for "${source.name}".`
+            : ""
+        }
+        details={[
+          "The connector and its polling schedule are deleted.",
+          "Files it already copied stay in the MinIO bucket.",
+        ]}
+        confirmLabel="Remove connector"
+        cancelLabel="Keep connector"
+        busy={deletingConnector}
+        onConfirm={confirmDeleteConnector}
+        onCancel={() => setConnectorToDelete(null)}
+      />
     </div>
   );
 }

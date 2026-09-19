@@ -1,11 +1,15 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import StatusBadge from "../components/StatusBadge";
+import ConfirmDialog from "../components/ConfirmDialog";
 import FileBrowser from "../components/Sources/FileBrowser";
 import {
   IconArrowRight,
   IconBucket,
   IconCheckCircle,
+  IconCopy,
+  IconServer,
+  IconFolder,
   IconGrid,
   IconList,
   IconPlus,
@@ -15,6 +19,7 @@ import {
   IconSync,
   IconTrash,
   IconUpload,
+  IconZap,
 } from "../components/Icons";
 import {
   ApiError,
@@ -33,19 +38,13 @@ function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
   });
 }
 
-/* ── Connector brand helper icons ── */
-function getConnectorIcon(type?: string): string {
-  if (!type) return "📁";
-  const t = type.toLowerCase();
-  if (t.includes("drive")) return "📁";
-  if (t.includes("s3")) return "🪣";
-  if (t.includes("azure")) return "☁️";
-  if (t.includes("sheet")) return "📊";
-  if (t.includes("onedrive")) return "💾";
-  if (t.includes("sharepoint")) return "🌐";
-  if (t.includes("postgres") || t.includes("mysql") || t.includes("db")) return "🗄️";
-  if (t.includes("scrape") || t.includes("crawl") || t.includes("web")) return "🌐";
-  return "⚡";
+/* ── Connector glyph — one vector icon per NiFi connector ── */
+function ConnectorGlyph({ type, size = 13 }: { type?: string; size?: number }) {
+  const t = (type ?? "").toLowerCase();
+  if (t.includes("drive")) return <IconFolder size={size} />;
+  if (t.includes("s3")) return <IconBucket size={size} />;
+  if (t.includes("azure")) return <IconServer size={size} />;
+  return <IconZap size={size} />;
 }
 
 /* ── Connector status summary ── */
@@ -160,7 +159,7 @@ function SourceCard({
           </div>
         ) : isLocal ? (
           <div className="source-card-stat">
-            <span className="source-card-stat-value" style={{ color: "#7ee787", fontSize: "0.85rem" }}>📁 FS</span>
+            <span className="source-card-stat-value" style={{ color: "#7ee787", display: "inline-flex" }}><IconFolder size={13} /></span>
             <span className="source-card-stat-label">Local System</span>
           </div>
         ) : (
@@ -191,7 +190,7 @@ function SourceCard({
               title="Copy bucket name"
               aria-label="Copy bucket name"
             >
-              {copied ? <IconCheckCircle size={12} style={{ color: "#3fb950" }} /> : "📋"}
+              {copied ? <IconCheckCircle size={12} style={{ color: "#3fb950" }} /> : <IconCopy size={12} />}
             </button>
           </div>
         )}
@@ -202,12 +201,14 @@ function SourceCard({
         {isManual ? (
           <div className="source-card-empty-connectors" style={{ borderColor: "rgba(56, 189, 248, 0.25)", background: "rgba(56, 189, 248, 0.08)" }}>
             <span style={{ color: "#38bdf8", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
-              <IconUpload size={13} /> MinIO Manual File Upload Manager (Direct S3 Bucket)
+              <IconUpload size={13} /> Manual upload source — files land in this MinIO bucket
             </span>
           </div>
         ) : isLocal ? (
           <div className="source-card-empty-connectors" style={{ borderColor: "rgba(46, 160, 67, 0.25)", background: "rgba(46, 160, 67, 0.08)" }}>
-            <span style={{ color: "#7ee787", fontWeight: 500 }}>📁 Legacy Local File System</span>
+            <span style={{ color: "#7ee787", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+              <IconFolder size={13} /> Legacy local file system source
+            </span>
           </div>
         ) : connectorCount === 0 ? (
           <div className="source-card-empty-connectors">
@@ -230,7 +231,7 @@ function SourceCard({
                   gap: "0.3rem",
                 }}
               >
-                <span>{getConnectorIcon(c.connector_type)}</span>
+                <ConnectorGlyph type={c.connector_type} />
                 <span style={{ fontWeight: 500 }}>{c.connector_type.replace(/_/g, " ")}</span>
               </span>
             ))}
@@ -264,9 +265,12 @@ function SourceCard({
                 e.stopPropagation();
                 onOpenFiles(source);
               }}
-              style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}
+              title={isManual ? "Upload files into this MinIO bucket" : "Browse files in this MinIO bucket"}
+              aria-label={isManual ? `Upload files to ${source.name}` : `Browse files in ${source.name}`}
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
             >
-              <span>📁 Files</span>
+              {isManual ? <IconUpload size={13} /> : <IconFolder size={13} />}
+              <span>{isManual ? "Upload Files" : "Files"}</span>
             </button>
           )}
 
@@ -275,7 +279,8 @@ function SourceCard({
             className="btn btn-ghost btn-sm"
             onClick={() => onDelete(source.id, source.name)}
             disabled={deleting}
-            title="Delete Source"
+            title="Delete source and its MinIO bucket"
+            aria-label={`Delete source ${source.name}`}
             style={{ color: "#f85149" }}
           >
             <IconTrash size={14} />
@@ -331,6 +336,7 @@ function SourceTable({
           {sources.map((s) => {
             const connectorCount = s.connectors?.length ?? 0;
             const isLocal = s.connector_type === "local_filesystem" || s.source_type === "local_filesystem" || s.minio_bucket.startsWith("local-");
+            const isManualRow = s.connector_type === "manual_upload" || s.connector_type === "minio_manual" || s.source_type === "minio_manual" || s.is_manual;
             const folderName = (s.config?.folder_name as string) || s.minio_bucket.replace("local-", "");
             return (
               <tr
@@ -341,7 +347,7 @@ function SourceTable({
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
                     <div className="source-card-icon" style={{ width: "32px", height: "32px" }}>
-                      {isLocal ? <span style={{ fontSize: "1rem" }}>📁</span> : <IconSources size={16} />}
+                      {isLocal ? <IconFolder size={16} /> : <IconSources size={16} />}
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, color: "#e6edf3" }}>{s.name}</div>
@@ -381,9 +387,24 @@ function SourceTable({
                       className="btn btn-secondary btn-sm"
                       onClick={() => onSync(s.id)}
                       disabled={syncingId === s.id}
+                      title="Sync now"
+                      aria-label={`Sync source ${s.name}`}
                     >
                       <IconSync size={12} className={syncingId === s.id ? "spin" : ""} />
                     </button>
+                    {onOpenFiles && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onOpenFiles(s)}
+                        title={isManualRow ? "Upload files into this MinIO bucket" : "Browse files in this MinIO bucket"}
+                        aria-label={isManualRow ? `Upload files to ${s.name}` : `Browse files in ${s.name}`}
+                        style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
+                      >
+                        {isManualRow ? <IconUpload size={12} /> : <IconFolder size={12} />}
+                        <span>{isManualRow ? "Upload" : "Files"}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
@@ -396,6 +417,8 @@ function SourceTable({
                       className="btn btn-ghost btn-sm"
                       onClick={() => onDelete(s.id, s.name)}
                       disabled={deletingId === s.id}
+                      title="Delete source and its MinIO bucket"
+                      aria-label={`Delete source ${s.name}`}
                       style={{ color: "#f85149" }}
                     >
                       <IconTrash size={14} />
@@ -499,6 +522,12 @@ export default function SourcesPage() {
   const [newSourceName, setNewSourceName] = useState("");
   const [selectedSourceType, setSelectedSourceType] = useState<"minio" | "minio_manual">("minio");
   const [fileDrawerSource, setFileDrawerSource] = useState<SourceRecord | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    id: string;
+    name: string;
+    minio_bucket: string;
+    total_files?: number | null;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   // Search & Filter controls state
   const [searchQuery, setSearchQuery] = useState("");
@@ -551,22 +580,32 @@ export default function SourcesPage() {
     [load]
   );
 
-  const handleDelete = useCallback(
-    async (sourceId: string, name: string) => {
-      if (!window.confirm(`Are you sure you want to delete source "${name}"?`)) return;
-      setDeletingId(sourceId);
-      try {
-        await deleteSource(sourceId);
-        setInfo(`Source "${name}" deleted.`);
-        await load();
-      } catch (err) {
-        setError(toApiError(err, "DELETE_FAILED"));
-      } finally {
-        setDeletingId(null);
-      }
-    },
-    [load]
-  );
+  const handleDelete = useCallback((sourceId: string, name: string) => {
+    const target = sources.find((s) => s.id === sourceId);
+    setPendingDelete(
+      target
+        ? { id: target.id, name: target.name, minio_bucket: target.minio_bucket, total_files: target.total_files }
+        : { id: sourceId, name, minio_bucket: "" },
+    );
+  }, [sources]);
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    const { id, name } = pendingDelete;
+    setDeletingId(id);
+    try {
+      await deleteSource(id);
+      setInfo(`Source "${name}" deleted. Its MinIO bucket and all objects were removed.`);
+      // Drop it locally so the card goes at once, then resync with the server.
+      setSources((prev) => prev.filter((s) => s.id !== id));
+      setPendingDelete(null);
+      await load();
+    } catch (err) {
+      setError(toApiError(err, "DELETE_FAILED"));
+    } finally {
+      setDeletingId(null);
+    }
+  }, [pendingDelete, load]);
 
   const handleCreate = useCallback(
     async (e: FormEvent) => {
@@ -587,9 +626,15 @@ export default function SourcesPage() {
           source_type: typeToCreate,
           connector_type: typeToCreate === "minio_manual" ? "manual_upload" : "minio",
         });
-        setInfo(`Source "${created.name}" created successfully.`);
         setSources((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
-        navigate(`/sources/${created.id}`);
+        if (typeToCreate === "minio_manual") {
+          // Manual upload source: open the file picker straight away.
+          setInfo(`Source "${created.name}" created. Add files to bucket ${created.minio_bucket}.`);
+          setFileDrawerSource(created);
+        } else {
+          setInfo(`Source "${created.name}" created. Attach NiFi connectors next.`);
+          navigate(`/sources/${created.id}`);
+        }
       } catch (err) {
         setError(toApiError(err, "CREATE_FAILED"));
         setShowCreateForm(true);
@@ -634,7 +679,7 @@ export default function SourcesPage() {
             </span>
           </h1>
           <p style={{ fontSize: "0.875rem", color: "#8b949e", marginTop: "0.35rem", margin: 0 }}>
-            Connect external data sources — each source gets an isolated MinIO bucket and real-time RAG delivery streams.
+            Create a NiFi connector source or a manual upload source. Each source gets its own isolated MinIO bucket.
           </p>
         </div>
 
@@ -652,7 +697,7 @@ export default function SourcesPage() {
       {/* Info / Error Banners */}
       {info && (
         <div className="alert alert-info" role="status" style={{ marginBottom: "1.25rem" }}>
-          <span>ℹ️ {info}</span>
+          <span role="status">{info}</span>
           <button type="button" className="btn-close" onClick={() => setInfo(null)}>×</button>
         </div>
       )}
@@ -769,16 +814,16 @@ export default function SourcesPage() {
         </div>
       ) : filteredSources.length === 0 ? (
         <div style={{ textAlign: "center", padding: "4rem 2rem", background: "rgba(17, 21, 30, 0.4)", borderRadius: "12px", border: "1px solid rgba(255, 255, 255, 0.08)" }}>
-          <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>📭</div>
+          <IconBucket size={38} style={{ color: "#58a6ff", marginBottom: "0.75rem" }} />
           <h3 style={{ color: "#e6edf3", margin: "0 0 0.5rem 0" }}>No data sources found</h3>
           <p style={{ color: "#8b949e", fontSize: "0.875rem", marginBottom: "1.25rem" }}>
             {searchQuery || statusFilter !== "all"
               ? "No sources match your current search criteria."
-              : "Get started by creating your first data source integration."}
+              : "Create your first MinIO bucket source to start."}
           </p>
           {!searchQuery && statusFilter === "all" && (
             <button type="button" className="btn btn-primary" onClick={() => setShowCreateForm(true)}>
-              + Create Data Source
+              + Create data source
             </button>
           )}
         </div>
@@ -846,10 +891,10 @@ export default function SourcesPage() {
                 </div>
                 <div>
                   <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                    Create Data Source
+                    New MinIO Bucket Source
                   </h2>
                   <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
-                    Isolated MinIO bucket & RAG pipeline isolation
+                    Each source gets its own isolated MinIO bucket
                   </div>
                 </div>
               </div>
@@ -894,12 +939,14 @@ export default function SourcesPage() {
               </div>
 
               <div style={{ marginBottom: "1.25rem" }}>
-                <label style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
-                  Source Option *
+                <label id="source-type-label" style={{ display: "block", fontSize: "0.8125rem", fontWeight: 600, color: "#c9d1d9", marginBottom: "0.4rem" }}>
+                  Bucket Source Type *
                 </label>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                <div role="radiogroup" aria-labelledby="source-type-label" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                   <button
                     type="button"
+                    role="radio"
+                    aria-checked={selectedSourceType === "minio"}
                     onClick={() => setSelectedSourceType("minio")}
                     style={{
                       padding: "0.75rem",
@@ -912,13 +959,17 @@ export default function SourcesPage() {
                     }}
                   >
                     <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                      <IconBucket size={14} /> MinIO Connector Source
+                      <IconZap size={14} /> Apache NiFi Connector Source
                     </div>
-                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>Airbyte / Pathway connectors</div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8, lineHeight: 1.4 }}>
+                      Pull files in through NiFi connectors: Google Drive, Amazon S3, Azure Blob Storage.
+                    </div>
                   </button>
 
                   <button
                     type="button"
+                    role="radio"
+                    aria-checked={selectedSourceType === "minio_manual"}
                     onClick={() => setSelectedSourceType("minio_manual")}
                     style={{
                       padding: "0.75rem",
@@ -931,9 +982,11 @@ export default function SourcesPage() {
                     }}
                   >
                     <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                      <IconUpload size={14} /> MinIO Manual Source
+                      <IconUpload size={14} /> Manual Upload Source
                     </div>
-                    <div style={{ fontSize: "0.72rem", opacity: 0.8 }}>Manual UI upload to MinIO</div>
+                    <div style={{ fontSize: "0.72rem", opacity: 0.8, lineHeight: 1.4 }}>
+                      Pick files in the browser. Files are stored straight in the MinIO bucket.
+                    </div>
                   </button>
                 </div>
               </div>
@@ -950,16 +1003,18 @@ export default function SourcesPage() {
                   }}
                 >
                   <div style={{ fontSize: "0.75rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-                    Auto-generated MinIO Bucket:
+                    MinIO bucket name (assigned on create):
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
                     <IconBucket size={14} style={{ color: "#58a6ff" }} />
                     <code style={{ fontSize: "0.85rem", color: "#58a6ff", fontWeight: 600 }}>
-                      source-{newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}
+                      source-{newSourceName.toLowerCase().replace(/[^a-z0-9-]/g, "-")}-&lt;id&gt;
                     </code>
                   </div>
                   <div style={{ fontSize: "0.72rem", color: "#8b949e", marginTop: "0.4rem" }}>
-                    Type: {selectedSourceType === "minio_manual" ? "MinIO Bucket (Manual File Upload)" : "MinIO Bucket (Connector Based)"}
+                    {selectedSourceType === "minio_manual"
+                      ? "You can upload files as soon as the source exists."
+                      : "Add one or more NiFi connectors after the source exists."}
                   </div>
                 </div>
               )}
@@ -977,7 +1032,11 @@ export default function SourcesPage() {
                   className="btn btn-primary"
                   disabled={creating}
                 >
-                  {creating ? "Creating..." : "Create Data Source"}
+                  {creating
+                    ? "Creating..."
+                    : selectedSourceType === "minio_manual"
+                      ? "Create source & upload files"
+                      : "Create NiFi source"}
                 </button>
               </div>
             </form>
@@ -1014,11 +1073,19 @@ export default function SourcesPage() {
               boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
             }}
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Files for source ${fileDrawerSource.name}`}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setFileDrawerSource(null);
+            }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
               <div>
                 <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
-                  Manage Source Files — {fileDrawerSource.name}
+                  {fileDrawerSource.connector_type === "manual_upload"
+                    ? `Upload Files — ${fileDrawerSource.name}`
+                    : `Source Files — ${fileDrawerSource.name}`}
                 </h2>
                 <div style={{ fontSize: "0.78rem", color: "#8b949e", marginTop: "0.2rem" }}>
                   {fileDrawerSource.connector_type === "local_filesystem" || fileDrawerSource.minio_bucket.startsWith("local-")
@@ -1029,7 +1096,8 @@ export default function SourcesPage() {
               <button
                 type="button"
                 onClick={() => setFileDrawerSource(null)}
-                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer" }}
+                aria-label="Close file manager"
+                style={{ background: "none", border: "none", color: "#8b949e", fontSize: "1.25rem", cursor: "pointer", minWidth: "44px", minHeight: "44px" }}
               >
                 ✕
               </button>
@@ -1046,6 +1114,33 @@ export default function SourcesPage() {
           </div>
         </div>
       )}
+
+      {/* DELETE SOURCE CONFIRMATION */}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        danger
+        title="Delete this source?"
+        message={
+          pendingDelete
+            ? `Source "${pendingDelete.name}" and its MinIO bucket are removed for good. This cannot be undone.`
+            : ""
+        }
+        details={
+          pendingDelete
+            ? [
+                `MinIO bucket: ${pendingDelete.minio_bucket || "unknown"}`,
+                `Objects in the bucket: ${pendingDelete.total_files ?? 0}`,
+                "The bucket and every object inside it are deleted.",
+                "Pipeline links and knowledge profile links for this source are removed.",
+              ]
+            : undefined
+        }
+        confirmLabel="Delete source and bucket"
+        cancelLabel="Keep source"
+        busy={deletingId !== null}
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconBrowse, IconDatabase, IconHome, IconIngestion, IconSources, IconUpload } from "./Icons";
+import { IconBrowse, IconDatabase, IconHome, IconIngestion, IconSources } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import DirectoryPage from "../pages/DirectoryPage";
@@ -8,12 +8,10 @@ import FileViewerPage from "../pages/FileViewerPage";
 import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
 import KnowledgeStorePage from "../pages/KnowledgeStorePage";
-import UploadPage from "../pages/UploadPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
   { to: "/browse", label: "Folders", icon: IconBrowse },
-  { to: "/upload", label: "Upload", icon: IconUpload },
   { to: "/sources", label: "Sources", icon: IconSources },
   { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
 ];
@@ -97,7 +95,6 @@ export default function AppLayout() {
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isSourcesExact = path === "/sources";
   const isKnowledgeStore = path === "/knowledge-store";
-  const isUpload = path === "/upload";
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
   const isSourceDetail = params.type === "source-detail";
@@ -149,10 +146,6 @@ export default function AppLayout() {
 
         <PersistentPage visible={isKnowledgeStore}>
           <KnowledgeStorePage />
-        </PersistentPage>
-
-        <PersistentPage visible={isUpload}>
-          <UploadPage />
         </PersistentPage>
 
         {/* Dynamic-param pages: re-mount when params change via key */}

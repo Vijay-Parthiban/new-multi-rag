@@ -1,6 +1,6 @@
 # new-multi-rag — Documentation Index
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-20
 
 This folder is the canonical documentation set for the `new-multi-rag` platform. Service-level READMEs point here rather than duplicating architecture content at the repo root.
 
@@ -8,33 +8,46 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 
 | Document | Description |
 |---|---|
-| [overall-detailed.md](./overall-detailed.md) | End-to-end architecture, data lifecycle, ports, and operational runbook |
+| [overall-detailed.md](./overall-detailed.md) | End-to-end architecture, data lifecycle, port/storage matrix, shared contracts, and operational runbook |
 
-## RAG Ingestion Manager
-
-| Document | Description |
-|---|---|
-| [overall-rag-ingestion-manager.md](./rag-ingestion-manager-docs/overall-rag-ingestion-manager.md) | Backend/frontend topology, fanout engine, codebase map |
-| [01 — Overview Dashboard](./rag-ingestion-manager-docs/01_overview_dashboard_page.md) | Home page metrics and quick links |
-| [02 — Folders & File Browser](./rag-ingestion-manager-docs/02_folders_and_file_browser_page.md) | Directory workspace and file preview |
-| [03 — Data Sources](./rag-ingestion-manager-docs/03_data_sources_page.md) | MinIO buckets, connectors, sync |
-| [04 — Knowledge Store Fanout](./rag-ingestion-manager-docs/04_knowledge_store_page.md) | 5-sink profiles, sync, purge, visualizers |
-| [05 — Document Upload](./rag-ingestion-manager-docs/05_document_upload_page.md) | Chunked upload and multi-format parsing |
-
-## RAG Retrieval & Chat Manager
+## RAG Ingestion Manager (`rag-ingestion-manager-docs/`)
 
 | Document | Description |
 |---|---|
-| [overall-rag-retrieval-chat-manager.md](./rag-retrieval-chat-manager-docs/overall-rag-retrieval-chat-manager.md) | Retrieval, generation, guardrails, evaluation stack |
-| [01–11 — UI pages](./rag-retrieval-chat-manager-docs/) | Per-page docs for dashboard, pipelines, chat, eval, guardrails |
+| [overall-rag-ingestion-manager.md](./rag-ingestion-manager-docs/overall-rag-ingestion-manager.md) | Backend/frontend topology, connector sync, fanout engine, codebase map |
+| [01 — Overview Dashboard](./rag-ingestion-manager-docs/01_overview_dashboard_page.md) | Home page metrics, source summary, and quick links |
+| [02 — Folders & File Browser](./rag-ingestion-manager-docs/02_folders_and_file_browser_page.md) | Directory workspace, file listing, and document inspector |
+| [03 — Data Sources](./rag-ingestion-manager-docs/03_data_sources_page.md) | Source buckets, NiFi connector catalogue, live/scheduled polling, sync, delete, file management |
+| [04 — Knowledge Store Fanout](./rag-ingestion-manager-docs/04_knowledge_store_page.md) | Knowledge profiles, 5 destination sinks, sync, purge, visualizers |
+| [05 — Document Upload (removed)](./rag-ingestion-manager-docs/05_document_upload_page.md) | Why the `/upload` page was removed, where uploads live now, and the file-format support matrix |
+
+## RAG Retrieval & Chat Manager (`rag-retrieval-chat-manager-docs/`)
+
+| Document | Description |
+|---|---|
+| [overall-rag-retrieval-chat-manager.md](./rag-retrieval-chat-manager-docs/overall-rag-retrieval-chat-manager.md) | Retrieval, rerank, generation, guardrails, and evaluation service architecture |
+| [01 — Overview Dashboard](./rag-retrieval-chat-manager-docs/01_overview_dashboard_page.md) | Landing page with headline stats and quick links to the other pages |
+| [02 — RAG Pipelines](./rag-retrieval-chat-manager-docs/02_rag_pipelines_page.md) | Pipeline configuration: retrieval mode, models, rerank and generation settings |
+| [03 — RAG Chat](./rag-retrieval-chat-manager-docs/03_rag_chat_page.md) | Conversational interface with citations, streaming, multimodal input, guardrails |
+| [04 — Prompts](./rag-retrieval-chat-manager-docs/04_prompts_management_page.md) | Prompt studio: authoring, versioning, and prompt overrides |
+| [05 — Real Time Monitoring](./rag-retrieval-chat-manager-docs/05_realtime_monitoring_page.md) | Live latency, token, and quality metrics for running pipelines |
+| [06 — Offline Evaluation](./rag-retrieval-chat-manager-docs/06_offline_evaluation_page.md) | Golden dataset runs scored per retrieval, rerank, and generation stage |
+| [07 — Tracking & Traces](./rag-retrieval-chat-manager-docs/07_tracking_and_traces_page.md) | Per-message span timelines exported through OpenTelemetry |
+| [08 — Guard Config](./rag-retrieval-chat-manager-docs/08_ai_guardrails_config_page.md) | Guardrails policy definitions: ban list, PII entities, toxic language |
+| [09 — Guard Traces](./rag-retrieval-chat-manager-docs/09_ai_guardrails_traces_page.md) | Audit trail of guardrail evaluations and their outcomes |
+| [10 — Guard Evaluation](./rag-retrieval-chat-manager-docs/10_ai_guardrails_eval_page.md) | Golden-dataset evaluation runs against guardrails configurations |
+| [11 — Knowledge Store](./rag-retrieval-chat-manager-docs/11_knowledge_store_page.md) | Knowledge profile page backed by the ingestion manager API |
 | [12 — Evaluation Metrics Reference](./rag-retrieval-chat-manager-docs/12_evaluation_metrics_reference.md) | Retrieval, rerank, and generation metric definitions |
 | [13 — Golden Dataset Requirements](./rag-retrieval-chat-manager-docs/13_golden_dataset_requirements.md) | Golden dataset schema and evaluation API contract |
 
 ## Shared Libraries
 
-- `shared-libs/platform-common/` — API key auth (`X-API-Key` header or `api_key` query param), Qdrant store helpers, and retrieval payload contracts used by both ingestion fanout and retrieval search.
+- `shared-libs/platform-common/` — API key auth (`X-API-Key` header or `api_key` query param), dense/sparse embedding clients, SSRF URL validation, Qdrant store helpers, and the retrieval hit/payload contract used by both ingestion fanout and retrieval search.
+- `shared-contracts/` — Pydantic cross-service schemas (`shared_contracts.knowledge`, `.sources`, `.search`, `.pipelines`) consumed by the ingestion backend and the retrieval knowledge-profile proxy.
 
 ## Verification
 
 - Knowledge fanout E2E script: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py`
-- Unit tests: `rag-ingestion-manager/backend/tests/test_page_yielder.py`, `test_fanout_payload.py`
+- Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 14 passing): `tests/test_page_yielder.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_connector_config_validation.py`
+- Retrieval unit tests: `rag-retrieval-chat-manager/backend/tests/unit/` (16 test modules, `uv run pytest tests/unit -v`)
+- Retrieval integration test: `rag-retrieval-chat-manager/backend/tests/integration/test_qdrant_retrieve.py` (requires a reachable Qdrant)

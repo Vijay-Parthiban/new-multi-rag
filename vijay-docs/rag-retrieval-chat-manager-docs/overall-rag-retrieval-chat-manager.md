@@ -3,72 +3,175 @@
 **Last updated:** 2026-09-17
 
 ## 1. System Overview
-`rag-retrieval-chat-manager` is the intelligent querying, retrieval orchestration, reranking, generation, safety guardrail, and evaluation platform in the `new-multi-rag` ecosystem. It leverages hybrid vector retrieval (Qdrant HNSW + OpenSearch BM25), LiteLLM cross-encoder rerankers, LiteLLM/Ollama generator models, Microsoft Presidio guardrail safety checks, and continuous Ragas offline evaluation suites.
+`rag-retrieval-chat-manager` is the query, retrieval, rerank, generation, guardrail, and evaluation service of the `new-multi-rag` ecosystem. It reads the shared Qdrant collection written by `web-scrapper-workspace` / `rag-ingestion-manager`, reranks hits with a LiteLLM-hosted cross-encoder, generates answers with LiteLLM chat/vision models, delegates safety checks to the external guardrails service, and runs Ragas-based evaluation both online (per chat message) and offline (golden datasets).
+
+Repository layout:
+- `backend/` — uv workspace, Python >= 3.12: `libs/*` (7 libraries) + `apps/rag-api` (HTTP API) + `apps/eval-worker` (RQ worker).
+- `frontend/` — Vite 6 + React 19 single-page app (`frontend/package.json`).
 
 ---
 
-## 2. Complete Component Architecture
+## 2. Runtime Topology
 
 ```
-+---------------------------------------------------------------------------------------------------+
-|                                  USER / API CONSUMER INTERFACE                                    |
-|  [ Web UI: Vite/React (Port 5174) ]  [ Streaming SSE Chat ]  [ REST APIs (Port 8000) ]            |
-+-------------------------------------------------+-------------------------------------------------+
-                                                  |
-                                                  v
-+---------------------------------------------------------------------------------------------------+
-|                                 RAG RETRIEVAL & CHAT BACKEND                                      |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-|  | Input Safety Guardrails   |  | Hybrid Retrieval Engine       |  | Cross-Encoder Reranker    |  |
-|  | - Presidio PII/SPI Redact |  | - vector_core: Qdrant dense   |  | - reranker_core: LiteLLM  |  |
-|  | - Banned words & Toxicity |  | - retrieval_core: OpenSearch  |  | - Cohere v3.5 / BGE large |  |
-|  | - Prompt Injection Guard  |  | - Reciprocal Rank Fusion      |  | - Score threshold filter  |  |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-|                                                 |                                                 |
-|                                                 v                                                 |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-|  | Output Safety Guardrails  |  | Generation Core (LLM Engine)  |  | Prompt Studio Core        |  |
-|  | - Presidio output mask    |  | - generation_core: Generator  |  | - dynamic variables       |  |
-|  | - Toxic response blocker  |  | - Vision multimodal support   |  | - context block builder   |  |
-|  | - Hallucination audit     |  | - GPT-4o, Claude 3.5, Ollama  |  | - version history         |  |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-|                                                 |                                                 |
-|                                                 v                                                 |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-|  | OpenTelemetry Tracing     |  | Offline Ragas Evaluation      |  | Background Eval Worker    |  |
-|  | - Span waterfall trees    |  | - eval_core: Faithfulness     |  | - Async batch execution   |  |
-|  | - Per-message latency     |  | - Answer relevance, precision |  | - Celery / Redis queue    |  |
-|  +---------------------------+  +-------------------------------+  +---------------------------+  |
-+-------------------------------------------------+-------------------------------------------------+
-                                                  |
-                                                  v
-+---------------------------------------------------------------------------------------------------+
-|                                     PERSISTENCE & STORAGE                                         |
-|  [ PostgreSQL: Chats, Sessions, Traces, Guardrails, Evals ]  [ RedisVL: Semantic Cache ]           |
-+---------------------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------+
+|  Frontend: Vite / React — dev port 5174 (frontend/vite.config.ts)        |
+|  api.ts API_URL      -> http://localhost:8007  (rag-ingestion-manager)   |
+|  api.ts RAG_API_URL  -> http://localhost:8001  (this service)            |
+|  api.ts SCRAPER_URL  -> http://localhost:8000  (web-scrapper API)        |
++---------------------------------+----------------------------------------+
+                                  | HTTP  (X-API-Key header or ?api_key=)
+                                  v
++--------------------------------------------------------------------------+
+|  rag-api  (uvicorn rag_api.main:app) — port 8001                         |
+|  FastAPI "RAG Platform API" 0.1.0, app-level verify_api_key dependency    |
+|  app.state: settings, pipeline, retriever, generator, queue               |
+|  routers: health, search, retrieve, rerank, generate, chat, evaluate,     |
+|           prompts, guardrails, guardrails_evaluate, knowledge (proxy)     |
++----+----------------------+-----------------------+-----------------+-----+
+     |                      |                       |                 |
+     v                      v                       v                 v
+ Qdrant :6333        LiteLLM proxy :4000      guardrails-service   Redis :6379/0
+ scrape_embeddings   embeddings / rerank /    POST /parse/{guard}  RQ queue "eval"
+ dense + sparse      chat / vision models     (default :8002)
+ named vectors, RRF                                              |
+     ^                      ^                                    v
+     |                      |                       +----------------------------+
++----+----------------------+--------------------+  | eval-worker: rq worker     |
+| Postgres :5432 database "rag" (SQLAlchemy)      |  | "eval" (run-worker.sh)     |
+| chat, evaluation, guardrails tables (rag_db)    |  | tasks.compute_chat_metrics |
++-------------------------------------------------+  | tasks.run_evaluation       |
+                                                     +----------------------------+
 ```
 
----
+## 3. Processes, Ports, Entrypoints
 
-## 3. Modular Library Decomposition (`libs/`)
-The backend is structured into modular Python libraries:
-- **`libs/rag-core`**: High-level RAG pipeline orchestrator and execution router (`pipeline.py`, `schemas.py`).
-- **`libs/vector-core`**: Qdrant vector client, dense embedding generation, SPLADE sparse vectors, payload hit mappers (`qdrant_store.py`, `search.py`, `embedding_client.py`).
-- **`libs/retrieval-core`**: Hybrid search fusion, OpenSearch lexical search, and multi-source hit aggregators (`retriever.py`, `hit_mapper.py`).
-- **`libs/reranker-core`**: LiteLLM and Cohere cross-encoder rerankers with noop fallback (`litellm_reranker.py`, `noop.py`).
-- **`libs/generation-core`**: Prompt assembling, context block formatting, LLM streaming generators, and vision multimodal processors (`generator.py`, `prompt_builder.py`, `vision_generator.py`).
-- **`libs/eval-core`**: Ragas and DeepEval metrics runners (Faithfulness, Relevancy, Precision, Recall, Red-team guardrail runners) (`runner.py`, `ragas_client.py`, `generation_metrics.py`).
-- **`libs/database`**: SQLAlchemy models and repositories for chats, messages, evaluation runs, guardrail policies, and traces (`rag_db/models/`, `rag_db/repositories/`).
-- **`libs/shared`**: Cross-cutting utilities, configuration settings, Presidio guardrail client, tracing context, and logging (`rag_shared/`).
+| Process | Entrypoint | Port | Notes |
+|---|---|---|---|
+| rag-api | `rag_api.main:run` → `uvicorn rag_api.main:app` | 8001 (`API_PORT`) | `rag_shared/config.py:50`; compose maps `8001:8001` |
+| eval-worker | `eval_worker.main:run` → `rq worker eval` | none | Consumes RQ queue `eval`; `rq_eval_queue` default `rag_shared/config.py:18` |
+| migrate | `rag-db-migrate` (`rag_db.migrate:main`) | none | Runs Alembic to head before api/worker start |
+| frontend (dev) | `npm run dev` (Vite) | 5174 | `frontend/vite.config.ts:6` |
+| Qdrant | external | 6333 | `qdrant_url` default `rag_shared/config.py:20` |
+| LiteLLM proxy | external | 4000 | `litellm_base_url` default `rag_shared/config.py:24` |
+| guardrails-service | external (`guardrails-service/`) | default 8002 | `rag_shared/guardrails_client.py:13` |
+| rag-ingestion-manager | external | 8007 | Knowledge-profile proxy target |
 
----
+Auth: the app registers `dependencies=[Depends(verify_api_key)]` (`apps/rag-api/src/rag_api/main.py:62`); `verify_api_key` comes from `platform_common.auth` and accepts `X-API-Key` or the `api_key` query parameter, and is a no-op when `api_key` is empty (`rag_shared/config.py:51`).
 
-## 4. Key Invariants & Operational Guarantees
-1. **Safety Interception First**: Guardrail safety checks run before vector search, preventing unauthorized prompt injection attacks from consuming embedding or LLM compute.
-2. **Deterministic Offline Evaluation**: Golden dataset benchmarks evaluate fixed context sets to produce stable, reproducible Ragas metric baselines.
-3. **End-to-End Tracing**: Every conversational exchange produces a complete span tree recording execution times across retrieval, reranking, generation, and guardrails.
+## 4. Modular Library Decomposition (`backend/libs/`)
 
-## 5. Related Documentation
+| Library | Package | Contents |
+|---|---|---|
+| `libs/rag-core` | `rag_core` | `RAGPipeline` orchestrator (`pipeline.py`: retrieve / rerank / chat / generate / from_request), request + result schemas (`schemas.py`), pipeline prompts (`prompts.py`) |
+| `libs/vector-core` | `vector_core` | Qdrant dense+sparse access (`qdrant_store.py`, `search.py`), LiteLLM embeddings (`embedding_client.py`), sparse BM25 encoder (`sparse_client.py`), vision payload client (`vision_client.py`), payload filters and hit mapping |
+| `libs/retrieval-core` | `retrieval_core` | `Retriever` mode/limit resolution (`retriever.py`), `chunk_from_search_hit` (`hit_mapper.py`) |
+| `libs/reranker-core` | `reranker_core` | `Reranker` protocol, `LiteLLMReranker` (LiteLLM `POST /v1/rerank`), `NoopReranker` pass-through, `build_reranker` factory |
+| `libs/generation-core` | `generation_core` | `Generator` (text) + `VisionGenerator` + fusion, prompt assembly (`prompt_builder.py`), prompt loading with overrides (`prompts.py`), `GenerationResult` |
+| `libs/eval-core` | `eval_core` | `GoldenItemEvaluator` (`runner.py`), Ragas client (`ragas_client.py`), chat/retrieval/rerank/generation metrics, guardrail eval runner, golden + guardrails dataset schemas |
+| `libs/database` | `rag_db` | SQLAlchemy models (`models/chat.py`, `models/evaluation.py`, `models/guardrails.py`), repositories, session factory (`services/database.py`), Alembic runner (`migrate.py`) |
+| `libs/shared` | `rag_shared` | Settings, API-key auth, OpenTelemetry tracing, guardrails HTTP client, prompt override store, logging |
+
+Two shared packages are consumed from sibling workspaces: `platform_common` (auth, vector names) and `shared_contracts.knowledge` (knowledge-profile models used by the proxy).
+
+## 5. Retrieval → Generation Pipeline (as implemented)
+
+`routes/chat.py` → `RAGPipeline.chat()` → `RAGPipeline.rerank()` → `RAGPipeline.retrieve()`:
+
+1. **Retrieve** — `RAGPipeline.retrieve()` (`libs/rag-core/src/rag_core/pipeline.py:27`) resolves the request config and calls `Retriever.retrieve()` (`libs/retrieval-core/src/retrieval_core/retriever.py:14`), which runs `search_scrape_chunks()` (`libs/vector-core/src/vector_core/search.py:17`).
+   - `mode=dense` → LiteLLM dense embedding only; `mode=sparse` → sparse BM25 embedding only; `mode=hybrid` (default, `settings.default_retrieval_mode`) → both named vectors in one Qdrant query with RRF fusion.
+   - Source filters: `source_type` (`all` / `web_scrape` / `file_ingest`) and `source_id`.
+2. **Rerank** — `RAGPipeline.rerank()` (`pipeline.py:47`) builds a reranker via `build_reranker(settings, enabled=cfg.rerank_enabled, model=cfg.rerank_model)` and truncates to `cfg.top_k` (default 5). Disabled → `NoopReranker`. Latency captured as `retrieve`, `rerank`, `total` ms.
+3. **Generate** — `RAGPipeline.chat()` (`pipeline.py:83`) calls `Generator.generate(query, reranked, model=…, vision_model=…, fusion_model=…)`, which builds the RAG prompt from reranked chunks, generates the text answer, generates a vision answer for image chunks (when present), and optionally fuses both. Result: `ChatResult` with `answer`, `text_answer`, `vision_answer`, chunk counts, and per-stage latency.
+4. **Persist + enqueue** — `_persist_chat_turn()` (`routes/chat.py:231`) writes session/message/trace to Postgres and, when `ragas_enabled and chat_metrics_async`, creates a pending metrics row and enqueues `eval_worker.tasks.compute_chat_metrics` on the RQ `eval` queue (`routes/chat.py:285`).
+5. **Offline evaluation** — `POST /evaluate/runs` persists a run and enqueues `eval_worker.tasks.run_evaluation` (`routes/evaluate.py:337`); the worker scores golden items with `GoldenItemEvaluator` and stores per-item metrics.
+
+`POST /generate`, `POST /rerank`, `POST /retrieve` expose individual stages on the same pipeline.
+
+## 6. Guardrails Integration Point
+
+Guardrails are **not** implemented in-process: `routes/chat.py` `_run_guardrails()` (`routes/chat.py:295`) reads a `guardrails_configs` row through `GuardrailsRepository`, then calls `run_guardrails_check(text, cfg.guards, …, timeout_s, settings)` from `rag_shared/guardrails_client.py:11`, which POSTs to `{guardrails_url}/parse/{guard}` per guard and treats a failed `validation_passed` as blocked.
+
+- Input phase runs before `pipeline.chat()` (`routes/chat.py:380`); output phase runs after (`routes/chat.py:432`); config `mode` (`input` / `output`) selects which phase executes.
+- A blocked turn returns canned copy from `GUARD_BLOCK_COPY` (ban list, PII, toxic language) with span attributes `guardrails.{phase}.blocked` / `blocked_by`, and a `guardrails_traces` row is recorded.
+- Note: `rag_shared/config.py` defines no `guardrails_url` / `guardrails_timeout_s` fields, so the chat guardrail path relies on attributes that the current `Settings` class does not declare.
+- Guardrail golden-dataset evaluation (`routes/guardrails_evaluate.py`) reuses the same client against the same service.
+
+## 7. Persistence (`rag_db`)
+
+Postgres, SQLAlchemy 2.x via `get_session_factory()` (`libs/database/src/rag_db/services/database.py:14`), `database_url` default `postgresql+psycopg://crawler:crawler@postgres:5432/rag` (`rag_shared/config.py:15`). Tables:
+
+| Area | Tables | Model |
+|---|---|---|
+| Chat | `chat_sessions`, `chat_messages`, `chat_pipeline_traces`, `chat_message_metrics` | `libs/database/src/rag_db/models/chat.py:14,26,40,61` |
+| Online/offline eval | `golden_datasets`, `golden_dataset_items`, `evaluation_runs`, `evaluation_run_items` | `.../models/evaluation.py:14,26,41,57` |
+| Guardrails | `guardrails_configs`, `guardrails_traces`, `guardrails_golden_datasets`, `guardrails_golden_dataset_items`, `guardrails_eval_runs`, `guardrails_eval_run_items` | `.../models/guardrails.py:14,30,47,59,75,93` |
+
+Repositories: `chat_repository.py`, `evaluation_repository.py`, `guardrails_repository.py`, `guardrails_evaluation_repository.py`. Schema is versioned with Alembic (`rag_db.migrate:main`, CLI `rag-db-migrate`). Redis holds only the RQ queue (`redis_url` default `redis://redis:6379/0`); there is no semantic cache layer.
+
+## 8. Tracing & Observability
+
+`init_tracing()` runs at process startup for both apps (`apps/rag-api/src/rag_api/main.py:44`, `apps/eval-worker/src/eval_worker/main.py:10`) and configures an OTLP HTTP exporter (`rag_shared/tracing.py`). Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` (`routes/chat.py:367`), `rag.chat.stream` for `POST /chat/stream` — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`) plus `latency.*` and `rag.chunks_used`. `emit_rag_pipeline_trace()` is used by the eval worker to emit synthetic traces for background metric runs, and `force_flush()` drains spans before worker exit.
+
+## 9. HTTP Endpoint Inventory
+
+| Method | Path | Router |
+|---|---|---|
+| GET | `/health` | `routes/health.py:6` — returns only `{"status": "ok"}` |
+| GET | `/search` | `routes/search.py:103` |
+| POST | `/scrapes/query` | `routes/search.py:128` |
+| POST | `/retrieve` | `routes/retrieve.py:37` (marked deprecated) |
+| POST | `/rerank` | `routes/rerank.py:17` |
+| POST | `/generate` | `routes/generate.py:22` |
+| POST | `/chat` | `routes/chat.py:356` |
+| POST | `/chat/stream` | `routes/chat.py:493` — SSE (`status` / `token` / `session` / `done` / `blocked` events) |
+| GET | `/chat/messages/{message_id}/metrics` | `routes/chat.py:764` |
+| GET | `/chat/stats` | `routes/chat.py:802` |
+| GET | `/chat/sessions` | `routes/chat.py:822` |
+| GET | `/chat/sessions/{session_id}/messages` | `routes/chat.py:848` |
+| DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:889` |
+| DELETE | `/chat/messages/{message_id}` | `routes/chat.py:902` |
+| POST | `/evaluate/datasets`, `/evaluate/datasets/upload` | `routes/evaluate.py:134,144` |
+| GET | `/evaluate/datasets`, `/evaluate/datasets/{id}`, `/evaluate/datasets/{id}/runs` | `routes/evaluate.py:166,195,256` |
+| DELETE | `/evaluate/datasets/{id}` | `routes/evaluate.py:215` |
+| POST | `/evaluate/runs` | `routes/evaluate.py:319` |
+| GET | `/evaluate/runs/{id}`, `/evaluate/runs/{id}/items` | `routes/evaluate.py:341,281` |
+| GET | `/evaluate/stats` | `routes/evaluate.py:398` |
+| GET | `/prompts` | `routes/prompts.py:163` |
+| PUT | `/prompts` | `routes/prompts.py:187` |
+| POST | `/prompts/reset` | `routes/prompts.py:196` |
+| GET | `/prompts/{prompt_id}` | `routes/prompts.py:204` |
+| PUT | `/prompts/{prompt_id}` | `routes/prompts.py:221` |
+| POST | `/prompts/{prompt_id}/reset` | `routes/prompts.py:229` |
+| GET | `/guardrails/guards` | `routes/guardrails.py:209` |
+| POST | `/guardrails/configs` | `routes/guardrails.py:215` |
+| GET | `/guardrails/configs`, `/guardrails/configs/{id}` | `routes/guardrails.py:244,257` |
+| PUT / DELETE | `/guardrails/configs/{id}` | `routes/guardrails.py:271,306` |
+| GET | `/guardrails/traces`, `/guardrails/stats` | `routes/guardrails.py:321,349` |
+| POST | `/guardrails-evaluate/datasets`, `/guardrails-evaluate/datasets/upload` | `routes/guardrails_evaluate.py:153,139` |
+| GET | `/guardrails-evaluate/datasets`, `/guardrails-evaluate/datasets/{id}/runs` | `routes/guardrails_evaluate.py:162,332` |
+| DELETE | `/guardrails-evaluate/datasets/{id}` | `routes/guardrails_evaluate.py:184` |
+| POST | `/guardrails-evaluate/runs` | `routes/guardrails_evaluate.py:197` |
+| GET | `/guardrails-evaluate/runs/{id}`, `/guardrails-evaluate/runs/{id}/items` | `routes/guardrails_evaluate.py:307,365` |
+| GET/POST | `/api/knowledge-profiles` | `routes/knowledge.py:31,47` |
+| GET/PUT/DELETE | `/api/knowledge-profiles/{profile_id}` | `routes/knowledge.py:62,77,93` |
+| POST | `/api/knowledge-profiles/{profile_id}/test-connection`, `.../sync` | `routes/knowledge.py:108,124` |
+
+### Knowledge-profiles proxy
+`routes/knowledge.py` contains no storage of its own: every handler forwards over `httpx` to the ingestion manager under prefix `/api/knowledge-profiles`. The base URL is read from `settings.ingestion_service_url` with a fallback of `http://localhost:8007` (`routes/knowledge.py:26-27`); reads use a 15 s timeout and `POST .../sync` uses 30 s, and upstream connection errors surface as HTTP 503 "Ingestion service unavailable".
+
+## 10. Key Invariants & Operational Guarantees
+1. **Safety before generation**: when a `guardrails_config_id` is supplied, input validation runs before retrieval/generation; output validation runs on the generated answer before it is persisted and returned. Guardrail checks execute only via the external guardrails service.
+2. **Deterministic offline evaluation**: golden-dataset runs use the pipeline with fixed configs and default `router_enabled=False`, so metric baselines are reproducible.
+3. **Single source of retrieval truth**: this service holds read-only Qdrant access to the shared collection; ingestion writes the vectors (embedding/sparse model names must match `web-scrapper-workspace`).
+4. **End-to-end tracing**: every `/chat` request produces one `rag.chat` span tree covering retrieve → rerank → generate (and guardrails when configured), with latency attributes per stage.
+5. **Async quality scoring**: chat-level Ragas metrics are computed by the `eval-worker` process, not in the request path; the response carries `metrics_status` (`pending` when a metrics job was enqueued, `skipped` when metrics are disabled or the turn was blocked) for the client to poll.
+
+## 11. Known Gaps in the Working Tree
+- `POST /chat/stream` (`routes/chat.py:493`) lazily imports a query-routing module (`routes/chat.py:506`) and calls `RAGPipeline.stream_chat` / `stream_chat_self_corrective`; neither the routing module nor those pipeline methods exist in this repository (`libs/rag-core/src/rag_core/pipeline.py` implements only retrieve/rerank/chat/generate), and `PipelineConfig` has no `rag_mode` field. Streaming chat therefore cannot execute as written.
+- `Settings` (`rag_shared/config.py`) declares no guardrails URL/timeout and no `ingestion_service_url` field; the guardrails client default (`http://localhost:8002`) and the proxy default (`http://localhost:8007`) are the effective values.
+
+## 12. Related Documentation
 - [12 — Evaluation Metrics Reference](./12_evaluation_metrics_reference.md)
 - [13 — Golden Dataset Requirements](./13_golden_dataset_requirements.md)
 - [06 — Offline Evaluation Page](./06_offline_evaluation_page.md)
