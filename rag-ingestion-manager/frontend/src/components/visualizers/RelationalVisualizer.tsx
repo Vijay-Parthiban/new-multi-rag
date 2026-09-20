@@ -142,6 +142,13 @@ export const RelationalVisualizer: React.FC<RelationalVisualizerProps> = ({ data
                 <div style={{ fontSize: "11px", color: "#94a3b8" }}>File Path</div>
                 <div style={{ fontSize: "12px", fontWeight: 600, color: "#38bdf8" }}>{selectedRow.file_key}</div>
               </div>
+              <div style={{ background: "rgba(30, 41, 59, 0.5)", padding: "8px", borderRadius: "6px" }}>
+                <div style={{ fontSize: "11px", color: "#94a3b8" }}>Record Type</div>
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "#fbbf24" }}>
+                  {selectedRow.record_type || "chunk"}
+                  {selectedRow.parent_ref ? ` -> ${selectedRow.parent_ref}` : ""}
+                </div>
+              </div>
               <div>
                 <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "4px" }}>Full Content</div>
                 <div style={{ background: "rgba(15, 23, 42, 0.9)", padding: "12px", borderRadius: "6px", fontSize: "12px", color: "#cbd5e1", lineHeight: 1.5, maxHeight: "150px", overflowY: "auto", border: "1px solid rgba(255, 255, 255, 0.05)" }}>

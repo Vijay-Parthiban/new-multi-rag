@@ -170,6 +170,13 @@ export const VectorVisualizer: React.FC<VectorVisualizerProps> = ({ data, loadin
                   <div style={{ fontSize: "11px", color: "#94a3b8" }}>Page / Index</div>
                   <div style={{ fontSize: "12px", fontWeight: 600, color: "#4ade80" }}>Page {selectedPoint.payload?.page_index ?? 0}</div>
                 </div>
+                <div style={{ background: "rgba(30, 41, 59, 0.5)", padding: "8px", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "#94a3b8" }}>Record Type</div>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#fbbf24" }}>
+                    {selectedPoint.payload?.record_type || "chunk"}
+                    {selectedPoint.payload?.parent_ref ? ` -> ${selectedPoint.payload.parent_ref}` : ""}
+                  </div>
+                </div>
               </div>
               <div>
                 <div style={{ fontSize: "11px", color: "#94a3b8", marginBottom: "4px" }}>Chunk Text Content</div>

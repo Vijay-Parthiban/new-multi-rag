@@ -41,6 +41,7 @@ Three behaviour notes the UI labels do not make obvious:
 | `enabled` | boolean | default `true`; edited in the modal, the list has no toggle |
 | `chunk_size` | integer | default `1000`; bounds `100`–`8000` |
 | `chunk_overlap` | integer | default `120`; bounds `0`–`2000` |
+| `chunk_strategy` | enum | `recursive` (default), `fixed`, `sentence`, `section`, `layout`, `context_aware`, `parent_child`. See §6 |
 | `modality_mode` | enum | `text` (default) or `text_images` |
 | `text_embedding_model` | text(128) | one text embedding model for every destination; default `nvidia-embed-textonly` |
 | `caption_model` | text(128), nullable | vision model that captions figures; default `groq-vision` |
@@ -198,7 +199,7 @@ set.
 |  [ Total Profiles ] [ Knowledge Products Using A Profile ] [ Destination         |
 |                                                              Catalogue: 4 ]      |
 +---------------------------------------------------------------------------------+
-|  <profile name>  [N of M destinations]  [Chunk 1000 / 120]  [Text + images]     |
+|  <profile name>  [N of M destinations]  [Chunk 1000 / 120]  [Chunking: recursive]  [Text + images]  |
 |                  [Captions: groq-vision]  [DISABLED]                             |
 |  <description>                                          [ Edit ]  [ Delete ]     |
 |  Destination chips:  [ Qdrant ENABLED ]  [ OpenSearch PAUSED ]  [ … ]            |
@@ -217,6 +218,7 @@ Two badges are new:
 
 | badge | shown when |
 |---|---|
+| `Chunking: <strategy>` | always; the short label from `formatChunkStrategy()` in `utils/format.ts` |
 | `Text + images` or `Text only` | always; `Text + images` follows `modality_mode = text_images` |
 | `Captions: <caption_model>` | only when `modality_mode` is `text_images` |
 
@@ -254,9 +256,10 @@ One modal for create (`POST /api/ingestion-profiles`) and edit (`PATCH /api/inge
    - **Caption Model** select over the models whose `kind` is `chat`, rendered only for `text_images`.
    - **Minimum Figure Pixels** number input (`min=0`), rendered only for `text_images`, with the hint
      `Figures smaller than this are skipped. 10000 skips logos and rules.`
-5. **Chunking**: `Chunk Size (characters)` (`min=100`, `max=8000`) and `Chunk Overlap (characters)`
-   (`min=0`, `max=2000`), with the hint `Chunk size and overlap apply to every destination. A page is split into
-   chunks of this size.`
+5. **Chunking**: a **Chunking Strategy** select, then `Chunk Size (characters)` (`min=100`, `max=8000`) and
+   `Chunk Overlap (characters)` (`min=0`, `max=2000`). The block hint reads `The strategy decides where one
+   chunk ends and the next starts. Chunk size and overlap apply to every strategy, and to every destination.`
+   The select lists the seven strategies, and a second line under it explains the chosen one.
 6. **Configure Destination Stores**: one card per catalogue entry, each with an enable checkbox and, when
    enabled, the typed field grid from `components/DestinationConfigFields.tsx`. That component is generic over
    `option.fields` and needed no change. The block carries the note
@@ -315,20 +318,27 @@ Five stages run in order for every file: extraction, captioning, chunking, one s
 fanout. `universal_fanout.py` owns the last four.
 
 ```
-iter_file_pages(render_pages=False, include_figures=True)
+iter_file_pages(render_pages=False, include_figures=True, layout=<strategy == "layout">)
         |                      -> FilePage(page_index=3, text=<one page>)
         v
 _caption_pages(pages)        -> text_images only: one caption per figure
         |
         v
 _resolve_chunking(product)   -> (chunk_size, chunk_overlap)
+_resolve_chunk_strategy(product) -> "recursive" | "fixed" | ... | "parent_child"
         |
         v
-_chunk_pages(pages, size, overlap) -> one FilePage per chunk,
-                                      page_index=3, chunk_index=0..n-1
+_context_similarities(pages) -> context_aware only: one batch embedding call per page
         |
         v
-one store document per chunk (Qdrant point, OpenSearch doc, Postgres row, Redis key)
+_chunk_pages(pages, size, overlap, strategy, similarities)
+                             -> one FilePage per record,
+                                page_index=3, chunk_index=0..n-1,
+                                record_type="chunk"|"parent"|"child",
+                                parent_ref="<page>:<parent chunk_index>"
+        |
+        v
+one store document per record (Qdrant point, OpenSearch doc, Postgres row, Redis key)
 ```
 
 ### Modality modes
@@ -360,21 +370,55 @@ The legacy Pipeline path keeps `render_pages=True`, so it behaves as before.
 - `_resolve_chunking(product)` reads the linked profile. A product with no profile falls back to
   `DEFAULT_CHUNK_SIZE = 1000` and `DEFAULT_CHUNK_OVERLAP = 120`, so an old product behaves like the old
   default. It clamps the overlap to `chunk_size - 1`, because a stored row could predate the API bound.
-- `_chunk_pages(pages, size, overlap)` splits every page with the existing `chunk_text()`. `page_index` keeps
-  the source page and `chunk_index` numbers the chunks from `0` inside each page. A blank page yields no chunk.
+- `_resolve_chunk_strategy(product)` reads `chunk_strategy` off the same profile and defaults to
+  `DEFAULT_CHUNK_STRATEGY = "recursive"`.
+- `_chunk_pages(pages, size, overlap, strategy, similarities)` splits every page with `chunk_text()`.
+  `page_index` keeps the source page and `chunk_index` numbers the records from `0` inside each page. A blank
+  page yields no chunk.
 - The fanout indexes chunks instead of whole pages. `pages_indexed` in the `knowledge_product_files` ledger
   still counts **source pages**, and the `Pages` column in the UI keeps its meaning.
 - When every page is blank the fanout records the file without writing a document. This keeps the ledger honest
   and stops a false `synced` on an empty file.
 
+#### Chunk strategies
+
+`chunk_text(text, chunk_size, chunk_overlap, strategy, similarities=None)` in
+`src/ingestion_service/utils/text_splitter.py` is the only chunker. The strategy picks the **unit stream** and
+the **packing rule**:
+
+| `chunk_strategy` | Units | Packing | Notes |
+|---|---|---|---|
+| `recursive` (default) | headings and blank-line paragraphs | packed to the window | The original algorithm, kept byte-identical so an existing product re-syncs to the same text |
+| `fixed` | none | a hard window every `chunk_size` characters | Ignores structure; the cut lands mid-paragraph |
+| `sentence` | sentences | packed to the window | No sentence is split. An abbreviation such as `e.g.` does not end a sentence, because the next word must start with a capital, digit, quote or bracket |
+| `section` | headings and blank-line paragraphs | one chunk per unit | A unit larger than `chunk_size` is cut on word boundaries |
+| `layout` | the PDF's own layout blocks, blank-line separated | one chunk per unit | `page_yielder._layout_text()` reads `page.get_text("blocks", sort=True)`, so a two-column page comes out in reading order and a table region stays separate. A non-PDF format has no layout blocks and behaves like `section` |
+| `context_aware` | sentences | packed inside a topic group | `_context_similarities()` embeds every sentence of a page in **one batch request**, then a boundary whose cosine similarity sits more than one standard deviation below the page mean starts a new group. A group boundary is never crossed. An unreachable embedding model falls back to the size window alone, so the file still ingests |
+| `parent_child` | headings and blank-line paragraphs, then sentences | parents at `chunk_size`, children at about a third of it | Both levels are stored. A child carries `record_type: "child"` and `parent_ref: "<page_index>:<parent chunk_index>"`; the parent carries `record_type: "parent"`. Parent records come first, so the ordinal in `parent_ref` addresses the parent's own `chunk_index`. A parent that fits inside one child window is stored alone, because a child identical to its parent doubles the store for nothing |
+
+`chunk_overlap` applies to every strategy. It is a parameter, not a strategy: the overlap window carries text
+across a boundary, and it does not depend on how the boundary was chosen.
+
+`chunk_strategy` is part of `product.pipeline_fingerprint`, so changing it and pressing **Apply Profile**
+purges and re-syncs every destination.
+
 Per-sink effect of chunking:
 
 | Sink | Change |
 |---|---|
-| Qdrant | one point per chunk; the payload carries the real `chunk_index` |
-| OpenSearch | one document per chunk; the document gained a `chunk_index` field |
-| PostgreSQL | one row per chunk; the `chunks` table gained `chunk_index INT NOT NULL DEFAULT 0`, added on an older table with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
-| RedisVL | the key became `<prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>`; the JSON value gained `chunk_index` |
+| Qdrant | one point per chunk; the payload carries the real `chunk_index`, plus `record_type` and `parent_ref` |
+| OpenSearch | one document per chunk; the document gained a `chunk_index`, `record_type` and `parent_ref` field |
+| PostgreSQL | one row per chunk; the `chunks` table gained `chunk_index INT NOT NULL DEFAULT 0` and, with the parent/child strategy, `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, both added on an older table with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
+| RedisVL | the key became `<prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>`; the JSON value gained `chunk_index`, `record_type` and `parent_ref` |
+
+The store inspector returns `record_type` and `parent_ref` for all four destinations, and the visualizer panels
+render them: the lexical list and the Qdrant point panel show a `Record Type` tag (`parent`, or `child -> 0:3`),
+the relational row panel and the Redis key panel show the same field. Only the vector and lexical panels tag a
+record that is not a plain chunk, so a `recursive` product looks exactly as it did.
+
+Ponytail note on `context_aware`: the topic-shift threshold is a per-page statistic (`mean - 1σ`), so no
+constant has to be tuned per corpus. If a real document reports the wrong boundaries, the knob to expose is
+`_CONTEXT_SHIFT_SIGMA` in `text_splitter.py`, not a new field per profile.
 
 **A plain poll does not re-index after a chunking change.** File change detection is etag plus size, so a
 chunk-size change does not look like a file change. A store keeps its old documents until the object bytes change
@@ -393,8 +437,10 @@ changed (§3).
 - The fanout refuses to recreate an existing Qdrant collection whose dimension disagrees. It raises instead,
   because a recreate would delete every point.
 
-The store inspector returns `modality` for Qdrant, OpenSearch, PostgreSQL and RedisVL. It returns `image_ref`
-where the store holds it. The RedisVL inspect returns the cached JSON value, so the caption text is readable.
+The store inspector returns `modality`, `record_type` and `parent_ref` for Qdrant, OpenSearch, PostgreSQL and
+RedisVL. It returns `image_ref` where the store holds it. The RedisVL inspect returns the cached JSON value, so
+the caption text and the record type are readable. Qdrant needs no projection, because its payload is returned
+whole.
 
 The store inspector projects `chunk_index` for Qdrant, OpenSearch and PostgreSQL. Its OpenSearch window is 200
 hits and its Redis window is 200 keys.
@@ -432,6 +478,7 @@ with no profile reports `modality_mode: "text"` and `null` for the rest.
 | `409` | `PROFILE_IN_USE` | `DELETE` on a profile that a product references |
 | `422` | `CHUNK_OVERLAP_TOO_LARGE` | `chunk_overlap >= chunk_size` |
 | `422` | `CAPTION_MODEL_REQUIRED` | `text_images` with no caption model |
+| `422` | — (FastAPI validation detail) | `chunk_strategy` is not one of the seven names. The field is a `Literal`, so the request never reaches the column |
 | `422` | `PROFILE_REQUIRED` | `apply-profile` with no body and no product link |
 
 The `409` detail carries the usage count:
@@ -459,6 +506,10 @@ The `409` detail carries the usage count:
   `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `caption_model TEXT` and
   `image_min_pixels INTEGER DEFAULT 10000`. Without them a local run fails with
   `no such column: ingestion_profiles.modality_mode`.
+- The chunk strategy added `chunk_strategy TEXT DEFAULT 'recursive'` in the same list. An existing row reads
+  `recursive`, so nothing re-indexes and no store changes on the upgrade. The Postgres `chunks` table gained
+  `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, added by `ALTER TABLE ... ADD COLUMN IF NOT
+  EXISTS` in the writer, which is the same idempotent path the older columns use.
 - No Alembic revision was added. `init_db()` runs `Base.metadata.create_all`, which creates any table that does
   not exist. The schema head stays `010_knowledge_products`.
 - **The table name `ingestion_profiles` is deliberate.** Migration `008_knowledge_store` spent
@@ -523,11 +574,18 @@ On failure the same line shows the API message.
 
 ## 10. Verification
 
-- `backend/tests/test_ingestion_profile_chunking.py` — plain pytest with bare asserts, 7 cases.
+- `backend/tests/test_ingestion_profile_chunking.py` — plain pytest with bare asserts, 21 cases.
   `_resolve_chunking` is covered with no profile, with a profile, and with an overlap above the size.
-  `_chunk_pages` is covered over one long page, over a blank page, and over three pages. `chunk_index` runs from
-  `0` with no gaps and restarts inside each page. It also covers `_assign_image_chunk_indexes`, so a figure
-  never collides with a text chunk on the same Redis key.
+  `_resolve_chunk_strategy` is covered with no profile and with a profile. `_chunk_pages` is covered over one
+  long page, over a blank page, and over three pages. `chunk_index` runs from `0` with no gaps and restarts
+  inside each page. It also covers `_assign_image_chunk_indexes`, so a figure never collides with a text chunk
+  on the same Redis key.
+- The chunk strategies share that file. The default `recursive` path must equal itself, so a stored product
+  re-syncs unchanged. `section` keeps every block whole. `fixed` ignores the block boundaries. `sentence` emits
+  runs of whole consecutive sentences. `context_aware` starts a chunk at a similarity dip and keeps one topic in
+  one chunk, and it falls back to the size window when the similarities are absent. `parent_child` stores parents
+  and children, gives a short block one parent and no child, and proves that every child's `parent_ref` resolves
+  to a record whose `record_type` is `parent`. An unknown strategy name raises rather than chunking silently.
 - `backend/tests/test_ingestion_modality_resolvers.py` — the modal default from a product with no profile, the
   `text_images` mode, and the caption-model fallback to `settings.caption_model`.
 - `backend/tests/test_page_yielder_figures.py` — a PDF with one embedded figure yields a text page and one
@@ -539,6 +597,12 @@ On failure the same line shows the API message.
 - `backend/scripts/e2e_ingestion_modality.py` — the modality proof. It checks the env-only field surface, the
   derived dimension, a `text` sync, that `text` mode stores no image document, and that `text_images` stores a
   caption in every store.
+- `backend/scripts/e2e_chunk_strategies.py` — the strategy proof. It uploads one structured document and moves
+  the same product through `section`, `parent_child`, `fixed` and `context_aware`, checking after each change
+  that every destination holds the expected record count, that the child records name a parent present in the
+  same store, that a strategy change leaves no stale record type behind, and that the four destinations agree
+  on the count. It also proves that an unknown strategy name is a `422` and that a profile with no strategy
+  stores `recursive`.
 
 Run them from `rag-ingestion-manager/backend`:
 
@@ -546,4 +610,5 @@ Run them from `rag-ingestion-manager/backend`:
 uv run pytest tests -q
 uv run python scripts/e2e_ingestion_profiles.py --source-id <a real source uuid>
 uv run python scripts/e2e_ingestion_modality.py --source-id <a real source uuid>
+uv run python scripts/e2e_chunk_strategies.py --source-id <a real source uuid>
 ```

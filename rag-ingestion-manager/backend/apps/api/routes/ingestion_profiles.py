@@ -25,8 +25,10 @@ from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_STRATEGY,
     DEFAULT_IMAGE_MIN_PIXELS,
     DEFAULT_MODALITY_MODE,
+    ChunkStrategy,
     IngestionModality,
     IngestionProfile,
     IngestionProfileDestination,
@@ -47,12 +49,26 @@ class IngestionProfileDestinationInput(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+# The stored column is the ChunkStrategy enum. The API takes the same seven names
+# as a Literal, so a bad value is a 422 at the edge and never reaches the column.
+ChunkStrategyName = Literal[
+    "recursive",
+    "fixed",
+    "sentence",
+    "section",
+    "layout",
+    "context_aware",
+    "parent_child",
+]
+
+
 class IngestionProfileCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str | None = Field(default=None)
     enabled: bool = True
     chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=100, le=8000)
     chunk_overlap: int = Field(default=DEFAULT_CHUNK_OVERLAP, ge=0, le=2000)
+    chunk_strategy: ChunkStrategyName = DEFAULT_CHUNK_STRATEGY
     modality_mode: Literal["text", "text_images"] = DEFAULT_MODALITY_MODE
     text_embedding_model: str = Field(
         default=settings.embedding_model, min_length=1, max_length=128
@@ -68,6 +84,7 @@ class IngestionProfileUpdateRequest(BaseModel):
     enabled: bool | None = Field(default=None)
     chunk_size: int | None = Field(default=None, ge=100, le=8000)
     chunk_overlap: int | None = Field(default=None, ge=0, le=2000)
+    chunk_strategy: ChunkStrategyName | None = Field(default=None)
     modality_mode: Literal["text", "text_images"] | None = Field(default=None)
     text_embedding_model: str | None = Field(default=None, min_length=1, max_length=128)
     caption_model: str | None = Field(default=None, max_length=128)
@@ -100,6 +117,11 @@ def _profile_to_dict(profile: IngestionProfile, product_count: int = 0) -> dict[
         "enabled": profile.enabled,
         "chunk_size": profile.chunk_size,
         "chunk_overlap": profile.chunk_overlap,
+        "chunk_strategy": (
+            profile.chunk_strategy.value
+            if hasattr(profile.chunk_strategy, "value")
+            else str(profile.chunk_strategy or DEFAULT_CHUNK_STRATEGY)
+        ),
         "modality_mode": (
             profile.modality_mode.value
             if hasattr(profile.modality_mode, "value")
@@ -235,6 +257,7 @@ async def create_ingestion_profile(
         enabled=req.enabled,
         chunk_size=req.chunk_size,
         chunk_overlap=req.chunk_overlap,
+        chunk_strategy=ChunkStrategy(req.chunk_strategy),
         modality_mode=IngestionModality(req.modality_mode),
         text_embedding_model=req.text_embedding_model,
         caption_model=req.caption_model or None,
@@ -297,6 +320,9 @@ async def update_ingestion_profile(
     _validate_chunking(next_size, next_overlap)
     profile.chunk_size = next_size
     profile.chunk_overlap = next_overlap
+
+    if req.chunk_strategy is not None:
+        profile.chunk_strategy = ChunkStrategy(req.chunk_strategy)
 
     # Validate the effective modality pair, so a PATCH that switches to images
     # without sending a caption model is still checked against the stored one.

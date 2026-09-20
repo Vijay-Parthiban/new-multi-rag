@@ -35,7 +35,7 @@ import {
 } from "../components/Icons";
 import LiveFanoutTimeline from "../components/knowledge/LiveFanoutTimeline";
 import { DestinationVisualizerModal } from "../components/visualizers/DestinationVisualizerModal";
-import { formatRelativeTime } from "../utils/format";
+import { formatChunkStrategy, formatRelativeTime } from "../utils/format";
 
 interface KnowledgeProductPageProps {
   routeProductId?: string;
@@ -288,6 +288,11 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
             {product.ingestion_profile_name && (
               <span className="status-badge status-paused">
                 Chunk {product.chunk_size} / {product.chunk_overlap}
+              </span>
+            )}
+            {product.ingestion_profile_name && product.chunk_strategy && (
+              <span className="status-badge status-paused">
+                {formatChunkStrategy(product.chunk_strategy)}
               </span>
             )}
             {product.modality_mode === "text_images" && (

@@ -6,16 +6,58 @@ import {
   getLiteLLMModels,
   listIngestionProfiles,
   updateIngestionProfile,
+  ChunkStrategy,
   IngestionProfile,
   KnowledgeDestinationOption,
   LiteLLMModelOption,
   LiteLLMModelsResponse,
 } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { formatChunkStrategy } from "../utils/format";
 import DestinationConfigFields from "../components/DestinationConfigFields";
 import { IconClose, IconDatabase, IconEdit, IconPlus, IconRefresh, IconTrash } from "../components/Icons";
 
 type DestConfigMap = Record<string, { enabled: boolean; config: Record<string, unknown> }>;
+
+// The seven stored strategies. The hint under the select explains the one that is
+// chosen, because the difference is in how a boundary is picked, not in a number.
+const CHUNK_STRATEGY_OPTIONS: { value: ChunkStrategy; label: string; hint: string }[] = [
+  {
+    value: "recursive",
+    label: "Paragraph and section, packed to size (default)",
+    hint: "Splits on headings and blank lines, then packs the pieces into the size window. The original behaviour.",
+  },
+  {
+    value: "fixed",
+    label: "Fixed length",
+    hint: "Cuts a hard window every Chunk Size characters. Fast, and it ignores headings and paragraphs.",
+  },
+  {
+    value: "sentence",
+    label: "Sentence",
+    hint: "Cuts on sentence ends and packs whole sentences into the size window. No sentence is split.",
+  },
+  {
+    value: "section",
+    label: "Paragraph and section, one chunk each",
+    hint: "One chunk per heading or paragraph, of any length. A block larger than Chunk Size is cut further.",
+  },
+  {
+    value: "layout",
+    label: "Document layout (PDF blocks)",
+    hint: "Uses the PDF's own layout blocks, so a table region or a heading stays with its body. Other formats behave like the section strategy.",
+  },
+  {
+    value: "context_aware",
+    label: "Context aware (topic shifts)",
+    hint: "Groups sentences by topic, measured with the Text Embedding Model. One extra embedding call per page.",
+  },
+  {
+    value: "parent_child",
+    label: "Parent and child",
+    hint: "Stores a large parent block plus small child chunks that name it, about a third of Chunk Size each.",
+  },
+];
 
 export default function IngestionProfilesPage() {
   const [profiles, setProfiles] = useState<IngestionProfile[]>([]);
@@ -32,6 +74,7 @@ export default function IngestionProfilesPage() {
   const [formEnabled, setFormEnabled] = useState<boolean>(true);
   const [formChunkSize, setFormChunkSize] = useState<number>(1000);
   const [formChunkOverlap, setFormChunkOverlap] = useState<number>(120);
+  const [formChunkStrategy, setFormChunkStrategy] = useState<ChunkStrategy>("recursive");
   const [formModalityMode, setFormModalityMode] = useState<"text" | "text_images">("text");
   const [formEmbeddingModel, setFormEmbeddingModel] = useState<string>("");
   const [formCaptionModel, setFormCaptionModel] = useState<string>("");
@@ -98,6 +141,7 @@ export default function IngestionProfilesPage() {
     setFormEnabled(true);
     setFormChunkSize(1000);
     setFormChunkOverlap(120);
+    setFormChunkStrategy("recursive");
     setFormModalityMode("text");
     setFormEmbeddingModel("");
     setFormCaptionModel("");
@@ -121,6 +165,7 @@ export default function IngestionProfilesPage() {
     setFormEnabled(profile.enabled);
     setFormChunkSize(profile.chunk_size);
     setFormChunkOverlap(profile.chunk_overlap);
+    setFormChunkStrategy(profile.chunk_strategy || "recursive");
     setFormModalityMode(profile.modality_mode || "text");
     setFormEmbeddingModel(profile.text_embedding_model || "");
     setFormCaptionModel(profile.caption_model || "");
@@ -163,6 +208,7 @@ export default function IngestionProfilesPage() {
       enabled: formEnabled,
       chunk_size: formChunkSize,
       chunk_overlap: formChunkOverlap,
+      chunk_strategy: formChunkStrategy,
       modality_mode: formModalityMode,
       text_embedding_model: formEmbeddingModel,
       caption_model: formModalityMode === "text_images" ? formCaptionModel || null : null,
@@ -457,6 +503,9 @@ export default function IngestionProfilesPage() {
                       Chunk {profile.chunk_size} / {profile.chunk_overlap}
                     </span>
                     <span className="status-badge status-paused">
+                      {formatChunkStrategy(profile.chunk_strategy)}
+                    </span>
+                    <span className="status-badge status-paused">
                       {profile.modality_mode === "text_images" ? "Text + images" : "Text only"}
                     </span>
                     {profile.modality_mode === "text_images" && profile.caption_model && (
@@ -709,7 +758,40 @@ export default function IngestionProfilesPage() {
                     Chunking
                   </div>
                   <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
-                    Chunk size and overlap apply to every destination. A page is split into chunks of this size.
+                    The strategy decides where one chunk ends and the next starts. Chunk size and overlap apply to
+                    every strategy, and to every destination.
+                  </div>
+
+                  <div style={{ marginBottom: "16px" }}>
+                    <label
+                      htmlFor="chunk-strategy"
+                      style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
+                    >
+                      Chunking Strategy
+                    </label>
+                    <select
+                      id="chunk-strategy"
+                      value={formChunkStrategy}
+                      onChange={(e) => setFormChunkStrategy(e.target.value as ChunkStrategy)}
+                      style={{
+                        width: "100%",
+                        padding: "10px 14px",
+                        borderRadius: "10px",
+                        background: "rgba(30, 41, 59, 0.8)",
+                        border: "1px solid rgba(255, 255, 255, 0.1)",
+                        color: "#f8fafc",
+                        fontSize: "14px",
+                      }}
+                    >
+                      {CHUNK_STRATEGY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
+                      {CHUNK_STRATEGY_OPTIONS.find((o) => o.value === formChunkStrategy)?.hint}
+                    </div>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>

@@ -141,6 +141,7 @@ def _ensure_sqlite_columns(sqlite_path) -> None:
             ("knowledge_products", "ingestion_profile_id VARCHAR(36)"),
             ("knowledge_products", "pipeline_fingerprint VARCHAR(64)"),
             ("ingestion_profiles", "modality_mode TEXT DEFAULT 'text'"),
+            ("ingestion_profiles", "chunk_strategy TEXT DEFAULT 'recursive'"),
             ("ingestion_profiles", "text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'"),
             ("ingestion_profiles", "caption_model TEXT"),
             ("ingestion_profiles", "image_min_pixels INTEGER DEFAULT 10000"),

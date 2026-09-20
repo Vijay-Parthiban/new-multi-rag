@@ -333,6 +333,15 @@ export interface IngestionProfileDestinationConfig {
 
 export type IngestionModalityMode = "text" | "text_images";
 
+export type ChunkStrategy =
+  | "recursive"
+  | "fixed"
+  | "sentence"
+  | "section"
+  | "layout"
+  | "context_aware"
+  | "parent_child";
+
 export interface IngestionProfile {
   id: string;
   name: string;
@@ -340,6 +349,7 @@ export interface IngestionProfile {
   enabled: boolean;
   chunk_size: number;
   chunk_overlap: number;
+  chunk_strategy: ChunkStrategy;
   modality_mode: IngestionModalityMode;
   text_embedding_model: string;
   caption_model?: string | null;
@@ -356,6 +366,7 @@ export interface IngestionProfileCreateRequest {
   enabled?: boolean;
   chunk_size?: number;
   chunk_overlap?: number;
+  chunk_strategy?: ChunkStrategy;
   modality_mode?: IngestionModalityMode;
   text_embedding_model?: string;
   caption_model?: string | null;
@@ -398,6 +409,7 @@ export interface KnowledgeProduct {
   ingestion_profile_name?: string | null;
   chunk_size?: number | null;
   chunk_overlap?: number | null;
+  chunk_strategy?: ChunkStrategy;
   modality_mode?: IngestionModalityMode;
   text_embedding_model?: string | null;
   caption_model?: string | null;
@@ -647,6 +659,11 @@ export interface DestinationInspectData {
     id: string;
     file_key?: string;
     page_index?: number;
+    chunk_index?: number;
+    modality?: string;
+    record_type?: string;
+    parent_ref?: string | null;
+    image_ref?: Record<string, number> | null;
     content?: string;
     score?: number;
   }>;
@@ -658,6 +675,10 @@ export interface DestinationInspectData {
     id: number;
     file_key: string;
     page_index: number;
+    chunk_index?: number;
+    modality?: string;
+    record_type?: string;
+    parent_ref?: string | null;
     content: string;
     created_at: string;
   }>;
@@ -669,6 +690,8 @@ export interface DestinationInspectData {
     key: string;
     ttl: number;
     type: string;
+    /** The cached chunk as JSON text; the record type lives inside it. */
+    value?: string;
   }>;
 }
 

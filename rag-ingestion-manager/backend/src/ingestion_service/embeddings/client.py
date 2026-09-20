@@ -44,6 +44,15 @@ class EmbeddingClient:
             logger.warning("LiteLLM embedding failed, falling back to FastEmbed: %s", exc)
             return self._embed_fastembed(text)
 
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        try:
+            return self._base_client.embed_passages(texts)
+        except Exception as exc:
+            logger.warning("LiteLLM batch embedding failed, falling back to FastEmbed: %s", exc)
+            return [self._embed_fastembed(text) for text in texts]
+
     def embed_image_png(self, image_bytes: bytes) -> list[float]:
         try:
             return self._base_client.embed_image_png(image_bytes)

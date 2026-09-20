@@ -149,8 +149,16 @@ export const LexicalVisualizer: React.FC<LexicalVisualizerProps> = ({ data, load
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
                     <span style={{ fontWeight: 600, color: "#f8fafc" }}>📄 {doc.file_key || "Document"}</span>
-                    <span style={{ fontSize: "11px", color: "#4ade80", background: "rgba(74, 222, 128, 0.1)", padding: "2px 6px", borderRadius: "4px" }}>
-                      Score: {doc.score != null ? doc.score.toFixed(2) : "1.00"}
+                    <span style={{ display: "flex", gap: "6px" }}>
+                      {doc.record_type && doc.record_type !== "chunk" && (
+                        <span style={{ fontSize: "11px", color: "#fbbf24", background: "rgba(251, 191, 36, 0.1)", padding: "2px 6px", borderRadius: "4px" }}>
+                          {doc.record_type}
+                          {doc.parent_ref ? ` -> ${doc.parent_ref}` : ""}
+                        </span>
+                      )}
+                      <span style={{ fontSize: "11px", color: "#4ade80", background: "rgba(74, 222, 128, 0.1)", padding: "2px 6px", borderRadius: "4px" }}>
+                        Score: {doc.score != null ? doc.score.toFixed(2) : "1.00"}
+                      </span>
                     </span>
                   </div>
                   <div style={{ fontSize: "11px", color: "#94a3b8", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: isSelected ? 8 : 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>

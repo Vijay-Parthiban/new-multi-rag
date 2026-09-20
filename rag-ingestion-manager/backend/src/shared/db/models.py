@@ -70,6 +70,22 @@ class IngestionModality(str, enum.Enum):
     TEXT_IMAGES = "text_images"
 
 
+class ChunkStrategy(str, enum.Enum):
+    """How an Ingestion Profile cuts a page into chunks.
+
+    The algorithms live in ``src/ingestion_service/utils/text_splitter.py``. A
+    stored row names one of them, and the fanout reads it per sync.
+    """
+
+    RECURSIVE = "recursive"
+    FIXED = "fixed"
+    SENTENCE = "sentence"
+    SECTION = "section"
+    LAYOUT = "layout"
+    CONTEXT_AWARE = "context_aware"
+    PARENT_CHILD = "parent_child"
+
+
 def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
     return [member.value for member in enum_cls]
 
@@ -79,6 +95,10 @@ def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
 # form always did.
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 120
+# RECURSIVE is the algorithm both apps shipped first: structure units packed to
+# the size window. It stays the default, so an existing product re-syncs to the
+# same chunk text and the stored fingerprint does not change.
+DEFAULT_CHUNK_STRATEGY = "recursive"
 
 # Modality defaults. DEFAULT_TEXT_EMBEDDING_MODEL must name a model the LiteLLM
 # proxy serves; the fanout derives the vector dimension from its output.
@@ -510,6 +530,17 @@ class IngestionProfile(Base):
         ),
         default=IngestionModality.TEXT,
         server_default=DEFAULT_MODALITY_MODE,
+        nullable=False,
+    )
+    chunk_strategy: Mapped[ChunkStrategy] = mapped_column(
+        Enum(
+            ChunkStrategy,
+            name="chunk_strategy",
+            values_callable=_enum_values,
+            create_constraint=False,
+        ),
+        default=ChunkStrategy.RECURSIVE,
+        server_default=DEFAULT_CHUNK_STRATEGY,
         nullable=False,
     )
     text_embedding_model: Mapped[str] = mapped_column(

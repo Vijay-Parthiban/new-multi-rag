@@ -37,6 +37,29 @@ class EmbeddingClient:
         )
         return vector
 
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        """Embed several passages in one request. One vector per input, in order.
+
+        The proxy takes a list, so a caller that needs a vector for every
+        sentence of a page pays for one round trip instead of one per sentence.
+        """
+        if not texts:
+            return []
+        payload = [(text.strip() or " ")[:_MAX_EMBED_CHARS] for text in texts]
+        response = self._client.embeddings.create(
+            model=self._model,
+            input=payload,
+            extra_body={"input_type": "passage", "truncate": "END"},
+        )
+        vectors = [item.embedding for item in response.data]
+        logger.info(
+            "embedding_batch_created model=%s count=%d dimensions=%d",
+            self._model,
+            len(vectors),
+            len(vectors[0]) if vectors else 0,
+        )
+        return vectors
+
     def embed_text(self, text: str) -> list[float]:
         """Embed a query string (input_type=query). Truncates very long inputs."""
         text = text.strip()

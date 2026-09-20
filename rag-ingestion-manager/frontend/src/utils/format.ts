@@ -17,3 +17,20 @@ export function formatRelativeTime(iso: string): string {
   if (days < 30) return `${days}d ago`;
   return date.toLocaleDateString();
 }
+
+// Short display name for a chunk strategy, for the badges on the profile list and
+// the product detail page. The long label and its hint live in the profile form,
+// where the user picks one.
+const CHUNK_STRATEGY_LABELS: Record<string, string> = {
+  recursive: "Chunking: recursive",
+  fixed: "Chunking: fixed length",
+  sentence: "Chunking: sentence",
+  section: "Chunking: section",
+  layout: "Chunking: layout",
+  context_aware: "Chunking: context aware",
+  parent_child: "Chunking: parent / child",
+};
+
+export function formatChunkStrategy(strategy: string): string {
+  return CHUNK_STRATEGY_LABELS[strategy] || `Chunking: ${strategy}`;
+}

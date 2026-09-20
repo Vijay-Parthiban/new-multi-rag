@@ -41,6 +41,7 @@ from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_STRATEGY,
     DEFAULT_MODALITY_MODE,
     IngestionProfile,
     KnowledgeProduct,
@@ -63,6 +64,15 @@ _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 def _profile_modality_mode(profile: IngestionProfile) -> str:
     mode = profile.modality_mode
     return mode.value if hasattr(mode, "value") else str(mode or DEFAULT_MODALITY_MODE)
+
+
+def _profile_chunk_strategy(profile: IngestionProfile) -> str:
+    strategy = getattr(profile, "chunk_strategy", None)
+    return (
+        strategy.value
+        if hasattr(strategy, "value")
+        else str(strategy or DEFAULT_CHUNK_STRATEGY)
+    )
 
 
 def _destination_types() -> list[dict[str, Any]]:
@@ -229,6 +239,13 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
         ),
         "chunk_overlap": (
             product.ingestion_profile.chunk_overlap if product.ingestion_profile else None
+        ),
+        # A product with no profile reports the fallback the fanout uses, so the
+        # UI never has to guess.
+        "chunk_strategy": (
+            _profile_chunk_strategy(product.ingestion_profile)
+            if product.ingestion_profile
+            else DEFAULT_CHUNK_STRATEGY
         ),
         # A product with no profile reports the fallback the fanout uses, so the
         # UI never has to guess.
@@ -411,6 +428,7 @@ def _pipeline_fingerprint(profile: IngestionProfile | None) -> str:
         parts = (
             str(DEFAULT_CHUNK_SIZE),
             str(DEFAULT_CHUNK_OVERLAP),
+            DEFAULT_CHUNK_STRATEGY,
             DEFAULT_MODALITY_MODE,
             settings.embedding_model,
             settings.caption_model,
@@ -420,6 +438,7 @@ def _pipeline_fingerprint(profile: IngestionProfile | None) -> str:
         parts = (
             str(profile.chunk_size),
             str(profile.chunk_overlap),
+            _profile_chunk_strategy(profile),
             _profile_modality_mode(profile),
             profile.text_embedding_model or "",
             profile.caption_model or "",
@@ -1272,6 +1291,8 @@ async def inspect_destination_store(
                         "page_index": h.get("_source", {}).get("page_index"),
                         "chunk_index": h.get("_source", {}).get("chunk_index"),
                         "modality": h.get("_source", {}).get("modality") or "text",
+                        "record_type": h.get("_source", {}).get("record_type") or "chunk",
+                        "parent_ref": h.get("_source", {}).get("parent_ref"),
                         "image_ref": h.get("_source", {}).get("image_ref"),
                         "content": h.get("_source", {}).get("content") or h.get("_source", {}).get("text"),
                         "score": h.get("_score"),
@@ -1295,7 +1316,7 @@ async def inspect_destination_store(
                 with conn.cursor() as cur:
                     if file_key:
                         cur.execute(
-                            f"SELECT id, file_key, page_index, chunk_index, modality, content, created_at "
+                            f"SELECT id, file_key, page_index, chunk_index, modality, record_type, parent_ref, content, created_at "
                             f"FROM {table_name} WHERE file_key = %s ORDER BY chunk_index, id LIMIT 1000;",
                             (file_key,),
                         )
@@ -1303,7 +1324,7 @@ async def inspect_destination_store(
                         total_count = len(rows)
                     else:
                         cur.execute(
-                            f"SELECT id, file_key, page_index, chunk_index, modality, content, created_at "
+                            f"SELECT id, file_key, page_index, chunk_index, modality, record_type, parent_ref, content, created_at "
                             f"FROM {table_name} ORDER BY id DESC LIMIT 50;"
                         )
                         rows = cur.fetchall()
@@ -1321,8 +1342,10 @@ async def inspect_destination_store(
                             "page_index": r[2],
                             "chunk_index": r[3],
                             "modality": r[4] or "text",
-                            "content": r[5],
-                            "created_at": str(r[6]),
+                            "record_type": r[5] or "chunk",
+                            "parent_ref": r[6],
+                            "content": r[7],
+                            "created_at": str(r[8]),
                         } for r in rows],
                     }
         except Exception as exc:

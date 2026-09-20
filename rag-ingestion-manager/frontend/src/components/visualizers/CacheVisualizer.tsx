@@ -27,6 +27,21 @@ export const CacheVisualizer: React.FC<CacheVisualizerProps> = ({ data, loading 
 
   const keys = data.keys || [];
 
+  // The cached record is JSON under the key, so the record type lives in the
+  // value and not in the key name.
+  const selectedRecordType = (() => {
+    const raw = selectedKey?.value;
+    if (typeof raw !== "string") return "chunk";
+    try {
+      const parsed = JSON.parse(raw) as { record_type?: string; parent_ref?: string };
+      const kind = parsed.record_type || "chunk";
+      return parsed.parent_ref ? `${kind} -> ${parsed.parent_ref}` : kind;
+    } catch {
+      return "chunk";
+    }
+  })();
+  const recordType = selectedRecordType;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
       {/* Top Stats Banner */}
@@ -112,6 +127,10 @@ export const CacheVisualizer: React.FC<CacheVisualizerProps> = ({ data, loading 
                 <div style={{ background: "rgba(30, 41, 59, 0.5)", padding: "8px", borderRadius: "6px" }}>
                   <div style={{ fontSize: "11px", color: "#94a3b8" }}>Key Type</div>
                   <div style={{ fontSize: "12px", fontWeight: 700, color: "#4ade80" }}>{selectedKey.type}</div>
+                </div>
+                <div style={{ background: "rgba(30, 41, 59, 0.5)", padding: "8px", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "#94a3b8" }}>Record Type</div>
+                  <div style={{ fontSize: "12px", fontWeight: 700, color: "#fbbf24" }}>{recordType}</div>
                 </div>
                 <div style={{ background: "rgba(30, 41, 59, 0.5)", padding: "8px", borderRadius: "6px" }}>
                   <div style={{ fontSize: "11px", color: "#94a3b8" }}>Time To Live</div>

@@ -29,12 +29,19 @@ from src.ingestion_service.core.knowledge_events import publish
 from src.ingestion_service.core.page_yielder import FilePage, iter_file_pages
 from src.ingestion_service.embeddings.client import EmbeddingClient
 from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
-from src.ingestion_service.utils.text_splitter import chunk_text
+from src.ingestion_service.utils.text_splitter import (
+    ChunkPlan,
+    adjacent_similarities,
+    chunk_parent_child,
+    chunk_text,
+    sentence_splitter,
+)
 from src.ingestion_service.vector.qdrant_store import QdrantVectorStore
 from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_STRATEGY,
     DEFAULT_IMAGE_MIN_PIXELS,
     DEFAULT_MODALITY_MODE,
     KnowledgeProduct,
@@ -152,6 +159,10 @@ def _build_fanout_payload(
         "chunk_index": page.chunk_index,
         "modality": page.modality,
         "image_ref": page.image_ref,
+        # "chunk" for a normal chunk, "parent" or "child" under the parent_child
+        # strategy. parent_ref resolves to the parent record in the same file.
+        "record_type": page.record_type,
+        "parent_ref": page.parent_ref,
         # A caption is text, so type stays "text" and every existing retrieval
         # consumer keeps working. modality is additive.
         "type": "text",
@@ -178,27 +189,113 @@ def _resolve_chunking(product: Any) -> tuple[int, int]:
     return size, min(overlap, max(0, size - 1))
 
 
-def _chunk_pages(pages: list[FilePage], chunk_size: int, chunk_overlap: int) -> list[FilePage]:
+def _resolve_chunk_strategy(product: Any) -> str:
+    """The chunk strategy this product's profile names, or the original one.
+
+    ``recursive`` is the algorithm that shipped first, so a product with no
+    profile chunks exactly as it did before the strategy select existed.
+    """
+    profile = getattr(product, "ingestion_profile", None)
+    if profile is None:
+        return DEFAULT_CHUNK_STRATEGY
+    mode = getattr(profile, "chunk_strategy", None)
+    if mode is None:
+        return DEFAULT_CHUNK_STRATEGY
+    value = mode.value if hasattr(mode, "value") else str(mode)
+    return value or DEFAULT_CHUNK_STRATEGY
+
+
+def _context_similarities(
+    pages: list[FilePage], *, model: str, settings: Any
+) -> dict[int, list[float]]:
+    """Cosine similarity of each adjacent sentence pair, per page index.
+
+    One batch embedding request per page, not one per sentence. Returns an empty
+    dict when the model is unreachable, and ``context_aware`` then falls back to
+    the size window alone instead of failing the file.
+    """
+    targets = {
+        page.page_index: sentence_splitter(page.text or "")
+        for page in pages
+        if len(page.text or "") > 0
+    }
+    targets = {index: units for index, units in targets.items() if len(units) > 1}
+    if not targets:
+        return {}
+    flat = [unit for units in targets.values() for unit in units]
+    embedder = EmbeddingClient(
+        base_url=settings.litellm_base_url, api_key=settings.openai_api_key, model=model
+    )
+    try:
+        vectors = embedder.embed_passages(flat)
+    except Exception as exc:
+        logger.warning("chunk_strategy_similarity_failed model=%s error=%s", model, exc)
+        return {}
+    if len(vectors) != len(flat):
+        logger.warning(
+            "chunk_strategy_similarity_mismatch expected=%d got=%d", len(flat), len(vectors)
+        )
+        return {}
+    out: dict[int, list[float]] = {}
+    cursor = 0
+    for index, units in targets.items():
+        group = vectors[cursor : cursor + len(units)]
+        cursor += len(units)
+        out[index] = adjacent_similarities(group)
+    return out
+
+
+def _chunk_pages(
+    pages: list[FilePage],
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: str = DEFAULT_CHUNK_STRATEGY,
+    similarities: dict[int, list[float]] | None = None,
+) -> list[FilePage]:
     """Split every page into chunks, one FilePage per chunk.
 
-    ``page_index`` keeps the source page and ``chunk_index`` counts the chunks
+    ``page_index`` keeps the source page and ``chunk_index`` counts the records
     inside it. A page whose text is blank yields no chunk, which is what the
     writers did with it before chunking existed.
 
     ``modality`` and ``image_ref`` carry over, because a caption is a chunk of a
     figure and every writer and the store payload need to know that.
+
+    ``parent_child`` emits parent records first and child records after them, so a
+    child's ``parent_ref`` of ``<page_index>:<ordinal>`` resolves to the parent
+    whose ``chunk_index`` equals the ordinal.
     """
     out: list[FilePage] = []
     for page in pages:
-        for index, text in enumerate(chunk_text(page.text or "", chunk_size, chunk_overlap)):
+        text = page.text or ""
+        if strategy == "parent_child":
+            plans = chunk_parent_child(text, chunk_size, chunk_overlap)
+        else:
+            plans = [
+                ChunkPlan(text=chunk)
+                for chunk in chunk_text(
+                    text,
+                    chunk_size,
+                    chunk_overlap,
+                    strategy,
+                    similarities=(similarities or {}).get(page.page_index),
+                )
+            ]
+        for index, plan in enumerate(plans):
             out.append(
                 FilePage(
                     page_index=page.page_index,
-                    text=text,
+                    text=plan.text,
                     image_png=page.image_png if index == 0 else None,
                     chunk_index=index,
                     modality=page.modality,
                     image_ref=page.image_ref,
+                    record_type=plan.record_type,
+                    parent_ref=(
+                        f"{page.page_index}:{plan.parent_ordinal}"
+                        if plan.parent_ordinal is not None
+                        else None
+                    ),
                 )
             )
     return out
@@ -418,6 +515,7 @@ async def execute_universal_fanout_sync(
     all_by_type = {d.destination_type: d for d in (product.destinations or [])}
     enabled_types = {d.destination_type for d in enabled_destinations}
     chunk_size, chunk_overlap = _resolve_chunking(product)
+    chunk_strategy = _resolve_chunk_strategy(product)
     linked_sources = [s.source for s in (product.sources or []) if s.source]
 
     settings = get_settings()
@@ -562,6 +660,7 @@ async def execute_universal_fanout_sync(
                             original_name=key,
                             render_pages=False,
                             include_figures=modality_mode == "text_images",
+                            layout=chunk_strategy == "layout",
                             image_min_pixels=image_min_pixels,
                         )
                     )
@@ -590,7 +689,26 @@ async def execute_universal_fanout_sync(
                             images_skipped=images_skipped,
                         )
 
-                pages = _chunk_pages(source_pages, chunk_size, chunk_overlap)
+                # context_aware embeds the page's sentences to find topic shifts, so
+                # chunking can block. It runs in a thread: one batch embedding call
+                # per page, and the event loop keeps serving the other files.
+                similarities = None
+                if chunk_strategy == "context_aware":
+                    similarities = await asyncio.to_thread(
+                        _context_similarities,
+                        source_pages,
+                        model=embedding_model,
+                        settings=settings,
+                    )
+
+                pages = await asyncio.to_thread(
+                    _chunk_pages,
+                    source_pages,
+                    chunk_size,
+                    chunk_overlap,
+                    chunk_strategy,
+                    similarities,
+                )
                 pages = _assign_image_chunk_indexes(pages)
                 if not pages:
                     # Every page was blank. Without this the writers get an empty
@@ -1031,6 +1149,8 @@ def _write_opensearch(
                     "chunk_index": page.chunk_index,
                     "modality": page.modality,
                     "image_ref": page.image_ref,
+                    "record_type": payload["record_type"],
+                    "parent_ref": payload["parent_ref"],
                     "content": payload["content"],
                     "text": payload["content"],
                     "source_id": payload["source_id"],
@@ -1082,6 +1202,8 @@ def _write_postgres(
                             page_index INT NOT NULL,
                             chunk_index INT NOT NULL DEFAULT 0,
                             modality TEXT NOT NULL DEFAULT 'text',
+                            record_type TEXT NOT NULL DEFAULT 'chunk',
+                            parent_ref TEXT,
                             content TEXT,
                             embedding vector({vector_dim}),
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -1096,6 +1218,8 @@ def _write_postgres(
                             page_index INT NOT NULL,
                             chunk_index INT NOT NULL DEFAULT 0,
                             modality TEXT NOT NULL DEFAULT 'text',
+                            record_type TEXT NOT NULL DEFAULT 'chunk',
+                            parent_ref TEXT,
                             content TEXT,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                         );
@@ -1109,6 +1233,11 @@ def _write_postgres(
                 cur.execute(
                     f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS modality TEXT NOT NULL DEFAULT 'text'"
                 )
+                # record_type and parent_ref came with the parent_child strategy.
+                cur.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS record_type TEXT NOT NULL DEFAULT 'chunk'"
+                )
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS parent_ref TEXT")
                 cur.execute(
                     f"CREATE INDEX IF NOT EXISTS ix_{_resolve_pg_table(dest_config)}_source_file "
                     f"ON {table_name} (source_id, file_key)"
@@ -1138,23 +1267,34 @@ def _write_postgres(
                         continue
                     if store_embeddings and record.dense_vector is not None:
                         cur.execute(
-                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, content, embedding) "
-                            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, record_type, parent_ref, content, embedding) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                             (
                                 file_key,
                                 source_id,
                                 page.page_index,
                                 page.chunk_index,
                                 page.modality,
+                                page.record_type,
+                                page.parent_ref,
                                 text,
                                 record.dense_vector,
                             ),
                         )
                     else:
                         cur.execute(
-                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, content) "
-                            "VALUES (%s, %s, %s, %s, %s, %s)",
-                            (file_key, source_id, page.page_index, page.chunk_index, page.modality, text),
+                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, record_type, parent_ref, content) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                file_key,
+                                source_id,
+                                page.page_index,
+                                page.chunk_index,
+                                page.modality,
+                                page.record_type,
+                                page.parent_ref,
+                                text,
+                            ),
                         )
         logger.info(
             "pgvector_relational_upserted table=%s file=%s docs=%d", table_name, file_key, len(records)
@@ -1197,6 +1337,8 @@ def _write_redis(
                 "chunk_index": page.chunk_index,
                 "modality": page.modality,
                 "image_ref": page.image_ref,
+                "record_type": page.record_type,
+                "parent_ref": page.parent_ref,
                 "similarity_threshold": dest_config.get("similarity_threshold"),
                 "embedding_model": settings.embedding_model,
             }

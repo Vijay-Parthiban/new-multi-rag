@@ -21,6 +21,11 @@ class FilePage:
     chunk_index: int = 0
     modality: str = "text"
     image_ref: dict[str, int] | None = None
+    # "chunk" for a normal chunk, "parent" or "child" under the parent_child
+    # chunk strategy. parent_ref names the parent record as
+    # "<page_index>:<parent chunk_index>".
+    record_type: str = "chunk"
+    parent_ref: str | None = None
 
 
 def iter_file_pages(
@@ -30,14 +35,19 @@ def iter_file_pages(
     *,
     render_pages: bool = True,
     include_figures: bool = False,
+    layout: bool = False,
     image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
 ) -> Iterator[FilePage]:
     """Yield one page at a time to limit RAM (PDF via PyMuPDF, structured formats via parsers).
 
-    ``render_pages`` and ``include_figures`` apply to PDFs only. ``render_pages``
-    is the Pipeline behaviour and stays the default, so the existing callers do
-    not change. The fanout passes ``render_pages=False, include_figures=True``:
-    it captions embedded figures and never needs a whole-page raster.
+    ``render_pages``, ``include_figures`` and ``layout`` apply to PDFs only.
+    ``render_pages`` is the Pipeline behaviour and stays the default, so the
+    existing callers do not change. The fanout passes ``render_pages=False,
+    include_figures=True``: it captions embedded figures and never needs a
+    whole-page raster. It adds ``layout=True`` for the ``layout`` chunk strategy,
+    which needs the document's own block boundaries instead of its text stream.
+    A DOCX already arrives as blank-line separated paragraphs, so that format and
+    the plain-text formats need no flag.
     """
     suffix = path.suffix.lower()
     mime = (mime_type or "").lower()
@@ -47,6 +57,7 @@ def iter_file_pages(
             path,
             render_pages=render_pages,
             include_figures=include_figures,
+            layout=layout,
             image_min_pixels=image_min_pixels,
         )
         return
@@ -100,11 +111,32 @@ def _figure_jpeg(doc: Any, xref: int, image_min_pixels: int) -> bytes | None:
         return None
 
 
+def _layout_text(page: Any) -> str:
+    """Reading-order text blocks, one per layout block, blank-line separated.
+
+    ``sort=True`` orders the blocks by position, so a two-column page comes out
+    in reading order rather than in content-stream order. PyMuPDF groups a
+    wrapped paragraph into one block and keeps a table region separate, so the
+    blank line between blocks is the layout boundary the ``layout`` chunk
+    strategy splits on.
+    """
+    blocks: list[str] = []
+    for block in page.get_text("blocks", sort=True) or []:
+        # (x0, y0, x1, y1, text, block_no, block_type); block_type 0 is text.
+        if len(block) < 7 or block[6] != 0:
+            continue
+        text = (block[4] or "").strip()
+        if text:
+            blocks.append(text)
+    return "\n\n".join(blocks)
+
+
 def _iter_pdf_pages(
     path: Path,
     *,
     render_pages: bool = True,
     include_figures: bool = False,
+    layout: bool = False,
     image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
 ) -> Iterator[FilePage]:
     import fitz
@@ -113,7 +145,7 @@ def _iter_pdf_pages(
     try:
         for i in range(len(doc)):
             page = doc[i]
-            text = page.get_text("text") or ""
+            text = _layout_text(page) if layout else (page.get_text("text") or "")
             if render_pages:
                 pix = page.get_pixmap(dpi=150)
                 png_bytes = pix.tobytes("png")

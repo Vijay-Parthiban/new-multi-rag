@@ -219,7 +219,7 @@ The store-name snippet is derived from the option's own `namespace_fields`, with
 
 ```
 Overview > Knowledge Store > <name>
-<h1> <name>  [STATUS]  [Modality: Text + images]  [Live polling | Scheduled every 30s]   [← Back] [Pause All Destinations]
+<h1> <name>  [STATUS]  [Chunking: parent / child]  [Modality: Text + images]  [Live polling | Scheduled every 30s]   [← Back] [Pause All Destinations]
 [ Source Buckets ] [ Files Indexed ] [ Pages Indexed ] [ Last Sync ]      (stats cards)
 Live Fanout:  MinIO bucket → Parse & chunk → <one chip per enabled destination>
               Added / Updated / Deleted / Unchanged / Pages  + Live|Reconnecting dot
@@ -240,7 +240,8 @@ page still feels live when the SSE stream is reconnecting.
   so the other destinations are sent back unchanged.
 - No sync button exists anywhere.
 
-The header shows a `Modality: Text + images` badge when the profile mode is `text_images`. The badge is absent in
+The header shows a `Chunking: <strategy>` badge when the product has a profile, and a `Modality: Text + images`
+badge when the profile mode is `text_images`. That second badge is absent in
 `text` mode. Only a linked profile supplies the mode, so a legacy product shows no badge.
 
 ---
@@ -567,7 +568,10 @@ store. A verification script needs this: the cap can hide part of one file's rec
 The Postgres branch uses the qualified `schema.chunks` name and the same connection resolver as the writer, so
 inspect reads the store the fanout wrote. The fake `cache_hit_rate: 0.88` field was removed; the Redis panel now
 shows the count of keys with a TTL, derived from the returned keys. Every store inspector returns `modality`, so
-a user can tell a caption from a text chunk.
+a user can tell a caption from a text chunk. It also returns `record_type` and `parent_ref`, so a parent or a
+child chunk of the `parent_child` strategy is distinguishable from a plain chunk. The lexical list and the
+Qdrant point panel tag a record that is not a plain chunk; the relational row panel and the Redis key panel show
+the same field.
 
 Pagination: without `file_key`, nothing is paginated — 50 Qdrant points, 200 OpenSearch documents, 50 Postgres
 rows, 200 of the matched Redis keys (totals reported separately). With `file_key`, Qdrant returns up to 1000,
