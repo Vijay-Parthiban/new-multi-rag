@@ -1,170 +1,80 @@
-import React, { useEffect, useState } from "react";
+/**
+ * Knowledge Store — view only.
+ *
+ * This page displays the Knowledge Products that the rag-ingestion-manager owns.
+ * It never creates, edits or deletes one: the ingestion manager is the only place
+ * that writes them. Its two actions are read-only:
+ *
+ *  - `Refresh` re-reads every product and asks the ingestion manager for an
+ *    immediate fanout, so the page shows current data and the stores catch up.
+ *  - `View` opens the read-only configuration page for one product.
+ *
+ * The page also re-reads automatically whenever the route is entered, so the
+ * numbers are current on every visit.
+ */
+import { useCallback, useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
-  createKnowledgeProduct,
-  deleteKnowledgeProduct,
-  deletePipeline,
   getDestinationOptions,
   listKnowledgeProducts,
-  listSources,
+  refreshKnowledgeProduct,
   testDestinationConnection,
-  updateKnowledgeProduct,
   KnowledgeDestinationOption,
   KnowledgeProduct,
-  SourceRecord,
 } from "../api";
-import {
-  IconClose,
-  IconDatabase,
-  IconDelete,
-  IconEdit,
-  IconPlus,
-  IconRefresh,
-  IconServer,
-} from "../components/Icons";
+import { IconArrowRight, IconDatabase, IconPlus, IconRefresh, IconServer } from "../components/Icons";
 
 export default function KnowledgeStorePage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [products, setProducts] = useState<KnowledgeProduct[]>([]);
-  const [sources, setSources] = useState<SourceRecord[]>([]);
   const [destinationOptions, setDestinationOptions] = useState<KnowledgeDestinationOption[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const [testingDestMap, setTestingDestMap] = useState<Record<string, boolean>>({});
-  const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; message: string }>>({});
-
-  // Modal State
-  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [editingProduct, setEditingProduct] = useState<KnowledgeProduct | null>(null);
-  const [formName, setFormName] = useState<string>("");
-  const [formDescription, setFormDescription] = useState<string>("");
-  const [formEnabled, setFormEnabled] = useState<boolean>(true);
-  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
-  const [destConfigs, setDestConfigs] = useState<
-    Record<string, { enabled: boolean; config: Record<string, unknown> }>
+  const [testResults, setTestResults] = useState<
+    Record<string, { status: "success" | "error"; message: string }>
   >({});
-  const [saving, setSaving] = useState<boolean>(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = useCallback(async () => {
     try {
-      const [profs, srcs, destOpts] = await Promise.all([
+      const [prods, destOpts] = await Promise.all([
         listKnowledgeProducts(),
-        listSources(),
         getDestinationOptions(),
       ]);
-      setProducts(profs);
-      setSources(srcs);
+      setProducts(prods);
       setDestinationOptions(destOpts);
+      setError(null);
     } catch (err: unknown) {
-      console.error("Failed to load Knowledge Store data:", err);
+      setError(err instanceof Error ? err.message : "Failed to load Knowledge Products.");
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadData();
   }, []);
 
-  const openCreateModal = () => {
-    setEditingProduct(null);
-    setFormName("");
-    setFormDescription("");
-    setFormEnabled(true);
-    setSelectedSourceIds(sources.map((s) => s.id));
+  useEffect(() => {
+    void loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const initialDest: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
-    destinationOptions.forEach((opt) => {
-      initialDest[opt.id] = {
-        enabled: true,
-        config: { ...opt.default_config },
-      };
-    });
-    setDestConfigs(initialDest);
-    setErrorMsg(null);
-    setIsModalOpen(true);
-  };
+  // The layout keeps every page mounted and toggles visibility, so a plain mount
+  // effect runs once. Re-read whenever this route is entered instead.
+  const pathname = location.pathname;
+  useEffect(() => {
+    if (pathname === "/knowledge-store") void loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
-  const openEditModal = (profile: KnowledgeProduct) => {
-    setEditingProduct(profile);
-    setFormName(profile.name);
-    setFormDescription(profile.description || "");
-    setFormEnabled(profile.enabled);
-    setSelectedSourceIds(profile.sources.map((s) => s.source_id));
-
-    const currentDestMap: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
-    destinationOptions.forEach((opt) => {
-      const existing = profile.destinations.find((d) => d.destination_type === opt.id);
-      currentDestMap[opt.id] = {
-        enabled: existing ? existing.enabled : true,
-        config: existing ? { ...existing.config } : { ...opt.default_config },
-      };
-    });
-    setDestConfigs(currentDestMap);
-    setErrorMsg(null);
-    setIsModalOpen(true);
-  };
-
-  const handleSaveProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formName.trim()) {
-      setErrorMsg("Product name is required.");
-      return;
-    }
-    setSaving(true);
-    setErrorMsg(null);
-
-    const formattedDestinations = Object.entries(destConfigs).map(([dest_type, val]) => ({
-      destination_type: dest_type,
-      enabled: val.enabled,
-      config: val.config,
-    }));
-
+  /** Re-read every product and ask the ingestion manager to sync each one now. */
+  const handleRefresh = async () => {
+    setRefreshing(true);
     try {
-      if (editingProduct) {
-        await updateKnowledgeProduct(editingProduct.id, {
-          name: formName,
-          description: formDescription,
-          enabled: formEnabled,
-          source_ids: selectedSourceIds,
-          destinations: formattedDestinations,
-        });
-      } else {
-        await createKnowledgeProduct({
-          name: formName,
-          description: formDescription,
-          enabled: formEnabled,
-          source_ids: selectedSourceIds,
-          destinations: formattedDestinations,
-        });
-      }
-      setIsModalOpen(false);
+      await Promise.allSettled(products.map((p) => refreshKnowledgeProduct(p.id)));
       await loadData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save profile.";
-      setErrorMsg(msg);
     } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDeleteProduct = async (profileId: string) => {
-    if (!confirm("Are you sure you want to delete this Knowledge Product?")) return;
-    try {
-      await deleteKnowledgeProduct(profileId);
-      await loadData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to delete profile.";
-      alert("Failed to delete profile: " + msg);
-    }
-  };
-  const handleDeletePipeline = async (pipelineId: string) => {
-    if (!confirm("Are you sure you want to delete this RAG Pipeline?")) return;
-    try {
-      await deletePipeline(pipelineId);
-      await loadData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to delete pipeline.";
-      alert("Failed to delete pipeline: " + msg);
+      setRefreshing(false);
     }
   };
 
@@ -176,21 +86,19 @@ export default function KnowledgeStorePage() {
     return key ? String(config[key]) : opt.category;
   };
 
-  const handleTestConnection = async (profileId: string, destType: string, config: Record<string, unknown>) => {
+  const handleTestConnection = async (
+    profileId: string,
+    destType: string,
+    config: Record<string, unknown>
+  ) => {
     const key = `${profileId}-${destType}`;
     setTestingDestMap((prev) => ({ ...prev, [key]: true }));
     try {
       const res = await testDestinationConnection(profileId, destType, config);
-      setTestResults((prev) => ({
-        ...prev,
-        [key]: { status: res.status, message: res.message },
-      }));
+      setTestResults((prev) => ({ ...prev, [key]: { status: res.status, message: res.message } }));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Connection failed";
-      setTestResults((prev) => ({
-        ...prev,
-        [key]: { status: "error", message: msg },
-      }));
+      setTestResults((prev) => ({ ...prev, [key]: { status: "error", message: msg } }));
     } finally {
       setTestingDestMap((prev) => ({ ...prev, [key]: false }));
     }
@@ -198,13 +106,15 @@ export default function KnowledgeStorePage() {
 
   // Metrics
   const totalProducts = products.length;
-  const linkedBucketsCount = new Set(
-    products.flatMap((p) => p.sources.map((s) => s.minio_bucket))
-  ).size;
+  const linkedBucketsCount = new Set(products.flatMap((p) => p.sources.map((s) => s.minio_bucket))).size;
   const activeDestinationsCount = products.reduce(
     (acc, p) => acc + p.destinations.filter((d) => d.enabled).length,
     0
   );
+
+  /** A product is running when it is enabled and at least one destination is on. */
+  const isRunning = (product: KnowledgeProduct): boolean =>
+    product.enabled && product.destinations.some((d) => d.enabled);
 
   return (
     <div className="page-container" style={{ padding: "24px", maxWidth: "1400px", margin: "0 auto" }}>
@@ -222,71 +132,58 @@ export default function KnowledgeStorePage() {
           boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3)",
         }}
       >
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div
-              style={{
-                width: "44px",
-                height: "44px",
-                borderRadius: "12px",
-                background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                boxShadow: "0 4px 14px rgba(59, 130, 246, 0.4)",
-              }}
-            >
-              <IconDatabase style={{ width: "24px", height: "24px", color: "#fff" }} />
-            </div>
-            <div>
-              <h1 style={{ margin: 0, fontSize: "24px", fontWeight: 700, color: "#f8fafc" }}>
-                Knowledge Store Manager
-              </h1>
-              <p style={{ margin: "4px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
-                Universal Multi-Sink Fanout Engine — Route MinIO documents to 4 enterprise RAG destinations.
-              </p>
-            </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div
+            style={{
+              width: "44px",
+              height: "44px",
+              borderRadius: "12px",
+              background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 4px 14px rgba(59, 130, 246, 0.4)",
+            }}
+          >
+            <IconDatabase style={{ width: "24px", height: "24px", color: "#fff" }} />
+          </div>
+          <div>
+            <h1 style={{ margin: 0, fontSize: "24px", fontWeight: 700, color: "#f8fafc" }}>
+              Knowledge Store
+            </h1>
+            <p style={{ margin: "4px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
+              View only — the Knowledge Products configured in the Ingestion Manager.
+            </p>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: "12px" }}>
-          <button
-            onClick={loadData}
-            disabled={loading}
-            className="btn btn-secondary"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "10px 18px",
-              borderRadius: "10px",
-              fontSize: "14px",
-              fontWeight: 600,
-            }}
-          >
-            <IconRefresh style={{ width: "16px", height: "16px" }} />
-            Refresh
-          </button>
-          <button
-            onClick={openCreateModal}
-            className="btn btn-primary"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "10px 20px",
-              borderRadius: "10px",
-              fontSize: "14px",
-              fontWeight: 600,
-              background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
-              boxShadow: "0 4px 14px rgba(37, 99, 235, 0.4)",
-            }}
-          >
-            <IconPlus style={{ width: "18px", height: "18px" }} />
-            Create Knowledge Product
+        <button
+          onClick={handleRefresh}
+          disabled={loading || refreshing}
+          className="btn btn-secondary"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "10px 18px",
+            borderRadius: "10px",
+            fontSize: "14px",
+            fontWeight: 600,
+          }}
+        >
+          <IconRefresh style={{ width: "16px", height: "16px" }} />
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
+          {error}
+          <button className="btn btn-sm btn-secondary" style={{ marginLeft: "0.75rem" }} onClick={loadData}>
+            Retry
           </button>
         </div>
-      </div>
+      )}
 
       {/* Metric Cards Grid */}
       <div
@@ -347,7 +244,7 @@ export default function KnowledgeStorePage() {
           </div>
           <div style={{ fontSize: "28px", fontWeight: 800, color: "#a855f7" }}>{activeDestinationsCount}</div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-            Vector, Lexical, Graph, DB & Cache
+            Vector, Lexical, DB &amp; Cache
           </div>
         </div>
 
@@ -372,10 +269,10 @@ export default function KnowledgeStorePage() {
         </div>
       </div>
 
-      {/* Products Grid */}
+      {/* Products */}
       {loading ? (
         <div style={{ textAlign: "center", padding: "60px 0", color: "#94a3b8" }}>
-          Loading Knowledge Products...
+          Loading Knowledge Products…
         </div>
       ) : products.length === 0 ? (
         <div
@@ -389,22 +286,19 @@ export default function KnowledgeStorePage() {
         >
           <IconDatabase style={{ width: "48px", height: "48px", color: "#64748b", marginBottom: "16px" }} />
           <h3 style={{ margin: "0 0 8px 0", fontSize: "18px", color: "#f8fafc" }}>
-            No Knowledge Products Created
+            No Knowledge Products
           </h3>
-          <p style={{ margin: "0 0 24px 0", fontSize: "14px", color: "#94a3b8" }}>
-            Create your first Knowledge Product to link MinIO document sources with Qdrant, OpenSearch, pgvector & RedisVL.
+          <p style={{ margin: 0, fontSize: "14px", color: "#94a3b8" }}>
+            Create one in the Ingestion Manager, then press Refresh here.
           </p>
-          <button onClick={openCreateModal} className="btn btn-primary">
-            <IconPlus style={{ width: "16px", height: "16px", marginRight: "8px" }} />
-            Create Knowledge Product
-          </button>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "24px" }}>
-          {products.map((profile) => {
+          {products.map((product) => {
+            const running = isRunning(product);
             return (
               <div
-                key={profile.id}
+                key={product.id}
                 style={{
                   background: "rgba(30, 41, 59, 0.6)",
                   border: "1px solid rgba(255, 255, 255, 0.08)",
@@ -414,20 +308,24 @@ export default function KnowledgeStorePage() {
                   boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
                 }}
               >
-                {/* Product Card Header */}
+                {/* Card header */}
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "flex-start",
                     marginBottom: "20px",
+                    gap: "16px",
                   }}
                 >
                   <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                       <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#f8fafc" }}>
-                        {profile.name}
+                        {product.name}
                       </h2>
+                      <span className={running ? "status-badge status-synced" : "status-badge status-paused"}>
+                        {running ? "Running" : "Paused"}
+                      </span>
                       <span
                         style={{
                           padding: "4px 12px",
@@ -435,59 +333,51 @@ export default function KnowledgeStorePage() {
                           fontSize: "12px",
                           fontWeight: 600,
                           background:
-                            profile.status === "synced"
+                            product.status === "synced"
                               ? "rgba(52, 211, 153, 0.15)"
-                              : profile.status === "syncing"
+                              : product.status === "syncing"
                               ? "rgba(59, 130, 246, 0.15)"
                               : "rgba(148, 163, 184, 0.15)",
                           color:
-                            profile.status === "synced"
+                            product.status === "synced"
                               ? "#34d399"
-                              : profile.status === "syncing"
+                              : product.status === "syncing"
                               ? "#60a5fa"
                               : "#94a3b8",
                           border: `1px solid ${
-                            profile.status === "synced"
+                            product.status === "synced"
                               ? "rgba(52, 211, 153, 0.3)"
-                              : profile.status === "syncing"
+                              : product.status === "syncing"
                               ? "rgba(59, 130, 246, 0.3)"
                               : "rgba(148, 163, 184, 0.3)"
                           }`,
                         }}
                       >
-                        {profile.status.toUpperCase()}
+                        {product.status.toUpperCase()}
                       </span>
                     </div>
-                    {profile.description && (
+                    {product.description && (
                       <p style={{ margin: "6px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
-                        {profile.description}
+                        {product.description}
                       </p>
                     )}
                   </div>
 
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      onClick={() => openEditModal(profile)}
-                      className="btn btn-secondary"
-                      style={{ padding: "8px 14px", fontSize: "13px" }}
-                    >
-                      <IconEdit style={{ width: "15px", height: "15px" }} />
-                    </button>
-
-                    <button
-                      onClick={() => handleDeleteProduct(profile.id)}
-                      className="btn btn-danger"
-                      style={{
-                        padding: "8px 14px",
-                        fontSize: "13px",
-                        background: "rgba(239, 68, 68, 0.15)",
-                        color: "#ef4444",
-                        border: "1px solid rgba(239, 68, 68, 0.3)",
-                      }}
-                    >
-                      <IconDelete style={{ width: "15px", height: "15px" }} />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => navigate(`/knowledge-store/${product.id}`)}
+                    className="btn btn-primary"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "8px 16px",
+                      fontSize: "13px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    View
+                    <IconArrowRight style={{ width: "15px", height: "15px" }} />
+                  </button>
                 </div>
 
                 {/* Linked MinIO Source Buckets */}
@@ -502,15 +392,13 @@ export default function KnowledgeStorePage() {
                       marginBottom: "10px",
                     }}
                   >
-                    Linked MinIO Source Buckets ({profile.sources.length})
+                    Linked MinIO Source Buckets ({product.sources.length})
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
-                    {profile.sources.length === 0 ? (
-                      <span style={{ fontSize: "13px", color: "#64748b" }}>
-                        No MinIO buckets linked.
-                      </span>
+                    {product.sources.length === 0 ? (
+                      <span style={{ fontSize: "13px", color: "#64748b" }}>No MinIO buckets linked.</span>
                     ) : (
-                      profile.sources.map((s) => (
+                      product.sources.map((s) => (
                         <div
                           key={s.source_id}
                           style={{
@@ -534,7 +422,7 @@ export default function KnowledgeStorePage() {
                   </div>
                 </div>
 
-                {/* 5 Universal RAG Destinations Grid */}
+                {/* Destination Stores */}
                 <div>
                   <div
                     style={{
@@ -546,7 +434,7 @@ export default function KnowledgeStorePage() {
                       marginBottom: "12px",
                     }}
                   >
-                    Configured Destination Stores (Universal 2026 RAG Multi-Sink)
+                    Configured Destination Stores
                   </div>
                   <div
                     style={{
@@ -556,19 +444,18 @@ export default function KnowledgeStorePage() {
                     }}
                   >
                     {destinationOptions.map((opt) => {
-                      const destCfg = profile.destinations.find((d) => d.destination_type === opt.id);
+                      const destCfg = product.destinations.find((d) => d.destination_type === opt.id);
                       const isEnabled = destCfg ? destCfg.enabled : false;
-                      const testKey = `${profile.id}-${opt.id}`;
+                      const testKey = `${product.id}-${opt.id}`;
                       const isTesting = testingDestMap[testKey] || false;
                       const testRes = testResults[testKey];
-
                       return (
                         <div
                           key={opt.id}
                           style={{
-                            background: isEnabled ? "rgba(15, 23, 42, 0.7)" : "rgba(15, 23, 42, 0.3)",
+                            background: "rgba(15, 23, 42, 0.5)",
                             border: `1px solid ${
-                              isEnabled ? "rgba(59, 130, 246, 0.3)" : "rgba(255, 255, 255, 0.05)"
+                              isEnabled ? "rgba(56, 189, 248, 0.2)" : "rgba(255, 255, 255, 0.05)"
                             }`,
                             borderRadius: "12px",
                             padding: "16px",
@@ -583,20 +470,22 @@ export default function KnowledgeStorePage() {
                               marginBottom: "8px",
                             }}
                           >
-                            <div style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
+                            <span style={{ fontSize: "14px", fontWeight: 700, color: "#f8fafc" }}>
                               {opt.name}
-                            </div>
+                            </span>
                             <span
                               style={{
                                 fontSize: "10px",
                                 fontWeight: 700,
                                 padding: "2px 8px",
                                 borderRadius: "4px",
-                                background: isEnabled ? "rgba(34, 197, 94, 0.2)" : "rgba(148, 163, 184, 0.1)",
-                                color: isEnabled ? "#4ade80" : "#64748b",
+                                background: isEnabled
+                                  ? "rgba(34, 197, 94, 0.2)"
+                                  : "rgba(148, 163, 184, 0.2)",
+                                color: isEnabled ? "#4ade80" : "#94a3b8",
                               }}
                             >
-                              {isEnabled ? "ACTIVE" : "OFF"}
+                              {isEnabled ? "RUNNING" : "PAUSED"}
                             </span>
                           </div>
 
@@ -631,9 +520,21 @@ export default function KnowledgeStorePage() {
                             </div>
                           )}
 
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                            }}
+                          >
                             <button
-                              onClick={() => handleTestConnection(profile.id, opt.id, destCfg?.config || opt.default_config)}
+                              onClick={() =>
+                                handleTestConnection(
+                                  product.id,
+                                  opt.id,
+                                  destCfg?.config || opt.default_config
+                                )
+                              }
                               disabled={isTesting || !isEnabled}
                               style={{
                                 background: "none",
@@ -642,10 +543,10 @@ export default function KnowledgeStorePage() {
                                 color: "#cbd5e1",
                                 fontSize: "11px",
                                 padding: "4px 8px",
-                                cursor: "pointer",
+                                cursor: isEnabled ? "pointer" : "not-allowed",
                               }}
                             >
-                              {isTesting ? "Testing..." : "Test Connection"}
+                              {isTesting ? "Testing…" : "Test Connection"}
                             </button>
 
                             {testRes && (
@@ -663,19 +564,33 @@ export default function KnowledgeStorePage() {
                       );
                     })}
                   </div>
-                  {/* Linked RAG Pipelines Section */}
-                  <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+
+                  {/* Linked RAG Pipelines */}
+                  <div
+                    style={{
+                      marginTop: "24px",
+                      paddingTop: "20px",
+                      borderTop: "1px solid rgba(255, 255, 255, 0.08)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: "16px",
+                      }}
+                    >
                       <div>
                         <h4 style={{ fontSize: "14px", fontWeight: 700, color: "#f8fafc", margin: 0 }}>
-                          Linked RAG Pipelines ({profile.pipelines?.length || 0})
+                          Linked RAG Pipelines ({product.pipelines?.length || 0})
                         </h4>
                         <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
-                          Vector search & ingestion pipelines connected to this Knowledge Product
+                          RAG pipelines reading this Knowledge Product
                         </div>
                       </div>
-                      <a
-                        href="/pipelines"
+                      <Link
+                        to="/pipelines"
                         className="btn btn-secondary"
                         style={{
                           display: "inline-flex",
@@ -689,16 +604,32 @@ export default function KnowledgeStorePage() {
                       >
                         <IconPlus style={{ width: "14px", height: "14px" }} />
                         Create / Manage Pipelines
-                      </a>
+                      </Link>
                     </div>
 
-                    {(!profile.pipelines || profile.pipelines.length === 0) ? (
-                      <div style={{ padding: "16px", textAlign: "center", background: "rgba(15, 23, 42, 0.4)", borderRadius: "10px", border: "1px dashed rgba(255, 255, 255, 0.1)", fontSize: "13px", color: "#64748b" }}>
-                        No RAG pipelines linked to this profile. Create one on the Pipelines page.
+                    {!product.pipelines || product.pipelines.length === 0 ? (
+                      <div
+                        style={{
+                          padding: "16px",
+                          textAlign: "center",
+                          background: "rgba(15, 23, 42, 0.4)",
+                          borderRadius: "10px",
+                          border: "1px dashed rgba(255, 255, 255, 0.1)",
+                          fontSize: "13px",
+                          color: "#64748b",
+                        }}
+                      >
+                        No RAG pipelines linked to this product. Create one on the Pipelines page.
                       </div>
                     ) : (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "12px" }}>
-                        {profile.pipelines.map((pipe) => (
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                          gap: "12px",
+                        }}
+                      >
+                        {product.pipelines.map((pipe) => (
                           <div
                             key={pipe.id}
                             style={{
@@ -706,54 +637,51 @@ export default function KnowledgeStorePage() {
                               border: "1px solid rgba(255, 255, 255, 0.08)",
                               borderRadius: "10px",
                               padding: "14px",
-                              display: "flex",
-                              flexDirection: "column",
-                              justifyContent: "space-between",
                             }}
                           >
-                            <div>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                                <span style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>{pipe.name}</span>
-                                <span
-                                  style={{
-                                    fontSize: "10px",
-                                    fontWeight: 700,
-                                    padding: "2px 8px",
-                                    borderRadius: "4px",
-                                    background: "rgba(34, 197, 94, 0.2)",
-                                    color: "#4ade80",
-                                  }}
-                                >
-                                  ACTIVE
-                                </span>
-                              </div>
-                              <div style={{ fontSize: "12px", color: "#94a3b8", display: "flex", flexDirection: "column", gap: "4px" }}>
-                                <div><strong>Collection:</strong> <code>{pipe.qdrant_collection}</code></div>
-                                <div><strong>Strategy:</strong> {pipe.rag_strategy} ({pipe.chunk_size} / {pipe.chunk_overlap})</div>
-                                <div><strong>Embedding:</strong> {pipe.embedding_model}</div>
-                              </div>
-                            </div>
-                            <div style={{ marginTop: "12px", paddingTop: "8px", borderTop: "1px solid rgba(255, 255, 255, 0.05)", display: "flex", justifyContent: "flex-end" }}>
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePipeline(pipe.id)}
+                            <div
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-start",
+                                marginBottom: "8px",
+                              }}
+                            >
+                              <span style={{ fontWeight: 700, fontSize: "14px", color: "#f8fafc" }}>
+                                {pipe.name}
+                              </span>
+                              <span
                                 style={{
-                                  background: "rgba(239, 68, 68, 0.1)",
-                                  border: "1px solid rgba(239, 68, 68, 0.2)",
-                                  color: "#ef4444",
-                                  borderRadius: "6px",
-                                  padding: "4px 10px",
-                                  fontSize: "11px",
-                                  fontWeight: 600,
-                                  cursor: "pointer",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: "4px",
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  padding: "2px 8px",
+                                  borderRadius: "4px",
+                                  background: "rgba(34, 197, 94, 0.2)",
+                                  color: "#4ade80",
                                 }}
                               >
-                                <IconDelete style={{ width: "12px", height: "12px" }} />
-                                Delete
-                              </button>
+                                ACTIVE
+                              </span>
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                color: "#94a3b8",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "4px",
+                              }}
+                            >
+                              <div>
+                                <strong>Collection:</strong> <code>{pipe.qdrant_collection}</code>
+                              </div>
+                              <div>
+                                <strong>Strategy:</strong> {pipe.rag_strategy} ({pipe.chunk_size} /{" "}
+                                {pipe.chunk_overlap})
+                              </div>
+                              <div>
+                                <strong>Embedding:</strong> {pipe.embedding_model}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -764,299 +692,6 @@ export default function KnowledgeStorePage() {
               </div>
             );
           })}
-        </div>
-      )}
-
-      {/* Modal / Drawer for Creating / Editing Knowledge Product */}
-      {isModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            backdropFilter: "blur(8px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              background: "#0f172a",
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              borderRadius: "20px",
-              width: "100%",
-              maxWidth: "850px",
-              maxHeight: "90vh",
-              overflowY: "auto",
-              padding: "32px",
-              boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "24px",
-                paddingBottom: "16px",
-                borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#f8fafc" }}>
-                {editingProduct ? "Edit Knowledge Product" : "Configure New Knowledge Product"}
-              </h2>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#94a3b8",
-                  cursor: "pointer",
-                  padding: "4px",
-                }}
-              >
-                <IconClose style={{ width: "20px", height: "20px" }} />
-              </button>
-            </div>
-
-            {errorMsg && (
-              <div
-                style={{
-                  padding: "12px 16px",
-                  borderRadius: "10px",
-                  background: "rgba(239, 68, 68, 0.15)",
-                  border: "1px solid rgba(239, 68, 68, 0.3)",
-                  color: "#f87171",
-                  fontSize: "13px",
-                  marginBottom: "20px",
-                }}
-              >
-                {errorMsg}
-              </div>
-            )}
-
-            <form onSubmit={handleSaveProduct}>
-              {/* General Info */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px", marginBottom: "24px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
-                    Product Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={formName}
-                    onChange={(e) => setFormName(e.target.value)}
-                    placeholder="e.g. Resume Knowledge Fanout Product"
-                    style={{
-                      width: "100%",
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      background: "rgba(30, 41, 59, 0.8)",
-                      border: "1px solid rgba(255, 255, 255, 0.1)",
-                      color: "#f8fafc",
-                      fontSize: "14px",
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
-                    Description
-                  </label>
-                  <textarea
-                    value={formDescription}
-                    onChange={(e) => setFormDescription(e.target.value)}
-                    placeholder="Universal RAG sink profile routing document embeddings to vector, lexical, graph, DB, and cache stores..."
-                    rows={2}
-                    style={{
-                      width: "100%",
-                      padding: "10px 14px",
-                      borderRadius: "10px",
-                      background: "rgba(30, 41, 59, 0.8)",
-                      border: "1px solid rgba(255, 255, 255, 0.1)",
-                      color: "#f8fafc",
-                      fontSize: "14px",
-                      resize: "none",
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* MinIO Source Buckets Selection */}
-              <div style={{ marginBottom: "28px" }}>
-                <label style={{ display: "block", fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "8px" }}>
-                  Link MinIO Source Buckets
-                </label>
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {sources.length === 0 ? (
-                    <div style={{ fontSize: "13px", color: "#64748b" }}>No sources available.</div>
-                  ) : (
-                    sources.map((src) => {
-                      const isSelected = selectedSourceIds.includes(src.id);
-                      return (
-                        <label
-                          key={src.id}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "12px",
-                            padding: "10px 14px",
-                            borderRadius: "10px",
-                            background: isSelected ? "rgba(59, 130, 246, 0.12)" : "rgba(30, 41, 59, 0.5)",
-                            border: `1px solid ${isSelected ? "rgba(59, 130, 246, 0.3)" : "rgba(255, 255, 255, 0.08)"}`,
-                            cursor: "pointer",
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedSourceIds([...selectedSourceIds, src.id]);
-                              } else {
-                                setSelectedSourceIds(selectedSourceIds.filter((id) => id !== src.id));
-                              }
-                            }}
-                          />
-                          <div>
-                            <span style={{ fontWeight: 600, fontSize: "14px", color: "#f8fafc" }}>
-                              {src.name}
-                            </span>
-                            <span style={{ fontSize: "12px", color: "#64748b", marginLeft: "10px" }}>
-                              Bucket: {src.minio_bucket}
-                            </span>
-                          </div>
-                        </label>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* 5 Universal RAG Destination Configurations */}
-              <div style={{ marginBottom: "32px" }}>
-                <label style={{ display: "block", fontSize: "14px", fontWeight: 700, color: "#cbd5e1", marginBottom: "12px" }}>
-                  Configure 5 Universal 2026 RAG Destination Stores
-                </label>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                  {destinationOptions.map((opt) => {
-                    const current = destConfigs[opt.id] || { enabled: true, config: opt.default_config };
-                    return (
-                      <div
-                        key={opt.id}
-                        style={{
-                          background: "rgba(30, 41, 59, 0.5)",
-                          border: "1px solid rgba(255, 255, 255, 0.08)",
-                          borderRadius: "12px",
-                          padding: "16px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            marginBottom: "12px",
-                          }}
-                        >
-                          <div>
-                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#38bdf8", textTransform: "uppercase" }}>
-                              {opt.category}
-                            </span>
-                            <h4 style={{ margin: "2px 0 0 0", fontSize: "15px", fontWeight: 700, color: "#f8fafc" }}>
-                              {opt.name}
-                            </h4>
-                          </div>
-
-                          <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-                            <span style={{ fontSize: "12px", color: "#94a3b8" }}>Enable Fanout</span>
-                            <input
-                              type="checkbox"
-                              checked={current.enabled}
-                              onChange={(e) => {
-                                setDestConfigs({
-                                  ...destConfigs,
-                                  [opt.id]: { ...current, enabled: e.target.checked },
-                                });
-                              }}
-                            />
-                          </label>
-                        </div>
-
-                        {current.enabled && (
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" }}>
-                            {Object.entries(current.config).map(([cfgKey, cfgVal]) => (
-                              <div key={cfgKey}>
-                                <label style={{ display: "block", fontSize: "11px", color: "#94a3b8", marginBottom: "4px" }}>
-                                  {cfgKey}
-                                </label>
-                                <input
-                                  type="text"
-                                  value={typeof cfgVal === "object" ? JSON.stringify(cfgVal) : String(cfgVal)}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    setDestConfigs({
-                                      ...destConfigs,
-                                      [opt.id]: {
-                                        ...current,
-                                        config: {
-                                          ...current.config,
-                                          [cfgKey]: val === "true" ? true : val === "false" ? false : isNaN(Number(val)) ? val : Number(val),
-                                        },
-                                      },
-                                    });
-                                  }}
-                                  style={{
-                                    width: "100%",
-                                    padding: "6px 10px",
-                                    borderRadius: "6px",
-                                    background: "rgba(15, 23, 42, 0.8)",
-                                    border: "1px solid rgba(255, 255, 255, 0.1)",
-                                    color: "#e2e8f0",
-                                    fontSize: "12px",
-                                  }}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Form Footer Actions */}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px" }}>
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="btn btn-secondary"
-                  style={{ padding: "10px 20px" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="btn btn-primary"
-                  style={{
-                    padding: "10px 24px",
-                    background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
-                  }}
-                >
-                  {saving ? "Saving Product..." : editingProduct ? "Update Product" : "Create Knowledge Product"}
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
       )}
     </div>

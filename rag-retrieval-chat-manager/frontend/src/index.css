@@ -1123,6 +1123,10 @@ select.input option {
   background: var(--bg-inset);
   color: var(--text-secondary);
 }
+.status-paused {
+  background: var(--warn-subtle);
+  color: #d29922;
+}
 
 .status-pending {
   background: var(--bg-inset);
@@ -4860,4 +4864,194 @@ select.input option {
 
 .attached-connector-card:hover {
   border-color: rgba(88, 166, 255, 0.4);
+}
+
+/* ── Live Fanout timeline (ported from the ingestion manager) ── */
+.fanout-panel {
+  background: var(--bg-glass, rgba(22, 30, 48, 0.6));
+  border: 1px solid var(--border-default, rgba(56, 68, 100, 0.45));
+  border-radius: var(--radius-md, 8px);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.fanout-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.fanout-panel-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary, #e6edf3);
+}
+
+.fanout-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--success-text, #7ee787);
+}
+
+.fanout-live--down {
+  color: var(--text-muted, #8b949e);
+}
+
+.fanout-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: fanout-pulse 1.6s ease-in-out infinite;
+}
+
+.fanout-live--down .fanout-live-dot {
+  animation: none;
+}
+
+@keyframes fanout-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.fanout-stage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.fanout-arrow {
+  color: var(--text-muted, #8b949e);
+  font-size: 0.85rem;
+}
+
+.fanout-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--border-default, rgba(56, 68, 100, 0.45));
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary, #e6edf3);
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.fanout-chip--source {
+  border-color: rgba(56, 189, 248, 0.35);
+  color: var(--accent, #58a6ff);
+}
+
+.fanout-chip--idle {
+  color: var(--text-muted, #8b949e);
+}
+
+.fanout-chip--active {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent, #58a6ff);
+  animation: fanout-flow 1.2s ease-in-out infinite;
+}
+
+.fanout-chip--done {
+  border-color: rgba(126, 231, 135, 0.5);
+  background: rgba(126, 231, 135, 0.12);
+  color: var(--success-text, #7ee787);
+}
+
+.fanout-chip--error {
+  border-color: rgba(248, 81, 73, 0.5);
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--danger, #f85149);
+}
+
+@keyframes fanout-flow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88, 166, 255, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(88, 166, 255, 0); }
+}
+
+.fanout-current {
+  font-size: 0.78rem;
+  color: var(--text-muted, #8b949e);
+  margin-bottom: 0.6rem;
+}
+
+.fanout-counters {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.fanout-counter {
+  font-size: 0.75rem;
+  color: var(--text-muted, #8b949e);
+}
+
+.fanout-counter strong {
+  color: var(--text-primary, #e6edf3);
+  margin-left: 0.25rem;
+}
+
+.fanout-log {
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-default, rgba(56, 68, 100, 0.45));
+  padding-top: 0.5rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+}
+
+.fanout-log-empty {
+  color: var(--text-muted, #8b949e);
+  padding: 0.5rem 0;
+  font-family: inherit;
+}
+
+.fanout-log-row {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.15rem 0;
+  color: var(--text-muted, #8b949e);
+}
+
+.fanout-log-time {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.fanout-log-file {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #e6edf3);
+}
+
+.fanout-log-kind {
+  flex: 0 0 auto;
+}
+
+.fanout-log-kind--destination_done {
+  color: var(--success-text, #7ee787);
+}
+
+.fanout-log-kind--destination_failed,
+.fanout-log-kind--file_failed {
+  color: var(--danger, #f85149);
+}
+
+.fanout-log-kind--tick_done {
+  color: var(--accent, #58a6ff);
 }

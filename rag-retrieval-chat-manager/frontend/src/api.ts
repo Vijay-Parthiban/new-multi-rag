@@ -9,7 +9,7 @@ export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;
 
 export const CHUNK_SIZE = 5 * 1024 * 1024;
 
-function authHeaders(apiKey: string = API_KEY): HeadersInit {
+export function authHeaders(apiKey: string = API_KEY): HeadersInit {
   return apiKey ? { "X-API-Key": apiKey } : {};
 }
 
@@ -337,6 +337,9 @@ export interface KnowledgeProduct {
   name: string;
   description?: string | null;
   enabled: boolean;
+  monitor_mode: "live" | "scheduled";
+  sync_interval_seconds?: number | null;
+  sync_interval_minutes?: number | null;
   status: string;
   error_message?: string | null;
   last_sync_at?: string | null;
@@ -345,19 +348,12 @@ export interface KnowledgeProduct {
   sources: KnowledgeProductSource[];
   destinations: KnowledgeDestinationConfig[];
   pipelines?: PipelineRecord[];
+  files_total: number;
+  files_synced: number;
+  files_pending: number;
+  files_failed: number;
+  pages_indexed: number;
 }
-export interface KnowledgeProductCreateRequest {
-  name: string;
-  description?: string;
-  enabled?: boolean;
-  source_ids?: string[];
-  destinations?: {
-    destination_type: string;
-    enabled: boolean;
-    config: Record<string, unknown>;
-  }[];
-}
-
 export interface TestConnectionResponse {
   status: "success" | "error";
   destination_type: string;
@@ -377,33 +373,6 @@ export async function getKnowledgeProduct(productId: string): Promise<KnowledgeP
   return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`);
 }
 
-export async function createKnowledgeProduct(
-  body: KnowledgeProductCreateRequest
-): Promise<KnowledgeProduct> {
-  return apiFetch<KnowledgeProduct>("/api/knowledge-products", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-export async function updateKnowledgeProduct(
-  productId: string,
-  body: Partial<KnowledgeProductCreateRequest>
-): Promise<KnowledgeProduct> {
-  return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-export async function deleteKnowledgeProduct(productId: string): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/api/knowledge-products/${productId}`, {
-    method: "DELETE",
-  });
-}
-
 export async function testDestinationConnection(
   productId: string,
   destinationType: string,
@@ -413,6 +382,120 @@ export async function testDestinationConnection(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ destination_type: destinationType, config }),
+  });
+}
+
+/* ── Read-only support for the view-only Knowledge Store ─────────────────────
+   This page never writes. It reads the Knowledge Products that the ingestion
+   manager owns, plus their file ledger, their live event stream and the
+   contents of each destination store. */
+
+export interface ProductFileEntry {
+  id: string;
+  file_key: string;
+  source_id: string;
+  source_name: string;
+  status: string;
+  pages_indexed: number;
+  size_bytes: number | null;
+  etag: string | null;
+  destinations_synced: string[];
+  error_message: string | null;
+  last_synced_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ProductFilesResponse {
+  files: ProductFileEntry[];
+  total: number;
+}
+
+export async function listProductFiles(
+  productId: string,
+  params: { status?: string; limit?: number; offset?: number } = {}
+): Promise<ProductFilesResponse> {
+  const search = new URLSearchParams();
+  if (params.status) search.set("status", params.status);
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
+  const suffix = search.toString() ? `?${search}` : "";
+  return apiFetch<ProductFilesResponse>(`/api/knowledge-products/${productId}/files${suffix}`);
+}
+
+export function productEventsPath(productId: string): string {
+  return `/api/knowledge-products/${productId}/events`;
+}
+
+export interface DestinationInspectData {
+  destination_type: string;
+  error?: string;
+  // Vector Qdrant
+  collection_name?: string;
+  total_points?: number;
+  status?: string;
+  points?: Array<{
+    id: string;
+    x: number;
+    y: number;
+    z: number;
+    payload: Record<string, any>;
+    vector_len: number;
+  }>;
+  // OpenSearch
+  index_name?: string;
+  total_docs?: number;
+  terms?: Array<{ text: string; value: number }>;
+  documents?: Array<{
+    id: string;
+    file_key?: string;
+    page_index?: number;
+    content?: string;
+    score?: number;
+  }>;
+  // PGVector Relational
+  table_name?: string;
+  schema_name?: string;
+  total_rows?: number;
+  rows?: Array<{
+    id: number;
+    file_key: string;
+    page_index: number;
+    content: string;
+    created_at: string;
+  }>;
+  // Redis Cache
+  prefix?: string;
+  total_cached_keys?: number;
+  used_memory_human?: string;
+  keys?: Array<{
+    key: string;
+    ttl: number;
+    type: string;
+  }>;
+}
+
+export async function inspectDestinationStore(
+  productId: string,
+  destinationType: string
+): Promise<DestinationInspectData> {
+  return apiFetch<DestinationInspectData>(
+    `/api/knowledge-products/${productId}/inspect/${destinationType}`
+  );
+}
+
+/**
+ * Nudge an immediate fanout for one product.
+ *
+ * The ingestion API exposes no sync route by design: the product poller owns the
+ * schedule. `PATCH` re-registers that poller, and `register_knowledge_poller`
+ * fires one immediate sync every time it runs, so an empty body is the way to ask
+ * for a run now without changing any ingestion code.
+ */
+export async function refreshKnowledgeProduct(productId: string): Promise<void> {
+  await apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
   });
 }
 

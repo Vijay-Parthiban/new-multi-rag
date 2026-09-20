@@ -28,8 +28,8 @@ const QUICK_LINKS = [
   },
   {
     to: "/knowledge-store",
-    title: "Knowledge Store Proxy",
-    description: "Shared Knowledge Store page forwarding requests to Ingestion Manager (Port 8007).",
+    title: "Knowledge Store",
+    description: "View the Knowledge Products configured in the Ingestion Manager (Port 8007).",
     icon: IconDatabase,
     cta: "View Knowledge Store",
   },

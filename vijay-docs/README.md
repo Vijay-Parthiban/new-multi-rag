@@ -36,7 +36,7 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 | [08 — Guard Config](./rag-retrieval-chat-manager-docs/08_ai_guardrails_config_page.md) | Guardrails policy definitions: ban list, PII entities, toxic language |
 | [09 — Guard Traces](./rag-retrieval-chat-manager-docs/09_ai_guardrails_traces_page.md) | Audit trail of guardrail evaluations and their outcomes |
 | [10 — Guard Evaluation](./rag-retrieval-chat-manager-docs/10_ai_guardrails_eval_page.md) | Golden-dataset evaluation runs against guardrails configurations |
-| [11 — Knowledge Store](./rag-retrieval-chat-manager-docs/11_knowledge_store_page.md) | Knowledge product page backed by the ingestion manager API |
+| [11 — Knowledge Store (view only)](./rag-retrieval-chat-manager-docs/11_knowledge_store_page.md) | Read-only mirror of the ingestion manager's Knowledge Products: live fanout, ingested-file ledger, destination inspection, manual and automatic refresh |
 | [12 — Evaluation Metrics Reference](./rag-retrieval-chat-manager-docs/12_evaluation_metrics_reference.md) | Retrieval, rerank, and generation metric definitions |
 | [13 — Golden Dataset Requirements](./rag-retrieval-chat-manager-docs/13_golden_dataset_requirements.md) | Golden dataset schema and evaluation API contract |
 

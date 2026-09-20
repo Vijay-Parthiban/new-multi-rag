@@ -52,11 +52,11 @@ The page is presentation-only apart from a single count: it fetches the number o
 | `/chat` | RAG Chat & Synthesis | Launch Chat | Chat |
 | `/pipelines` | Pipeline Management | Manage Pipelines | Pipelines |
 | `/prompts` | Prompt Studio | Edit Prompts | Prompts |
-| `/knowledge-store` | Knowledge Store Proxy | View Knowledge Store | Knowledge Store |
+| `/knowledge-store` | Knowledge Store | View Knowledge Store | Knowledge Store |
 | `/evaluations` | Real-Time Monitoring | Monitor Quality | Real Time Monitoring |
 | `/guardrails/config` | Guardrail Policy Rules | Configure Guardrails | Guard Config |
 
-Every destination exists in the sidebar `NAV` list; the page offers no link to Knowledge Store detail, Tracking, Offline Evaluation, Guard Traces, or Guard Evaluation, which are reachable only from the sidebar.
+Every destination exists in the sidebar `NAV` list; the page offers no link to the Knowledge Store detail page, Tracking, Offline Evaluation, Guard Traces, or Guard Evaluation, which are reachable only from the sidebar or, for the detail page, from a product card's `View` button.
 
 Card and panel descriptions are static UI copy. The reranker referenced as "Cohere" is implemented as a LiteLLM reranker (`reranker_core/litellm_reranker.py`, model alias `nvidia-rerank`), and the "Ragas & DeepEval" wording covers Ragas metrics only (`eval_core/ragas_client.py`).
 
@@ -83,6 +83,6 @@ The other three stat cards are literals with no backing endpoint. The retrieval 
 1. **Interactive session launch**: card → `/chat`, a persistent `ChatPage` (`AppLayout.tsx:187-189`) for hybrid retrieval, reranking, and generation.
 2. **Pipeline parameter tuning**: card → `/pipelines` (`AppLayout.tsx:183-185`) for retrieval settings, rerank toggle, top-k, and generator/vision/fusion models.
 3. **Prompt editing**: card → `/prompts` (`AppLayout.tsx:191-193`), backed by the retrieval API's prompt registry (`/prompts`).
-4. **Knowledge Store**: card → `/knowledge-store` (`AppLayout.tsx:175-177`), which forwards to the ingestion manager on port 8007.
+4. **Knowledge Store**: card → `/knowledge-store` (`AppLayout.tsx:175-177`), a view-only list of the Knowledge Products owned by the ingestion manager on port 8007; a product card's `View` button opens the read-only detail page at `/knowledge-store/:id`.
 5. **Quality monitoring**: card → `/evaluations` (`AppLayout.tsx:195-197`) reading per-message Ragas metrics via `/chat/stats` and `/chat/messages/{id}/metrics`.
 6. **Safety policy auditing**: card → `/guardrails/config` (`AppLayout.tsx:207-209`) for ban lists, PII checks, and toxic-language guards used by the chat guardrail phases.

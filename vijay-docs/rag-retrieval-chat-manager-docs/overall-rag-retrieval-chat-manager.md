@@ -193,8 +193,10 @@ Two points to know before you touch this layer:
 | GET/PATCH/DELETE | `/api/knowledge-products/{product_id}` | `routes/knowledge.py` |
 | POST | `/api/knowledge-products/{product_id}/test-connection` | `routes/knowledge.py` |
 
-### Knowledge Products proxy
+### Knowledge Products proxy (present, unused)
 `routes/knowledge.py` contains no storage of its own: every handler forwards over `httpx` to the ingestion manager under prefix `/api/knowledge-products`. The base URL is read from `settings.ingestion_service_url` with a fallback of `http://localhost:8007`; every call uses a 15 s timeout, the update route uses `PATCH`, and upstream connection errors surface as HTTP 503 "Ingestion service unavailable". The proxy has no sync route, because manual sync was removed upstream.
+
+**No frontend code calls it.** Both the Knowledge Store pages use `apiFetch`, whose base is `API_URL = VITE_API_URL ?? "http://localhost:8007"`, so the browser reaches the ingestion backend directly and this router is a parallel path that nothing takes. It answers 200 when called by hand. Removing the router, or repointing the pages at it, is an open choice — see `11_knowledge_store_page.md` §6.
 
 ## 10. Key Invariants & Operational Guarantees
 1. **Safety before generation**: when a `guardrails_config_id` is supplied, input validation runs before retrieval/generation; output validation runs on the generated answer before it is persisted and returned. Guardrail checks execute only via the external guardrails service.
