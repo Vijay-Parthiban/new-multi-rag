@@ -1,9 +1,9 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-20
 
 ## 1. Executive Summary & Page Purpose
-The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects pipeline records. Each record owns its Qdrant collection, dense embedding engine, optional sparse engine, chunking parameters, folder / MinIO-source scope, optional web scraper configuration, and an optional Knowledge Store profile link (`PipelinesPage.tsx:218-225`).
+The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects pipeline records. Each record owns its Qdrant collection, dense embedding engine, optional sparse engine, chunking parameters, folder / MinIO-source scope, optional web scraper configuration, and an optional Knowledge Product link (the selector is labelled `Knowledge Product`).
 
 Key facts:
 
@@ -107,7 +107,7 @@ Fusion detail: hybrid search issues `qmodels.Prefetch` for the dense and the spa
 |  |  Internal name                       |  |  <description>                                   | |
 |  |  Description (unique - used in chat) |  |  <name> · <rag_strategy>                         | |
 |  |  Search Strategy                     |  |  <qdrant_collection>                             | |
-|  |  Knowledge Profile (if any exist)    |  |  <embedding_model>[ + <sparse_model>]            | |
+|  |  Knowledge Product (if any exist)   |  |  <embedding_model>[ + <sparse_model>]            | |
 |  |  Primary Text Engine                 |  |  [ Run ] [ Delete ]                              | |
 |  |  Keyword Search Engine (sparse only) |  |                                                  | |
 |  |  Content Type (multimodal/metadata)  |  |  Pipeline Details & Stats (selected pipeline)    | |
@@ -153,14 +153,14 @@ Base URL `API_URL` (default `http://localhost:8007`); router prefix `/api/pipeli
 | `GET` | `/api/pipelines/{id}/stats` | `{indexed_files_count, scraped_pages_count}` | `PipelineStats` |
 | `GET` | `/api/pipelines/{id}/runs` | Runs for one pipeline, newest first | `list[PipelineRunRecord]` |
 | `POST` | `/api/pipelines/{id}/run` | Enqueues an ingestion run (202); 409 if a run is already pending/processing | → `PipelineRunRecord` |
-| `POST` | `/api/pipelines/{id}/sync` | Enqueues a file-sync (202); requires `directory_names`, 409 if a run is active | → `{"status": "queued", "pipeline_id": "..."}` |
+| `POST` | `/api/pipelines/{id}/sync` | Pipeline directory file-sync (202), unrelated to Knowledge Products; requires `directory_names`, 409 if a run is active | → `{"status": "queued", "pipeline_id": "..."}` |
 | `GET` | `/api/directories` | Folder checklist source | `list[DirectorySummary]` |
 | `GET` | `/api/sources` | MinIO source checklist | `list[SourceRecord]` |
-| `GET` | `/api/knowledge-profiles` | Knowledge Profile selector | `list[KnowledgeProfile]` |
+| `GET` | `/api/knowledge-products` | Knowledge Product selector | `list[KnowledgeProduct]` |
 
-The page calls `listKnowledgeProfiles` (`api.ts:378`), `createPipeline`, `deletePipeline`, `startPipelineRun`, `listPipelineRuns`, `getPipelineStats`, `triggerPipelineSync`. `PATCH /api/pipelines/{id}` (`updatePipeline`) exists in the client but is not used by this page.
+The page calls `listKnowledgeProducts`, `createPipeline`, `deletePipeline`, `startPipelineRun`, `listPipelineRuns`, `getPipelineStats`, `triggerPipelineSync`. `PATCH /api/pipelines/{id}` (`updatePipeline`) exists in the client but is not used by this page.
 
-`PipelineRecord` keys: `id`, `knowledge_profile_id`, `name`, `description`, `rag_strategy`, `embedding_model`, `sparse_embedding_model`, `modality`, `directory_names`, `chunk_size`, `chunk_overlap`, `qdrant_collection`, `web_scraper_enabled`, `scraper_seed_url`, `scraper_max_depth`, `scraper_max_pages`, `scraper_mode`, `created_at`, `updated_at` (`routes/pipelines.py:71-92`).
+`PipelineRecord` keys: `id`, `knowledge_product_id`, `name`, `description`, `rag_strategy`, `embedding_model`, `sparse_embedding_model`, `modality`, `directory_names`, `chunk_size`, `chunk_overlap`, `qdrant_collection`, `web_scraper_enabled`, `scraper_seed_url`, `scraper_max_depth`, `scraper_max_pages`, `scraper_mode`, `created_at`, `updated_at` (built by `_pipeline_to_dict` in `routes/pipelines.py`).
 `PipelineRunRecord` keys: `id`, `pipeline_id`, `status`, `files_total`, `files_processed`, `pages_indexed`, `points_upserted`, `scraper_crawl_job_id`, `scraper_scrape_job_id`, `error_message`, `started_at`, `completed_at`, `created_at` (`routes/pipelines.py:95-110`).
 
 Server-side creation rules (`routes/pipelines.py:113-131`):
@@ -169,7 +169,7 @@ Server-side creation rules (`routes/pipelines.py:113-131`):
 - `sparse_embedding_model` required for `sparse | hybrid`.
 - At least one `directory_names` entry or `web_scraper_enabled = true`, otherwise `NO_SOURCES`.
 - `scraper_seed_url` required when the web scraper is enabled.
-- If `knowledge_profile_id` is omitted the API attaches the oldest Knowledge Profile (`routes/pipelines.py:231-238`).
+- If `knowledge_product_id` is omitted, `POST /api/pipelines` attaches the oldest Knowledge Product; `GET /api/pipelines` backfills the same link on any unlinked record.
 
 Note the asymmetry with the UI gate: the page also accepts "only MinIO sources selected" as a valid submission (`PipelinesPage.tsx:215`), but the API still rejects that request with `NO_SOURCES` because it checks folders and the scraper only.
 
@@ -192,7 +192,7 @@ Note the asymmetry with the UI gate: the page also accepts "only MinIO sources s
   "scraper_max_depth": 2,
   "scraper_max_pages": 50,
   "scraper_mode": "httpx",
-  "knowledge_profile_id": "3695cb61-e728-4bf1-91f8-cf249d593c6b"
+  "knowledge_product_id": "3695cb61-e728-4bf1-91f8-cf249d593c6b"
 }
 ```
 

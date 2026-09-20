@@ -16,10 +16,10 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
 | Ingestion Manager  |  Overview  |  Folders  |  Sources  |  Knowledge Store                |
 +------------------------------------------------------------------------------------------+
 | Ingestion Overview                                                                       |
-| Ingest documents, manage connected data sources, and orchestrate 5-sink Knowledge         |
+| Ingest documents, manage connected data sources, and orchestrate 4-destination Knowledge  |
 | Store fanout sync.                                                                        |
 +------------------------------------------------------------------------------------------+
-| [ Connected Data Sources | Workspace Folders | Ingested Files | Knowledge Profiles ]      |
+| [ Connected Data Sources | Workspace Folders | Ingested Files | Knowledge Products ]      |
 +------------------------------------------------------------------------------------------+
 | Quick Launch Workspaces:                                                                  |
 | [ Data Sources & Storage ]  [ Folders & Files ]                                           |
@@ -29,7 +29,7 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
 | [ <folder name> : N files : relative time ] x up to 6                                     |
 +------------------------------------------------------------------------------------------+
 | Universal Multi-Sink Knowledge Engine (2026 Edition)        [ Configure Sinks ]           |
-| [ Qdrant ] [ OpenSearch ] [ Neo4j ] [ PostgreSQL ] [ RedisVL ]                            |
+| [ Qdrant ] [ OpenSearch ] [ PostgreSQL ] [ RedisVL ]                                      |
 +------------------------------------------------------------------------------------------+
 ```
 
@@ -43,18 +43,18 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
   | `Connected Data Sources` | `sourcesCount` = `listSources().length` | `GET /api/sources` |
   | `Workspace Folders` | `directories.length` | `GET /api/directories` |
   | `Ingested Files` | `directories.reduce((acc, d) => acc + (d.fileCount \|\| 0), 0)` | derived from `GET /api/directories` (see note below) |
-  | `Knowledge Profiles` | `profilesCount` = `listKnowledgeProfiles().length` | `GET /api/knowledge-profiles` |
+  | `Knowledge Products` | `productsCount` = `listKnowledgeProducts().length` | `GET /api/knowledge-products` |
 
   Note: `GET /api/directories` returns only `{name, id, created_at}` per directory (`apps/api/routes/directories.py:37-41`). `DirectorySummary.fileCount`/`file_count` are optional and are never populated by that endpoint, so the `Ingested Files` card currently always renders `0`.
 
 - **Quick action grid** — `QUICK_LINKS` (`as const`, 4 entries; the `Document Upload` card was removed on 2026-09-20 with the Upload page). Titles, targets, descriptions and CTA labels as coded:
 
-  | Title | Route | Description (verbatim) | CTA |
+  | Title | Route | Description | CTA |
   |---|---|---|---|
   | `Data Sources & Storage` | `/sources` | Create NiFi connector sources or manual upload sources. Each source gets its own MinIO bucket. | Manage Sources |
   | `Folders & Files` | `/browse` | Explore virtual directory workspaces and raw object storage contents. | Open Workspace |
   | `External Connectors` | `/sources` | Sync Google Drive, Amazon S3, and Azure Blob Storage into MinIO buckets. | Manage Sources |
-  | `Knowledge Store Fanout` | `/knowledge-store` | Manage 5-sink multi-vector fanout sync to Qdrant, OpenSearch, Neo4j, Postgres, & RedisVL. | Manage Knowledge Store |
+  | `Knowledge Store Fanout` | `/knowledge-store` | Manage 4-destination multi-vector fanout sync to Qdrant, OpenSearch, Postgres, & RedisVL. | Manage Knowledge Store |
 
   `Data Sources & Storage` and `External Connectors` both link to `/sources` (distinct cards, same destination).
 
@@ -64,10 +64,9 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
   - populated: `directories.slice(0, 6)` as cards linking to `/browse/{encodeURIComponent(dir.name)}`; each card footer shows `{fileCount ?? file_count ?? 0} file(s)` and `formatRelativeTime(updatedAt ?? updated_at ?? created_at)` (via `frontend/src/utils/format.ts`). Since `GET /api/directories` supplies neither `fileCount` nor `updatedAt`, each card currently reads `0 files` and falls back to `created_at` for the timestamp.
   - There is **no** "Connected Sources Summary Table" on this page, and the source list fetched for the KPI counter is not rendered as a table.
 
-- **Knowledge sink engine banner** — panel titled `Universal Multi-Sink Knowledge Engine (2026 Edition)` with a `Configure Sinks` link to `/knowledge-store`, one paragraph of copy, and five static tiles (no API calls):
+- **Knowledge sink engine banner** — panel titled `Universal Multi-Sink Knowledge Engine (2026 Edition)` with a `Configure Sinks` link to `/knowledge-store`, one paragraph of copy, and four static tiles (no API calls):
   - `Qdrant:` Dense Vector Embeddings (HNSW)
   - `OpenSearch:` BM25 Lexical & Inverted Index
-  - `Neo4j:` GraphRAG Entity-Relation Triples
   - `PostgreSQL:` Relational & pgvector ACLs
   - `RedisVL:` Parent-Child & Semantic Cache
 
@@ -81,7 +80,7 @@ Only three endpoints are called by this page, all on mount:
 |---|---|---|---|
 | `GET` | `/api/sources` | `listSources()` (`api.ts`) | `Connected Data Sources` KPI |
 | `GET` | `/api/directories` | `listDirectories()` (`api.ts`) | `Workspace Folders` + `Ingested Files` KPIs, Recent Folder Workspaces grid |
-| `GET` | `/api/knowledge-profiles` | `listKnowledgeProfiles()` (`api.ts`) | `Knowledge Profiles` KPI |
+| `GET` | `/api/knowledge-products` | `listKnowledgeProducts()` (`api.ts`) | `Knowledge Products` KPI |
 
 There is no `GET /api/files/stats` endpoint in `apps/api/routes/files.py`; the dashboard does not compute or display a storage-usage figure. Aggregate file/page counters are exposed only per pipeline at `GET /api/pipelines/{pipeline_id}/stats`.
 

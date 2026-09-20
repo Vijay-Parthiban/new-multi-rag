@@ -7,12 +7,12 @@ from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
 
 def test_build_fanout_payload_matches_retrieval_contract() -> None:
     source_id = uuid.uuid4()
-    profile_id = uuid.uuid4()
+    product_id = uuid.uuid4()
     page = FilePage(page_index=2, text="Sample chunk text")
 
     payload = _build_fanout_payload(
         source_id=source_id,
-        profile_id=profile_id,
+        product_id=product_id,
         file_key="resumes/resume_alex.pdf",
         page=page,
     )
@@ -24,3 +24,4 @@ def test_build_fanout_payload_matches_retrieval_contract() -> None:
     assert payload["text"] == "Sample chunk text"
     assert payload["chunk_index"] == 2
     assert payload["file_name"] == "resume_alex.pdf"
+    assert payload["knowledge_product_id"] == str(product_id)

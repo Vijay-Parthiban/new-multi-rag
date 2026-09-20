@@ -3,13 +3,12 @@
 **Last updated:** 2026-09-20
 
 ## 1. System Overview
-`rag-ingestion-manager` is the document ingestion, storage-management, parsing, and multi-sink synchronization service of the `new-multi-rag` platform. It brings unstructured documents from configured sources (per-source MinIO buckets, manual browser uploads, legacy local filesystem folders, Apache NiFi connectors for Google Drive / Amazon S3 / Azure Blob Storage) into MinIO object storage, then executes a per-profile fanout into five RAG storage destinations:
+`rag-ingestion-manager` is the document ingestion, storage-management, parsing, and multi-sink synchronization service of the `new-multi-rag` platform. It brings unstructured documents from configured sources (per-source MinIO buckets, manual browser uploads, legacy local filesystem folders, Apache NiFi connectors for Google Drive / Amazon S3 / Azure Blob Storage) into MinIO object storage, then executes a per-product fanout into four RAG storage destinations:
 
 | `destination_type` | Engine | Role | Accepted aliases |
 |---|---|---|---|
-| `vector_qdrant` | Qdrant | Dense vector similarity in a per-profile collection | — |
+| `vector_qdrant` | Qdrant | Dense vector similarity in a per-product collection | — |
 | `lexical_opensearch` | OpenSearch | BM25 lexical index | `elasticsearch` |
-| `graph_neo4j` | Neo4j | `Document`/`Chunk` graph, optional LiteLLM entity extraction | — |
 | `relational_pgvector` | PostgreSQL | Relational chunk table, optional pgvector column | `database_pgvector` |
 | `cache_redisvl` | Redis / RedisVL | Semantic cache and parent-child key store | `cache_redis` |
 
@@ -39,8 +38,8 @@ Runtime processes:
 |  | /api/directories             |  |   APScheduler cron)          |  | PyMuPDF/docx |  |
 |  | /api/files                   |  | apps/pathway_worker          |  | csv/json/txt |  |
 |  | /api/pipelines               |  |   (pathway_sync_queue +      |  | chunk_text   |  |
-|  | /api/sources                 |  |   10s source poll)           |  | SHA-256 hash |  |
-|  | /api/knowledge-profiles      |  | in-process source pollers    |  | embeddings   |  |
+|  | /api/sources                 |  |   10s source poll)           |  | ETag + size  |  |
+|  | /api/knowledge-products      |  | in-process source pollers    |  | embeddings   |  |
 |  | /health                      |  |   (pathway_sync)             |  | (LiteLLM)    |  |
 |  +------------------------------+  +------------------------------+  +--------------+  |
 +-------------------------------------------+-------------------------------------------+
@@ -50,18 +49,13 @@ Runtime processes:
 |                     UNIVERSAL MULTI-SINK FANOUT (universal_fanout.py)                 |
 |  asyncio.gather over enabled destinations, each dispatched via asyncio.to_thread      |
 |  (synchronous per-destination clients), return_exceptions=True                        |
-|  DELETE profile -> purge_knowledge_profile() deletes per-file_key artifacts            |
+|  DELETE product -> purge_knowledge_product() removes per-file_key artifacts            |
 |                                                                                       |
 |  +-----------------+ +-----------------+ +-----------------+ +--------------------+    |
-|  | vector_qdrant   | | lexical_        | | graph_neo4j     | | relational_        |    |
-|  | dense vectors,  | |   opensearch    | | Document/Chunk  | |   pgvector         |    |
-|  | HNSW collection | | BM25 index      | | graph nodes     | | chunk table        |    |
+|  | vector_qdrant   | | lexical_        | | relational_     | | cache_redisvl      |    |
+|  | dense vectors,  | |   opensearch    | |   pgvector      | | semantic cache /   |    |
+|  | HNSW collection | | BM25 index      | | chunk table     | | parent-child keys  |    |
 |  +-----------------+ +-----------------+ +-----------------+ +--------------------+    |
-|                            +---------------------+                                    |
-|                            | cache_redisvl       |                                    |
-|                            | semantic cache /    |                                    |
-|                            | parent-child keys   |                                    |
-|                            +---------------------+                                    |
 +-------------------------------------------+-------------------------------------------+
                                             |
                                             v
@@ -70,7 +64,7 @@ Runtime processes:
 |  Sidebar NAV: Overview / | Folders /browse | Sources /sources |                      |
 |               Knowledge Store /knowledge-store                                        |
 |  Pages mounted by AppLayout: HomePage, BrowsePage, DirectoryPage, FileViewerPage,     |
-|  SourcesPage, SourceDetailPage, KnowledgeStorePage                                    |
+|  SourcesPage, SourceDetailPage, KnowledgeStorePage, KnowledgeProductPage              |
 +---------------------------------------------------------------------------------------+
 ```
 
@@ -85,7 +79,7 @@ rag-ingestion-manager/
 │   ├── Dockerfile
 │   ├── alembic.ini
 │   ├── alembic/
-│   │   └── versions/                   # 001_initial_schema … 009_pipeline_knowledge_profile
+│   │   └── versions/                   # 001_initial_schema … 010_knowledge_products
 │   ├── apps/
 │   │   ├── api/
 │   │   │   ├── main.py                 # FastAPI app + lifespan + CORS + exception handlers
@@ -96,7 +90,7 @@ rag-ingestion-manager/
 │   │   │       ├── files.py            # file metadata, view, rename, delete, append
 │   │   │       ├── pipelines.py        # pipeline CRUD, runs, sync, RAG chunk query
 │   │   │       ├── sources.py          # sources, connectors, source files, sync triggers
-│   │   │       ├── knowledge.py        # knowledge profiles, fanout sync, inspect APIs
+│   │   │       ├── knowledge_products.py  # knowledge products, pause, files, SSE, inspect APIs
 │   │   │       └── knowledge_destination_schemas.py   # typed destination field schemas
 │   │   ├── worker/
 │   │   │   ├── main.py                 # 3 Redis queue loops
@@ -105,11 +99,14 @@ rag-ingestion-manager/
 │   │       └── main.py                 # pathway_sync_queue consumer + 10s source poll
 │   ├── scripts/
 │   │   ├── run-api.sh / run-worker.sh / run-migrate.sh / run-pathway-worker.sh
-│   │   └── e2e_knowledge_fanout.py     # E2E fanout/purge verification script
+│   │   ├── e2e_knowledge_fanout.py     # E2E fanout, store isolation and purge verification script
+│   │   ├── e2e_knowledge_pause.py      # E2E pause/resume verification script
+│   │   └── purge_neo4j_legacy.py       # one-shot legacy graph-node purge
 │   ├── tests/
 │   │   ├── test_page_yielder.py
 │   │   ├── test_fanout_payload.py
-│   │   └── test_knowledge_destination_schemas.py
+│   │   ├── test_knowledge_destination_schemas.py
+│   │   └── test_knowledge_product_files.py
 │   └── src/
 │       ├── file_manager/               # chunked-upload job engine for the metadata store
 │       │   ├── core/                   # jobs/operations, chunk stitching, duplicates, errors
@@ -119,7 +116,9 @@ rag-ingestion-manager/
 │       │   │   ├── source_sync.py      # trigger_source_sync, sync_all_enabled_sources
 │       │   │   └── scraper.py          # web-scraper API client
 │       │   ├── core/
-│       │   │   ├── universal_fanout.py # multi-sink fanout + per-file purge engine
+│       │   │   ├── universal_fanout.py # four-destination fanout + per-file purge engine
+│       │   │   ├── knowledge_sync.py   # product poller: register_knowledge_poller, sync_knowledge_product
+│       │   │   ├── knowledge_events.py # SSE event bus for the live fanout timeline
 │       │   │   ├── page_yielder.py     # iter_file_pages(): PDF/DOCX/CSV/JSON/text pages
 │       │   │   ├── sync_runner.py      # pipeline chunk indexing (sync_pipeline, sync_all_pipelines)
 │       │   │   ├── pipeline_runner.py  # pipeline run orchestration (files + scraper)
@@ -137,8 +136,8 @@ rag-ingestion-manager/
 │       └── shared/
 │           ├── auth.py                 # verify_api_key bound to settings.api_key
 │           ├── config/settings.py      # all settings and defaults
-│           ├── db/models.py            # SQLAlchemy models (13 tables)
-│           ├── db/session.py           # engine, AsyncSessionLocal, get_db, init_db, close_db
+│           ├── db/models.py            # SQLAlchemy models (14 tables)
+│           ├── db/session.py           # engine, AsyncSessionLocal, get_db, init_db, _ensure_sqlite_renames, close_db
 │           ├── queue/client.py         # Redis enqueue/dequeue for all queues
 │           └── storage/s3_client.py    # aioboto3/boto3 MinIO client, list/put/get/delete
 └── frontend/
@@ -151,10 +150,10 @@ rag-ingestion-manager/
         │   ├── PageHeader.tsx, Breadcrumb.tsx, StatusBadge.tsx, Icons.tsx, MarkdownMessage.tsx
         │   ├── DestinationConfigFields.tsx  # renders typed destination fields from the API schema
         │   ├── Sources/                # source/connector form components
-        │   └── visualizers/            # DestinationVisualizerModal + 5 sink visualizers
+        │   └── visualizers/            # DestinationVisualizerModal + 4 destination visualizers
         ├── pages/                      # see §3.1 for mounted vs. present-but-unmounted
         │   ├── HomePage.tsx, BrowsePage.tsx, DirectoryPage.tsx, FileViewerPage.tsx,
-        │   ├── SourcesPage.tsx, SourceDetailPage.tsx, KnowledgeStorePage.tsx,
+        │   ├── SourcesPage.tsx, SourceDetailPage.tsx, KnowledgeStorePage.tsx, KnowledgeProductPage.tsx,
         │   └── PipelinesPage.tsx, TrackingPage.tsx, PromptsPage.tsx, ChatPage.tsx,
         │       EvaluationsPage.tsx, GoldenEvaluationsPage.tsx, GuardrailsConfigPage.tsx,
         │       GuardrailsTracesPage.tsx, GuardrailsEvaluationPage.tsx
@@ -173,6 +172,7 @@ rag-ingestion-manager/
 | `/sources` | `SourcesPage` |
 | `/sources/:id` | `SourceDetailPage` |
 | `/knowledge-store` | `KnowledgeStorePage` |
+| `/knowledge-store/:id` | `KnowledgeProductPage` |
 
 Pages are mounted persistently and toggled by visibility, so component state (uploads in progress, open forms) survives navigation. The ingestion app does **not** mount `PipelinesPage`, `TrackingPage`, `PromptsPage`, `ChatPage`, `EvaluationsPage`, `GoldenEvaluationsPage`, `GuardrailsConfigPage`, `GuardrailsTracesPage`, or `GuardrailsEvaluationPage`; those files exist in `frontend/src/pages/` but belong to the retrieval/chat frontend. `App.tsx` only holds legacy redirects (`/directories*`), and `api.ts` additionally exposes scraper (`VITE_SCRAPER_URL`, default `http://localhost:8000`) and retrieval (`VITE_RAG_API_URL`, default `http://localhost:8001`) clients that the mounted ingestion pages do not use.
 
@@ -180,7 +180,7 @@ Pages are mounted persistently and toggled by visibility, so component state (up
 
 ## 4. HTTP API Surface
 
-App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, `directories`, `files`, `pipelines`, `sources`, `knowledge`. Every route depends on `verify_api_key` (routes are registered on the app-level dependency), except the public `/health` path.
+App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, `directories`, `files`, `pipelines`, `sources`, `knowledge_products`. Every route depends on `verify_api_key` (routes are registered on the app-level dependency), except the public `/health` path.
 
 | Router prefix | Method | Path | Status | Notes |
 |---|---|---|---|---|
@@ -217,7 +217,7 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/sources` | `POST` | `` | 201 | create a NiFi connector source or a Manual Upload source |
 | `/api/sources` | `GET` | `/{source_id}` | 200 | source detail |
 | `/api/sources` | `PATCH` | `/{source_id}` | 200 | update config / monitor modes / intervals (`sync_interval_seconds` or `sync_interval_minutes`) / enabled |
-| `/api/sources` | `DELETE` | `/{source_id}` | 200 | delete source, empty and remove its MinIO bucket (or local folder), drop pipeline + knowledge-profile links |
+| `/api/sources` | `DELETE` | `/{source_id}` | 200 | delete source, empty and remove its MinIO bucket (or local folder), drop pipeline + knowledge-product links |
 | `/api/sources` | `POST` | `/{source_id}/connectors` | 201 | add connector |
 | `/api/sources` | `GET` | `/{source_id}/connectors/{connector_id}` | 200 | connector detail |
 | `/api/sources` | `PATCH` | `/{source_id}/connectors/{connector_id}` | 200 | update connector |
@@ -231,20 +231,24 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/sources` | `GET` | `/{source_id}/files/content` | 200 | file bytes with guessed media type |
 | `/api/sources` | `POST` | `/{source_id}/sync` | 200 | trigger sync for all connectors |
 | `/api/sources` | `POST` | `/{source_id}/events` | 200 | MinIO event webhook receiver |
-| `/api/knowledge-profiles` | `GET` | `/destinations/options` | 200 | destination types with typed field schemas and defaults |
-| `/api/knowledge-profiles` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/models` listing, `model_kind` in `all\|embedding\|chat\|sparse`, env fallback |
-| `/api/knowledge-profiles` | `GET` | `` | 200 | list profiles with sources and destinations |
-| `/api/knowledge-profiles` | `POST` | `` | 200 | create profile (400 on duplicate name) |
-| `/api/knowledge-profiles` | `GET` | `/{profile_id}` | 200 | profile detail |
-| `/api/knowledge-profiles` | `PUT` | `/{profile_id}` | 200 | update profile |
-| `/api/knowledge-profiles` | `DELETE` | `/{profile_id}` | 200 | purge artifacts then delete profile |
-| `/api/knowledge-profiles` | `POST` | `/{profile_id}/test-connection` | 200 | connectivity test for one destination |
-| `/api/knowledge-profiles` | `POST` | `/{profile_id}/sync` | 200 | start fanout in a FastAPI `BackgroundTasks` task |
-| `/api/knowledge-profiles` | `GET` | `/{profile_id}/inspect/{destination_type}` | 200 | live store read-back (implemented for `vector_qdrant`, `lexical_opensearch`, `graph_neo4j`; other types return `Visualizer not implemented for this type`) |
+| `/api/knowledge-products` | `GET` | `/destinations/options` | 200 | destination types with typed field schemas, defaults and `namespace_fields` |
+| `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/models` listing, `model_kind` in `all\|embedding\|chat\|sparse`, env fallback |
+| `/api/knowledge-products` | `GET` | `` | 200 | list products with sources and destinations, newest first |
+| `/api/knowledge-products` | `POST` | `` | 201 | create product (400 on duplicate name); registers the poller and starts ingestion |
+| `/api/knowledge-products` | `GET` | `/{product_id}/files` | 200 | ingested-file ledger, `?status=&limit=50&offset=0` -> `{"files": [...], "total": n}` |
+| `/api/knowledge-products` | `GET` | `/{product_id}/events` | 200 | SSE stream of fanout events (`knowledge_events.py`), `: keepalive` every 15 s |
+| `/api/knowledge-products` | `GET` | `/{product_id}` | 200 | product detail |
+| `/api/knowledge-products` | `PATCH` | `/{product_id}` | 200 | partial update; deletes destination rows absent from the payload |
+| `/api/knowledge-products` | `DELETE` | `/{product_id}` | 200 | purge artifacts then delete product |
+| `/api/knowledge-products` | `PATCH` | `/{product_id}/destinations/{destination_id}` | 200 | body `{enabled}`; pause or resume one destination |
+| `/api/knowledge-products` | `POST` | `/{product_id}/pause-all` | 200 | pause every destination of the product |
+| `/api/knowledge-products` | `POST` | `/{product_id}/resume-all` | 200 | resume every destination of the product |
+| `/api/knowledge-products` | `POST` | `/{product_id}/test-connection` | 200 | connectivity test for one destination |
+| `/api/knowledge-products` | `GET` | `/{product_id}/inspect/{destination_type}` | 200 | live store read-back, implemented for all four destinations |
 
 Error handling: `AppError` subclasses (NotFound/Validation/Conflict) are mapped by `apps/api/exceptions.py`; any other exception is caught by the global handler and returned as `500 {"error": {"message": ...}}`. CORS is wide open: `allow_origins=["*"]`, `allow_credentials=False`, `allow_methods=["*"]`, `allow_headers=["*"]`.
 
-Lifespan: `ensure_storage_layout()` -> `init_db()` -> `asyncio.create_task(init_all_source_pollers())` on startup; `close_redis()` then `close_db()` on shutdown.
+Lifespan: `ensure_storage_layout()` -> `init_db()` -> `asyncio.create_task(init_all_source_pollers())` and `asyncio.create_task(init_all_knowledge_pollers())` on startup; `close_redis()` then `close_db()` on shutdown.
 
 ---
 
@@ -275,12 +279,22 @@ Default schedule is every 4 hours at minute 0 second 0 (`sync_cron_hour="*/4"`),
 
 ### 5.4 In-process source pollers (API)
 `init_all_source_pollers()` runs at API startup, selects every `Source.enabled == True`, and calls `register_source_poller(source_id)` for each; the same function is re-invoked whenever a connector is added, updated, or deleted. `register_source_poller` behaviour:
-- Mode is **live** when the source-level `connector_monitor_mode` is `live` **or** any of its connectors is `live`; it then starts a loop that calls `sync_source_from_pathway` every 3 seconds.
-- Otherwise a **scheduled** loop is started. The interval is taken in seconds first (`connector_sync_interval_seconds`, else the first connector's `sync_interval_seconds`), and only then falls back to minutes (`connector_sync_interval_minutes`, else the first connector's `sync_interval_minutes`, defaulting to 5 minutes). The result is floored at 5 seconds.
-- Registration also fires one immediate `_trigger_initial_sync` so a newly enabled source does not wait for the first sleep. Any existing poller for that source is cancelled first, and pollers are only started for enabled sources.
-- A source whose `connector_type` is one of the markers `minio`, `minio_manual`, `manual_upload`, `local_filesystem` and which has no `SourceConnector` rows is skipped (`pathway_sync_no_connectors`) instead of synthesising a fake connector.
+- The **enabled connector rows decide the schedule**. Mode is **live** when any enabled connector is `live`; then the loop calls `sync_source_from_pathway` every 3 seconds.
+- Otherwise a **scheduled** loop is started with the smallest interval among the enabled connectors: `sync_interval_seconds` first (floored at 5 s), else `sync_interval_minutes × 60`, else 5 minutes.
+- A source with no connector rows at all (legacy single-connector sources) falls back to the source-level `connector_monitor_mode` and interval fields.
+- When every connector is paused, or the source is a marker-type bucket (`minio`, `minio_manual`, `manual_upload`, `local_filesystem`) with no connector rows, the poller is stopped and `register_source_poller` returns early (`source_poller_skipped`).
+- Registration also fires one immediate `_trigger_initial_sync` so a newly configured connector does not wait for the first sleep. Any existing poller for that source is cancelled first, and pollers are only started for enabled sources.
+- A source whose `connector_type` is one of the markers above and which has no `SourceConnector` rows never synthesises a fake connector.
+- Pausing is `PATCH` with `{"enabled": false}`. The connector row's `enabled` is the pause switch for a single connector; pausing all of them means one such call per connector. `_do_sync_source_from_pathway` filters on it, so a paused connector is skipped by the poller, the manual sync endpoint, the MinIO webhook and the cron sweep alike.
 
 Separately, `pathway_sync.start_minio_monitor` / `start_local_fs_monitor` provide per-bucket watchers and are started from source-management paths (for example when a source is linked to a pipeline).
+
+### 5.5 In-process Knowledge Product pollers (API)
+`init_all_knowledge_pollers()` runs at API startup, selects every `KnowledgeProduct.enabled == True`, and calls `register_knowledge_poller(product_id)` for each. `register_knowledge_poller` re-reads the product with its sources and destinations, and returns early (`knowledge_poller_skipped`) when the product is missing, disabled, has no linked source, or has no enabled destination. Otherwise it starts the loop and fires one immediate `sync_knowledge_product(product_id)`.
+- `resolved_interval_seconds(product)` decides the cadence: **live** mode is 3 s; else `sync_interval_seconds` floored at 5 s; else `sync_interval_minutes × 60` floored at 5 s; else 300 s.
+- `sync_knowledge_product` guards on `_SYNCING_PRODUCTS`, so a burst of source events collapses into one running sync plus one waiting task. It sets the product `status = "syncing"`, calls `execute_universal_fanout_sync(db, product)`, then sets `status = "idle"`, `last_sync_at` and clears `error_message`, and writes the same on every enabled destination. On a failure it sets `status = "error"` with the message.
+- Registration is re-invoked on create, update, a destination toggle, and pause-all / resume-all. A product with every destination paused stops polling; a single paused destination does not.
+- `knowledge_events.publish` feeds the SSE stream from the same process. It is synchronous and runs on the event loop, never inside a destination worker thread.
 
 ---
 
@@ -350,20 +364,17 @@ Loaded with pydantic-settings from an optional `.env` (`extra="ignore"`) and cac
 | `scraper_api_key` | `""` | web-scraper API key; falls back to `api_key` when unset |
 | `api_key` | `""` | API auth; empty disables auth |
 | `opensearch_url` | `http://opensearch:9200` | lexical destination fallback |
-| `neo4j_bolt_uri` | `bolt://neo4j:7687` | graph destination default |
-| `neo4j_http_url` | `http://neo4j:7474` | graph destination default |
-| `neo4j_user` / `neo4j_password` | `neo4j` / `password` | graph destination credentials |
-| `neo4j_auth_disabled` | `True` | when true the Neo4j driver connects with `auth=None` |
+| `neo4j_*` (legacy) | — | `neo4j_bolt_uri`, `neo4j_http_url`, `neo4j_user`, `neo4j_password` and `neo4j_auth_disabled` stay declared in `settings.py`, but no destination reads them after 2026-09-20 |
 
 Derived values: `embedding_model_options` (`embedding_model`, `multimodal_embedding_model`, `text-embedding-3-small`, `text-embedding-3-large`), `unique_embedding_models` (deduplicated), `async_database_url` (asyncpg URL).
 
-Destination defaults that are not settings live in `apps/api/routes/knowledge_destination_schemas.py`, e.g. `vector_qdrant.vector_size = 2048`, `collection_name = knowledge_qdrant_collection`, `lexical_opensearch.index_name = knowledge_lexical_index`, `bm25_k1 = 1.2`, `bm25_b = 0.75`, `hnsw_m = 16`, `hnsw_ef_construct = 100`. `merge_destination_config()` merges user input over these defaults and `normalize_destination_payload()` drops unknown destination ids — it does not add implicit destinations.
+Destination defaults that are not settings live in `apps/api/routes/knowledge_destination_schemas.py`, e.g. `vector_qdrant.vector_size = 2048`, `bm25_k1 = 1.2`, `bm25_b = 0.75`, `hnsw_m = 16`, `hnsw_ef_construct = 100`. The catalogue returns exactly four entries, each with a `namespace_fields` list. `merge_destination_config()` merges user input over these defaults, `normalize_destination_payload()` drops unknown destination ids — it does not add implicit destinations — and `apply_store_namespace()` replaces an empty or still-default store name with `kp_<slug>_<suffix>` while it keeps a value the user typed. `_validate_store_namespace()` rejects a clash between products with `422 DESTINATION_STORE_CONFLICT`.
 
 ---
 
 ## 9. Database Schema & Migrations
 
-`src/shared/db/models.py` defines 13 tables:
+`src/shared/db/models.py` defines 14 tables:
 
 | Table | Model | Purpose |
 |---|---|---|
@@ -374,12 +385,13 @@ Destination defaults that are not settings live in `apps/api/routes/knowledge_de
 | `sources` | `Source` | external source + its dedicated MinIO bucket, monitor modes, metrics |
 | `source_connectors` | `SourceConnector` | per-connector type/config/monitor mode |
 | `pipeline_sources` | `PipelineSource` | M2M pipeline<->source link with per-link monitor config |
-| `pipelines` | `Pipeline` | rag strategy, embedding config, chunking, scraper settings, `knowledge_profile_id` |
+| `pipelines` | `Pipeline` | rag strategy, embedding config, chunking, scraper settings, `knowledge_product_id` |
 | `pipeline_runs` | `PipelineRun` | run status, counters, scraper job ids |
-| `indexed_files` | `IndexedFile` | per-pipeline indexing state keyed by `content_hash` (`file_id` or `source_id` + `file_key`) |
-| `knowledge_profiles` | `KnowledgeProfile` | name, enabled, status, `error_message`, `last_sync_at` |
-| `knowledge_profile_sources` | `KnowledgeProfileSource` | M2M profile<->source (MinIO bucket) |
-| `knowledge_destination_configs` | `KnowledgeDestinationConfig` | per-destination `enabled`, `config` (JSONB), `status`, `error_message`, `last_sync_at` |
+| `indexed_files` | `IndexedFile` | per-pipeline indexing state keyed by `content_hash` (`file_id` or `source_id` + `file_key`); the pipeline indexer writes it, the fanout does not |
+| `knowledge_products` | `KnowledgeProduct` | name, enabled, status, `monitor_mode`, `sync_interval_seconds` / `sync_interval_minutes`, `error_message`, `last_sync_at` |
+| `knowledge_product_sources` | `KnowledgeProductSource` | M2M product<->source (MinIO bucket) |
+| `knowledge_product_destinations` | `KnowledgeProductDestination` | per-destination `enabled`, `config` (JSONB), `status`, `error_message`, `last_sync_at` |
+| `knowledge_product_files` | `KnowledgeProductFile` | per-product fanout ledger: `(knowledge_product_id, source_id, file_key)` unique, `etag`, `size_bytes`, `content_hash`, `status`, `pages_indexed`, `destinations_synced`, `error_message`, `last_synced_at` |
 
 Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 
@@ -392,10 +404,11 @@ Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 | `005_sources` | `005_sources.py` | sources, pipeline_sources |
 | `006_source_indexed_files` | `006_source_indexed_files.py` | allow indexed_files to reference source-backed files (`source_id`, `file_key`) |
 | `007_multi_connector_sources` | `007_multi_connector_sources.py` | source_connectors, connector/pipeline monitor modes, per-link PipelineSource config |
-| `008_knowledge_store` | `008_knowledge_store.py` | knowledge_profiles, knowledge_profile_sources, knowledge_destination_configs |
-| `009_pipeline_knowledge_profile` | `009_pipeline_knowledge_profile.py` | `pipelines.knowledge_profile_id` |
+| `008_knowledge_store` | `008_knowledge_store.py` | created knowledge_profiles, knowledge_profile_sources, knowledge_destination_configs (all renamed in `010`) |
+| `009_pipeline_knowledge_profile` | `009_pipeline_knowledge_profile.py` | added `pipelines.knowledge_profile_id` (renamed in `010`) |
+| `010_knowledge_products` | `010_knowledge_products.py` | renamed the three knowledge tables, their indexes and columns; added `monitor_mode`, `sync_interval_seconds`, `sync_interval_minutes`; created `knowledge_product_files`; deleted the `graph_neo4j` destination rows and the `indexed_files` rows with `pipeline_id IS NULL` |
 
-`models.py` also installs SQLite compilers for `JSONB`/`UUID` so the schema can be created on SQLite (used by tests).
+`models.py` also installs SQLite compilers for `JSONB`/`UUID` so the schema can be created on SQLite (used by tests). The SQLite dev database is created by `init_db()`, which runs `_ensure_sqlite_renames(path)` before `Base.metadata.create_all` and `_ensure_sqlite_columns(path)` after it, because `create_all` never renames a table.
 
 ---
 
@@ -407,36 +420,35 @@ Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 3. `indexer.py` splits page text with `chunk_text(chunk_size, chunk_overlap)`, embeds dense vectors through `EmbeddingClient` (LiteLLM `/v1/embeddings`, FastEmbed `BAAI/bge-small-en-v1.5` fallback) and sparse vectors when the strategy is `sparse`/`hybrid` (also for `multimodal`/`metadata` with text modality), then upserts points into the pipeline's Qdrant collection. Payloads carry `source_type="file_ingest"`, `source_id`, `source_locator`, `pipeline_id`, `file_id`, `directory_name`, `chunk_index`, `page_index`, `content`, `rag_strategy`, `embedding_model`.
 4. `POST /api/pipelines/query` performs dense/sparse/hybrid search through `platform_common` Qdrant helpers.
 
-### 10.2 Source path (connectors, fanout to the 5 sinks)
+### 10.2 Source path (connectors, fanout to the 4 destinations)
 1. `POST /api/sources` creates a `Source` row with a deterministic MinIO bucket. A **NiFi connector source** (`source_type: "minio"`) starts with no connectors and gets them through `POST /api/sources/{id}/connectors`, where the type must be one of the three catalogue ids `google_drive`, `s3`, `azure_blob`. A **Manual Upload source** (`source_type: "minio_manual"`) writes files straight into its bucket through `POST /api/sources/{id}/files`. Legacy local filesystem rows still resolve to `local-<folder>`.
 2. Manual sync (`POST /api/sources/{id}/sync`, `.../connectors/{cid}/sync`, file upload/delete, MinIO event webhook, or the cron/10-second poll) marks the source `syncing` and pushes `pathway_sync_queue`.
-3. `pathway_worker` calls `pathway_sync.sync_source_from_pathway`, which runs the connector/dir sync into the source's MinIO bucket and then triggers the linked pipelines' fanout.
-4. A Knowledge Profile (`knowledge_profiles`) links one or more sources (`knowledge_profile_sources`) and one row per enabled destination (`knowledge_destination_configs`).
-5. `POST /api/knowledge-profiles/{id}/sync` sets `status="syncing"`, clears `error_message`, and schedules `_background_fanout_sync`; that helper opens its own session, calls `execute_universal_fanout_sync`, then writes back `profile.status` (the fanout's `status` value, default `"synced"`), `profile.last_sync_at`, and — only if the returned dict contains an `error_message` key — `profile.error_message`. Every enabled destination row is then set to `status="synced"` with the same timestamp.
-6. `execute_universal_fanout_sync(db, profile)`:
-   - resolves the profile with sources and destinations loaded, keeps only enabled destinations and linked sources; with no linked sources it returns a success result with zero counters;
-   - per source, builds the set of live objects — `list_objects(bucket)` for MinIO, `storage/local_sources/<folder>.rglob("*")` for local sources — and loads existing `IndexedFile` rows for `source_id` keyed by `file_key`;
-   - computes `hashlib.sha256(bytes).hexdigest()` per object: unchanged hash -> skipped; changed hash -> `purge_file_from_destinations(profile, key)` then re-fanout; absent from the live set but present in `indexed_files` -> purge + delete the tracking row;
-   - writes the object to a `tempfile.NamedTemporaryFile`, then `page_yielder.iter_file_pages()` yields `FilePage(page_index, text, image_png)` rows (PyMuPDF for PDF, python-docx, csv, json, plain text/markdown fallback);
-   - fans out with `asyncio.gather(*[_fanout_to_destination(...) for dest in enabled_destinations], return_exceptions=True)`, where each `_fanout_to_destination` offloads the synchronous `_sync_fanout_to_destination` via `asyncio.to_thread`;
-   - records/refreshes `IndexedFile(source_id, file_key, content_hash, indexed_at)`;
-   - returns `{"status", "files_processed", "files_added", "files_updated", "files_deleted", "pages_processed", "destinations_synced"}`.
+3. `pathway_worker` calls `pathway_sync.sync_source_from_pathway`, which runs the connector/dir sync into the source's MinIO bucket and then calls `_trigger_pipeline_syncs(db, source)`. That function starts `sync_knowledge_product(product_id)` for every linked Knowledge Product and enqueues a pipeline run per linked pipeline; it does not run the fanout itself.
+4. A Knowledge Product (`knowledge_products`) links one or more sources (`knowledge_product_sources`) and one row per destination (`knowledge_product_destinations`). `monitor_mode` plus `sync_interval_seconds` / `sync_interval_minutes` decide its poll cadence.
+5. There is no manual sync route. `register_knowledge_poller(product_id)` starts the product's poller and fires one immediate sync; each later tick calls `sync_knowledge_product(product_id)`, which guards on `_SYNCING_PRODUCTS`, sets `status="syncing"`, calls `execute_universal_fanout_sync(db, product)`, then sets `status="idle"`, `last_sync_at`, clears `error_message`, and writes the same on every enabled destination. On a failure it sets `status="error"` and keeps the message.
+6. `execute_universal_fanout_sync(db, product)`:
+   - resolves the product with sources and destinations loaded, keeps only enabled destinations and linked sources; with no enabled destination it returns zeros with `"message": "No destination is enabled."`;
+   - per source, builds the set of live objects — `list_objects(bucket)` for MinIO, `storage/local_sources/<folder>.rglob("*")` for local sources — and loads the existing `KnowledgeProductFile` rows for `source_id` keyed by `file_key`;
+   - compares the object's **etag and size** against the row: unchanged and already present in every enabled destination -> skipped without a download; changed -> purge the key from every destination in `destinations_synced` (a paused one included), then re-fanout; absent from the live set but present in `knowledge_product_files` -> purge from every destination that holds it, then delete the row;
+   - downloads the object to a `tempfile.NamedTemporaryFile`, then `page_yielder.iter_file_pages()` yields `FilePage(page_index, text, image_png)` rows (PyMuPDF for PDF, python-docx, csv, json, plain text/markdown fallback);
+   - fans out with `asyncio.gather(*[_fanout_to_destination(...) for dest in missing], return_exceptions=True)`, where each `_fanout_to_destination` offloads the synchronous writer via `asyncio.to_thread`;
+   - updates the `KnowledgeProductFile` row: `destinations_synced` gains each destination that succeeded, plus `etag`, `size_bytes`, `content_hash`, `pages_indexed` and `last_synced_at`, and `status` becomes `synced` when every enabled destination holds the file, else `pending`;
+   - returns `{"status", "files_processed", "files_added", "files_updated", "files_deleted", "files_unchanged", "pages_processed", "destinations_synced"}`.
 7. Per-destination writes (all synchronous, REST/driver level, no driver pooling):
-   - `vector_qdrant` — embeds each page's text with the destination's `embedding_model` through LiteLLM, then `QdrantVectorStore.ensure_collection(vector_size=<configured or auto-detected>, enable_sparse=False)` and `upsert_batch` with one point per page carrying the fanout payload. The schema exposes `distance`, `hnsw_m`, `hnsw_ef_construct`, `quantization` and `on_disk_payload`, but this branch only applies `vector_size`.
+   - `vector_qdrant` — embeds each page's text with the destination's `embedding_model` through LiteLLM, then `QdrantVectorStore.ensure_collection(collection_name=<the product's kp_<slug>_<id8>>, vector_size=<configured or auto-detected>, enable_sparse=False)` and `upsert_batch` with one point per page carrying the fanout payload. The schema exposes `distance`, `hnsw_m`, `hnsw_ef_construct`, `quantization` and `on_disk_payload`, but this branch only applies `vector_size`.
    - `lexical_opensearch` — `PUT {index_name}` with `number_of_shards` / `number_of_replicas` / `refresh_interval` index settings (BM25 k1/b are **not** applied to the mapping), then indexes one document per page containing `file_key`, `page_index`, `content`/`text`, `source_id`, `source_locator`, `created_at`, `sparse_model`, `bm25_k1`, `bm25_b`; optional basic auth.
-   - `graph_neo4j` — `Document`/`Chunk` nodes with `CONTAINS_CHUNK` relationships; when `entity_extraction_enabled`, entities are extracted through LiteLLM chat completions (`entity_extraction_model`, default `gpt-4o-mini`, capped by `max_entities_per_chunk`) and attached with `MENTIONS` relationships. Auth is `None` when `auth_disabled` (destination config, default from `neo4j_auth_disabled`).
-   - `relational_pgvector` — inserts one row per page into `schema_name.table_name` (default `public.knowledge_chunks`); when `store_embeddings` is enabled (default `True`) the row carries the dense embedding, otherwise text only.
-   - `cache_redisvl` — writes one key per chunk with `ttl_seconds` (default `86400`), `parent_child_mapping` (default `True`), `similarity_threshold` stored in the payload, and optional RAPTOR summaries when `raptor_summaries` is enabled.
-8. `purge_knowledge_profile()` (used by `DELETE /api/knowledge-profiles/{id}`) walks the profile's linked `source_id`s, purges each tracked `file_key` from all enabled destinations, deletes the `IndexedFile` rows, and returns `{"purged_files", "source_ids", "destinations"}`. The API then deletes the profile row (destinations and source links cascade).
+   - `relational_pgvector` — runs `CREATE SCHEMA IF NOT EXISTS` for the product's schema `kp_<slug>_<id8>` and `CREATE EXTENSION IF NOT EXISTS vector`, then inserts one row per page into `<schema>.chunks` with `source_id`, `file_key`, `page_index` and `content`. When `store_embeddings` is enabled (default `True`) the row carries the dense embedding, otherwise text only. The purge runs `DELETE ... WHERE file_key = %s AND source_id = %s`.
+   - `cache_redisvl` — writes one key per chunk as `"<prefix>:<source_id>:<file_key>:<page>"` with a `:children` set and an optional `:summary` key, where the prefix is the product's `kp:<slug>:<id8>`. It honours `ttl_seconds` (default `86400`), `parent_child_mapping` (default `True`), a `similarity_threshold` stored in the payload, and optional RAPTOR summaries when `raptor_summaries` is enabled. The purge scans `"<prefix>:<source_id>:<file_key>*"` with glob metacharacters escaped.
+8. `purge_knowledge_product()` (used by `DELETE /api/knowledge-products/{id}`) walks the product's linked `source_id`s, purges each tracked `file_key` from every destination that holds it, deletes the `KnowledgeProductFile` rows, and returns `{"purged_files", "source_ids", "destinations"}`. The API then stops the poller, clears the SSE buffer, and deletes the product row (destinations, source links and file rows cascade).
 
 ---
 
 ## 11. Key Engineering Invariants
-1. **Content-hash differential ingestion**: `IndexedFile` rows keyed by `(pipeline_id, content_hash)` and `(pipeline_id, source_id, file_key)` let both the pipeline runner and the fanout engine skip unchanged bytes; changed files are purged in destinations before re-indexing, removed files are purged and their tracking rows deleted. Source file identity is the SHA-256 of the object bytes.
-2. **Parallel multi-sink fanout with isolated failures**: destinations are written concurrently (`asyncio.gather(..., return_exceptions=True)` over `asyncio.to_thread` calls), so one failing sink does not abort the others. A raised destination error is logged (`fanout_destination_failed`), its destination is omitted from the returned `destinations_synced` list, and the engine continues. Errors are not persisted per destination: nothing writes `KnowledgeDestinationConfig.error_message`, and `KnowledgeProfile.error_message` is only assigned when the fanout result dict contains an `error_message` key — the current result dict never does, so the profile row keeps the `None` it was set to when the sync started. After the run, every enabled destination row is set to `status="synced"` with `last_sync_at = now()` regardless of individual sink outcomes.
-3. **Retrieval-aligned payloads**: fanout documents carry `source_type`, `source_id`, `source_locator`, `file_key`, `file_name`/`original_name`, `page_index`, `chunk_index`, `content`/`text`, `knowledge_profile_id`, and `created_at`; the pipeline indexer emits `source_type="file_ingest"`, `source_locator="<directory>/<file>#page-<n>"`, plus pipeline/strategy/embedding metadata for `platform_common` hit mapping.
-4. **Profile delete purge**: `DELETE /api/knowledge-profiles/{id}` purges indexed artifacts from all enabled destinations before deleting the profile, and returns a `purge_summary`.
-5. **Live inspectability (partial)**: `GET /api/knowledge-profiles/{id}/inspect/{destination_type}` serves live read-back data for `vector_qdrant` (collection info + scroll of points with a pseudo-3D projection), `lexical_opensearch` (match-all hits + aggregated term frequencies), and `graph_neo4j`; other destination types return `{"message": "Visualizer not implemented for this type"}`.
+1. **Metadata-based differential ingestion (fanout)**: `KnowledgeProductFile` rows are unique on `(knowledge_product_id, source_id, file_key)`. The fanout skips an object whose ETag and size are unchanged since the last tick and whose row is already synced into every enabled destination. A changed file is purged from every destination that holds it before re-indexing. A removed file is purged and its row deleted. The pipeline path keeps its own `IndexedFile` rows keyed by `(pipeline_id, content_hash)` and `(pipeline_id, source_id, file_key)`, where source file identity stays the SHA-256 of the object bytes.
+2. **Parallel fanout with per-destination failure recording**: destinations are written concurrently (`asyncio.gather(..., return_exceptions=True)` over `asyncio.to_thread` calls), so one failing destination does not abort the others. Every writer re-raises. A failure is left out of `destinations_synced`, written to the row's `error_message`, published as `destination_failed` on the SSE stream, and leaves the file `status = "pending"`, so the next tick retries only the missing destination. It is never reported as success.
+3. **Retrieval-aligned payloads**: fanout documents carry `source_type`, `source_id`, `source_locator`, `file_key`, `file_name`/`original_name`, `page_index`, `chunk_index`, `content`/`text`, `knowledge_product_id`, and `created_at`; the pipeline indexer emits `source_type="file_ingest"`, `source_locator="<directory>/<file>#page-<n>"`, plus pipeline/strategy/embedding metadata for `platform_common` hit mapping.
+4. **Product delete purge**: `DELETE /api/knowledge-products/{id}` purges indexed artifacts from every destination that holds them before deleting the product, and returns a `purge_summary`.
+5. **Live inspectability**: `GET /api/knowledge-products/{id}/inspect/{destination_type}` serves live read-back data for all four destinations — `vector_qdrant` (collection info + scroll of points with a pseudo-3D projection), `lexical_opensearch` (match-all hits + aggregated term frequencies), `relational_pgvector` (rows from the product's schema) and `cache_redisvl` (keys under the product's prefix).
 6. **Single API-key gate**: every route is behind `verify_api_key` (header or query param), disabled only when `api_key` is empty.
 
 ---
@@ -456,14 +468,16 @@ Compose file is shared with the retrieval stack; the ingestion-relevant services
 | `scraper-api` / `scraper-worker` / `scraper-migrate` | `tharun0511/web-scrapper-wokspace:latest` | — | `8000:8000` (scraper API) |
 | `qdrant` | `qdrant/qdrant:v1.18.0` | — | `6333:6333` |
 | `redis` | `redis:7-alpine` | — | `6379:6379` |
-| `postgres` | `postgres:16-alpine` | — | `5432:5432` |
+| `postgres` | `pgvector/pgvector:pg16` | — | `5432:5432` |
+| `neo4j` | (declared in `docker-compose.yaml`) | — | `7474:7474`, `7687:7687` (unused by any destination since 2026-09-20) |
 | `otel-collector` | `otel/opentelemetry-collector:0.148.0` | — | `4317:4317`, `4318:4318` |
 | `rag-migrate` / `rag-api` / `eval-worker` (+ guardrails services) | retrieval Dockerfile on this compose file | — | `8001:8001` (`rag-api`) |
 
-Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/app/storage`), `hf-cache` (`worker` and the retrieval `rag-api`), `minio_data`, `pg_data`, `qdrant_data`, `nifi_data`, `scraper_data`. All ingestion services set `extra_hosts: host.docker.internal:host-gateway` so `litellm_base_url` can point at a host-run LiteLLM proxy.
+Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/app/storage`), `hf-cache` (`worker` and the retrieval `rag-api`), `minio_data`, `pg_data`, `qdrant_data`, `neo4j_data` (still declared, unused by any destination), `nifi_data`, `scraper_data`. All ingestion services set `extra_hosts: host.docker.internal:host-gateway` so `litellm_base_url` can point at a host-run LiteLLM proxy.
 
 ---
 
 ## 13. Verification
-- E2E: `backend/scripts/e2e_knowledge_fanout.py` (delete -> purge verify -> create -> sync -> inspect all sinks).
-- Tests: `backend/tests/test_page_yielder.py`, `backend/tests/test_fanout_payload.py`, `backend/tests/test_knowledge_destination_schemas.py`, `backend/tests/test_connector_config_validation.py`.
+- E2E: `backend/scripts/e2e_knowledge_fanout.py` (two products over one bucket, store-name isolation, `422 DESTINATION_STORE_CONFLICT`, add/replace/delete propagation to all four destinations, `POST /sync` returns 404) and `backend/scripts/e2e_knowledge_pause.py` (pause-all, resume-all, per-destination pause).
+- Legacy cleanup: `backend/scripts/purge_neo4j_legacy.py` deletes the `Chunk`/`Document`/`Entity` nodes written before the graph destination was removed.
+- Tests: `backend/tests/test_page_yielder.py`, `backend/tests/test_fanout_payload.py`, `backend/tests/test_knowledge_destination_schemas.py`, `backend/tests/test_knowledge_product_files.py`, `backend/tests/test_connector_config_validation.py` (`uv run pytest tests -q`, 23 passed).

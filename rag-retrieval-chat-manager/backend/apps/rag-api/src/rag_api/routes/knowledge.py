@@ -4,22 +4,19 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
 import httpx
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from rag_shared.config import Settings, get_settings
 from shared_contracts.knowledge import (
-    KnowledgeProfileCreate,
-    KnowledgeProfileRead,
-    KnowledgeProfileUpdate,
-    TestConnectionRequest,
-    TestConnectionResponse,
+    KnowledgeProductCreate,
+    KnowledgeProductRead,
+    KnowledgeProductUpdate,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/knowledge-profiles", tags=["knowledge-profiles-proxy"])
+router = APIRouter(prefix="/api/knowledge-products", tags=["knowledge-products-proxy"])
 
 
 def get_ingestion_url(settings: Settings = Depends(get_settings)) -> str:
@@ -28,14 +25,14 @@ def get_ingestion_url(settings: Settings = Depends(get_settings)) -> str:
     return base_url.rstrip("/")
 
 
-@router.get("", response_model=list[KnowledgeProfileRead])
-async def list_knowledge_profiles(
+@router.get("", response_model=list[KnowledgeProductRead])
+async def list_knowledge_products(
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     """Proxy request to rag-ingestion-manager backend on port 8007."""
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.get(f"{ingestion_url}/api/knowledge-profiles")
+            resp = await client.get(f"{ingestion_url}/api/knowledge-products")
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return resp.json()
@@ -44,14 +41,16 @@ async def list_knowledge_profiles(
             raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
 
 
-@router.post("", response_model=KnowledgeProfileRead, status_code=201)
-async def create_knowledge_profile(
-    body: KnowledgeProfileCreate,
+@router.post("", response_model=KnowledgeProductRead, status_code=201)
+async def create_knowledge_product(
+    body: KnowledgeProductCreate,
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.post(f"{ingestion_url}/api/knowledge-profiles", json=body.model_dump(mode="json"))
+            resp = await client.post(
+                f"{ingestion_url}/api/knowledge-products", json=body.model_dump(mode="json")
+            )
             if resp.status_code not in (200, 201):
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return resp.json()
@@ -59,14 +58,14 @@ async def create_knowledge_profile(
             raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
 
 
-@router.get("/{profile_id}", response_model=KnowledgeProfileRead)
-async def get_knowledge_profile(
-    profile_id: uuid.UUID,
+@router.get("/{product_id}", response_model=KnowledgeProductRead)
+async def get_knowledge_product(
+    product_id: uuid.UUID,
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.get(f"{ingestion_url}/api/knowledge-profiles/{profile_id}")
+            resp = await client.get(f"{ingestion_url}/api/knowledge-products/{product_id}")
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return resp.json()
@@ -74,15 +73,18 @@ async def get_knowledge_profile(
             raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
 
 
-@router.put("/{profile_id}", response_model=KnowledgeProfileRead)
-async def update_knowledge_profile(
-    profile_id: uuid.UUID,
-    body: KnowledgeProfileUpdate,
+@router.patch("/{product_id}", response_model=KnowledgeProductRead)
+async def update_knowledge_product(
+    product_id: uuid.UUID,
+    body: KnowledgeProductUpdate,
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.put(f"{ingestion_url}/api/knowledge-profiles/{profile_id}", json=body.model_dump(mode="json", exclude_unset=True))
+            resp = await client.patch(
+                f"{ingestion_url}/api/knowledge-products/{product_id}",
+                json=body.model_dump(mode="json", exclude_unset=True),
+            )
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return resp.json()
@@ -90,14 +92,14 @@ async def update_knowledge_profile(
             raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
 
 
-@router.delete("/{profile_id}")
-async def delete_knowledge_profile(
-    profile_id: uuid.UUID,
+@router.delete("/{product_id}")
+async def delete_knowledge_product(
+    product_id: uuid.UUID,
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.delete(f"{ingestion_url}/api/knowledge-profiles/{profile_id}")
+            resp = await client.delete(f"{ingestion_url}/api/knowledge-products/{product_id}")
             if resp.status_code not in (200, 204):
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return Response(status_code=204)
@@ -105,31 +107,18 @@ async def delete_knowledge_profile(
             raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
 
 
-@router.post("/{profile_id}/test-connection", response_model=TestConnectionResponse)
+@router.post("/{product_id}/test-connection")
 async def test_destination_connection(
-    profile_id: uuid.UUID,
-    body: TestConnectionRequest,
+    product_id: uuid.UUID,
+    body: dict[str, Any],
     ingestion_url: str = Depends(get_ingestion_url),
 ) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            resp = await client.post(f"{ingestion_url}/api/knowledge-profiles/{profile_id}/test-connection", json=body.model_dump(mode="json"))
+            resp = await client.post(
+                f"{ingestion_url}/api/knowledge-products/{product_id}/test-connection", json=body
+            )
             if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=resp.text)
-            return resp.json()
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=503, detail=f"Ingestion service unavailable: {str(exc)}")
-
-
-@router.post("/{profile_id}/sync")
-async def trigger_fanout_sync(
-    profile_id: uuid.UUID,
-    ingestion_url: str = Depends(get_ingestion_url),
-) -> Any:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.post(f"{ingestion_url}/api/knowledge-profiles/{profile_id}/sync")
-            if resp.status_code not in (200, 202):
                 raise HTTPException(status_code=resp.status_code, detail=resp.text)
             return resp.json()
         except httpx.RequestError as exc:

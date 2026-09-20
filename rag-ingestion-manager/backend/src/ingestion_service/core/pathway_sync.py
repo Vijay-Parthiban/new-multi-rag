@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 _SYNCING_SOURCES: set[uuid.UUID] = set()
 _MINIO_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
 _LOCAL_FS_MONITOR_TASKS: dict[uuid.UUID, asyncio.Task] = {}
+
+# `Source.connector_type` values that name a source kind, not a connector. They
+# must never be turned into a synthesized connector.
+MARKER_CONNECTOR_TYPES = {"minio", "minio_manual", "manual_upload", "local_filesystem"}
 async def sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -> None:
     """Sync a source through Pathway Airbyte connector."""
     if source_id in _SYNCING_SOURCES:
@@ -60,13 +64,12 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
         return
 
     # Resolve connectors: prefer per-connector rows, fall back to legacy fields.
-    # "minio" and "local_filesystem" are source markers, not connector ids, so
-    # they must not synthesize a connector that no NiFi sync path can serve.
+    # Marker source kinds are not connector ids, so they must not synthesize a
+    # connector that no NiFi sync path can serve.
     connectors: list[SourceConnector] = [
         c for c in (source.connectors or []) if c.enabled
     ]
-    marker_types = {"minio", "minio_manual", "manual_upload", "local_filesystem"}
-    if not connectors and source.connector_type and source.connector_type not in marker_types:
+    if not connectors and source.connector_type and source.connector_type not in MARKER_CONNECTOR_TYPES:
         # Legacy single-connector source — synthesize a connector row
         connectors = [
             SourceConnector(
@@ -177,12 +180,9 @@ async def _do_sync_source_from_pathway(db: AsyncSession, source_id: uuid.UUID) -
 
     # Start monitoring MinIO for file changes in background
     start_minio_monitor(source_id)
-    # Register live poller if source or any connector is configured in LIVE mode
-    is_live = (source.connector_monitor_mode == SourceMonitorMode.LIVE) or any(
-        c.monitor_mode == SourceMonitorMode.LIVE for c in connectors
-    )
-    if is_live:
-        start_live_sync_poller(source.id, poll_interval_seconds=3)
+    # Poller registration stays on the mutation paths (source create/update,
+    # connector add/update/delete, startup). Re-registering here would tear down
+    # and rebuild the poller on every tick and restart its initial sync.
 async def _run_airbyte_connector(config: dict) -> dict:
     """Execute Airbyte connector with given configuration."""
     # Simplified placeholder - actual Airbyte execution would happen here
@@ -205,25 +205,26 @@ async def _run_airbyte_connector(config: dict) -> dict:
         return resp.json() if resp.status_code == 200 else {}
 
 async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
-    """Trigger Knowledge Profile fanout sync and pipeline re-indexing for linked source."""
+    """Wake the Knowledge Product pollers and enqueue pipeline re-indexing."""
     try:
-        from src.ingestion_service.core.universal_fanout import execute_universal_fanout_sync
-        
-        # Find matching knowledge profiles linked to this source
+        # The Knowledge Product poller owns the fanout. Kick it so a source
+        # change reaches the destinations now instead of at the next interval.
         from sqlalchemy import select
-        from src.shared.db.models import KnowledgeProfileSource
-        
-        stmt = select(KnowledgeProfileSource.knowledge_profile_id).where(KnowledgeProfileSource.source_id == source.id)
+
+        from src.ingestion_service.core.knowledge_sync import sync_knowledge_product
+        from src.shared.db.models import KnowledgeProductSource
+
+        stmt = select(KnowledgeProductSource.knowledge_product_id).where(
+            KnowledgeProductSource.source_id == source.id
+        )
         res = await db.execute(stmt)
-        kp_ids = res.scalars().all()
-        
-        for kp_id in kp_ids:
-            await execute_universal_fanout_sync(db, kp_id)
+        for product_id in res.scalars().all():
+            asyncio.create_task(sync_knowledge_product(product_id))
     except Exception as exc:
         logger.error(
-            "knowledge_profile_fanout_sync_failed source=%s error=%s",
+            "knowledge_product_kick_failed source=%s error=%s",
             source.id,
-            str(exc)
+            str(exc),
         )
 
     try:
@@ -446,16 +447,15 @@ def stop_source_poller(source_id: uuid.UUID) -> None:
         task.cancel()
         logger.info("Stopped background poller task for source %s", source_id)
 
-def start_live_sync_poller(source_id: uuid.UUID, poll_interval_seconds: int = 3) -> None:
-    """Legacy alias for register_source_poller."""
-    asyncio.create_task(register_source_poller(source_id))
-
 async def register_source_poller(source_id: uuid.UUID) -> None:
-    """Register or update continuous live/scheduled background polling for a source."""
-    from sqlalchemy import select
+    """Register or update continuous live/scheduled background polling for a source.
+
+    The enabled connector rows decide the schedule. A source with no connector
+    rows at all falls back to the source-level defaults (legacy sources).
+    """
     from sqlalchemy.orm import selectinload
     from src.shared.db.session import AsyncSessionLocal
-    from src.shared.db.models import Source, SourceConnector, SourceMonitorMode
+    from src.shared.db.models import Source, SourceMonitorMode
 
     async with AsyncSessionLocal() as db:
         source = await db.get(
@@ -468,67 +468,62 @@ async def register_source_poller(source_id: uuid.UUID) -> None:
             return
 
         connectors = source.connectors or []
-        is_live = (source.connector_monitor_mode == SourceMonitorMode.LIVE) or any(
-            c.monitor_mode == SourceMonitorMode.LIVE for c in connectors
-        )
+        enabled = [c for c in connectors if c.enabled]
 
         stop_source_poller(source_id)
 
-        if is_live:
-            poll_interval_seconds = 3
-            logger.info("Starting INSTANTANEOUS LIVE background poller for source %s (interval=%ds)", source_id, poll_interval_seconds)
+        # Nothing to poll: every connector is paused, or this is a bucket-only
+        # source (manual upload / legacy local) that never had connectors.
+        if not enabled and (connectors or source.connector_type in MARKER_CONNECTOR_TYPES):
+            logger.info(
+                "source_poller_skipped source=%s reason=%s",
+                source_id,
+                "all connectors paused" if connectors else "no connectors",
+            )
+            return
 
-            async def _live_loop():
-                while True:
-                    try:
-                        await asyncio.sleep(poll_interval_seconds)
-                        async with AsyncSessionLocal() as db_inner:
-                            await sync_source_from_pathway(db_inner, source_id)
-                    except asyncio.CancelledError:
-                        logger.info("Live poller task cancelled for source %s", source_id)
-                        break
-                    except Exception as exc:
-                        logger.error("Live poller loop error for source %s: %s", source_id, exc)
-
-            task = asyncio.create_task(_live_loop())
-            _SOURCE_POLLER_TASKS[source_id] = task
-
+        if enabled:
+            is_live = any(c.monitor_mode == SourceMonitorMode.LIVE for c in enabled)
+            intervals_seconds = [c.sync_interval_seconds for c in enabled if c.sync_interval_seconds]
+            intervals_minutes = [c.sync_interval_minutes for c in enabled if c.sync_interval_minutes]
         else:
-            # SCHEDULED mode — seconds take priority over minutes.
-            interval_seconds = source.connector_sync_interval_seconds
-            if not interval_seconds:
-                for c in connectors:
-                    if c.sync_interval_seconds:
-                        interval_seconds = c.sync_interval_seconds
-                        break
-            if not interval_seconds:
-                interval_minutes = source.connector_sync_interval_minutes
-                if not interval_minutes:
-                    for c in connectors:
-                        if c.sync_interval_minutes:
-                            interval_minutes = c.sync_interval_minutes
-                            break
-                if not interval_minutes:
-                    interval_minutes = 5  # default 5 minutes
-                interval_seconds = interval_minutes * 60
+            is_live = source.connector_monitor_mode == SourceMonitorMode.LIVE
+            intervals_seconds = [source.connector_sync_interval_seconds] if source.connector_sync_interval_seconds else []
+            intervals_minutes = [source.connector_sync_interval_minutes] if source.connector_sync_interval_minutes else []
 
-            interval_seconds = max(5, interval_seconds)
-            logger.info("Starting PRECISE SCHEDULED background poller for source %s (interval=%ds)", source_id, interval_seconds)
+        if is_live:
+            interval_seconds = 3
+        elif intervals_seconds:
+            # ponytail: one loop per source, so the shortest interval wins. Split
+            # into per-connector pollers when a source mixes a 5s and an hour.
+            interval_seconds = max(5, min(intervals_seconds))
+        elif intervals_minutes:
+            interval_seconds = max(5, min(intervals_minutes) * 60)
+        else:
+            interval_seconds = 300  # default 5 minutes
 
-            async def _scheduled_loop():
-                while True:
-                    try:
-                        await asyncio.sleep(interval_seconds)
-                        async with AsyncSessionLocal() as db_inner:
-                            await sync_source_from_pathway(db_inner, source_id)
-                    except asyncio.CancelledError:
-                        logger.info("Scheduled poller task cancelled for source %s", source_id)
-                        break
-                    except Exception as exc:
-                        logger.error("Scheduled poller loop error for source %s: %s", source_id, exc)
+        logger.info(
+            "Starting %s background poller for source %s (interval=%ds, connectors=%d)",
+            "LIVE" if is_live else "SCHEDULED",
+            source_id,
+            interval_seconds,
+            len(enabled),
+        )
 
-            task = asyncio.create_task(_scheduled_loop())
-            _SOURCE_POLLER_TASKS[source_id] = task
+        async def _loop():
+            while True:
+                try:
+                    await asyncio.sleep(interval_seconds)
+                    async with AsyncSessionLocal() as db_inner:
+                        await sync_source_from_pathway(db_inner, source_id)
+                except asyncio.CancelledError:
+                    logger.info("Source poller task cancelled for source %s", source_id)
+                    break
+                except Exception as exc:
+                    logger.error("Source poller loop error for source %s: %s", source_id, exc)
+
+        task = asyncio.create_task(_loop())
+        _SOURCE_POLLER_TASKS[source_id] = task
 
         # Trigger immediate initial sync on registration
         asyncio.create_task(_trigger_initial_sync(source_id))

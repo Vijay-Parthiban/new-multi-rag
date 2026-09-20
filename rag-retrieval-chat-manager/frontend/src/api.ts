@@ -199,7 +199,7 @@ export interface PipelineCatalogEntry {
 
 export interface PipelineRecord {
   id: string;
-  knowledge_profile_id?: string | null;
+  knowledge_product_id?: string | null;
   name: string;
   description: string;
   rag_strategy: string;
@@ -252,7 +252,7 @@ export interface CreatePipelineRequest {
   scraper_max_depth?: number;
   scraper_max_pages?: number;
   scraper_mode?: string;
-  knowledge_profile_id?: string;
+  knowledge_product_id?: string;
 }
 
 export interface PipelinePatchRequest {
@@ -310,6 +310,7 @@ export interface KnowledgeDestinationOption {
   name: string;
   category: string;
   description: string;
+  namespace_fields?: string[];
   default_config: Record<string, unknown>;
 }
 
@@ -323,7 +324,7 @@ export interface KnowledgeDestinationConfig {
   error_message?: string | null;
 }
 
-export interface KnowledgeProfileSource {
+export interface KnowledgeProductSource {
   source_id: string;
   name: string;
   connector_type?: string | null;
@@ -331,7 +332,7 @@ export interface KnowledgeProfileSource {
   status?: string;
 }
 
-export interface KnowledgeProfile {
+export interface KnowledgeProduct {
   id: string;
   name: string;
   description?: string | null;
@@ -341,11 +342,11 @@ export interface KnowledgeProfile {
   last_sync_at?: string | null;
   created_at?: string;
   updated_at?: string;
-  sources: KnowledgeProfileSource[];
+  sources: KnowledgeProductSource[];
   destinations: KnowledgeDestinationConfig[];
   pipelines?: PipelineRecord[];
 }
-export interface KnowledgeProfileCreateRequest {
+export interface KnowledgeProductCreateRequest {
   name: string;
   description?: string;
   enabled?: boolean;
@@ -364,67 +365,54 @@ export interface TestConnectionResponse {
   details?: Record<string, unknown>;
 }
 
-export interface KnowledgeSyncResponse {
-  status: string;
-  profile_id: string;
-  files_processed: number;
-  destinations_synced: string[];
-  details?: Record<string, unknown>;
-}
 export async function getDestinationOptions(): Promise<KnowledgeDestinationOption[]> {
-  return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-profiles/destinations/options");
+  return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-products/destinations/options");
 }
 
-export async function listKnowledgeProfiles(): Promise<KnowledgeProfile[]> {
-  return apiFetch<KnowledgeProfile[]>("/api/knowledge-profiles");
+export async function listKnowledgeProducts(): Promise<KnowledgeProduct[]> {
+  return apiFetch<KnowledgeProduct[]>("/api/knowledge-products");
 }
 
-export async function getKnowledgeProfile(profileId: string): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`);
+export async function getKnowledgeProduct(productId: string): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`);
 }
 
-export async function createKnowledgeProfile(
-  body: KnowledgeProfileCreateRequest
-): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>("/api/knowledge-profiles", {
+export async function createKnowledgeProduct(
+  body: KnowledgeProductCreateRequest
+): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>("/api/knowledge-products", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-export async function updateKnowledgeProfile(
-  profileId: string,
-  body: Partial<KnowledgeProfileCreateRequest>
-): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`, {
-    method: "PUT",
+export async function updateKnowledgeProduct(
+  productId: string,
+  body: Partial<KnowledgeProductCreateRequest>
+): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-export async function deleteKnowledgeProfile(profileId: string): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/api/knowledge-profiles/${profileId}`, {
+export async function deleteKnowledgeProduct(productId: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/api/knowledge-products/${productId}`, {
     method: "DELETE",
   });
 }
 
 export async function testDestinationConnection(
-  profileId: string,
+  productId: string,
   destinationType: string,
   config: Record<string, any>
 ): Promise<TestConnectionResponse> {
-  return apiFetch<TestConnectionResponse>(`/api/knowledge-profiles/${profileId}/test-connection`, {
+  return apiFetch<TestConnectionResponse>(`/api/knowledge-products/${productId}/test-connection`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ destination_type: destinationType, config }),
-  });
-}
-
-export async function syncKnowledgeProfile(profileId: string): Promise<KnowledgeSyncResponse> {
-  return apiFetch<KnowledgeSyncResponse>(`/api/knowledge-profiles/${profileId}/sync`, {
-    method: "POST",
   });
 }
 

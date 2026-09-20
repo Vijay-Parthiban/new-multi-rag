@@ -139,7 +139,7 @@ Note: a stray line of JSX at `BrowsePage.tsx:336` renders a literal `Bucket: …
 
 ### 3.5 `FileBrowser` component (Sources page only)
 
-`components/Sources/FileBrowser.tsx` is a self-contained MinIO browser with props `sourceId`, `bucketName`, `files`, `onDelete`, `onError`, `onInfo`, `allowUpload` (default `false`), `allowDelete` (default `false`) (`FileBrowser.tsx:24-33`, `:77-78`). It is not mounted by any `/browse` route.
+`components/Sources/FileBrowser.tsx` is a self-contained MinIO browser with props `sourceId`, `bucketName`, `files`, `onDelete`, `onError`, `onInfo`, `allowUpload` (default `false`), `allowDelete` (default `false`), `allowPreview` (default `false`) (`FileBrowser.tsx:15-34`, `:71-81`). It is not mounted by any `/browse` route; it is the file view on the Sources page and in the Sources list drawer.
 
 - Toolbar shows the bucket name plus the current `prefix`; a two-button toggle switches between **All Files (Flat)** and **Folder View** (`:301-315`).
 - Path bar: `root` button (reloads with empty prefix), one crumb per prefix segment (clicking navigates to that segment), and an `↑ up` button using `parentPrefix` (`:50-62`, `:312-355`).
@@ -147,8 +147,13 @@ Note: a stray line of JSX at `BrowsePage.tsx:336` renders a literal `Bucket: …
 - Folder section: derived purely client-side from the returned keys — every `key` containing a `/` after the current prefix contributes a folder row with an item count; clicking it loads `prefix + name + "/"` (`:201-219`, `:445-475`).
 - File table: sortable headers Name / Size / Modified (`SortKey = "name" | "size" | "modified"`, default `name`; sorting is ascending only and there is no descending toggle) (`:40`, `:98`, `:222-243`, `:505-540`).
 - Pagination: `PAGE_SIZE = 20`; page resets to 0 when prefix or sort key changes; footer reads `Page {n} of {total} ({count} files)` (`:42`, `:238-250`, `:600-625`).
-- Row keyboard support: Enter/Space triggers delete, ArrowUp/ArrowDown moves focus between rows (`:262-280`).
-- Actions per row: **Open & Visualize** — a hardcoded link to `http://localhost:8007/api/sources/{sourceId}/files?key={key}`, i.e. the JSON listing endpoint on the ingestion backend's default port, not the content endpoint (`:564-572`); and **Delete** (rendered only when `allowDelete` or `onDelete` is set) which asks `window.confirm("Delete {key} from the bucket?")` then calls the `onDelete` prop or `deleteSourceFile` (`:181-197`, `:574-585`).
+- Row keyboard support: Enter/Space triggers delete **only when delete is allowed**, ArrowUp/ArrowDown moves focus between rows (`:267-287`).
+- Actions per row, computed as `hasRowActions = canDelete || allowPreview` (`:264-265`):
+  - **Open & Visualize** — rendered only when `allowPreview` is true; links to `/api/sources/{sourceId}/files/content?key={key}` (the content endpoint, relative to the API). No caller passes `allowPreview`, so it never shows today.
+  - **Delete** — rendered only when `allowDelete` or an `onDelete` prop is set; asks `window.confirm("Delete {key} from the bucket?")` then calls the `onDelete` prop or `deleteSourceFile` (`:181-197`).
+  - When neither applies the **Actions column is omitted entirely** and rows are not focusable for deletion.
+- Who passes what (2026-09-20): the Sources detail page passes `allowUpload` and `allowDelete` only for `minio_manual` and legacy local sources; the Sources drawer does the same through `canManageFiles`. A connector bucket therefore renders Name / Size / Modified with no Actions column, and a manual bucket renders Delete but not Open & Visualize.
+- The `/browse` **BrowsePage** is a separate surface with its own "Open & Visualize" button (section 3.1). It was not changed.
 
 ---
 

@@ -1,11 +1,11 @@
 # 01 — RAG Retrieval & Chat Overview Dashboard
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-20
 
 ## 1. Executive Summary & Page Purpose
 The **RAG Retrieval & Chat Overview Dashboard** is `frontend/src/pages/HomePage.tsx`, mounted at route `/` (`frontend/src/components/AppLayout.tsx:164-166`). It is the landing page of the `rag-retrieval-chat-manager` frontend: a page header, four headline stat cards, six quick-launch cards that link to the other workspace pages, and a read-only "Active Retrieval & Synthesis Pipeline Features" panel.
 
-The page is presentation-only apart from a single count: it fetches the number of knowledge profiles once on mount. It performs **no** health checks, no polling, and no other API calls.
+The page is presentation-only apart from a single count: it fetches the number of Knowledge Products once on mount. It performs **no** health checks, no polling, and no other API calls.
 
 ---
 
@@ -20,8 +20,8 @@ The page is presentation-only apart from a single count: it fetches the number o
 |   "Manage RAG pipelines, synthesize answers, monitor retrieval latency, and evaluate model performance."    |
 +-------------------------------------------------------------------------------------------------------------+
 | Stat cards (HomePage.tsx:76-93):                                                                            |
-|   [ 4 ]              [ 42 ms ]              [ 96.8% ]              [ {profilesCount} ]                       |
-|   Active RAG         Avg Hybrid Retrieval   Ragas Faithfulness     Linked Knowledge Profiles                |
+|   [ 4 ]              [ 42 ms ]              [ 96.8% ]              [ {productsCount} ]                       |
+|   Active RAG         Avg Hybrid Retrieval   Ragas Faithfulness     Linked Knowledge Products                |
 |   Pipelines          Latency                Score                                                            |
 +-------------------------------------------------------------------------------------------------------------+
 | Quick-launch cards (HomePage.tsx:7-50, rendered HomePage.tsx:95-103):                                       |
@@ -43,7 +43,7 @@ The page is presentation-only apart from a single count: it fetches the number o
 | Active RAG Pipelines | `4` (hard-coded literal) | `HomePage.tsx:78` |
 | Avg Hybrid Retrieval Latency | `42 ms` (hard-coded literal) | `HomePage.tsx:82` |
 | Ragas Faithfulness Score | `96.8%` (hard-coded literal) | `HomePage.tsx:86` |
-| Linked Knowledge Profiles | `{profilesCount}` state, 0 until the fetch resolves | `HomePage.tsx:53,90` |
+| Linked Knowledge Products | `{productsCount}` state, 0 until the fetch resolves | `HomePage.tsx:53,90` |
 
 ### Quick-launch cards (`HomePage.tsx:7-50`)
 
@@ -68,14 +68,14 @@ The page makes exactly one request, triggered by `useEffect(() => { load(); }, [
 
 | Method | Endpoint | Description | Response Model |
 |---|---|---|---|
-| `GET` | `/api/knowledge-profiles` | Counts knowledge profiles for the "Linked Knowledge Profiles" card; failures resolve to an empty list and the card shows `0` | `KnowledgeProfile[]` |
+| `GET` | `/api/knowledge-products` | Counts Knowledge Products for the "Linked Knowledge Products" card; failures resolve to an empty list and the card shows `0` | `KnowledgeProduct[]` |
 
 Call chain:
-- `listKnowledgeProfiles()` (`frontend/src/api.ts:378-380`) → `apiFetch("/api/knowledge-profiles")`.
+- `listKnowledgeProducts()` in `frontend/src/api.ts` → `apiFetch("/api/knowledge-products")`.
 - `apiFetch` targets `API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8007"` (`frontend/src/api.ts:3,56`), i.e. the **rag-ingestion-manager** backend directly, not this service's own API.
 - Auth header is `X-API-Key` when `VITE_API_KEY` is set (`frontend/src/api.ts:6,11-13`); errors are caught in the page (`HomePage.tsx:57-61`).
 
-The other three stat cards are literals with no backing endpoint. The retrieval backend does expose a same-path proxy (`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/knowledge.py:22`, base URL default `http://localhost:8007`), but `HomePage.tsx` does not use it; the Knowledge Store page and this card use `API_URL` (`:8007`), while the RAG backend is reached through `RAG_API_URL` (`http://localhost:8001`, `frontend/src/api.ts:5`).
+The other three stat cards are literals with no backing endpoint. The retrieval backend does expose a same-prefix proxy for `/api/knowledge-products` (`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/knowledge.py`, base URL default `http://localhost:8007`), but `HomePage.tsx` does not use it; the Knowledge Store page and this card use `API_URL` (`:8007`), while the RAG backend is reached through `RAG_API_URL` (`http://localhost:8001`, `frontend/src/api.ts:5`).
 
 ---
 

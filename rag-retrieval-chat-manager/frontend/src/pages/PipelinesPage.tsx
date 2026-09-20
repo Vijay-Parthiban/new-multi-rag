@@ -16,8 +16,8 @@ import {
   listDirectories,
   listPipelineRuns,
   listPipelines,
-  listKnowledgeProfiles,
-  KnowledgeProfile,
+  listKnowledgeProducts,
+  KnowledgeProduct,
   startPipelineRun,
   getPipelineStats,
   triggerPipelineSync,
@@ -50,8 +50,8 @@ export default function PipelinesPage() {
   const [selectedDirs, setSelectedDirs] = useState<Set<string>>(new Set());
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
-  const [knowledgeProfiles, setKnowledgeProfiles] = useState<KnowledgeProfile[]>([]);
-  const [selectedKnowledgeProfileId, setSelectedKnowledgeProfileId] = useState<string>("");
+  const [knowledgeProducts, setKnowledgeProducts] = useState<KnowledgeProduct[]>([]);
+  const [selectedKnowledgeProductId, setSelectedKnowledgeProductId] = useState<string>("");
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(120);
   const [qdrantCollection, setQdrantCollection] = useState("");
@@ -69,15 +69,15 @@ export default function PipelinesPage() {
         listDirectories(),
         listPipelines(),
         listSources(),
-        listKnowledgeProfiles(),
+        listKnowledgeProducts(),
       ]);
       setOptions(opts);
       setDirectories(dirs);
       setPipelines(pipes);
       setSources(srcs);
-      setKnowledgeProfiles(kps);
-      if (kps.length > 0 && !selectedKnowledgeProfileId) {
-        setSelectedKnowledgeProfileId(kps[0].id);
+      setKnowledgeProducts(kps);
+      if (kps.length > 0 && !selectedKnowledgeProductId) {
+        setSelectedKnowledgeProductId(kps[0].id);
       }
       setError(null);
     } catch (err) {
@@ -154,7 +154,7 @@ export default function PipelinesPage() {
       scraper_max_depth: scraperMaxDepth,
       scraper_max_pages: scraperMaxPages,
       scraper_mode: scraperMode,
-      knowledge_profile_id: selectedKnowledgeProfileId || undefined,
+      knowledge_product_id: selectedKnowledgeProductId || undefined,
     };
 
     try {
@@ -321,16 +321,16 @@ export default function PipelinesPage() {
                 onChange={(e) => setEmbeddingModel(e.target.value)}
                 required
               >
-              {knowledgeProfiles.length > 0 && (
+              {knowledgeProducts.length > 0 && (
                 <div style={{ marginBottom: "1rem" }}>
-                  <label htmlFor="knowledge-profile-select" className="field-label">Knowledge Profile</label>
+                  <label htmlFor="knowledge-profile-select" className="field-label">Knowledge Product</label>
                   <select
                     id="knowledge-profile-select"
                     className="input"
-                    value={selectedKnowledgeProfileId}
-                    onChange={(e) => setSelectedKnowledgeProfileId(e.target.value)}
+                    value={selectedKnowledgeProductId}
+                    onChange={(e) => setSelectedKnowledgeProductId(e.target.value)}
                   >
-                    {knowledgeProfiles.map((kp) => (
+                    {knowledgeProducts.map((kp) => (
                       <option key={kp.id} value={kp.id}>
                         {kp.name} {kp.description ? `(${kp.description})` : ""}
                       </option>

@@ -10,6 +10,8 @@ import {
   IconBucket,
   IconFile,
   IconFolder,
+  IconPause,
+  IconPlay,
   IconPlus,
   IconServer,
   IconSources,
@@ -28,8 +30,6 @@ import {
   deleteSourceConnector,
   getSource,
   listSourceFiles,
-  triggerConnectorSync,
-  triggerSourceSync,
   updateSourceConnector,
 } from "../api";
 
@@ -95,7 +95,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   const [info, setInfo] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("connectors");
 
-  const [syncingAll, setSyncingAll] = useState(false);
+  const [togglingAll, setTogglingAll] = useState(false);
+  const [togglingConnectorId, setTogglingConnectorId] = useState<string | null>(null);
   const [copiedBucket, setCopiedBucket] = useState(false);
   // Connector Modal State
   const [connectorModalOpen, setConnectorModalOpen] = useState(false);
@@ -180,17 +181,28 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     setTimeout(() => setCopiedBucket(false), 2000);
   };
 
-  const handleSyncAll = async () => {
+  const handleToggleAllConnectors = async () => {
     if (!source) return;
-    setSyncingAll(true);
+    const connectors = source.connectors ?? [];
+    if (connectors.length === 0) return;
+    const resume = connectors.every((c) => c.enabled === false);
+    setTogglingAll(true);
     try {
-      const res = await triggerSourceSync(source.id);
-      setInfo(res.message ?? "Source sync triggered.");
+      // ponytail: one PATCH per connector, sequential. Each PATCH re-registers
+      // the source poller, so parallel calls would race on the task registry.
+      for (const c of connectors) {
+        await updateSourceConnector(source.id, c.id, { enabled: resume });
+      }
+      setInfo(
+        resume
+          ? "All connectors resumed. Polling restarts now."
+          : "All connectors paused. Polling stops until you resume.",
+      );
       await fetchSource();
     } catch (err) {
-      setError(toApiError(err, "SYNC_FAILED"));
+      setError(toApiError(err, "TOGGLE_CONNECTORS_FAILED"));
     } finally {
-      setSyncingAll(false);
+      setTogglingAll(false);
     }
   };
 
@@ -277,14 +289,17 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     }
   };
 
-  const handleSyncSingleConnector = async (connId: string) => {
+  const handleToggleConnector = async (conn: SourceConnectorRecord) => {
     if (!source) return;
+    setTogglingConnectorId(conn.id);
     try {
-      await triggerConnectorSync(source.id, connId);
-      setInfo("Connector sync started.");
+      await updateSourceConnector(source.id, conn.id, { enabled: !conn.enabled });
+      setInfo(conn.enabled ? "Connector paused." : "Connector resumed. Polling restarts now.");
       await fetchSource();
     } catch (err) {
-      setError(toApiError(err, "SYNC_CONNECTOR_FAILED"));
+      setError(toApiError(err, "TOGGLE_CONNECTOR_FAILED"));
+    } finally {
+      setTogglingConnectorId(null);
     }
   };
 
@@ -316,6 +331,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   const connectorCount = source.connectors?.length ?? 0;
   const isLocalSource = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket?.startsWith("local-") || source.is_local;
   const isManualMinioSource = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
+  const allConnectorsPaused =
+    connectorCount > 0 && (source.connectors ?? []).every((c) => c.enabled === false);
   return (
     <div className="page">
       {/* Top Header */}
@@ -406,16 +423,31 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           >
             ← Back to Sources
           </button>
-          {!isLocalSource && (
+          {connectorCount > 0 && (
             <button
               type="button"
-              className="btn btn-primary"
-              onClick={handleSyncAll}
-              disabled={syncingAll}
+              className="btn btn-secondary"
+              onClick={handleToggleAllConnectors}
+              disabled={togglingAll}
+              title={
+                allConnectorsPaused
+                  ? "Resume polling for every connector of this bucket"
+                  : "Pause polling for every connector of this bucket"
+              }
               style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
             >
-              <IconSync size={15} className={syncingAll ? "spin" : ""} />
-              <span>{syncingAll ? "Syncing All..." : "Sync All Connectors"}</span>
+              {allConnectorsPaused ? (
+                <IconPlay size={15} />
+              ) : (
+                <IconPause size={15} className={togglingAll ? "spin" : ""} />
+              )}
+              <span>
+                {togglingAll
+                  ? "Working..."
+                  : allConnectorsPaused
+                    ? "Resume All Connectors"
+                    : "Pause All Connectors"}
+              </span>
             </button>
           )}
         </div>
@@ -500,7 +532,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
               MinIO Manual File Upload Manager (Direct S3 Bucket)
             </div>
             <div style={{ fontSize: "0.82rem", color: "#7dd3fc", marginTop: "0.15rem" }}>
-              Files are stored directly in MinIO S3 bucket <code>{source.minio_bucket}</code>. Use the <strong>Files &amp; Uploads</strong> tab to manage files.
+              Files are stored directly in MinIO S3 bucket <code>{source.minio_bucket}</code>. Upload, list and delete them below.
             </div>
           </div>
         </div>
@@ -669,7 +701,11 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                                 conn.connector_type.replace(/_/g, " ")}
                             </div>
                             <div style={{ fontSize: "0.75rem", color: "#8b949e" }}>
-                              {conn.monitor_mode === "scheduled" ? (
+                              {conn.enabled === false ? (
+                                <>
+                                  Mode: <span style={{ color: "#d29922", fontWeight: 600 }}>Paused</span>
+                                </>
+                              ) : conn.monitor_mode === "scheduled" ? (
                                 <>
                                   Mode:{" "}
                                   <span style={{ color: "#58a6ff", fontWeight: 600 }}>
@@ -687,7 +723,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                             </div>
                           </div>
                         </div>
-                        <StatusBadge status={conn.status || "idle"} />
+                        <StatusBadge status={conn.enabled === false ? "paused" : conn.status || "idle"} />
                       </div>
 
                       <div style={{ fontSize: "0.78rem", color: "#8b949e", marginBottom: "1rem", background: "rgba(0, 0, 0, 0.2)", padding: "0.5rem 0.75rem", borderRadius: "6px" }}>
@@ -699,11 +735,19 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
-                        onClick={() => handleSyncSingleConnector(conn.id)}
+                        onClick={() => handleToggleConnector(conn)}
+                        disabled={togglingConnectorId === conn.id}
+                        title={conn.enabled === false ? "Resume scheduled polling for this connector" : "Stop polling this connector"}
                         style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}
                       >
-                        <IconSync size={12} />
-                        <span>Sync Now</span>
+                        {conn.enabled === false ? <IconPlay size={12} /> : <IconPause size={12} />}
+                        <span>
+                          {togglingConnectorId === conn.id
+                            ? "Working..."
+                            : conn.enabled === false
+                              ? "Resume"
+                              : "Pause"}
+                        </span>
                       </button>
 
                       <div style={{ display: "flex", gap: "0.4rem" }}>
@@ -800,7 +844,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           bucketName={source?.minio_bucket ?? ""}
           files={files}
           allowUpload={isLocalSource || isManualMinioSource}
-          allowDelete={true}
+          allowDelete={isLocalSource || isManualMinioSource}
           onError={(err) => setError(err)}
           onInfo={(msg) => console.log(msg)}
         />

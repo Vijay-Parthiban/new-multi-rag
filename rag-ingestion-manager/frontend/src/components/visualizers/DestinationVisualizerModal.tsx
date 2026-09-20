@@ -1,32 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { DestinationInspectData, inspectDestinationStore, KnowledgeProfile } from "../../api";
+import { DestinationInspectData, inspectDestinationStore, KnowledgeProduct } from "../../api";
 import { IconClose, IconRefresh } from "../Icons";
-import { VectorVisualizer } from "./VectorVisualizer";
-import { LexicalVisualizer } from "./LexicalVisualizer";
-import { GraphVisualizer } from "./GraphVisualizer";
-import { RelationalVisualizer } from "./RelationalVisualizer";
-import { CacheVisualizer } from "./CacheVisualizer";
+import { visualizerFor, VISUALIZERS } from "./index";
 
 interface DestinationVisualizerModalProps {
   isOpen: boolean;
   onClose: () => void;
-  profile: KnowledgeProfile | null;
-  initialDestinationType?: string;
+  product: KnowledgeProduct | null;
+  initialDestinationType: string;
 }
-
-const DESTINATION_TABS = [
-  { id: "vector_qdrant", label: "Vector Search", engine: "Qdrant", icon: "🌌", color: "#38bdf8" },
-  { id: "lexical_opensearch", label: "Lexical BM25", engine: "OpenSearch", icon: "🔍", color: "#818cf8" },
-  { id: "graph_neo4j", label: "Knowledge Graph", engine: "Neo4j", icon: "🕸️", color: "#34d399" },
-  { id: "relational_pgvector", label: "Relational Chunks", engine: "PostgreSQL", icon: "🗄️", color: "#fbbf24" },
-  { id: "cache_redisvl", label: "Semantic Cache", engine: "RedisVL", icon: "⚡", color: "#f472b6" },
-];
 
 export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProps> = ({
   isOpen,
   onClose,
-  profile,
-  initialDestinationType = "vector_qdrant",
+  product,
+  initialDestinationType,
 }) => {
   const [activeTab, setActiveTab] = useState<string>(initialDestinationType);
   const [inspectData, setInspectData] = useState<DestinationInspectData | null>(null);
@@ -39,10 +27,10 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
   }, [initialDestinationType]);
 
   const loadData = async (destType: string) => {
-    if (!profile) return;
+    if (!product) return;
     setLoading(true);
     try {
-      const res = await inspectDestinationStore(profile.id, destType);
+      const res = await inspectDestinationStore(product.id, destType);
       setInspectData(res);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to load store inspection data";
@@ -53,12 +41,25 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
   };
 
   useEffect(() => {
-    if (isOpen && profile) {
+    if (isOpen && product) {
       loadData(activeTab);
     }
-  }, [isOpen, profile, activeTab]);
+  }, [isOpen, product, activeTab]);
 
-  if (!isOpen || !profile) return null;
+  if (!isOpen || !product) return null;
+
+  const renderActiveVisualizer = () => {
+    const entry = visualizerFor(activeTab);
+    if (!entry) {
+      return (
+        <div className="alert alert-info" style={{ fontSize: "13px" }}>
+          No visualizer for <code>{activeTab}</code> yet.
+        </div>
+      );
+    }
+    const Component = entry.Component;
+    return <Component data={inspectData as DestinationInspectData} loading={loading} />;
+  };
 
   return (
     <div
@@ -119,7 +120,7 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
                 Destination Store Visualizer & Live Inspector
               </h3>
               <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
-                Knowledge Profile: <span style={{ color: "#38bdf8", fontWeight: 600 }}>{profile.name}</span>
+                Knowledge Product: <span style={{ color: "#38bdf8", fontWeight: 600 }}>{product.name}</span>
               </div>
             </div>
           </div>
@@ -164,7 +165,7 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
           </div>
         </div>
 
-        {/* 5 Destination Navigation Tabs */}
+        {/* Destination tabs, derived from the registry */}
         <div
           style={{
             display: "flex",
@@ -175,7 +176,14 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
             overflowX: "auto",
           }}
         >
-          {DESTINATION_TABS.map((tab) => {
+          {product.destinations
+            .filter((d) => VISUALIZERS[d.destination_type])
+            .map((d) => ({
+              id: d.destination_type,
+              enabled: d.enabled,
+              ...VISUALIZERS[d.destination_type],
+            }))
+            .map((tab) => {
             const isActive = activeTab === tab.id;
             return (
               <button
@@ -210,6 +218,9 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
                 >
                   {tab.engine}
                 </span>
+                {!tab.enabled && (
+                  <span style={{ fontSize: "10px", fontWeight: 600, color: "#e3b341" }}>Paused</span>
+                )}
               </button>
             );
           })}
@@ -217,25 +228,7 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
 
         {/* Modal Content Visualizer Area */}
         <div style={{ padding: "24px", overflowY: "auto", flex: 1 }}>
-          {inspectData && (
-            <>
-              {activeTab === "vector_qdrant" && (
-                <VectorVisualizer data={inspectData} loading={loading} />
-              )}
-              {activeTab === "lexical_opensearch" && (
-                <LexicalVisualizer data={inspectData} loading={loading} />
-              )}
-              {activeTab === "graph_neo4j" && (
-                <GraphVisualizer data={inspectData} loading={loading} />
-              )}
-              {activeTab === "relational_pgvector" && (
-                <RelationalVisualizer data={inspectData} loading={loading} />
-              )}
-              {activeTab === "cache_redisvl" && (
-                <CacheVisualizer data={inspectData} loading={loading} />
-              )}
-            </>
-          )}
+          {inspectData && <>{renderActiveVisualizer()}</>}
         </div>
       </div>
     </div>

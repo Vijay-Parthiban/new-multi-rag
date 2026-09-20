@@ -1,49 +1,55 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
-  createKnowledgeProfile,
-  deleteKnowledgeProfile,
+  createKnowledgeProduct,
+  deleteKnowledgeProduct,
   deletePipeline,
   getDestinationOptions,
   getLiteLLMModels,
-  listKnowledgeProfiles,
+  listKnowledgeProducts,
   listSources,
-  syncKnowledgeProfile,
+  pauseAllProductDestinations,
+  resumeAllProductDestinations,
   testDestinationConnection,
-  updateKnowledgeProfile,
+  updateKnowledgeProduct,
   KnowledgeDestinationOption,
-  KnowledgeProfile,
+  KnowledgeProduct,
   LiteLLMModelOption,
   SourceRecord,
 } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog";
 import DestinationConfigFields from "../components/DestinationConfigFields";
 import {
   IconClose,
   IconDatabase,
   IconDelete,
   IconEdit,
+  IconPause,
+  IconPlay,
   IconPlus,
   IconRefresh,
   IconServer,
-  IconZap,
 } from "../components/Icons";
 
-import { DestinationVisualizerModal } from "../components/visualizers/DestinationVisualizerModal";
-
 export default function KnowledgeStorePage() {
-  const [profiles, setProfiles] = useState<KnowledgeProfile[]>([]);
+  const navigate = useNavigate();
+  const [products, setProducts] = useState<KnowledgeProduct[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [destinationOptions, setDestinationOptions] = useState<KnowledgeDestinationOption[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [togglingAllId, setTogglingAllId] = useState<string | null>(null);
   const [testingDestMap, setTestingDestMap] = useState<Record<string, boolean>>({});
   const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; message: string }>>({});
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [editingProfile, setEditingProfile] = useState<KnowledgeProfile | null>(null);
+  const [editingProduct, setEditingProduct] = useState<KnowledgeProduct | null>(null);
   const [formName, setFormName] = useState<string>("");
   const [formDescription, setFormDescription] = useState<string>("");
   const [formEnabled, setFormEnabled] = useState<boolean>(true);
+  const [formMonitorMode, setFormMonitorMode] = useState<"live" | "scheduled">("scheduled");
+  const [formIntervalValue, setFormIntervalValue] = useState<number>(300);
+  const [formIntervalUnit, setFormIntervalUnit] = useState<"seconds" | "minutes">("seconds");
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [destConfigs, setDestConfigs] = useState<
     Record<string, { enabled: boolean; config: Record<string, unknown> }>
@@ -52,26 +58,18 @@ export default function KnowledgeStorePage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [litellmModels, setLitellmModels] = useState<LiteLLMModelOption[]>([]);
   const [litellmWarning, setLitellmWarning] = useState<string | null>(null);
-  // Visualizer Modal State
-  const [visualizerProfile, setVisualizerProfile] = useState<KnowledgeProfile | null>(null);
-  const [visualizerDestType, setVisualizerDestType] = useState<string>("vector_qdrant");
-  const [isVisualizerOpen, setIsVisualizerOpen] = useState<boolean>(false);
-
-  const handleOpenVisualizer = (profile: KnowledgeProfile, destType: string = "vector_qdrant") => {
-    setVisualizerProfile(profile);
-    setVisualizerDestType(destType);
-    setIsVisualizerOpen(true);
-  };
+  const [productToDelete, setProductToDelete] = useState<KnowledgeProduct | null>(null);
+  const [deleting, setDeleting] = useState<boolean>(false);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [profs, srcs, destOpts] = await Promise.all([
-        listKnowledgeProfiles(),
+      const [prods, srcs, destOpts] = await Promise.all([
+        listKnowledgeProducts(),
         listSources(),
         getDestinationOptions(),
       ]);
-      setProfiles(profs);
+      setProducts(prods);
       setSources(srcs);
       setDestinationOptions(destOpts);
     } catch (err: unknown) {
@@ -85,10 +83,10 @@ export default function KnowledgeStorePage() {
     loadData();
   }, []);
 
-  const buildInitialDestConfigs = (profile?: KnowledgeProfile | null) => {
+  const buildInitialDestConfigs = (product?: KnowledgeProduct | null) => {
     const initialDest: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
     destinationOptions.forEach((opt) => {
-      const existing = profile?.destinations.find((d) => d.destination_type === opt.id);
+      const existing = product?.destinations.find((d) => d.destination_type === opt.id);
       initialDest[opt.id] = {
         enabled: existing ? existing.enabled : true,
         config: {
@@ -112,10 +110,13 @@ export default function KnowledgeStorePage() {
   };
 
   const openCreateModal = async () => {
-    setEditingProfile(null);
+    setEditingProduct(null);
     setFormName("");
     setFormDescription("");
     setFormEnabled(true);
+    setFormMonitorMode("scheduled");
+    setFormIntervalValue(300);
+    setFormIntervalUnit("seconds");
     setSelectedSourceIds(sources.map((s) => s.id));
     setDestConfigs(buildInitialDestConfigs());
     setErrorMsg(null);
@@ -123,71 +124,102 @@ export default function KnowledgeStorePage() {
     await loadLiteLLMModels();
   };
 
-  const openEditModal = async (profile: KnowledgeProfile) => {
-    setEditingProfile(profile);
-    setFormName(profile.name);
-    setFormDescription(profile.description || "");
-    setFormEnabled(profile.enabled);
-    setSelectedSourceIds(profile.sources.map((s) => s.source_id));
-    setDestConfigs(buildInitialDestConfigs(profile));
+  const openEditModal = async (product: KnowledgeProduct) => {
+    setEditingProduct(product);
+    setFormName(product.name);
+    setFormDescription(product.description || "");
+    setFormEnabled(product.enabled);
+    setFormMonitorMode(product.monitor_mode || "scheduled");
+    if (product.sync_interval_minutes) {
+      setFormIntervalValue(product.sync_interval_minutes);
+      setFormIntervalUnit("minutes");
+    } else {
+      setFormIntervalValue(product.sync_interval_seconds || 300);
+      setFormIntervalUnit("seconds");
+    }
+    setSelectedSourceIds(product.sources.map((s) => s.source_id));
+    setDestConfigs(buildInitialDestConfigs(product));
     setErrorMsg(null);
     setIsModalOpen(true);
     await loadLiteLLMModels();
   };
 
-  const handleSaveProfile = async (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) {
-      setErrorMsg("Profile name is required.");
+      setErrorMsg("Product name is required.");
       return;
     }
+    if (selectedSourceIds.length === 0) {
+      setErrorMsg("Select at least one MinIO bucket source.");
+      return;
+    }
+    if (!Object.values(destConfigs).some((d) => d.enabled)) {
+      setErrorMsg("Enable at least one destination.");
+      return;
+    }
+
     setSaving(true);
     setErrorMsg(null);
 
-    const formattedDestinations = Object.entries(destConfigs).map(([dest_type, val]) => ({
-      destination_type: dest_type,
+    const formattedDestinations = Object.entries(destConfigs).map(([destination_type, val]) => ({
+      destination_type,
       enabled: val.enabled,
       config: val.config,
     }));
 
+    const schedule =
+      formMonitorMode === "live"
+        ? { monitor_mode: "live" as const, sync_interval_seconds: null, sync_interval_minutes: null }
+        : formIntervalUnit === "minutes"
+        ? { monitor_mode: "scheduled" as const, sync_interval_seconds: null, sync_interval_minutes: formIntervalValue }
+        : { monitor_mode: "scheduled" as const, sync_interval_seconds: formIntervalValue, sync_interval_minutes: null };
+
     try {
-      if (editingProfile) {
-        await updateKnowledgeProfile(editingProfile.id, {
+      if (editingProduct) {
+        await updateKnowledgeProduct(editingProduct.id, {
           name: formName,
           description: formDescription,
           enabled: formEnabled,
           source_ids: selectedSourceIds,
           destinations: formattedDestinations,
+          ...schedule,
         });
       } else {
-        await createKnowledgeProfile({
+        await createKnowledgeProduct({
           name: formName,
           description: formDescription,
           enabled: formEnabled,
           source_ids: selectedSourceIds,
           destinations: formattedDestinations,
+          ...schedule,
         });
       }
       setIsModalOpen(false);
       await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save profile.";
+      const msg = err instanceof Error ? err.message : "Failed to save product.";
       setErrorMsg(msg);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDeleteProfile = async (profileId: string) => {
-    if (!confirm("Are you sure you want to delete this Knowledge Profile?")) return;
+  const handleDeleteProduct = async () => {
+    if (!productToDelete) return;
+    setDeleting(true);
     try {
-      await deleteKnowledgeProfile(profileId);
+      await deleteKnowledgeProduct(productToDelete.id);
+      setProductToDelete(null);
       await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to delete profile.";
-      alert("Failed to delete profile: " + msg);
+      const msg = err instanceof Error ? err.message : "Failed to delete product.";
+      setErrorMsg(msg);
+    } finally {
+      setDeleting(false);
     }
   };
+
   const handleDeletePipeline = async (pipelineId: string) => {
     if (!confirm("Are you sure you want to delete this RAG Pipeline?")) return;
     try {
@@ -199,24 +231,29 @@ export default function KnowledgeStorePage() {
     }
   };
 
-  const handleSyncProfile = async (profileId: string) => {
-    setSyncingId(profileId);
+  const handleToggleAllDestinations = async (product: KnowledgeProduct) => {
+    const allPaused = product.destinations.every((d) => !d.enabled);
+    setTogglingAllId(product.id);
     try {
-      await syncKnowledgeProfile(profileId);
+      if (allPaused) {
+        await resumeAllProductDestinations(product.id);
+      } else {
+        await pauseAllProductDestinations(product.id);
+      }
       await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Sync failed.";
-      alert("Sync failed: " + msg);
+      const msg = err instanceof Error ? err.message : "Failed to change destinations.";
+      alert("Failed to change destinations: " + msg);
     } finally {
-      setSyncingId(null);
+      setTogglingAllId(null);
     }
   };
 
-  const handleTestConnection = async (profileId: string, destType: string, config: Record<string, unknown>) => {
-    const key = `${profileId}-${destType}`;
+  const handleTestConnection = async (productId: string, destType: string, config: Record<string, unknown>) => {
+    const key = `${productId}-${destType}`;
     setTestingDestMap((prev) => ({ ...prev, [key]: true }));
     try {
-      const res = await testDestinationConnection(profileId, destType, config);
+      const res = await testDestinationConnection(productId, destType, config);
       setTestResults((prev) => ({
         ...prev,
         [key]: { status: res.status, message: res.message },
@@ -232,12 +269,28 @@ export default function KnowledgeStorePage() {
     }
   };
 
+  const describeStore = (opt: KnowledgeDestinationOption, config: Record<string, unknown>): string => {
+    const fields = opt.namespace_fields || [];
+    if (opt.id === "relational_pgvector") {
+      return `${String(config.schema_name ?? "")}.${String(config.table_name ?? "")}`;
+    }
+    const key = fields.find((f) => config[f] != null);
+    return key ? String(config[key]) : opt.category;
+  };
+
+  const monitorLabel = (product: KnowledgeProduct): string => {
+    if (product.monitor_mode === "live") return "Live polling";
+    if (product.sync_interval_minutes) return `Scheduled every ${product.sync_interval_minutes}m`;
+    if (product.sync_interval_seconds) return `Scheduled every ${product.sync_interval_seconds}s`;
+    return "Scheduled";
+  };
+
   // Metrics
-  const totalProfiles = profiles.length;
+  const totalProducts = products.length;
   const linkedBucketsCount = new Set(
-    profiles.flatMap((p) => p.sources.map((s) => s.minio_bucket))
+    products.flatMap((p) => p.sources.map((s) => s.minio_bucket))
   ).size;
-  const activeDestinationsCount = profiles.reduce(
+  const activeDestinationsCount = products.reduce(
     (acc, p) => acc + p.destinations.filter((d) => d.enabled).length,
     0
   );
@@ -279,7 +332,7 @@ export default function KnowledgeStorePage() {
                 Knowledge Store Manager
               </h1>
               <p style={{ margin: "4px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
-                Universal Multi-Sink Fanout Engine — Route MinIO documents to 5 enterprise 2026 RAG destinations.
+                Universal Multi-Sink Fanout Engine — Route MinIO documents to 4 enterprise RAG destinations.
               </p>
             </div>
           </div>
@@ -319,7 +372,7 @@ export default function KnowledgeStorePage() {
             }}
           >
             <IconPlus style={{ width: "18px", height: "18px" }} />
-            New Knowledge Profile
+            Create Knowledge Product
           </button>
         </div>
       </div>
@@ -343,9 +396,9 @@ export default function KnowledgeStorePage() {
           }}
         >
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#94a3b8", marginBottom: "8px" }}>
-            Total Profiles
+            Total Products
           </div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: "#f8fafc" }}>{totalProfiles}</div>
+          <div style={{ fontSize: "28px", fontWeight: 800, color: "#f8fafc" }}>{totalProducts}</div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
             Active Knowledge Routing Sets
           </div>
@@ -383,7 +436,7 @@ export default function KnowledgeStorePage() {
           </div>
           <div style={{ fontSize: "28px", fontWeight: 800, color: "#a855f7" }}>{activeDestinationsCount}</div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
-            Vector, Lexical, Graph, DB & Cache
+            Vector, Lexical, DB & Cache
           </div>
         </div>
 
@@ -400,7 +453,7 @@ export default function KnowledgeStorePage() {
             Fanout Engine Architecture
           </div>
           <div style={{ fontSize: "20px", fontWeight: 700, color: "#34d399", marginTop: "4px" }}>
-            5 Parallel Sinks
+            4 Parallel Sinks
           </div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
             Decoupled MinIO Parser Stream
@@ -408,12 +461,12 @@ export default function KnowledgeStorePage() {
         </div>
       </div>
 
-      {/* Profiles Grid */}
+      {/* Products Grid */}
       {loading ? (
         <div style={{ textAlign: "center", padding: "60px 0", color: "#94a3b8" }}>
-          Loading Knowledge Profiles...
+          Loading Knowledge Products...
         </div>
-      ) : profiles.length === 0 ? (
+      ) : products.length === 0 ? (
         <div
           style={{
             textAlign: "center",
@@ -425,23 +478,33 @@ export default function KnowledgeStorePage() {
         >
           <IconDatabase style={{ width: "48px", height: "48px", color: "#64748b", marginBottom: "16px" }} />
           <h3 style={{ margin: "0 0 8px 0", fontSize: "18px", color: "#f8fafc" }}>
-            No Knowledge Profiles Created
+            No Knowledge Products Created
           </h3>
           <p style={{ margin: "0 0 24px 0", fontSize: "14px", color: "#94a3b8" }}>
-            Create your first Knowledge Profile to link MinIO document sources with Qdrant, OpenSearch, Neo4j, pgvector & RedisVL.
+            Create your first Knowledge Product to link MinIO document sources with Qdrant, OpenSearch, pgvector & RedisVL.
           </p>
           <button onClick={openCreateModal} className="btn btn-primary">
             <IconPlus style={{ width: "16px", height: "16px", marginRight: "8px" }} />
-            Create Knowledge Profile
+            Create Knowledge Product
           </button>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "24px" }}>
-          {profiles.map((profile) => {
-            const isSyncing = syncingId === profile.id;
+          {products.map((product) => {
+            const allPaused = product.destinations.length > 0 && product.destinations.every((d) => !d.enabled);
+            const isTogglingAll = togglingAllId === product.id;
             return (
               <div
-                key={profile.id}
+                key={product.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(`/knowledge-store/${product.id}`)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(`/knowledge-store/${product.id}`);
+                  }
+                }}
                 style={{
                   background: "rgba(30, 41, 59, 0.6)",
                   border: "1px solid rgba(255, 255, 255, 0.08)",
@@ -449,9 +512,10 @@ export default function KnowledgeStorePage() {
                   padding: "24px",
                   backdropFilter: "blur(12px)",
                   boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+                  cursor: "pointer",
                 }}
               >
-                {/* Profile Card Header */}
+                {/* Product Card Header */}
                 <div
                   style={{
                     display: "flex",
@@ -461,94 +525,66 @@ export default function KnowledgeStorePage() {
                   }}
                 >
                   <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                       <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#f8fafc" }}>
-                        {profile.name}
+                        {product.name}
                       </h2>
-                      <span
-                        style={{
-                          padding: "4px 12px",
-                          borderRadius: "20px",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                          background:
-                            profile.status === "synced"
-                              ? "rgba(52, 211, 153, 0.15)"
-                              : profile.status === "syncing"
-                              ? "rgba(59, 130, 246, 0.15)"
-                              : "rgba(148, 163, 184, 0.15)",
-                          color:
-                            profile.status === "synced"
-                              ? "#34d399"
-                              : profile.status === "syncing"
-                              ? "#60a5fa"
-                              : "#94a3b8",
-                          border: `1px solid ${
-                            profile.status === "synced"
-                              ? "rgba(52, 211, 153, 0.3)"
-                              : profile.status === "syncing"
-                              ? "rgba(59, 130, 246, 0.3)"
-                              : "rgba(148, 163, 184, 0.3)"
-                          }`,
-                        }}
-                      >
-                        {profile.status.toUpperCase()}
+                      <span className={`status-badge status-${product.status}`}>
+                        {product.status.toUpperCase()}
                       </span>
+                      <span className="status-badge status-paused">{monitorLabel(product)}</span>
                     </div>
-                    {profile.description && (
+                    {product.description && (
                       <p style={{ margin: "6px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
-                        {profile.description}
+                        {product.description}
                       </p>
                     )}
                   </div>
 
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      onClick={() => handleSyncProfile(profile.id)}
-                      disabled={isSyncing}
-                      className="btn btn-primary"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "8px 16px",
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                      }}
-                    >
-                      <IconZap style={{ width: "15px", height: "15px" }} />
-                      {isSyncing ? "Syncing Sinks..." : "Sync All Sinks"}
-                    </button>
-                    <button
-                      onClick={() => handleOpenVisualizer(profile, "vector_qdrant")}
-                      className="btn"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "8px 16px",
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        background: "linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%)",
-                        border: "1px solid rgba(139, 92, 246, 0.4)",
-                        color: "#c084fc",
-                        cursor: "pointer",
-                      }}
-                    >
-                      🔭 Multi-Sink Visualizer
-                    </button>
+                  <div style={{ display: "flex", gap: "8px" }} onKeyDown={(e) => e.stopPropagation()}>
+                    {product.destinations.length > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleAllDestinations(product);
+                        }}
+                        disabled={isTogglingAll}
+                        className="btn btn-secondary"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          padding: "8px 16px",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {allPaused ? (
+                          <IconPlay style={{ width: "15px", height: "15px" }} />
+                        ) : (
+                          <IconPause style={{ width: "15px", height: "15px" }} />
+                        )}
+                        {allPaused ? "Resume All" : "Pause All"}
+                      </button>
+                    )}
 
                     <button
-                      onClick={() => openEditModal(profile)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditModal(product);
+                      }}
                       className="btn btn-secondary"
                       style={{ padding: "8px 14px", fontSize: "13px" }}
+                      aria-label={`Edit ${product.name}`}
                     >
                       <IconEdit style={{ width: "15px", height: "15px" }} />
                     </button>
 
                     <button
-                      onClick={() => handleDeleteProfile(profile.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProductToDelete(product);
+                      }}
                       className="btn btn-danger"
                       style={{
                         padding: "8px 14px",
@@ -557,6 +593,7 @@ export default function KnowledgeStorePage() {
                         color: "#ef4444",
                         border: "1px solid rgba(239, 68, 68, 0.3)",
                       }}
+                      aria-label={`Delete ${product.name}`}
                     >
                       <IconDelete style={{ width: "15px", height: "15px" }} />
                     </button>
@@ -575,15 +612,15 @@ export default function KnowledgeStorePage() {
                       marginBottom: "10px",
                     }}
                   >
-                    Linked MinIO Source Buckets ({profile.sources.length})
+                    Linked MinIO Source Buckets ({product.sources.length})
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
-                    {profile.sources.length === 0 ? (
+                    {product.sources.length === 0 ? (
                       <span style={{ fontSize: "13px", color: "#64748b" }}>
                         No MinIO buckets linked.
                       </span>
                     ) : (
-                      profile.sources.map((s) => {
+                      product.sources.map((s) => {
                         const isLocal = s.connector_type === "local_filesystem" || s.source_type === "local_filesystem" || s.minio_bucket?.startsWith("local-");
                         const folderName = (s.config?.folder_name as string) || s.minio_bucket?.replace("local-", "");
                         return (
@@ -622,7 +659,7 @@ export default function KnowledgeStorePage() {
                   </div>
                 </div>
 
-                {/* 5 Universal RAG Destinations Grid */}
+                {/* Destination Stores Grid */}
                 <div>
                   <div
                     style={{
@@ -634,7 +671,7 @@ export default function KnowledgeStorePage() {
                       marginBottom: "12px",
                     }}
                   >
-                    Configured Destination Stores (Universal 2026 RAG Multi-Sink)
+                    Configured Destination Stores
                   </div>
                   <div
                     style={{
@@ -644,9 +681,9 @@ export default function KnowledgeStorePage() {
                     }}
                   >
                     {destinationOptions.map((opt) => {
-                      const destCfg = profile.destinations.find((d) => d.destination_type === opt.id);
+                      const destCfg = product.destinations.find((d) => d.destination_type === opt.id);
                       const isEnabled = destCfg ? destCfg.enabled : false;
-                      const testKey = `${profile.id}-${opt.id}`;
+                      const testKey = `${product.id}-${opt.id}`;
                       const isTesting = testingDestMap[testKey] || false;
                       const testRes = testResults[testKey];
 
@@ -684,7 +721,7 @@ export default function KnowledgeStorePage() {
                                 color: isEnabled ? "#4ade80" : "#64748b",
                               }}
                             >
-                              {isEnabled ? "ACTIVE" : "OFF"}
+                              {isEnabled ? "ACTIVE" : "PAUSED"}
                             </span>
                           </div>
 
@@ -700,7 +737,7 @@ export default function KnowledgeStorePage() {
                             {opt.description}
                           </div>
 
-                          {isEnabled && destCfg?.config && (
+                          {destCfg?.config && (
                             <div
                               style={{
                                 fontSize: "11px",
@@ -715,17 +752,16 @@ export default function KnowledgeStorePage() {
                                 whiteSpace: "nowrap",
                               }}
                             >
-                              {opt.id === "vector_qdrant" && `Collection: ${String(destCfg.config.collection_name)}`}
-                              {opt.id === "lexical_opensearch" && `Index: ${String(destCfg.config.index_name)}`}
-                              {opt.id === "graph_neo4j" && `URI: ${String(destCfg.config.bolt_uri)}`}
-                              {opt.id === "relational_pgvector" && `Table: ${String(destCfg.config.table_name)}`}
-                              {opt.id === "cache_redisvl" && `Prefix: ${String(destCfg.config.index_prefix)}`}
+                              {describeStore(opt, destCfg.config)}
                             </div>
                           )}
 
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                             <button
-                              onClick={() => handleTestConnection(profile.id, opt.id, destCfg?.config || opt.default_config)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTestConnection(product.id, opt.id, destCfg?.config || opt.default_config);
+                              }}
                               disabled={isTesting || !isEnabled}
                               style={{
                                 background: "none",
@@ -739,24 +775,6 @@ export default function KnowledgeStorePage() {
                             >
                               {isTesting ? "Testing..." : "Test Link"}
                             </button>
-
-                            {isEnabled && (
-                              <button
-                                onClick={() => handleOpenVisualizer(profile, opt.id)}
-                                style={{
-                                  background: "rgba(56, 189, 248, 0.15)",
-                                  border: "1px solid rgba(56, 189, 248, 0.4)",
-                                  borderRadius: "6px",
-                                  color: "#38bdf8",
-                                  fontSize: "11px",
-                                  fontWeight: 600,
-                                  padding: "4px 10px",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                🔭 Inspect Store
-                              </button>
-                            )}
 
                             {testRes && (
                               <span
@@ -778,15 +796,16 @@ export default function KnowledgeStorePage() {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
                       <div>
                         <h4 style={{ fontSize: "14px", fontWeight: 700, color: "#f8fafc", margin: 0 }}>
-                          Linked RAG Pipelines ({profile.pipelines?.length || 0})
+                          Linked RAG Pipelines ({product.pipelines?.length || 0})
                         </h4>
                         <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
-                          Vector search & ingestion pipelines connected to this Knowledge Profile
+                          Vector search & ingestion pipelines connected to this Knowledge Product
                         </div>
                       </div>
                       <a
                         href="/pipelines"
                         className="btn btn-secondary"
+                        onClick={(e) => e.stopPropagation()}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -802,13 +821,13 @@ export default function KnowledgeStorePage() {
                       </a>
                     </div>
 
-                    {(!profile.pipelines || profile.pipelines.length === 0) ? (
+                    {(!product.pipelines || product.pipelines.length === 0) ? (
                       <div style={{ padding: "16px", textAlign: "center", background: "rgba(15, 23, 42, 0.4)", borderRadius: "10px", border: "1px dashed rgba(255, 255, 255, 0.1)", fontSize: "13px", color: "#64748b" }}>
-                        No RAG pipelines linked to this profile. Create one on the Pipelines page.
+                        No RAG pipelines linked to this product. Create one on the Pipelines page.
                       </div>
                     ) : (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "12px" }}>
-                        {profile.pipelines.map((pipe) => (
+                        {product.pipelines.map((pipe) => (
                           <div
                             key={pipe.id}
                             style={{
@@ -846,7 +865,10 @@ export default function KnowledgeStorePage() {
                             <div style={{ marginTop: "12px", paddingTop: "8px", borderTop: "1px solid rgba(255, 255, 255, 0.05)", display: "flex", justifyContent: "flex-end" }}>
                               <button
                                 type="button"
-                                onClick={() => handleDeletePipeline(pipe.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeletePipeline(pipe.id);
+                                }}
                                 style={{
                                   background: "rgba(239, 68, 68, 0.1)",
                                   border: "1px solid rgba(239, 68, 68, 0.2)",
@@ -877,7 +899,7 @@ export default function KnowledgeStorePage() {
         </div>
       )}
 
-      {/* Modal / Drawer for Creating / Editing Knowledge Profile */}
+      {/* Modal / Drawer for Creating / Editing a Knowledge Product */}
       {isModalOpen && (
         <div
           style={{
@@ -919,7 +941,7 @@ export default function KnowledgeStorePage() {
               }}
             >
               <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#f8fafc" }}>
-                {editingProfile ? "Edit Knowledge Profile" : "Configure New Knowledge Profile"}
+                {editingProduct ? "Edit Knowledge Product" : "Configure New Knowledge Product"}
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -930,6 +952,7 @@ export default function KnowledgeStorePage() {
                   cursor: "pointer",
                   padding: "4px",
                 }}
+                aria-label="Close"
               >
                 <IconClose style={{ width: "20px", height: "20px" }} />
               </button>
@@ -951,18 +974,18 @@ export default function KnowledgeStorePage() {
               </div>
             )}
 
-            <form onSubmit={handleSaveProfile}>
+            <form onSubmit={handleSaveProduct}>
               {/* General Info */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px", marginBottom: "24px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
-                    Profile Name *
+                    Product Name *
                   </label>
                   <input
                     type="text"
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
-                    placeholder="e.g. Resume Knowledge Fanout Profile"
+                    placeholder="e.g. Resume Knowledge Fanout Product"
                     style={{
                       width: "100%",
                       padding: "10px 14px",
@@ -981,7 +1004,7 @@ export default function KnowledgeStorePage() {
                     checked={formEnabled}
                     onChange={(e) => setFormEnabled(e.target.checked)}
                   />
-                  <span style={{ fontSize: "13px", color: "#cbd5e1" }}>Profile enabled</span>
+                  <span style={{ fontSize: "13px", color: "#cbd5e1" }}>Product enabled</span>
                 </label>
 
                 <div>
@@ -991,7 +1014,7 @@ export default function KnowledgeStorePage() {
                   <textarea
                     value={formDescription}
                     onChange={(e) => setFormDescription(e.target.value)}
-                    placeholder="Universal RAG sink profile routing document embeddings to vector, lexical, graph, DB, and cache stores..."
+                    placeholder="Universal RAG sink product routing document embeddings to vector, lexical, DB, and cache stores..."
                     rows={2}
                     style={{
                       width: "100%",
@@ -1004,6 +1027,83 @@ export default function KnowledgeStorePage() {
                       resize: "none",
                     }}
                   />
+                </div>
+
+                {/* Sync schedule */}
+                <div
+                  style={{
+                    padding: "16px",
+                    borderRadius: "12px",
+                    background: "rgba(30, 41, 59, 0.5)",
+                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                  }}
+                >
+                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "4px" }}>
+                    Sync Mode
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
+                    Ingestion runs on its own. There is no manual sync.
+                  </div>
+
+                  <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                      <input
+                        type="radio"
+                        name="monitor-mode"
+                        checked={formMonitorMode === "live"}
+                        onChange={() => setFormMonitorMode("live")}
+                      />
+                      <span style={{ fontSize: "13px", color: "#cbd5e1" }}>Immediate live sync</span>
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                      <input
+                        type="radio"
+                        name="monitor-mode"
+                        checked={formMonitorMode === "scheduled"}
+                        onChange={() => setFormMonitorMode("scheduled")}
+                      />
+                      <span style={{ fontSize: "13px", color: "#cbd5e1" }}>Scheduled sync</span>
+                    </label>
+                  </div>
+
+                  {formMonitorMode === "scheduled" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "14px", flexWrap: "wrap" }}>
+                      <label htmlFor="sync-interval" style={{ fontSize: "13px", color: "#cbd5e1" }}>
+                        Check for new data every
+                      </label>
+                      <input
+                        id="sync-interval"
+                        type="number"
+                        min={1}
+                        value={formIntervalValue}
+                        onChange={(e) => setFormIntervalValue(Math.max(1, Number(e.target.value) || 1))}
+                        style={{
+                          width: "100px",
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          background: "rgba(30, 41, 59, 0.8)",
+                          border: "1px solid rgba(255, 255, 255, 0.1)",
+                          color: "#f8fafc",
+                          fontSize: "13px",
+                        }}
+                      />
+                      <select
+                        value={formIntervalUnit}
+                        onChange={(e) => setFormIntervalUnit(e.target.value as "seconds" | "minutes")}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          background: "rgba(30, 41, 59, 0.8)",
+                          border: "1px solid rgba(255, 255, 255, 0.1)",
+                          color: "#f8fafc",
+                          fontSize: "13px",
+                        }}
+                      >
+                        <option value="seconds">Seconds (minimum 5)</option>
+                        <option value="minutes">Minutes</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1095,10 +1195,10 @@ export default function KnowledgeStorePage() {
                 </div>
               </div>
 
-              {/* 5 Universal RAG Destination Configurations */}
+              {/* Destination Configurations */}
               <div style={{ marginBottom: "32px" }}>
                 <label style={{ display: "block", fontSize: "14px", fontWeight: 700, color: "#cbd5e1", marginBottom: "12px" }}>
-                  Configure 5 Universal RAG Destination Stores
+                  Configure Destination Stores
                 </label>
                 {litellmWarning && (
                   <div style={{ fontSize: "12px", color: "#fbbf24", marginBottom: "10px" }}>
@@ -1199,7 +1299,7 @@ export default function KnowledgeStorePage() {
                     background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
                   }}
                 >
-                  {saving ? "Saving Profile..." : editingProfile ? "Update Profile" : "Create Profile"}
+                  {saving ? "Saving Product..." : editingProduct ? "Update Product" : "Create Knowledge Product"}
                 </button>
               </div>
             </form>
@@ -1207,12 +1307,25 @@ export default function KnowledgeStorePage() {
         </div>
       )}
 
-      {/* 5 Destination Sink Visualizer Modal */}
-      <DestinationVisualizerModal
-        isOpen={isVisualizerOpen}
-        onClose={() => setIsVisualizerOpen(false)}
-        profile={visualizerProfile}
-        initialDestinationType={visualizerDestType}
+      <ConfirmDialog
+        open={productToDelete !== null}
+        title="Delete Knowledge Product"
+        message={`Delete '${productToDelete?.name ?? ""}'? Its content is removed from every destination store.`}
+        details={
+          productToDelete
+            ? [
+                `Bucket sources: ${productToDelete.sources.length}`,
+                `Destinations: ${productToDelete.destinations.length}`,
+                `Indexed files: ${productToDelete.files_total}`,
+              ]
+            : undefined
+        }
+        confirmLabel="Delete product"
+        cancelLabel="Keep product"
+        danger
+        busy={deleting}
+        onConfirm={handleDeleteProduct}
+        onCancel={() => setProductToDelete(null)}
       />
     </div>
   );

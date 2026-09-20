@@ -1,6 +1,6 @@
 # 03 — Data Sources & Connectors Page
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-20 (pause/resume revision)
 
 ## 1. Executive Summary & Page Purpose
 The **Data Sources Page** manages the ingestion perimeter. Two files implement it:
@@ -42,10 +42,10 @@ Two monitoring modes exist at two independent points:
 |  | <status dot> synced                  |  | <status dot> synced                  |
 |  | 2 connectors | source-v-res-1a2b3c4d |  | MinIO | MANUAL UPLOAD                |
 |  | <connector badges, max 4, +N more>   |  | Manual upload source — files land    |
-|  | [Sync Now] [Files] [Trash] [Manage]  |  | [Sync Now] [Upload Files] [Trash]    |
+|  | [Pause All] [Files] [Trash] [Manage] |  | [Upload Files] [Trash] [Manage]      |
 |  +--------------------------------------+  +--------------------------------------+
 +--------------------------------------------------------------------------------+
-|  Detail page: Back to Sources | Sync All Connectors                             |
+|  Detail page: Back to Sources | Pause All Connectors                           |
 |  Stats: Source Status | Attached Connectors | Total Synced Files (+ size)        |
 |  Tabs: Connectors Catalogue | Source Files  (tabs hidden for manual/local)      |
 |  Active Attached Connectors + NiFi Connector Catalogue grid (3 tiles)            |
@@ -56,7 +56,9 @@ List page behaviour:
 - Grid view cards and table view columns: Source Name, Storage Location, Status, Connectors, Last Updated, Actions.
 - Cards show the connector count (manual sources show a `MinIO / MANUAL UPLOAD` stat and local sources a filesystem marker instead), the bucket name with a copy-to-clipboard button, and up to 4 connector type badges with a vector icon per connector type. Cards do **not** show a file count or last-sync time.
 - The source list re-fetches every 30 s while `/sources` is the active route (`SourcesPage.tsx:527`); the detail page re-fetches source + files every 20 s (`SourceDetailPage.tsx:154-157`).
-- Actions: grid cards and table rows both offer `Sync Now`, a file action and `Manage` (navigates to `/sources/:id`), plus a delete button. The file action reads **Upload Files** for manual sources and **Files** for connector sources; both open the same file drawer modal with upload and delete enabled.
+- Actions: grid cards and table rows both offer a pause toggle, a file action and `Manage` (navigates to `/sources/:id`), plus a delete button. The file action reads **Upload Files** for manual sources and **Files** for connector sources; both open the same file drawer modal.
+- **There is no manual sync trigger.** Polling is automatic: it starts the moment a connector is saved and stops only when every connector is paused. The pause toggle reads **Pause All** / **Resume All** on a card and **Pause** / **Resume** in a table row, and it is only shown when the source has connector rows. A manual-upload bucket has nothing to poll, so it shows no pause button. The card subtitle switches to "Paused — polling stopped" when every connector is disabled.
+- Pausing flips `SourceConnector.enabled` for every connector of the source, one sequential `PATCH /api/sources/{id}/connectors/{cid}` at a time. The calls are sequential on purpose: each one re-registers the source poller, and parallel calls would race on the poller task registry.
 - **New Source** modal: name input, two mutually exclusive radio tiles, a live bucket-name preview and a submit button whose label depends on the choice (`SourcesPage.tsx:913-1013`):
   - **Apache NiFi Connector Source** (`source_type: minio`) — "Pull files in through NiFi connectors: Google Drive, Amazon S3, Azure Blob Storage." Submitting navigates to the detail page so connectors can be attached.
   - **Manual Upload Source** (`source_type: minio_manual`) — "Pick files in the browser. Files are stored straight in the MinIO bucket." Submitting opens the file drawer immediately.
@@ -68,8 +70,11 @@ Detail page behaviour:
 - Header pill: bucket name (manual and connector sources) or `storage/local_sources/<folder>` (local sources), plus `StatusBadge`.
 - Stat cards: Source Status, Attached Connectors (count), Total Synced Files (`total_files`) with subtext derived from `total_size_bytes` formatted as KB.
 - Banner for `minio_manual` sources ("Files are stored directly in MinIO S3 bucket …") and for legacy local sources.
-- Tab 1 "Connectors Catalogue": a card per attached connector showing the catalogue label and vector icon, the mode ("Live polling" or "Scheduled every `<n>s`" / "`<n>m`"), connector status badge, last sync timestamp, and `Sync Now` / `Configure` / delete buttons. Below it the "NiFi Connector Catalogue" grid of exactly three tiles — Google Drive, Amazon S3, Azure Blob Storage — each marked "Live and scheduled polling". The category filter pills are gone because only one category remains.
-- Tab 2 "Source Files": `FileBrowser` with `allowUpload` and `allowDelete` both enabled for manual and local sources; for connector sources the tab can list and delete but upload is off.
+- Tab 1 "Connectors Catalogue": a card per attached connector showing the catalogue label and vector icon, the mode ("Live polling", "Scheduled every `<n>s`" / "`<n>m`", or "Paused"), a status badge (`Paused` when disabled), the last sync timestamp, and `Pause` / `Resume` plus `Configure` and delete buttons. The manual sync button is gone; the header button is `Pause All Connectors` / `Resume All Connectors` and appears only when the source has connectors. Below the cards is the "NiFi Connector Catalogue" grid of exactly three tiles — Google Drive, Amazon S3, Azure Blob Storage — each marked "Live and scheduled polling". The category filter pills are gone because only one category remains.
+- Tab 2 "Source Files": `FileBrowser` renders the read-only view unless the source is a manual or legacy local bucket. `allowUpload` and `allowDelete` are both `true` for those two kinds only, and `allowPreview` is `false` everywhere, so:
+  - Connector bucket → the file table has **no** Actions column at all: no "Open & Visualize" and no "Delete".
+  - Manual / legacy local bucket → Delete stays, "Open & Visualize" is gone.
+  - The drawer on `/sources` follows the same rule through `canManageFiles`, which is `isManualSource(x) || isLocalSource(x)`.
 - Tab navigation is hidden entirely for manual and local sources; the source-files view is shown directly for them (`SourceDetailPage.tsx:141`, `:515`).
 - The connector modal hosts `ConnectorConfigForm`, a monitor-mode radio pair ("Immediate live polling" / "Scheduled polling"), and — when Scheduled is selected — a numeric interval input plus a unit `<select>` with `Seconds (minimum 5)` and `Minutes`. A helper line under the pair states the unit semantics. On edit, a connector stores only one of the two interval columns, and the modal picks the unit from whichever is set (seconds win).
 - Deleting a connector uses the same in-app `ConfirmDialog` and notes that files the connector already copied stay in the bucket.
@@ -150,7 +155,7 @@ All routes are under `APIRouter(prefix="/api/sources")` (`routes/sources.py:32`)
 | `DELETE` | `/api/sources/{id}` | 200 | Delete source, empty and remove its bucket (or local folder), and drop all links | `{"status":"deleted","id":str}` |
 | `POST` | `/api/sources/{id}/connectors` | 201 | Attach a connector | `ConnectorCreateRequest` → connector record; 422 `CONNECTORS_NOT_SUPPORTED` for local sources, 422 `INVALID_CONNECTOR` for unknown ids |
 | `GET` | `/api/sources/{id}/connectors/{connector_id}` | 200 | Read one connector | connector record |
-| `PATCH` | `/api/sources/{id}/connectors/{connector_id}` | 200 | Update connector config/mode/interval/enabled | `ConnectorUpdateRequest` → connector record |
+| `PATCH` | `/api/sources/{id}/connectors/{connector_id}` | 200 | Update connector config/mode/interval/enabled (pause and resume) | `ConnectorUpdateRequest` → connector record |
 | `DELETE` | `/api/sources/{id}/connectors/{connector_id}` | 200 | Detach a connector | `{"status":"deleted","connector_id":…,"source_id":…}` |
 | `POST` | `/api/sources/{id}/connectors/{connector_id}/sync` | 200 | Sync a single connector | `{"status":"triggered",…}`; `{"status":"error","message":"Connector is disabled"}` if disabled; 404 if not attached to this source |
 | `POST` | `/api/sources/{id}/pipeline/{pipeline_id}` | 200 | Link source to pipeline | optional `{monitor_mode, sync_interval_minutes}`; 409 `LINK_EXISTS`, 404 `SOURCE_NOT_FOUND`/`PIPELINE_NOT_FOUND` |
@@ -222,33 +227,52 @@ Verified on 2026-09-20 against a live MinIO: create → upload → delete leaves
 - Manual sources can carry connectors too (the API allows it and the detail page would render them), but the Connectors tab is hidden for them, so in practice a Manual Upload Source stays upload-only.
 
 ### 6.3 Connector add / edit / delete / sync
-- **Add**: `POST /{id}/connectors` stores the config verbatim together with `monitor_mode` and the chosen interval column, and if `enabled` is true enqueues an initial Pathway sync (`enqueue_pathway_sync`) before re-registering the source poller. Unknown `connector_type` values are rejected with 422 `INVALID_CONNECTOR`.
-- **Edit**: `PATCH /{id}/connectors/{connector_id}` replaces `config`, `monitor_mode`, `sync_interval_minutes`, `sync_interval_seconds` or `enabled` when present (partial update; omitted fields are untouched).
+- **Add**: `POST /{id}/connectors` stores the config verbatim together with `monitor_mode` and the chosen interval column, and if `enabled` is true enqueues an initial Pathway sync (`enqueue_pathway_sync`) before re-registering the source poller. Unknown `connector_type` values are rejected with 422 `INVALID_CONNECTOR`. Polling starts from this call — no manual trigger is needed or offered.
+- **Edit**: `PATCH /{id}/connectors/{connector_id}` replaces `config`, `monitor_mode`, `sync_interval_minutes`, `sync_interval_seconds` or `enabled` when present (partial update; omitted fields are untouched). A `PATCH` that changes nothing emits no UPDATE and is a no-op.
 - **Delete**: `DELETE /{id}/connectors/{connector_id}` removes the row and re-registers the poller. The UI asks for confirmation first and notes that already-copied files stay in the bucket.
-- **Sync**: `POST /{id}/connectors/{connector_id}/sync` sets the connector to `syncing`, clears its error, and enqueues a Pathway sync. Note that the frontend helper `triggerConnectorSync` posts to the **source-level** `/sync` endpoint, and `triggerSourceSync` posts to the same URL, so the per-connector endpoint is currently only reachable by direct API call.
+- **Pause / resume**: the same `PATCH` with `{"enabled": false|true}`. See §6.5a.
+- **Sync**: `POST /{id}/connectors/{connector_id}/sync` sets the connector to `syncing`, clears its error, and enqueues a Pathway sync. It has no UI caller any more; the endpoint stays for scripts.
 - **Source-level sync**: `POST /{id}/sync` delegates to `clients/source_sync.py:trigger_source_sync`, which sets `status = "syncing"`, clears the error, and enqueues the Pathway job. It refuses disabled sources.
+- **Serialisation caveat**: `updated_at` carries `onupdate=func.now()`, so SQLAlchemy expires it after an emitted UPDATE. Both `PATCH` handlers call `await db.refresh(obj)` before serialising, otherwise reading `updated_at` triggers a lazy load outside the greenlet and the request fails with `MissingGreenlet` (500). A no-op PATCH never hit this, which is why it went unnoticed.
 
 ### 6.4 Sync execution and duplicate detection
-`sync_source_from_pathway` (`core/pathway_sync.py:23-181`) iterates the source's connectors and calls `sync_connector_via_nifi` for each; per-connector results set `connector.status` to `synced` (with `last_sync_at`) or `error` (with `error_message`). Afterwards the source's `total_files`/`total_size_bytes` are recomputed from the bucket, `status` becomes `idle`, `last_sync_at` is stamped, pipeline syncs are triggered, the MinIO watcher is started, and a live poller is registered if the source or any connector is in `live` mode (`pathway_sync.py:158-181`).
+`sync_source_from_pathway` (`core/pathway_sync.py:27-181`) iterates the source's **enabled** connectors and calls `sync_connector_via_nifi` for each; per-connector results set `connector.status` to `synced` (with `last_sync_at`) or `error` (with `error_message`). Afterwards the source's `total_files`/`total_size_bytes` are recomputed from the bucket, `status` becomes `idle`, `last_sync_at` is stamped, pipeline syncs are triggered, and the MinIO watcher is started. Poller registration is **not** re-done here; see §6.5.
 
 Change detection in the connector engines is metadata-based: S3 and Azure compare the stored `remote-etag` plus object size, the web scraper and SFTP compare sizes, and the local-directory sync compares mtime + size (`pathway_sync.py:376-391`). Connector output is written under the key prefix `connectors/<connector_id>/` inside the source bucket (`nifi_sync.py:167`, `:287`), so connector files show up in the file browser under that folder. Content-level SHA-256 hashing exists further downstream in the knowledge-profile fanout (`core/universal_fanout.py:255-256`), not in the connector sync path.
 
 ### 6.5 Automatic background polling
-- `register_source_poller(source_id)` (`pathway_sync.py:449-535`) stops any existing poller and starts a new one:
-  - If the source or any of its connectors is in `live` mode: continuous loop with a fixed 3-second interval, running a full `sync_source_from_pathway` each tick.
-  - Otherwise (scheduled): interval in seconds = `source.connector_sync_interval_seconds`, else the first connector's `sync_interval_seconds`. If neither is set, fall back to `source.connector_sync_interval_minutes × 60`, else the first connector's minutes × 60, else **5 minutes**. The result is floored at 5 seconds (`max(5, interval_seconds)`).
+- `register_source_poller(source_id)` (`pathway_sync.py:449-528`) stops any existing poller and starts a new one:
+  - The **enabled connector rows decide the schedule**. A source with connector rows but none enabled stops the poller and returns (`source_poller_skipped`). A bucket-only source (marker `connector_type`, no connector rows) is also skipped — there is nothing to poll.
+  - Mode: `live` when **any enabled connector** is `live` → continuous loop with a fixed 3-second interval. Otherwise scheduled.
+  - Scheduled interval, in order: the smallest `sync_interval_seconds` among enabled connectors (floored at 5 s), else the smallest `sync_interval_minutes × 60`, else **5 minutes**.
+  - Only a source with **no connector rows at all** falls back to the source-level `connector_monitor_mode` / interval fields (legacy sources).
   - Disabled sources or unknown ids stop the poller instead.
-  - After registering, an immediate initial sync runs in the background so a new or edited source does not wait for the first sleep.
+  - After registering, an immediate initial sync runs in the background so a newly configured connector does not wait for the first sleep.
+- Before 2026-09-20 the mode was `source.connector_monitor_mode == "live" or any(connector is live)`. Because every new source defaulted to `live`, a connector configured as scheduled was still polled every 3 seconds and the UI's "Scheduled every 30s" was a lie. The enabled connectors now win.
+- One loop serves the whole source, so when connectors in one source have different intervals the **shortest** one applies to all of them. Splitting into per-connector pollers is the next step if a source ever mixes a 5-second and an hour-long schedule.
 - The `sync_interval_seconds` column was added on 2026-09-20 to `sources` (`connector_sync_interval_seconds`) and `source_connectors` (`sync_interval_seconds`). Both are nullable; seconds always win over minutes when set.
 - Who starts it: source create, source update, connector add/update/delete, and server startup. `apps/api/main.py:23-26` schedules `init_all_source_pollers()` in the lifespan, which registers pollers for every enabled source.
-- `start_live_sync_poller(source_id, poll_interval_seconds=3)` is a legacy alias that ignores its interval argument and just schedules `register_source_poller`.
+- `_do_sync_source_from_pathway` no longer re-registers the poller at the end of every sync. It used to, which tore the poller down and rebuilt it on each tick; registration belongs to the mutation paths and to startup.
 - Additional per-source watchers: `start_minio_monitor` (bucket notification watch stream, triggers pipeline syncs on create/upload events) and `start_local_fs_monitor` (2-second mtime snapshot loop over `storage/local_sources/<folder>`, triggers pipeline syncs on change).
-- `stop_source_poller` cancels and forgets the task; it is called on source delete and whenever a source is found disabled.
+- `stop_source_poller` cancels and forgets the task; it is called on source delete, on any connector pause/resume, and whenever a source is found disabled.
 
-### 6.5a Selecting the connector for a sync
+### 6.5a Pause and resume
+`enabled` on the connector row is the pause switch, and it is the only one — `Source.enabled` keeps its original meaning ("is this source row active") and is not used by the pause buttons.
+
+| Action | Request | Effect |
+|---|---|---|
+| Pause one connector | `PATCH /api/sources/{id}/connectors/{cid}` `{"enabled": false}` | Row leaves the enabled set; the poller is re-registered and stops if none remain |
+| Resume one connector | same with `{"enabled": true}` | Poller re-registers and runs an immediate initial sync |
+| Pause / resume all | the same call, once per connector, sequential | Same as above applied to every connector |
+
+Because `_do_sync_source_from_pathway` already filters `c.enabled`, a paused connector is skipped by the poller, by `POST /{id}/sync`, by the MinIO event webhook and by the cron sweep — not just by the UI.
+
+**Do not fire the per-connector PATCHes in parallel.** Each one calls `register_source_poller`, which pops and cancels the previous task and stores a new one; concurrent calls race on `_SOURCE_POLLER_TASKS` and can leave a stray task. The UI sends them sequentially.
+
+### 6.5b Selecting the connector for a sync
 `_do_sync_source_from_pathway` (`pathway_sync.py:35-181`) prefers enabled `SourceConnector` rows. Only when there are none does it fall back to the legacy single-connector fields, and since 2026-09-20 that fallback skips the marker values `minio`, `minio_manual`, `manual_upload` and `local_filesystem`. Without that guard a freshly created NiFi source (which stores `connector_type: "minio"`) synthesised a fake connector on every 3-second tick, logged `nifi_unsupported_connector_type type=minio`, and did nothing. A source with no connectors now exits early with `pathway_sync_no_connectors`.
 
-### 6.5b SQLite column backfill
+### 6.5c SQLite column backfill
 `_ensure_sqlite_columns` (`src/shared/db/session.py`) adds columns that `Base.metadata.create_all` cannot add to an existing table. It covers `sources.total_files`, `sources.total_size_bytes`, `sources.error_message`, `sources.connector_sync_interval_seconds` and `source_connectors.sync_interval_seconds`.
 
 Until 2026-09-20 the helper only ran on the Postgres→SQLite fallback path, so a deployment configured with `DATABASE_URL=sqlite+aiosqlite:///storage/ingestion.db` (the value in `backend/.env`) never received new columns and every `Source` query failed with `no such column`. `init_db` now calls it on the configured-SQLite path too.
@@ -295,9 +319,30 @@ Frontend: `npx tsc --noEmit` reports no errors and `npx vite build` succeeds.
 
 Browser checks performed: nav has no Upload item; New Source shows both source types; a Manual Upload Source opens the file drawer and a picked file appears in the bucket listing (30 B, "just now"); the delete dialog shows the bucket name and object count and closes on Escape; deleting removes the card at once; a NiFi source shows the three-tile catalogue; attaching Amazon S3 with "Scheduled / 30 / Seconds" renders as "Mode: Scheduled every 30s"; and reopening Configure prefills `45` with unit `seconds` for a 45-second connector.
 
+### 7.1 Automatic polling and pause (2026-09-20)
+
+Measured against the running API on a connector created with `monitor_mode: "scheduled"`, `sync_interval_seconds: 30` on a source whose `connector_monitor_mode` defaulted to `live`:
+
+| Check | Method | Result |
+|---|---|---|
+| Syncs without any manual trigger | Connector created → sync ran immediately | pass (`nifi_s3_sync_failed` appeared with no `POST /sync` call) |
+| The 30 s schedule wins over the source-level `live` default | `last_sync_at` unchanged at t=0 s and t=10 s, advanced at t=36 s | pass |
+| Pause stops polling | `PATCH {enabled:false}` → `last_sync_at` unchanged over 40 s while it had been moving every ~30 s | pass |
+| Resume restarts polling at once | `PATCH {enabled:true}` → `last_sync_at` advanced within 6 s | pass |
+| `PATCH` returns 200 for a real change | both the connector and the source PATCH return 200 with the persisted `enabled` | pass (this is the fix in §6.3) |
+| Connector bucket shows no file actions | detail page → Source Files: table headers are Name / Size / Modified only, no "Open & Visualize", no Delete | pass |
+| Manual bucket keeps Delete only | detail page → Source Files: Actions column present with Delete, no "Open & Visualize" | pass |
+| Sources page pause toggle | card button flips Pause All ⇄ Resume All, subtitle flips to "Paused — polling stopped", banner names the connector count | pass |
+| Detail page pause | header `Pause All Connectors`, per-connector `Pause` → `Resume`, mode line shows "Paused", badge shows `Paused` | pass |
+
+`pytest tests -q` → 14 passed. `npx tsc --noEmit` → no errors. `npx vite build` → succeeds.
+
 ## 8. Known limitations
 
-- `triggerConnectorSync` posts to the source-level `/sync` endpoint, so the per-connector sync button syncs every connector of the source.
+- One poller loop serves a whole source, so connectors with different intervals in the same source all follow the **shortest** interval. Per-connector pollers are the fix if that ever matters.
+- Pausing every connector takes one sequential `PATCH` per connector and each `PATCH` runs an immediate initial sync on the ones that stay enabled. With three connectors that is three round trips; a bulk endpoint would collapse it.
+- `POST /{id}/connectors/{cid}/sync` and `POST /{id}/sync` still exist and still work, but nothing in the UI calls them.
 - `GET /api/sources` takes roughly 2.6 s under load while the background pollers run their sync cycles; the UI polls every 30 s and updates optimistically after a create or delete, so this only shows up as latency on the first paint.
 - The detail page stat "Attached Connectors" counts `source.connectors`, which excludes marker types by construction; a NiFi source with no connectors correctly shows 0.
 - `_run_airbyte_connector` in `core/pathway_sync.py` remains dead code. It references `settings.airbyte_url`, which `Settings` does not define. Left in place rather than deleted because it is pre-existing and outside the Sources-page scope.
+- `init_all_live_sync_pollers()` in `core/pathway_sync.py` is also pre-existing dead code (a two-line alias with no callers). Its sibling `start_live_sync_poller` was removed on 2026-09-20 because the poller rewrite orphaned it.

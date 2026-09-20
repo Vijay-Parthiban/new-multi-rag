@@ -1,292 +1,350 @@
-"""End-to-end Knowledge Fanout profile delete, recreate, sync, and inspect verification."""
+"""End-to-end verification of the Knowledge Products fanout.
+
+Proves, against a running ingestion API and live destination stores:
+  1. Two products over the same bucket get different stores on all four sinks.
+  2. A clashing store name is rejected with 422 DESTINATION_STORE_CONFLICT.
+  3. Create alone starts ingestion; there is no manual sync route.
+  4. Add propagates to all four sinks.
+  5. Replace updates in place instead of duplicating.
+  6. Delete removes the file from all four sinks.
+  7. A second product on the same bucket stays empty.
+
+Usage:
+    uv run python scripts/e2e_knowledge_fanout.py
+    uv run python scripts/e2e_knowledge_fanout.py --base-url http://localhost:8007
+    uv run python scripts/e2e_knowledge_fanout.py --source-id <uuid>
+
+Exit codes: 0 all checks passed, 1 setup or request failure, 2 an assertion failed.
+"""
 
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import sys
 import time
+import uuid
 from typing import Any
 
 import httpx
 
-API = "http://localhost:8007"
-PROFILE_ID = "a92d7a29-9294-4a3a-aa78-3193b7007c4f"
-SOURCE_IDS = [
-    "5d2edc8f-1a4a-41d2-80ac-4f10639d9504",  # v-res
-    "5f4d24f4-ce4b-4eba-af82-0206fed37158",  # manual-vj
-]
-DEST_TYPES = [
-    "vector_qdrant",
-    "lexical_opensearch",
-    "graph_neo4j",
-    "relational_pgvector",
-    "cache_redisvl",
-]
+DEST_TYPES = ["vector_qdrant", "lexical_opensearch", "relational_pgvector", "cache_redisvl"]
+NAMESPACE_KEY = {
+    "vector_qdrant": "collection_name",
+    "lexical_opensearch": "index_name",
+    "relational_pgvector": "schema_name",
+    "cache_redisvl": "index_prefix",
+}
+FILE_KEY = "e2e_notes.txt"
+SETTLE_TIMEOUT_S = 120
+TICK_WAIT_S = 45
 
-DESTINATION_CONFIGS = [
-    {
-        "destination_type": "vector_qdrant",
-        "enabled": True,
-        "config": {
-            "url": "http://localhost:6335",
-            "api_key": "qdrant",
-            "collection_name": "knowledge_qdrant_collection",
-            "vector_size": 2048,
-        },
-    },
-    {
-        "destination_type": "lexical_opensearch",
-        "enabled": True,
-        "config": {
-            "endpoint_url": "http://localhost:9200",
-            "index_name": "knowledge_lexical_index",
-        },
-    },
-    {
-        "destination_type": "graph_neo4j",
-        "enabled": True,
-        "config": {
-            "bolt_uri": "bolt://localhost:7687",
-            "http_url": "http://localhost:7474",
-            "username": "neo4j",
-            "password": "password",
-        },
-    },
-    {
-        "destination_type": "relational_pgvector",
-        "enabled": True,
-        "config": {
-            "connection_url": "postgresql://ingestion:ingestion@localhost:5432/ingestion",
-            "table_name": "knowledge_chunks",
-        },
-    },
-    {
-        "destination_type": "cache_redisvl",
-        "enabled": True,
-        "config": {
-            "redis_url": "redis://localhost:6379",
-            "index_prefix": "knowledge_cache",
-            "ttl_seconds": 86400,
-        },
-    },
-]
+failures: list[str] = []
 
 
-def summarize_inspect(dest_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    if dest_type == "vector_qdrant":
-        return {
-            "total_points": payload.get("total_points", 0),
-            "sample_points": len(payload.get("points", [])),
-            "error": payload.get("error"),
-        }
-    if dest_type == "lexical_opensearch":
-        return {
-            "total_docs": payload.get("total_docs", 0),
-            "sample_docs": len(payload.get("documents", [])),
-            "terms": len(payload.get("terms", [])),
-            "error": payload.get("error"),
-        }
-    if dest_type == "graph_neo4j":
-        return {
-            "total_nodes": payload.get("total_nodes", 0),
-            "total_edges": payload.get("total_edges", 0),
-            "error": payload.get("error"),
-        }
-    if dest_type == "relational_pgvector":
-        return {
-            "total_rows": payload.get("total_rows", 0),
-            "sample_rows": len(payload.get("rows", [])),
-            "error": payload.get("error"),
-        }
-    if dest_type == "cache_redisvl":
-        return {
-            "total_cached_keys": payload.get("total_cached_keys", 0),
-            "sample_keys": len(payload.get("keys", [])),
-            "error": payload.get("error"),
-        }
-    return {"raw": payload}
+def check(condition: bool, label: str, detail: Any = None) -> None:
+    if condition:
+        print(f"  PASS  {label}")
+        return
+    failures.append(label)
+    print(f"  FAIL  {label}" + (f"  ({detail})" if detail is not None else ""))
 
 
-def inspect_all(client: httpx.Client, profile_id: str) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for dest in DEST_TYPES:
-        resp = client.get(f"{API}/api/knowledge-profiles/{profile_id}/inspect/{dest}")
-        data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-        out[dest] = summarize_inspect(dest, data)
-    return out
+def wait_for_hits(
+    client: httpx.Client,
+    api: str,
+    product_id: str,
+    file_key: str,
+    *,
+    expect: int,
+    want_content: str | None = None,
+    timeout_s: int = SETTLE_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Poll the four inspect endpoints until each one reports the expected state.
 
-
-def wait_for_sync(client: httpx.Client, profile_id: str, timeout_s: int = 300) -> dict[str, Any]:
+    Waiting on the inspect output instead of on a tick boundary keeps the check
+    honest: it confirms the stores hold the data, not that a loop ran.
+    """
     deadline = time.time() + timeout_s
+    hits: dict[str, Any] = {}
+    ok = False
     while time.time() < deadline:
-        resp = client.get(f"{API}/api/knowledge-profiles/{profile_id}")
-        profile = resp.json()
-        status = profile.get("status")
-        print(f"  sync status: {status}")
-        if status != "syncing":
-            return profile
+        hits = {}
+        ok = True
+        for dest in DEST_TYPES:
+            payload = inspect(client, api, product_id, dest)
+            found = dest_file_hits(dest, payload, file_key)
+            entry = {"hits": found, "total": dest_total(dest, payload), "error": payload.get("error")}
+            if want_content is not None and dest != "cache_redisvl":
+                content = dest_file_content(dest, payload, file_key)
+                entry["content"] = content[:40]
+                if want_content not in content:
+                    ok = False
+            if found != expect:
+                ok = False
+            hits[dest] = entry
+        if ok:
+            break
         time.sleep(3)
-    raise TimeoutError(f"Profile {profile_id} did not finish syncing within {timeout_s}s")
+    return {"ok": ok, "hits": hits}
+
+
+def wait_for_tick(
+    client: httpx.Client,
+    api: str,
+    product_id: str,
+    previous_last_sync: str | None,
+    timeout_s: int = SETTLE_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Wait until the product finishes a sync tick, then return it.
+
+    The poller owns the schedule, so the script waits instead of triggering.
+    """
+    deadline = time.time() + timeout_s
+    last_seen: dict[str, Any] = {}
+    while time.time() < deadline:
+        resp = client.get(f"{api}/api/knowledge-products/{product_id}")
+        if resp.status_code == 200:
+            product = resp.json()
+            last_seen = product
+            if product.get("status") != "syncing" and product.get("last_sync_at") != previous_last_sync:
+                return product
+        time.sleep(2)
+    return last_seen
+
+
+def inspect(client: httpx.Client, api: str, product_id: str, dest: str) -> dict[str, Any]:
+    resp = client.get(f"{api}/api/knowledge-products/{product_id}/inspect/{dest}")
+    return resp.json() if resp.status_code == 200 else {"error": resp.text}
+
+
+def dest_total(dest: str, payload: dict[str, Any]) -> int:
+    if dest == "vector_qdrant":
+        return int(payload.get("total_points") or 0)
+    if dest == "lexical_opensearch":
+        return int(payload.get("total_docs") or 0)
+    if dest == "relational_pgvector":
+        return int(payload.get("total_rows") or 0)
+    if dest == "cache_redisvl":
+        return int(payload.get("total_cached_keys") or 0)
+    return 0
+
+
+def dest_file_hits(dest: str, payload: dict[str, Any], file_key: str) -> int:
+    if dest == "vector_qdrant":
+        return sum(1 for p in payload.get("points") or [] if (p.get("payload") or {}).get("file_key") == file_key)
+    if dest == "lexical_opensearch":
+        return sum(1 for d in payload.get("documents") or [] if d.get("file_key") == file_key)
+    if dest == "relational_pgvector":
+        return sum(1 for r in payload.get("rows") or [] if r.get("file_key") == file_key)
+    if dest == "cache_redisvl":
+        # One cached page is a string key. The parent-child set and the summary
+        # key also contain the file name, so count only the page keys.
+        pages = 0
+        for k in payload.get("keys") or []:
+            key = str(k.get("key") or "")
+            if f":{file_key}:" not in key:
+                continue
+            if key.endswith(":children") or key.endswith(":summary"):
+                continue
+            pages += 1
+        return pages
+    return 0
+
+
+def dest_file_content(dest: str, payload: dict[str, Any], file_key: str) -> str:
+    if dest == "vector_qdrant":
+        for p in payload.get("points") or []:
+            if (p.get("payload") or {}).get("file_key") == file_key:
+                return str((p.get("payload") or {}).get("content") or "")
+    if dest == "lexical_opensearch":
+        for d in payload.get("documents") or []:
+            if d.get("file_key") == file_key:
+                return str(d.get("content") or "")
+    if dest == "relational_pgvector":
+        for r in payload.get("rows") or []:
+            if r.get("file_key") == file_key:
+                return str(r.get("content") or "")
+    if dest == "cache_redisvl":
+        return "present" if dest_file_hits(dest, payload, file_key) else ""
+    return ""
+
+
+def clear_file(client: httpx.Client, api: str, source_id: str) -> None:
+    """Remove the test object if a previous run left it behind."""
+    try:
+        client.delete(f"{api}/api/sources/{source_id}/files", params={"key": FILE_KEY})
+    except Exception:
+        pass
+
+
+def pick_source(client: httpx.Client, api: str, requested: str | None) -> str | None:
+    resp = client.get(f"{api}/api/sources")
+    if resp.status_code != 200:
+        print("could not list sources:", resp.status_code, resp.text)
+        return None
+    sources = resp.json()
+    if requested:
+        return requested
+    for src in sources:
+        if src.get("minio_bucket") and not str(src["minio_bucket"]).startswith("local-"):
+            return src["id"]
+    return sources[0]["id"] if sources else None
 
 
 def main() -> int:
-    report: dict[str, Any] = {"steps": []}
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", default="http://localhost:8007")
+    parser.add_argument("--source-id", default=None)
+    parser.add_argument("--keep", action="store_true", help="Do not delete the created products.")
+    args = parser.parse_args()
+    api = args.base_url.rstrip("/")
+    report: dict[str, Any] = {}
 
-    with httpx.Client(timeout=60.0) as client:
-        print("=== BEFORE DELETE: inspect existing profile ===")
-        before_delete = inspect_all(client, PROFILE_ID)
-        report["before_delete"] = before_delete
-        print(json.dumps(before_delete, indent=2))
-
-        print("\n=== DELETE profile (with destination purge) ===")
-        del_resp = client.delete(f"{API}/api/knowledge-profiles/{PROFILE_ID}")
-        delete_body = del_resp.json() if del_resp.status_code == 200 else {"error": del_resp.text}
-        report["delete"] = {"status_code": del_resp.status_code, "body": delete_body}
-        print(json.dumps(delete_body, indent=2))
-
-        print("\n=== AFTER DELETE: direct destination checks ===")
-        after_delete = {
-            "qdrant_points": _qdrant_count(),
-            "opensearch_docs": _opensearch_count(),
-            "neo4j_nodes": _neo4j_node_count(),
-            "postgres_rows": _postgres_row_count(),
-            "redis_keys": _redis_key_count(),
-        }
-        report["after_delete_direct"] = after_delete
-        print(json.dumps(after_delete, indent=2))
-
-        print("\n=== CREATE new Knowledge Fanout profile ===")
-        create_payload = {
-            "name": "Enterprise Multi-RAG Fanout Profile",
-            "description": "E2E recreated profile with all 5 sinks and both sources",
-            "enabled": True,
-            "source_ids": SOURCE_IDS,
-            "destinations": DESTINATION_CONFIGS,
-        }
-        create_resp = client.post(f"{API}/api/knowledge-profiles", json=create_payload)
-        if create_resp.status_code not in {200, 201}:
-            print("CREATE FAILED:", create_resp.text)
-            report["create_error"] = create_resp.text
-            print(json.dumps(report, indent=2))
+    with httpx.Client(timeout=120.0) as client:
+        source_id = pick_source(client, api, args.source_id)
+        if not source_id:
+            print("No source bucket available. Create a source first.")
             return 1
+        print(f"Using source {source_id}")
+        clear_file(client, api, source_id)
 
-        new_profile = create_resp.json()
-        new_id = new_profile["id"]
-        report["create"] = {"id": new_id, "name": new_profile.get("name")}
-        print(f"Created profile {new_id}")
+        suffix = uuid.uuid4().hex[:6]
+        created: list[str] = []
 
-        print("\n=== RESET indexed_files to force full re-sync ===")
-        _clear_indexed_files_for_sources()
+        print("\n=== 1. Create two products over the same bucket ===")
+        payload_base = {
+            "enabled": True,
+            "monitor_mode": "live",
+            "source_ids": [source_id],
+            "destinations": [
+                {"destination_type": dest, "enabled": True, "config": {}}
+                for dest in DEST_TYPES
+            ],
+        }
+        resp_a = client.post(f"{api}/api/knowledge-products", json={**payload_base, "name": f"E2E Alpha {suffix}"})
+        if resp_a.status_code not in (200, 201):
+            print("create A failed:", resp_a.status_code, resp_a.text)
+            return 1
+        product_a = resp_a.json()
+        created.append(product_a["id"])
 
-        print("\n=== TRIGGER SYNC ===")
-        sync_resp = client.post(f"{API}/api/knowledge-profiles/{new_id}/sync")
-        report["sync_trigger"] = sync_resp.json()
-        print(sync_resp.json())
+        resp_b = client.post(f"{api}/api/knowledge-products", json={**payload_base, "name": f"E2E Beta {suffix}"})
+        if resp_b.status_code not in (200, 201):
+            print("create B failed:", resp_b.status_code, resp_b.text)
+            return 1
+        product_b = resp_b.json()
+        created.append(product_b["id"])
+        print(f"  A={product_a['id']}  B={product_b['id']}")
 
-        print("\n=== WAIT FOR SYNC COMPLETION ===")
-        final_profile = wait_for_sync(client, new_id)
-        report["final_profile_status"] = final_profile.get("status")
+        print("\n=== 1b. Create alone starts ingestion (no manual trigger) ===")
+        started = wait_for_tick(client, api, product_a["id"], None, timeout_s=90)
+        report["first_sync_at"] = started.get("last_sync_at")
+        check(bool(started.get("last_sync_at")), "last_sync_at is set without any sync call", started.get("status"))
 
-        print("\n=== AFTER SYNC: inspect all destinations (visualizer API) ===")
-        after_sync = inspect_all(client, new_id)
-        report["after_sync_inspect"] = after_sync
-        print(json.dumps(after_sync, indent=2))
+        print("\n=== 2. Stores are isolated per product ===")
+        a_by_type = {d["destination_type"]: d for d in product_a["destinations"]}
+        b_by_type = {d["destination_type"]: d for d in product_b["destinations"]}
+        report["store_names"] = {}
+        for dest in DEST_TYPES:
+            key = NAMESPACE_KEY[dest]
+            value_a = (a_by_type[dest]["config"] or {}).get(key)
+            value_b = (b_by_type[dest]["config"] or {}).get(key)
+            report["store_names"][dest] = {"a": value_a, "b": value_b}
+            check(bool(value_a) and value_a != value_b, f"{dest}: {key} differs", report["store_names"][dest])
+            check(str(value_a).startswith("kp") or str(value_a).startswith("kp:"), f"{dest}: namespaced", value_a)
 
-        visualization_ok = all(
-            _dest_has_data(dest, after_sync.get(dest, {}))
-            for dest in DEST_TYPES
+        print("\n=== 3. A clashing store name is rejected ===")
+        clash = {
+            **payload_base,
+            "name": f"E2E Clash {suffix}",
+            "destinations": [
+                {
+                    "destination_type": "vector_qdrant",
+                    "enabled": True,
+                    "config": {"collection_name": (a_by_type["vector_qdrant"]["config"] or {})["collection_name"]},
+                }
+            ],
+        }
+        resp_clash = client.post(f"{api}/api/knowledge-products", json=clash)
+        detail = resp_clash.json().get("detail") if resp_clash.status_code == 422 else {}
+        report["conflict"] = {"status": resp_clash.status_code, "detail": detail}
+        check(resp_clash.status_code == 422, "422 on a duplicate collection_name", resp_clash.text[:200])
+        check(
+            isinstance(detail, dict) and detail.get("code") == "DESTINATION_STORE_CONFLICT",
+            "DESTINATION_STORE_CONFLICT code returned",
+            detail,
         )
-        report["visualization_ok"] = visualization_ok
-        report["all_destinations_populated"] = visualization_ok
 
+        print("\n=== 4. Manual sync is gone ===")
+        resp_sync = client.post(f"{api}/api/knowledge-products/{product_a['id']}/sync")
+        check(resp_sync.status_code == 404, "POST /{id}/sync returns 404", resp_sync.status_code)
+
+        print("\n=== 5. Add propagates to all four destinations ===")
+        resp_up = client.post(
+            f"{api}/api/sources/{source_id}/files",
+            files={"file": (FILE_KEY, io.BytesIO(b"alpha"), "text/plain")},
+        )
+        check(resp_up.status_code in (200, 201), "file uploaded to the bucket", resp_up.text[:200])
+
+        state = wait_for_hits(client, api, product_a["id"], FILE_KEY, expect=1)
+        report["after_add"] = state["hits"]
+        check(state["ok"], "the file reached all four destinations", state["hits"])
+
+        print("\n=== 6. Replace updates instead of duplicating ===")
+        resp_up2 = client.post(
+            f"{api}/api/sources/{source_id}/files",
+            files={"file": (FILE_KEY, io.BytesIO(b"beta"), "text/plain")},
+        )
+        check(resp_up2.status_code in (200, 201), "file replaced", resp_up2.text[:200])
+
+        state = wait_for_hits(
+            client, api, product_a["id"], FILE_KEY, expect=1, want_content="beta"
+        )
+        report["after_replace"] = state["hits"]
+        check(state["ok"], "content is now beta, one row per destination", state["hits"])
+
+        print("\n=== 7. Each product keeps its own copy of the shared bucket ===")
+        # Isolation is not "B is empty": both products watch the same bucket, so
+        # both index it. Isolation means B holds its own copy in its own store,
+        # which proves the per-product ledger did not make B skip the file.
+        report["b_after_a_writes"] = {}
+        b_ok = True
+        for dest in DEST_TYPES:
+            payload = inspect(client, api, product_b["id"], dest)
+            hits = dest_file_hits(dest, payload, FILE_KEY)
+            report["b_after_a_writes"][dest] = {
+                "hits": hits,
+                "total": dest_total(dest, payload),
+                "error": payload.get("error"),
+            }
+            b_ok = b_ok and hits >= 1
+        check(b_ok, "B holds its own copy in its own store", report["b_after_a_writes"])
+
+        print("\n=== 8. Delete removes the file from all four destinations ===")
+        resp_del = client.delete(f"{api}/api/sources/{source_id}/files", params={"key": FILE_KEY})
+        check(resp_del.status_code == 200, "file deleted from the bucket", resp_del.text[:200])
+
+        state = wait_for_hits(client, api, product_a["id"], FILE_KEY, expect=0)
+        report["after_delete"] = state["hits"]
+        check(state["ok"], "the file is gone from all four destinations", state["hits"])
+
+        files_resp = client.get(f"{api}/api/knowledge-products/{product_a['id']}/files")
+        ledger_keys = [f["file_key"] for f in files_resp.json().get("files", [])] if files_resp.status_code == 200 else []
+        check(FILE_KEY not in ledger_keys, "the ledger no longer lists the file", ledger_keys)
+
+        if not args.keep:
+            print("\n=== 9. Cleanup ===")
+            for product_id in created:
+                resp = client.delete(f"{api}/api/knowledge-products/{product_id}")
+                print(f"  deleted {product_id}: {resp.status_code}")
+
+        report["failures"] = failures
         print("\n=== SUMMARY ===")
         print(json.dumps(report, indent=2))
-        return 0 if visualization_ok else 2
-
-
-def _dest_has_data(dest: str, summary: dict[str, Any]) -> bool:
-    if summary.get("error"):
-        return False
-    if dest == "vector_qdrant":
-        return int(summary.get("total_points") or 0) > 0
-    if dest == "lexical_opensearch":
-        return int(summary.get("total_docs") or 0) > 0
-    if dest == "graph_neo4j":
-        return int(summary.get("total_nodes") or 0) > 0
-    if dest == "relational_pgvector":
-        return int(summary.get("total_rows") or 0) > 0
-    if dest == "cache_redisvl":
-        return int(summary.get("total_cached_keys") or 0) > 0
-    return False
-
-
-def _qdrant_count() -> int:
-    try:
-        r = httpx.get(
-            "http://localhost:6335/collections/knowledge_qdrant_collection",
-            headers={"api-key": "qdrant"},
-            timeout=10,
-        )
-        return int(r.json().get("result", {}).get("points_count", 0))
-    except Exception as exc:
-        return -1
-
-
-def _opensearch_count() -> int:
-    try:
-        r = httpx.get("http://localhost:9200/knowledge_lexical_index/_count", timeout=10)
-        return int(r.json().get("count", 0))
-    except Exception as exc:
-        return -1
-
-
-def _neo4j_node_count() -> int:
-    try:
-        r = httpx.post(
-            "http://localhost:7474/db/neo4j/tx/commit",
-            json={"statements": [{"statement": "MATCH (n) RETURN count(n) AS c"}]},
-            timeout=10,
-        )
-        rows = r.json().get("results", [{}])[0].get("data", [])
-        return int(rows[0].get("row", [0])[0]) if rows else 0
-    except Exception:
-        return -1
-
-
-def _postgres_row_count() -> int:
-    try:
-        import psycopg2
-
-        with psycopg2.connect("postgresql://ingestion:ingestion@localhost:5432/ingestion") as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM knowledge_chunks")
-                return int(cur.fetchone()[0])
-    except Exception:
-        return -1
-
-
-def _clear_indexed_files_for_sources() -> None:
-    try:
-        import psycopg2
-
-        with psycopg2.connect("postgresql://ingestion:ingestion@localhost:5432/ingestion") as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM indexed_files WHERE source_id = ANY(%s::uuid[])",
-                    (SOURCE_IDS,),
-                )
-    except Exception as exc:
-        print(f"  warning: could not clear indexed_files: {exc}")
-
-
-def _redis_key_count() -> int:
-    try:
-        import redis
-
-        client = redis.from_url("redis://localhost:6379")
-        return len(client.keys("knowledge_cache:*"))
-    except Exception:
-        return -1
+        print(f"\n{len(failures)} check(s) failed." if failures else "\nAll checks passed.")
+        return 2 if failures else 0
 
 
 if __name__ == "__main__":

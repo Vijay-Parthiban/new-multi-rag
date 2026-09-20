@@ -1,6 +1,6 @@
 # Overall Architecture — RAG Retrieval & Chat Manager
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-20
 
 ## 1. System Overview
 `rag-retrieval-chat-manager` is the query, retrieval, rerank, generation, guardrail, and evaluation service of the `new-multi-rag` ecosystem. It reads the shared Qdrant collection written by `web-scrapper-workspace` / `rag-ingestion-manager`, reranks hits with a LiteLLM-hosted cross-encoder, generates answers with LiteLLM chat/vision models, delegates safety checks to the external guardrails service, and runs Ragas-based evaluation both online (per chat message) and offline (golden datasets).
@@ -55,7 +55,7 @@ Repository layout:
 | Qdrant | external | 6333 | `qdrant_url` default `rag_shared/config.py:20` |
 | LiteLLM proxy | external | 4000 | `litellm_base_url` default `rag_shared/config.py:24` |
 | guardrails-service | external (`guardrails-service/`) | default 8002 | `rag_shared/guardrails_client.py:13` |
-| rag-ingestion-manager | external | 8007 | Knowledge-profile proxy target |
+| rag-ingestion-manager | external | 8007 | Knowledge Products proxy target |
 
 Auth: the app registers `dependencies=[Depends(verify_api_key)]` (`apps/rag-api/src/rag_api/main.py:62`); `verify_api_key` comes from `platform_common.auth` and accepts `X-API-Key` or the `api_key` query parameter, and is a no-op when `api_key` is empty (`rag_shared/config.py:51`).
 
@@ -72,7 +72,7 @@ Auth: the app registers `dependencies=[Depends(verify_api_key)]` (`apps/rag-api/
 | `libs/database` | `rag_db` | SQLAlchemy models (`models/chat.py`, `models/evaluation.py`, `models/guardrails.py`), repositories, session factory (`services/database.py`), Alembic runner (`migrate.py`) |
 | `libs/shared` | `rag_shared` | Settings, API-key auth, OpenTelemetry tracing, guardrails HTTP client, prompt override store, logging |
 
-Two shared packages are consumed from sibling workspaces: `platform_common` (auth, vector names) and `shared_contracts.knowledge` (knowledge-profile models used by the proxy).
+Two shared packages are consumed from sibling workspaces: `platform_common` (auth, vector names) and `shared_contracts.knowledge` (Knowledge Product models used by the proxy).
 
 ## 5. Retrieval → Generation Pipeline (as implemented)
 
@@ -153,12 +153,12 @@ Repositories: `chat_repository.py`, `evaluation_repository.py`, `guardrails_repo
 | DELETE | `/guardrails-evaluate/datasets/{id}` | `routes/guardrails_evaluate.py:184` |
 | POST | `/guardrails-evaluate/runs` | `routes/guardrails_evaluate.py:197` |
 | GET | `/guardrails-evaluate/runs/{id}`, `/guardrails-evaluate/runs/{id}/items` | `routes/guardrails_evaluate.py:307,365` |
-| GET/POST | `/api/knowledge-profiles` | `routes/knowledge.py:31,47` |
-| GET/PUT/DELETE | `/api/knowledge-profiles/{profile_id}` | `routes/knowledge.py:62,77,93` |
-| POST | `/api/knowledge-profiles/{profile_id}/test-connection`, `.../sync` | `routes/knowledge.py:108,124` |
+| GET/POST | `/api/knowledge-products` | `routes/knowledge.py` |
+| GET/PATCH/DELETE | `/api/knowledge-products/{product_id}` | `routes/knowledge.py` |
+| POST | `/api/knowledge-products/{product_id}/test-connection` | `routes/knowledge.py` |
 
-### Knowledge-profiles proxy
-`routes/knowledge.py` contains no storage of its own: every handler forwards over `httpx` to the ingestion manager under prefix `/api/knowledge-profiles`. The base URL is read from `settings.ingestion_service_url` with a fallback of `http://localhost:8007` (`routes/knowledge.py:26-27`); reads use a 15 s timeout and `POST .../sync` uses 30 s, and upstream connection errors surface as HTTP 503 "Ingestion service unavailable".
+### Knowledge Products proxy
+`routes/knowledge.py` contains no storage of its own: every handler forwards over `httpx` to the ingestion manager under prefix `/api/knowledge-products`. The base URL is read from `settings.ingestion_service_url` with a fallback of `http://localhost:8007`; every call uses a 15 s timeout, the update route uses `PATCH`, and upstream connection errors surface as HTTP 503 "Ingestion service unavailable". The proxy has no sync route, because manual sync was removed upstream.
 
 ## 10. Key Invariants & Operational Guarantees
 1. **Safety before generation**: when a `guardrails_config_id` is supplied, input validation runs before retrieval/generation; output validation runs on the generated answer before it is persisted and returned. Guardrail checks execute only via the external guardrails service.

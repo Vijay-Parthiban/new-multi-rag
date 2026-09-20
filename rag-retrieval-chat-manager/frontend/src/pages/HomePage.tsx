@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { IconChat, IconDatabase, IconEvaluation, IconGuardrails, IconPipeline, IconPrompts } from "../components/Icons";
-import { listKnowledgeProfiles } from "../api";
+import { listKnowledgeProducts } from "../api";
 
 const QUICK_LINKS = [
   {
@@ -50,12 +50,12 @@ const QUICK_LINKS = [
 ] as const;
 
 export default function HomePage() {
-  const [profilesCount, setProfilesCount] = useState<number>(0);
+  const [productsCount, setProductsCount] = useState<number>(0);
 
   const load = useCallback(async () => {
     try {
-      const profiles = await listKnowledgeProfiles().catch(() => []);
-      setProfilesCount(profiles.length);
+      const products = await listKnowledgeProducts().catch(() => []);
+      setProductsCount(products.length);
     } catch {
       /* overview fallback */
     }
@@ -87,8 +87,8 @@ export default function HomePage() {
           <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Ragas Faithfulness Score</div>
         </div>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>{profilesCount}</div>
-          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Linked Knowledge Profiles</div>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>{productsCount}</div>
+          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Linked Knowledge Products</div>
         </div>
       </section>
 

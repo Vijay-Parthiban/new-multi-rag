@@ -12,6 +12,8 @@ import {
   IconFolder,
   IconGrid,
   IconList,
+  IconPause,
+  IconPlay,
   IconPlus,
   IconRadio,
   IconSearch,
@@ -28,8 +30,40 @@ import {
   createSource,
   deleteSource,
   listSources,
-  triggerSourceSync,
+  updateSourceConnector,
 } from "../api";
+
+/** Resolve the paused state of a connector source from its connector rows. */
+function sourcePauseState(source: SourceRecord): {
+  pausable: boolean;
+  paused: boolean;
+  label: string;
+} {
+  const connectors = source.connectors ?? [];
+  const pausable = connectors.length > 0;
+  const paused = pausable && connectors.every((c) => c.enabled === false);
+  return { pausable, paused, label: paused ? "Resume" : "Pause" };
+}
+
+/** A manual-upload bucket. The browser owns its files, so upload and delete stay on. */
+function isManualSource(source: SourceRecord): boolean {
+  return (
+    source.connector_type === "manual_upload" ||
+    source.connector_type === "minio_manual" ||
+    source.source_type === "minio_manual" ||
+    !!source.is_manual
+  );
+}
+
+/** A legacy local-filesystem source. Behaves like a manual bucket. */
+function isLocalSource(source: SourceRecord): boolean {
+  return (
+    source.connector_type === "local_filesystem" ||
+    source.source_type === "local_filesystem" ||
+    source.minio_bucket.startsWith("local-") ||
+    !!source.is_local
+  );
+}
 
 function toApiError(err: unknown, code = "UNKNOWN"): ApiError {
   if (err instanceof ApiError) return err;
@@ -83,24 +117,25 @@ export function summarizeConnectors(connectors: SourceConnectorRecord[]): Status
 function SourceCard({
   source,
   onNavigate,
-  onSync,
+  onTogglePause,
   onDelete,
   onOpenFiles,
-  syncing,
+  pausing,
   deleting,
 }: {
   source: SourceRecord;
   onNavigate: (id: string) => void;
-  onSync: (id: string) => void;
+  onTogglePause: (source: SourceRecord) => void;
   onDelete: (id: string, name: string) => void;
   onOpenFiles?: (source: SourceRecord) => void;
-  syncing: boolean;
+  pausing: boolean;
   deleting: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const connectorCount = source.connectors?.length ?? 0;
-  const isLocal = source.connector_type === "local_filesystem" || source.source_type === "local_filesystem" || source.minio_bucket.startsWith("local-") || source.is_local;
-  const isManual = source.connector_type === "manual_upload" || source.connector_type === "minio_manual" || source.source_type === "minio_manual" || source.is_manual;
+  const pauseState = sourcePauseState(source);
+  const isLocal = isLocalSource(source);
+  const isManual = isManualSource(source);
   const folderName = (source.config?.folder_name as string) || source.minio_bucket.replace("local-", "");
 
   const handleCopyBucket = (e: React.MouseEvent) => {
@@ -135,9 +170,9 @@ function SourceCard({
           <div>
             <h3 className="source-card-name">{source.name}</h3>
             <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginTop: "0.15rem" }}>
-              <span className="source-status-dot" data-status={source.status || "idle"} />
-              <span style={{ fontSize: "0.75rem", color: "#8b949e", textTransform: "capitalize" }}>
-                {source.status || "Idle / Ready"}
+              <span className="source-status-dot" data-status={pauseState.paused ? "paused" : source.status || "idle"} />
+              <span style={{ fontSize: "0.75rem", color: pauseState.paused ? "#d29922" : "#8b949e", textTransform: "capitalize" }}>
+                {pauseState.paused ? "Paused — polling stopped" : source.status || "Idle / Ready"}
               </span>
             </div>
           </div>
@@ -245,16 +280,26 @@ function SourceCard({
 
       {/* Actions Toolbar */}
       <div className="source-card-actions" onClick={(e) => e.stopPropagation()}>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={() => onSync(source.id)}
-          disabled={syncing}
-          style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
-        >
-          <IconSync size={13} className={syncing ? "spin" : ""} />
-          <span>{syncing ? "Syncing..." : "Sync Now"}</span>
-        </button>
+        {pauseState.pausable && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onTogglePause(source)}
+            disabled={pausing}
+            title={pauseState.paused ? "Resume polling for every connector" : "Pause polling for every connector"}
+            aria-label={pauseState.paused ? `Resume all connectors of ${source.name}` : `Pause all connectors of ${source.name}`}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+          >
+            {pauseState.paused ? <IconPlay size={13} /> : <IconPause size={13} className={pausing ? "spin" : ""} />}
+            <span>
+              {pausing
+                ? "Working..."
+                : pauseState.paused
+                  ? "Resume All"
+                  : "Pause All"}
+            </span>
+          </button>
+        )}
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
           {onOpenFiles && (
@@ -273,7 +318,6 @@ function SourceCard({
               <span>{isManual ? "Upload Files" : "Files"}</span>
             </button>
           )}
-
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -305,18 +349,18 @@ function SourceCard({
 function SourceTable({
   sources,
   onNavigate,
-  onSync,
+  onTogglePause,
   onDelete,
   onOpenFiles,
-  syncingId,
+  pausingId,
   deletingId,
 }: {
   sources: SourceRecord[];
   onNavigate: (id: string) => void;
-  onSync: (id: string) => void;
+  onTogglePause: (source: SourceRecord) => void;
   onDelete: (id: string, name: string) => void;
   onOpenFiles?: (source: SourceRecord) => void;
-  syncingId: string | null;
+  pausingId: string | null;
   deletingId: string | null;
 }) {
   return (
@@ -335,8 +379,9 @@ function SourceTable({
         <tbody>
           {sources.map((s) => {
             const connectorCount = s.connectors?.length ?? 0;
-            const isLocal = s.connector_type === "local_filesystem" || s.source_type === "local_filesystem" || s.minio_bucket.startsWith("local-");
-            const isManualRow = s.connector_type === "manual_upload" || s.connector_type === "minio_manual" || s.source_type === "minio_manual" || s.is_manual;
+            const pauseState = sourcePauseState(s);
+            const isLocal = isLocalSource(s);
+            const isManualRow = isManualSource(s);
             const folderName = (s.config?.folder_name as string) || s.minio_bucket.replace("local-", "");
             return (
               <tr
@@ -382,16 +427,19 @@ function SourceTable({
                 </td>
                 <td style={{ textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: "inline-flex", gap: "0.4rem" }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => onSync(s.id)}
-                      disabled={syncingId === s.id}
-                      title="Sync now"
-                      aria-label={`Sync source ${s.name}`}
-                    >
-                      <IconSync size={12} className={syncingId === s.id ? "spin" : ""} />
-                    </button>
+                    {pauseState.pausable && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onTogglePause(s)}
+                        disabled={pausingId === s.id}
+                        title={pauseState.paused ? "Resume all connectors" : "Pause all connectors"}
+                        aria-label={pauseState.paused ? `Resume all connectors of ${s.name}` : `Pause all connectors of ${s.name}`}
+                      >
+                        {pauseState.paused ? <IconPlay size={12} /> : <IconPause size={12} />}
+                        <span>{pauseState.paused ? "Resume" : "Pause"}</span>
+                      </button>
+                    )}
                     {onOpenFiles && (
                       <button
                         type="button"
@@ -516,7 +564,7 @@ export default function SourcesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newSourceName, setNewSourceName] = useState("");
@@ -564,17 +612,28 @@ export default function SourcesPage() {
     [navigate]
   );
 
-  const handleSync = useCallback(
-    async (sourceId: string) => {
-      setSyncingId(sourceId);
+  const handleTogglePause = useCallback(
+    async (source: SourceRecord) => {
+      const connectors = source.connectors ?? [];
+      if (connectors.length === 0) return;
+      const resume = connectors.every((c) => c.enabled === false);
+      setPausingId(source.id);
       try {
-        const res = await triggerSourceSync(sourceId);
-        setInfo(res.message ?? "Sync triggered successfully.");
+        // ponytail: one PATCH per connector, sequential. Each PATCH re-registers
+        // the source poller, so parallel calls would race on the task registry.
+        for (const c of connectors) {
+          await updateSourceConnector(source.id, c.id, { enabled: resume });
+        }
+        setInfo(
+          resume
+            ? `Polling resumed for ${connectors.length} connector${connectors.length === 1 ? "" : "s"} of "${source.name}".`
+            : `Polling paused for ${connectors.length} connector${connectors.length === 1 ? "" : "s"} of "${source.name}".`,
+        );
         await load();
       } catch (err) {
-        setError(toApiError(err, "SYNC_FAILED"));
+        setError(toApiError(err, "PAUSE_FAILED"));
       } finally {
-        setSyncingId(null);
+        setPausingId(null);
       }
     },
     [load]
@@ -663,6 +722,11 @@ export default function SourcesPage() {
   const activeCount = sources.filter((s) => s.enabled !== false).length;
   const syncingCount = sources.filter((s) => s.status === "syncing" || s.status === "processing").length;
   const errorCount = sources.filter((s) => s.status === "error" || s.status === "failed" || !!s.error_message).length;
+
+  // Only manual-upload and legacy local buckets own their files. A connector
+  // bucket is written by NiFi sync, so the drawer stays read-only for it.
+  const canManageFiles =
+    !!fileDrawerSource && (isManualSource(fileDrawerSource) || isLocalSource(fileDrawerSource));
 
   return (
     <div className="page">
@@ -834,10 +898,10 @@ export default function SourcesPage() {
               key={s.id}
               source={s}
               onNavigate={handleNavigate}
-              onSync={handleSync}
+              onTogglePause={handleTogglePause}
               onDelete={handleDelete}
               onOpenFiles={(src) => setFileDrawerSource(src)}
-              syncing={syncingId === s.id}
+              pausing={pausingId === s.id}
               deleting={deletingId === s.id}
             />
           ))}
@@ -846,10 +910,10 @@ export default function SourcesPage() {
         <SourceTable
           sources={filteredSources}
           onNavigate={handleNavigate}
-          onSync={handleSync}
+          onTogglePause={handleTogglePause}
           onDelete={handleDelete}
           onOpenFiles={(src) => setFileDrawerSource(src)}
-          syncingId={syncingId}
+          pausingId={pausingId}
           deletingId={deletingId}
         />
       )}
@@ -1106,8 +1170,8 @@ export default function SourcesPage() {
             <FileBrowser
               sourceId={fileDrawerSource.id}
               bucketName={fileDrawerSource.minio_bucket}
-              allowUpload={true}
-              allowDelete={true}
+              allowUpload={canManageFiles}
+              allowDelete={canManageFiles}
               onError={(err) => setError(err)}
               onInfo={(msg) => setInfo(msg)}
             />

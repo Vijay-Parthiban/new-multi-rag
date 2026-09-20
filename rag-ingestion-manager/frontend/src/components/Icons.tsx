@@ -256,5 +256,7 @@ export function IconSparkles({ className, style, size = 16 }: IconProps) {
 }
 export function IconRadio({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" /></svg>); }
 export function IconSync({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M12 4H4v2l-3-3 3-3v2h8c1.1 0 2 .9 2 2v4h-2V4zm-4 8h8v-2l3 3-3 3v-2H4c-1.1 0-2-.9-2-2v-4h2v6z" /></svg>); }
+export function IconPause({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M3.5 2h3v12h-3V2zm6 0h3v12h-3V2z" /></svg>); }
+export function IconPlay({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 2.2v11.6L13.5 8 4 2.2z" /></svg>); }
 export function IconTrash({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M5 1h6v1H5V1zM3 3h10v1H3V3zm1 2h8v9H4V5z" /></svg>); }
 

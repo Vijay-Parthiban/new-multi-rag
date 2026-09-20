@@ -8,6 +8,7 @@ import FileViewerPage from "../pages/FileViewerPage";
 import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
 import KnowledgeStorePage from "../pages/KnowledgeStorePage";
+import KnowledgeProductPage from "../pages/KnowledgeProductPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
@@ -64,6 +65,11 @@ function useRouteParams(path: string) {
     const sourceMatch = path.match(/^\/sources\/([^/]+)\/?$/);
     if (sourceMatch) return { id: sourceMatch[1], type: "source-detail" as const };
 
+    // /knowledge-store/:id
+    const knowledgeProductMatch = path.match(/^\/knowledge-store\/([^/]+)\/?$/);
+    if (knowledgeProductMatch)
+      return { id: knowledgeProductMatch[1], type: "knowledge-product" as const };
+
     return { type: "none" as const };
   }, [path]);
 }
@@ -98,6 +104,7 @@ export default function AppLayout() {
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
   const isSourceDetail = params.type === "source-detail";
+  const isKnowledgeProduct = params.type === "knowledge-product";
 
   return (
     <div className="shell">
@@ -167,6 +174,11 @@ export default function AppLayout() {
         {isSourceDetail && params.id && (
           <PersistentPage visible={true}>
             <SourceDetailPage key={params.id} routeSourceId={params.id} />
+          </PersistentPage>
+        )}
+        {isKnowledgeProduct && params.id && (
+          <PersistentPage visible={true}>
+            <KnowledgeProductPage key={params.id} routeProductId={params.id} />
           </PersistentPage>
         )}
       </div>

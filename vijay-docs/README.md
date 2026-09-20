@@ -18,7 +18,7 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 | [01 — Overview Dashboard](./rag-ingestion-manager-docs/01_overview_dashboard_page.md) | Home page metrics, source summary, and quick links |
 | [02 — Folders & File Browser](./rag-ingestion-manager-docs/02_folders_and_file_browser_page.md) | Directory workspace, file listing, and document inspector |
 | [03 — Data Sources](./rag-ingestion-manager-docs/03_data_sources_page.md) | Source buckets, NiFi connector catalogue, live/scheduled polling, sync, delete, file management |
-| [04 — Knowledge Store Fanout](./rag-ingestion-manager-docs/04_knowledge_store_page.md) | Knowledge profiles, 5 destination sinks, sync, purge, visualizers |
+| [04 — Knowledge Store Fanout](./rag-ingestion-manager-docs/04_knowledge_store_page.md) | Knowledge products, 4 destination sinks, automatic sync, pause/resume, live fanout timeline, visualizers |
 | [05 — Document Upload (removed)](./rag-ingestion-manager-docs/05_document_upload_page.md) | Why the `/upload` page was removed, where uploads live now, and the file-format support matrix |
 
 ## RAG Retrieval & Chat Manager (`rag-retrieval-chat-manager-docs/`)
@@ -36,18 +36,19 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 | [08 — Guard Config](./rag-retrieval-chat-manager-docs/08_ai_guardrails_config_page.md) | Guardrails policy definitions: ban list, PII entities, toxic language |
 | [09 — Guard Traces](./rag-retrieval-chat-manager-docs/09_ai_guardrails_traces_page.md) | Audit trail of guardrail evaluations and their outcomes |
 | [10 — Guard Evaluation](./rag-retrieval-chat-manager-docs/10_ai_guardrails_eval_page.md) | Golden-dataset evaluation runs against guardrails configurations |
-| [11 — Knowledge Store](./rag-retrieval-chat-manager-docs/11_knowledge_store_page.md) | Knowledge profile page backed by the ingestion manager API |
+| [11 — Knowledge Store](./rag-retrieval-chat-manager-docs/11_knowledge_store_page.md) | Knowledge product page backed by the ingestion manager API |
 | [12 — Evaluation Metrics Reference](./rag-retrieval-chat-manager-docs/12_evaluation_metrics_reference.md) | Retrieval, rerank, and generation metric definitions |
 | [13 — Golden Dataset Requirements](./rag-retrieval-chat-manager-docs/13_golden_dataset_requirements.md) | Golden dataset schema and evaluation API contract |
 
 ## Shared Libraries
 
 - `shared-libs/platform-common/` — API key auth (`X-API-Key` header or `api_key` query param), dense/sparse embedding clients, SSRF URL validation, Qdrant store helpers, and the retrieval hit/payload contract used by both ingestion fanout and retrieval search.
-- `shared-contracts/` — Pydantic cross-service schemas (`shared_contracts.knowledge`, `.sources`, `.search`, `.pipelines`) consumed by the ingestion backend and the retrieval knowledge-profile proxy.
+- `shared-contracts/` — Pydantic cross-service schemas (`shared_contracts.knowledge`, `.sources`, `.search`, `.pipelines`) consumed by the ingestion backend and the retrieval knowledge-product proxy.
 
 ## Verification
 
-- Knowledge fanout E2E script: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py`
-- Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 14 passing): `tests/test_page_yielder.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_connector_config_validation.py`
+- Knowledge fanout E2E scripts: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py` (CRUD propagation and store isolation) and `rag-ingestion-manager/backend/scripts/e2e_knowledge_pause.py` (pause and resume)
+- Legacy Neo4j purge script: `rag-ingestion-manager/backend/scripts/purge_neo4j_legacy.py`
+- Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 23 passing): `tests/test_page_yielder.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_knowledge_product_files.py`, `tests/test_connector_config_validation.py`
 - Retrieval unit tests: `rag-retrieval-chat-manager/backend/tests/unit/` (16 test modules, `uv run pytest tests/unit -v`)
 - Retrieval integration test: `rag-retrieval-chat-manager/backend/tests/integration/test_qdrant_retrieve.py` (requires a reachable Qdrant)

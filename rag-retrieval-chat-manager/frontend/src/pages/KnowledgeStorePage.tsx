@@ -1,16 +1,15 @@
 import React, { useEffect, useState } from "react";
 import {
-  createKnowledgeProfile,
-  deleteKnowledgeProfile,
+  createKnowledgeProduct,
+  deleteKnowledgeProduct,
   deletePipeline,
   getDestinationOptions,
-  listKnowledgeProfiles,
+  listKnowledgeProducts,
   listSources,
-  syncKnowledgeProfile,
   testDestinationConnection,
-  updateKnowledgeProfile,
+  updateKnowledgeProduct,
   KnowledgeDestinationOption,
-  KnowledgeProfile,
+  KnowledgeProduct,
   SourceRecord,
 } from "../api";
 import {
@@ -21,21 +20,19 @@ import {
   IconPlus,
   IconRefresh,
   IconServer,
-  IconZap,
 } from "../components/Icons";
 
 export default function KnowledgeStorePage() {
-  const [profiles, setProfiles] = useState<KnowledgeProfile[]>([]);
+  const [products, setProducts] = useState<KnowledgeProduct[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [destinationOptions, setDestinationOptions] = useState<KnowledgeDestinationOption[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingDestMap, setTestingDestMap] = useState<Record<string, boolean>>({});
   const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; message: string }>>({});
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [editingProfile, setEditingProfile] = useState<KnowledgeProfile | null>(null);
+  const [editingProduct, setEditingProduct] = useState<KnowledgeProduct | null>(null);
   const [formName, setFormName] = useState<string>("");
   const [formDescription, setFormDescription] = useState<string>("");
   const [formEnabled, setFormEnabled] = useState<boolean>(true);
@@ -50,11 +47,11 @@ export default function KnowledgeStorePage() {
     setLoading(true);
     try {
       const [profs, srcs, destOpts] = await Promise.all([
-        listKnowledgeProfiles(),
+        listKnowledgeProducts(),
         listSources(),
         getDestinationOptions(),
       ]);
-      setProfiles(profs);
+      setProducts(profs);
       setSources(srcs);
       setDestinationOptions(destOpts);
     } catch (err: unknown) {
@@ -69,7 +66,7 @@ export default function KnowledgeStorePage() {
   }, []);
 
   const openCreateModal = () => {
-    setEditingProfile(null);
+    setEditingProduct(null);
     setFormName("");
     setFormDescription("");
     setFormEnabled(true);
@@ -87,8 +84,8 @@ export default function KnowledgeStorePage() {
     setIsModalOpen(true);
   };
 
-  const openEditModal = (profile: KnowledgeProfile) => {
-    setEditingProfile(profile);
+  const openEditModal = (profile: KnowledgeProduct) => {
+    setEditingProduct(profile);
     setFormName(profile.name);
     setFormDescription(profile.description || "");
     setFormEnabled(profile.enabled);
@@ -107,10 +104,10 @@ export default function KnowledgeStorePage() {
     setIsModalOpen(true);
   };
 
-  const handleSaveProfile = async (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) {
-      setErrorMsg("Profile name is required.");
+      setErrorMsg("Product name is required.");
       return;
     }
     setSaving(true);
@@ -123,8 +120,8 @@ export default function KnowledgeStorePage() {
     }));
 
     try {
-      if (editingProfile) {
-        await updateKnowledgeProfile(editingProfile.id, {
+      if (editingProduct) {
+        await updateKnowledgeProduct(editingProduct.id, {
           name: formName,
           description: formDescription,
           enabled: formEnabled,
@@ -132,7 +129,7 @@ export default function KnowledgeStorePage() {
           destinations: formattedDestinations,
         });
       } else {
-        await createKnowledgeProfile({
+        await createKnowledgeProduct({
           name: formName,
           description: formDescription,
           enabled: formEnabled,
@@ -150,10 +147,10 @@ export default function KnowledgeStorePage() {
     }
   };
 
-  const handleDeleteProfile = async (profileId: string) => {
-    if (!confirm("Are you sure you want to delete this Knowledge Profile?")) return;
+  const handleDeleteProduct = async (profileId: string) => {
+    if (!confirm("Are you sure you want to delete this Knowledge Product?")) return;
     try {
-      await deleteKnowledgeProfile(profileId);
+      await deleteKnowledgeProduct(profileId);
       await loadData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to delete profile.";
@@ -171,17 +168,12 @@ export default function KnowledgeStorePage() {
     }
   };
 
-  const handleSyncProfile = async (profileId: string) => {
-    setSyncingId(profileId);
-    try {
-      await syncKnowledgeProfile(profileId);
-      await loadData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Sync failed.";
-      alert("Sync failed: " + msg);
-    } finally {
-      setSyncingId(null);
+  const describeStore = (opt: KnowledgeDestinationOption, config: Record<string, unknown>): string => {
+    if (opt.id === "relational_pgvector") {
+      return `${String(config.schema_name ?? "")}.${String(config.table_name ?? "")}`;
     }
+    const key = (opt.namespace_fields || []).find((f: string) => config[f] != null);
+    return key ? String(config[key]) : opt.category;
   };
 
   const handleTestConnection = async (profileId: string, destType: string, config: Record<string, unknown>) => {
@@ -205,11 +197,11 @@ export default function KnowledgeStorePage() {
   };
 
   // Metrics
-  const totalProfiles = profiles.length;
+  const totalProducts = products.length;
   const linkedBucketsCount = new Set(
-    profiles.flatMap((p) => p.sources.map((s) => s.minio_bucket))
+    products.flatMap((p) => p.sources.map((s) => s.minio_bucket))
   ).size;
-  const activeDestinationsCount = profiles.reduce(
+  const activeDestinationsCount = products.reduce(
     (acc, p) => acc + p.destinations.filter((d) => d.enabled).length,
     0
   );
@@ -251,7 +243,7 @@ export default function KnowledgeStorePage() {
                 Knowledge Store Manager
               </h1>
               <p style={{ margin: "4px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
-                Universal Multi-Sink Fanout Engine — Route MinIO documents to 5 enterprise 2026 RAG destinations.
+                Universal Multi-Sink Fanout Engine — Route MinIO documents to 4 enterprise RAG destinations.
               </p>
             </div>
           </div>
@@ -291,7 +283,7 @@ export default function KnowledgeStorePage() {
             }}
           >
             <IconPlus style={{ width: "18px", height: "18px" }} />
-            New Knowledge Profile
+            Create Knowledge Product
           </button>
         </div>
       </div>
@@ -315,9 +307,9 @@ export default function KnowledgeStorePage() {
           }}
         >
           <div style={{ fontSize: "13px", fontWeight: 600, color: "#94a3b8", marginBottom: "8px" }}>
-            Total Profiles
+            Total Products
           </div>
-          <div style={{ fontSize: "28px", fontWeight: 800, color: "#f8fafc" }}>{totalProfiles}</div>
+          <div style={{ fontSize: "28px", fontWeight: 800, color: "#f8fafc" }}>{totalProducts}</div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
             Active Knowledge Routing Sets
           </div>
@@ -372,7 +364,7 @@ export default function KnowledgeStorePage() {
             Fanout Engine Architecture
           </div>
           <div style={{ fontSize: "20px", fontWeight: 700, color: "#34d399", marginTop: "4px" }}>
-            5 Parallel Sinks
+            4 Parallel Sinks
           </div>
           <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
             Decoupled MinIO Parser Stream
@@ -380,12 +372,12 @@ export default function KnowledgeStorePage() {
         </div>
       </div>
 
-      {/* Profiles Grid */}
+      {/* Products Grid */}
       {loading ? (
         <div style={{ textAlign: "center", padding: "60px 0", color: "#94a3b8" }}>
-          Loading Knowledge Profiles...
+          Loading Knowledge Products...
         </div>
-      ) : profiles.length === 0 ? (
+      ) : products.length === 0 ? (
         <div
           style={{
             textAlign: "center",
@@ -397,20 +389,19 @@ export default function KnowledgeStorePage() {
         >
           <IconDatabase style={{ width: "48px", height: "48px", color: "#64748b", marginBottom: "16px" }} />
           <h3 style={{ margin: "0 0 8px 0", fontSize: "18px", color: "#f8fafc" }}>
-            No Knowledge Profiles Created
+            No Knowledge Products Created
           </h3>
           <p style={{ margin: "0 0 24px 0", fontSize: "14px", color: "#94a3b8" }}>
-            Create your first Knowledge Profile to link MinIO document sources with Qdrant, OpenSearch, Neo4j, pgvector & RedisVL.
+            Create your first Knowledge Product to link MinIO document sources with Qdrant, OpenSearch, pgvector & RedisVL.
           </p>
           <button onClick={openCreateModal} className="btn btn-primary">
             <IconPlus style={{ width: "16px", height: "16px", marginRight: "8px" }} />
-            Create Knowledge Profile
+            Create Knowledge Product
           </button>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "24px" }}>
-          {profiles.map((profile) => {
-            const isSyncing = syncingId === profile.id;
+          {products.map((profile) => {
             return (
               <div
                 key={profile.id}
@@ -423,7 +414,7 @@ export default function KnowledgeStorePage() {
                   boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
                 }}
               >
-                {/* Profile Card Header */}
+                {/* Product Card Header */}
                 <div
                   style={{
                     display: "flex",
@@ -476,24 +467,6 @@ export default function KnowledgeStorePage() {
 
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button
-                      onClick={() => handleSyncProfile(profile.id)}
-                      disabled={isSyncing}
-                      className="btn btn-primary"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "8px 16px",
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                      }}
-                    >
-                      <IconZap style={{ width: "15px", height: "15px" }} />
-                      {isSyncing ? "Syncing Sinks..." : "Sync All Sinks"}
-                    </button>
-
-                    <button
                       onClick={() => openEditModal(profile)}
                       className="btn btn-secondary"
                       style={{ padding: "8px 14px", fontSize: "13px" }}
@@ -502,7 +475,7 @@ export default function KnowledgeStorePage() {
                     </button>
 
                     <button
-                      onClick={() => handleDeleteProfile(profile.id)}
+                      onClick={() => handleDeleteProduct(profile.id)}
                       className="btn btn-danger"
                       style={{
                         padding: "8px 14px",
@@ -654,11 +627,7 @@ export default function KnowledgeStorePage() {
                                 whiteSpace: "nowrap",
                               }}
                             >
-                              {opt.id === "vector_qdrant" && `Collection: ${String(destCfg.config.collection_name)}`}
-                              {opt.id === "lexical_opensearch" && `Index: ${String(destCfg.config.index_name)}`}
-                              {opt.id === "graph_neo4j" && `URI: ${String(destCfg.config.bolt_uri)}`}
-                              {opt.id === "relational_pgvector" && `Table: ${String(destCfg.config.table_name)}`}
-                              {opt.id === "cache_redisvl" && `Prefix: ${String(destCfg.config.index_prefix)}`}
+                              {describeStore(opt, destCfg.config)}
                             </div>
                           )}
 
@@ -702,7 +671,7 @@ export default function KnowledgeStorePage() {
                           Linked RAG Pipelines ({profile.pipelines?.length || 0})
                         </h4>
                         <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px" }}>
-                          Vector search & ingestion pipelines connected to this Knowledge Profile
+                          Vector search & ingestion pipelines connected to this Knowledge Product
                         </div>
                       </div>
                       <a
@@ -798,7 +767,7 @@ export default function KnowledgeStorePage() {
         </div>
       )}
 
-      {/* Modal / Drawer for Creating / Editing Knowledge Profile */}
+      {/* Modal / Drawer for Creating / Editing Knowledge Product */}
       {isModalOpen && (
         <div
           style={{
@@ -840,7 +809,7 @@ export default function KnowledgeStorePage() {
               }}
             >
               <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 700, color: "#f8fafc" }}>
-                {editingProfile ? "Edit Knowledge Profile" : "Configure New Knowledge Profile"}
+                {editingProduct ? "Edit Knowledge Product" : "Configure New Knowledge Product"}
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -872,18 +841,18 @@ export default function KnowledgeStorePage() {
               </div>
             )}
 
-            <form onSubmit={handleSaveProfile}>
+            <form onSubmit={handleSaveProduct}>
               {/* General Info */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px", marginBottom: "24px" }}>
                 <div>
                   <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#cbd5e1", marginBottom: "6px" }}>
-                    Profile Name *
+                    Product Name *
                   </label>
                   <input
                     type="text"
                     value={formName}
                     onChange={(e) => setFormName(e.target.value)}
-                    placeholder="e.g. Resume Knowledge Fanout Profile"
+                    placeholder="e.g. Resume Knowledge Fanout Product"
                     style={{
                       width: "100%",
                       padding: "10px 14px",
@@ -1083,7 +1052,7 @@ export default function KnowledgeStorePage() {
                     background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
                   }}
                 >
-                  {saving ? "Saving Profile..." : editingProfile ? "Update Profile" : "Create Profile"}
+                  {saving ? "Saving Product..." : editingProduct ? "Update Product" : "Create Knowledge Product"}
                 </button>
               </div>
             </form>

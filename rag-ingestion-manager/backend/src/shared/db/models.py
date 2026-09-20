@@ -284,8 +284,8 @@ class Pipeline(Base):
     scraper_max_depth: Mapped[int] = mapped_column(Integer, default=2)
     scraper_max_pages: Mapped[int] = mapped_column(Integer, default=50)
     scraper_mode: Mapped[str] = mapped_column(String(32), default="httpx")
-    knowledge_profile_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("knowledge_profiles.id", ondelete="SET NULL"), nullable=True
+    knowledge_product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_products.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -294,8 +294,8 @@ class Pipeline(Base):
 
     runs: Mapped[list["PipelineRun"]] = relationship(back_populates="pipeline", cascade="all, delete-orphan")
     sources: Mapped[list["PipelineSource"]] = relationship(back_populates="pipeline", lazy="selectin", cascade="all, delete-orphan")
-    knowledge_profile: Mapped["KnowledgeProfile | None"] = relationship(
-        "KnowledgeProfile", back_populates="pipelines", lazy="selectin"
+    knowledge_product: Mapped["KnowledgeProduct | None"] = relationship(
+        "KnowledgeProduct", back_populates="pipelines", lazy="selectin"
     )
 
 class PipelineRun(Base):
@@ -319,15 +319,28 @@ class PipelineRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     pipeline: Mapped["Pipeline"] = relationship(back_populates="runs")
-class KnowledgeProfile(Base):
-    """Knowledge profile linking MinIO source buckets to multi-sink knowledge destinations."""
+class KnowledgeProduct(Base):
+    """Knowledge product linking MinIO source buckets to multi-sink knowledge destinations."""
 
-    __tablename__ = "knowledge_profiles"
+    __tablename__ = "knowledge_products"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    monitor_mode: Mapped[SourceMonitorMode] = mapped_column(
+        Enum(
+            SourceMonitorMode,
+            name="source_monitor_mode",
+            values_callable=_enum_values,
+            create_constraint=False,
+        ),
+        default=SourceMonitorMode.SCHEDULED,
+        server_default="scheduled",
+        nullable=False,
+    )
+    sync_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="idle", server_default="idle")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -336,49 +349,52 @@ class KnowledgeProfile(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    sources: Mapped[list["KnowledgeProfileSource"]] = relationship(
-        back_populates="knowledge_profile", cascade="all, delete-orphan", lazy="selectin"
+    sources: Mapped[list["KnowledgeProductSource"]] = relationship(
+        back_populates="knowledge_product", cascade="all, delete-orphan", lazy="selectin"
     )
-    destinations: Mapped[list["KnowledgeDestinationConfig"]] = relationship(
-        back_populates="knowledge_profile", cascade="all, delete-orphan", lazy="selectin"
+    destinations: Mapped[list["KnowledgeProductDestination"]] = relationship(
+        back_populates="knowledge_product", cascade="all, delete-orphan", lazy="selectin"
     )
     pipelines: Mapped[list["Pipeline"]] = relationship(
-        back_populates="knowledge_profile", lazy="selectin"
+        back_populates="knowledge_product", lazy="selectin"
+    )
+    files: Mapped[list["KnowledgeProductFile"]] = relationship(
+        back_populates="knowledge_product", cascade="all, delete-orphan", lazy="selectin"
     )
 
 
-class KnowledgeProfileSource(Base):
-    """M2M join between KnowledgeProfile and Source (MinIO bucket)."""
+class KnowledgeProductSource(Base):
+    """M2M join between KnowledgeProduct and Source (MinIO bucket)."""
 
-    __tablename__ = "knowledge_profile_sources"
+    __tablename__ = "knowledge_product_sources"
     __table_args__ = (
-        Index("ix_knowledge_profile_sources_unique", "knowledge_profile_id", "source_id", unique=True),
+        Index("ix_knowledge_product_sources_unique", "knowledge_product_id", "source_id", unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    knowledge_profile_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("knowledge_profiles.id", ondelete="CASCADE"), nullable=False
+    knowledge_product_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    knowledge_profile: Mapped["KnowledgeProfile"] = relationship(back_populates="sources", lazy="selectin")
+    knowledge_product: Mapped["KnowledgeProduct"] = relationship(back_populates="sources", lazy="selectin")
     source: Mapped["Source"] = relationship(lazy="selectin")
 
 
-class KnowledgeDestinationConfig(Base):
-    """Destination configuration for a knowledge profile (Qdrant, OpenSearch, Neo4j, pgvector, RedisVL)."""
+class KnowledgeProductDestination(Base):
+    """Destination configuration for a knowledge product (Qdrant, OpenSearch, pgvector, RedisVL)."""
 
-    __tablename__ = "knowledge_destination_configs"
+    __tablename__ = "knowledge_product_destinations"
     __table_args__ = (
-        Index("ix_knowledge_dest_profile_type_unique", "knowledge_profile_id", "destination_type", unique=True),
+        Index("ix_knowledge_product_dest_type_unique", "knowledge_product_id", "destination_type", unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    knowledge_profile_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("knowledge_profiles.id", ondelete="CASCADE"), nullable=False
+    knowledge_product_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False
     )
     destination_type: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
@@ -391,7 +407,45 @@ class KnowledgeDestinationConfig(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    knowledge_profile: Mapped["KnowledgeProfile"] = relationship(back_populates="destinations", lazy="selectin")
+    knowledge_product: Mapped["KnowledgeProduct"] = relationship(back_populates="destinations", lazy="selectin")
+
+
+class KnowledgeProductFile(Base):
+    """Per-product ingestion state for one object in one source bucket.
+
+    This is the fanout's own ledger. It replaces the ``indexed_files`` rows the
+    fanout used to write, so that two products sharing a bucket keep separate
+    state and so that a per-destination progress record exists for the UI.
+    """
+
+    __tablename__ = "knowledge_product_files"
+    __table_args__ = (
+        Index("ix_kp_files_unique", "knowledge_product_id", "source_id", "file_key", unique=True),
+        Index("ix_kp_files_product_status", "knowledge_product_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    knowledge_product_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_products.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    file_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    etag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending")
+    pages_indexed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    destinations_synced: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    knowledge_product: Mapped["KnowledgeProduct"] = relationship(back_populates="files")
 
 
 class IndexedFile(Base):

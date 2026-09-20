@@ -25,7 +25,7 @@ The removed page was the only caller of the chunked-upload client. Its content-t
 - `frontend/src/hash.ts` (`computeFileHash`), exported but no longer imported anywhere.
 - `components/Sources/FileBrowser.tsx`, which is now the single upload surface.
 
-Parsing for indexing lives in `backend/src/ingestion_service/core/page_yielder.py`; the UI never parses anything. Chunking and embedding settings belong to RAG pipelines and Knowledge Profiles, not to any upload surface.
+Parsing for indexing lives in `backend/src/ingestion_service/core/page_yielder.py`; the UI never parses anything. Chunking and embedding settings belong to RAG pipelines and Knowledge Products, not to any upload surface.
 
 ---
 
@@ -59,7 +59,7 @@ The file drawer calls `uploadSourceFiles(sourceId, files)` — multipart `POST /
 
 1. `ensure_bucket(minio_bucket)`, then each non-empty file is written with `put_object` under its sanitized file name. Local-filesystem sources write to `storage/local_sources/<folder_name>` instead.
 2. `_update_source_metrics` recomputes `total_files` / `total_size_bytes`.
-3. `_trigger_sync_in_background` fires `_trigger_pipeline_syncs()`, which runs `execute_universal_fanout_sync()` for every Knowledge Profile linked to the source and enqueues a sync run per linked pipeline.
+3. `_trigger_sync_in_background` fires `_trigger_pipeline_syncs(db_session, db_source)`. That function does not run the fanout inline any more. It starts `sync_knowledge_product(product_id)` for every Knowledge Product linked to the source, then enqueues a sync run per linked pipeline. The product's own poller does the destination writes.
 
 Deletes (`DELETE /files?key=…`) repeat steps 2–3.
 
@@ -102,13 +102,13 @@ Upload itself only stores bytes. Indexing happens later, on one of two paths:
 
 **Path 1 — RAG pipeline sync (per linked pipeline).** The pipeline is enqueued by `_trigger_pipeline_syncs()`; the worker reads the source file and `ingestion_service/core/indexer.py` calls `chunk_text(text, pipeline.chunk_size, pipeline.chunk_overlap)` (`indexer.py:137`) where `chunk_text` is the recursive markdown/text splitter (`ingestion_service/utils/text_splitter.py:4`, splits on `^#+ ...` headings and blank lines, with word-level overflow splitting and overlap carried from the end of the previous chunk). Defaults from `apps/api/routes/pipelines.py:31-32`: `chunk_size = 1000` (allowed 100–8000), `chunk_overlap = 120` (allowed 0–2000); both are per-pipeline and settable on the Pipelines page.
 
-**Path 2 — Knowledge Profile fanout (per linked profile).** `execute_universal_fanout_sync()` reads each source object, calls `iter_file_pages()` and writes **one record per page**; it does not call `chunk_text`. See document 04 for the per-sink payloads.
+**Path 2 — Knowledge Product fanout (per linked product).** The product poller calls `sync_knowledge_product()` and then `execute_universal_fanout_sync(db, product)`. The fanout reads each source object, calls `iter_file_pages()` and writes **one record per page**; it does not call `chunk_text`. It records its own state in `knowledge_product_files`, not in `IndexedFile`. See document 04 for the per-destination payloads.
 
 Embedding defaults and dimension behaviour:
 - Default embedding model `settings.embedding_model = nvidia-embed-passage`, called through the LiteLLM proxy at `LITELLM_BASE_URL` with `OPENAI_API_KEY`.
 - `EmbeddingClient` (`ingestion_service/embeddings/client.py`) catches LiteLLM failures and falls back to FastEmbed `BAAI/bge-small-en-v1.5` (384-dimension vectors); a failed image embedding returns a zero vector of 384 floats.
-- The Knowledge Profile's Qdrant `vector_size` default is `2048`; `ensure_collection()` recreates the target collection when the stored dense vector size differs from the configured size (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:71-116`). When a profile config has no `vector_size`, the fanout uses the length of the first embedding instead.
-- Uploading into a source triggers the fanout/pipeline sync in the background, but a profile whose destination is disabled, or a file whose SHA-256 is unchanged since the last sync, is not re-indexed.
+- The Knowledge Product's Qdrant `vector_size` default is `2048`; `ensure_collection()` recreates the target collection when the stored dense vector size differs from the configured size (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:71-116`). When a product config has no `vector_size`, the fanout uses the length of the first embedding instead.
+- Uploading into a source triggers the fanout/pipeline sync in the background, but a product whose destinations are all paused, or a file whose ETag and size are unchanged since the last sync, is not re-indexed.
 
 ---
 
@@ -121,6 +121,7 @@ Embedding defaults and dimension behaviour:
 | `/browse/:name/view/:fileId` | `FileViewerPage.tsx` | Preview one stored file |
 | `/sources` | `SourcesPage.tsx` | Manage NiFi and manual-upload buckets (see document 03) |
 | `/sources/:id` | `SourceDetailPage.tsx` | One source: connectors, catalogue, files |
-| `/knowledge-store` | `KnowledgeStorePage.tsx` | Knowledge Profile fanout (see document 04) |
+| `/knowledge-store` | `KnowledgeStorePage.tsx` | Knowledge Product list and creation (see document 04) |
+| `/knowledge-store/:id` | `KnowledgeProductPage.tsx` | One Knowledge Product: destination cards, live fanout timeline, ingested files (see document 04) |
 
 The sidebar (`components/AppLayout.tsx:12-17`) links Overview `/`, Folders `/browse`, Sources `/sources` and Knowledge Store `/knowledge-store`. There is no `/upload` route and no Upload nav item. `App.tsx` only holds legacy redirects: `/directories` → `/browse`, `/directories/:name` → `/browse/:name`, `/directories/:name/view/:fileId` → `/browse/:name/view/:fileId`.

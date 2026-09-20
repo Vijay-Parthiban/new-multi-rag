@@ -26,7 +26,7 @@ from src.file_manager.core.errors import ConflictError, NotFoundError, Validatio
 from src.file_manager.utils.paths import sanitize_directory_name, sanitize_file_name, storage_root
 from src.shared.db.session import get_db
 from src.shared.storage import ensure_bucket
-from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource, KnowledgeProfileSource
+from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource, KnowledgeProductSource
 from src.shared.config.settings import get_settings
 from src.ingestion_service.core.pathway_sync import register_source_poller, stop_source_poller
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -187,7 +187,7 @@ def _trigger_sync_in_background(source: Source) -> None:
             async with AsyncSessionLocal() as db_session:
                 db_source = await db_session.get(Source, source.id)
                 if db_source:
-                    await _trigger_pipeline_syncs(db_source, db_session)
+                    await _trigger_pipeline_syncs(db_session, db_source)
         except Exception as exc:
             logger.error("Background sync trigger failed for source %s: %s", source.id, exc)
     asyncio.create_task(_runner())
@@ -455,7 +455,10 @@ async def update_source(
         except Exception as exc:
             logger.warning("bucket_notification_update_failed source=%s error=%s", source.id, exc)
 
-    source = await db.get(Source, source.id)
+    # `updated_at` carries a server-side onupdate, so SQLAlchemy expires it after
+    # an emitted UPDATE. Refresh inside the async context or serialising it later
+    # raises MissingGreenlet.
+    await db.refresh(source)
     await register_source_poller(source_id)
     return await _source_to_dict(source)
 
@@ -468,7 +471,7 @@ async def delete_source(
     if not source:
         raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
 
-    await db.execute(delete(KnowledgeProfileSource).where(KnowledgeProfileSource.source_id == source_id))
+    await db.execute(delete(KnowledgeProductSource).where(KnowledgeProductSource.source_id == source_id))
     await db.execute(delete(PipelineSource).where(PipelineSource.source_id == source_id))
     is_local = _is_local_source(source)
     if is_local:
@@ -580,7 +583,10 @@ async def update_source_connector(
         connector.enabled = body.enabled
 
     await db.commit()
-    connector = await db.get(SourceConnector, connector_id)
+    # `updated_at` carries a server-side onupdate, so SQLAlchemy expires it after
+    # an emitted UPDATE. Refresh inside the async context or serialising it later
+    # raises MissingGreenlet.
+    await db.refresh(connector)
     await register_source_poller(source_id)
     return _connector_to_dict(connector)
 

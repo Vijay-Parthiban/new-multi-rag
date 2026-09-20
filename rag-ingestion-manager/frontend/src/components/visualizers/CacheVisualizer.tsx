@@ -40,8 +40,8 @@ export const CacheVisualizer: React.FC<CacheVisualizerProps> = ({ data, loading 
           <div style={{ fontSize: "18px", fontWeight: 800, color: "#4ade80", marginTop: "4px" }}>{data.total_cached_keys ?? keys.length}</div>
         </div>
         <div style={{ background: "rgba(30, 41, 59, 0.6)", padding: "14px", borderRadius: "10px", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
-          <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase", fontWeight: 700 }}>Cache Hit Rate</div>
-          <div style={{ fontSize: "18px", fontWeight: 800, color: "#a855f7", marginTop: "4px" }}>{((data.cache_hit_rate || 0.88) * 100).toFixed(0)}%</div>
+          <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase", fontWeight: 700 }}>Keys With TTL</div>
+          <div style={{ fontSize: "18px", fontWeight: 800, color: "#a855f7", marginTop: "4px" }}>{keys.filter((k) => k.ttl > 0).length}</div>
         </div>
         <div style={{ background: "rgba(30, 41, 59, 0.6)", padding: "14px", borderRadius: "10px", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
           <div style={{ fontSize: "11px", color: "#94a3b8", textTransform: "uppercase", fontWeight: 700 }}>Used Memory</div>

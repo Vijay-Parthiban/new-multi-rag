@@ -1376,7 +1376,7 @@ select.input option {
 }
 
 .stats-overview-value {
-  fontSize: 1.625rem;
+  font-size: 1.625rem;
   font-weight: 800;
   color: #e6edf3;
   margin: 0.25rem 0 0.15rem 0;
@@ -1662,7 +1662,7 @@ select.input option {
 }
 
 .source-card-empty-connectors {
-  fontSize: 0.75rem;
+  font-size: 0.75rem;
   color: #8b949e;
   font-style: italic;
   padding: 0.35rem 0.6rem;

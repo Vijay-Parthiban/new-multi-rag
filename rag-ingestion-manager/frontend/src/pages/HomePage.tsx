@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { IconBrowse, IconDatabase, IconFolder, IconSources } from "../components/Icons";
-import { DirectorySummary, listDirectories, listKnowledgeProfiles, listSources } from "../api";
+import { DirectorySummary, listDirectories, listKnowledgeProducts, listSources } from "../api";
 import { formatRelativeTime } from "../utils/format";
 
 const QUICK_LINKS = [
@@ -30,7 +30,7 @@ const QUICK_LINKS = [
   {
     to: "/knowledge-store",
     title: "Knowledge Store Fanout",
-    description: "Manage 5-sink multi-vector fanout sync to Qdrant, OpenSearch, Neo4j, Postgres, & RedisVL.",
+    description: "Manage multi-vector fanout sync to Qdrant, OpenSearch, Postgres, & RedisVL.",
     icon: IconDatabase,
     cta: "Manage Knowledge Store",
   },
@@ -39,19 +39,19 @@ const QUICK_LINKS = [
 export default function HomePage() {
   const [directories, setDirectories] = useState<DirectorySummary[]>([]);
   const [sourcesCount, setSourcesCount] = useState<number>(0);
-  const [profilesCount, setProfilesCount] = useState<number>(0);
+  const [productsCount, setProductsCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [dirs, sources, profiles] = await Promise.all([
+      const [dirs, sources, products] = await Promise.all([
         listDirectories().catch(() => []),
         listSources().catch(() => []),
-        listKnowledgeProfiles().catch(() => []),
+        listKnowledgeProducts().catch(() => []),
       ]);
       setDirectories(dirs);
       setSourcesCount(sources.length);
-      setProfilesCount(profiles.length);
+      setProductsCount(products.length);
     } catch {
       /* overview stays usable */
     } finally {
@@ -69,7 +69,7 @@ export default function HomePage() {
     <div className="page">
       <PageHeader
         title="Ingestion Overview"
-        description="Ingest documents, manage connected data sources, and orchestrate 5-sink Knowledge Store fanout sync."
+        description="Ingest documents, manage connected data sources, and orchestrate 4-destination Knowledge Store fanout sync."
       />
 
       {/* Metric Highlights Banner */}
@@ -87,8 +87,8 @@ export default function HomePage() {
           <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Ingested Files</div>
         </div>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>{profilesCount}</div>
-          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Knowledge Profiles</div>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>{productsCount}</div>
+          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Knowledge Products</div>
         </div>
       </section>
 
@@ -153,7 +153,7 @@ export default function HomePage() {
           <Link to="/knowledge-store" className="btn btn-ghost btn-sm">Configure Sinks</Link>
         </div>
         <p style={{ fontSize: "0.9rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
-          Ingestion streams document object bytes into MinIO source buckets, chunks text with token window splitters, and executes 5-destination multi-vector fanout.
+          Ingestion streams document object bytes into MinIO source buckets, chunks text with token window splitters, and executes 4-destination multi-vector fanout.
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }}>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #3b82f6" }}>
@@ -161,9 +161,6 @@ export default function HomePage() {
           </div>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #10b981" }}>
             <strong>OpenSearch:</strong> BM25 Lexical & Inverted Index
-          </div>
-          <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #8b5cf6" }}>
-            <strong>Neo4j:</strong> GraphRAG Entity-Relation Triples
           </div>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #f59e0b" }}>
             <strong>PostgreSQL:</strong> Relational & pgvector ACLs

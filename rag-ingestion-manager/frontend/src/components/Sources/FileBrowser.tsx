@@ -29,6 +29,8 @@ export interface FileBrowserProps {
   allowUpload?: boolean;
   /** Whether to show delete file actions. Default: false. */
   allowDelete?: boolean;
+  /** Whether to show the "Open & Visualize" link. Default: false. */
+  allowPreview?: boolean;
 }
 
 interface DirectoryNode {
@@ -75,6 +77,7 @@ export default function FileBrowser({
   onInfo,
   allowUpload = false,
   allowDelete = false,
+  allowPreview = false,
 }: FileBrowserProps) {
   const [files, setFiles] = useState<SourceFileEntry[]>(propFiles ?? []);
   const [prefix, setPrefix] = useState("");
@@ -258,9 +261,12 @@ export default function FileBrowser({
 
   /* ── Keyboard nav for table rows ── */
 
+  const canDelete = allowDelete || !!propOnDelete;
+  const hasRowActions = canDelete || allowPreview;
+
   const handleFileKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTableRowElement>, file: SourceFileEntry, index: number) => {
-      if (e.key === "Enter" || e.key === " ") {
+      if ((e.key === "Enter" || e.key === " ") && canDelete) {
         e.preventDefault();
         void handleDelete(file);
       } else if (e.key === "ArrowDown") {
@@ -277,7 +283,7 @@ export default function FileBrowser({
         prev?.focus();
       }
     },
-    [handleDelete],
+    [handleDelete, canDelete],
   );
 
   /* ── Render ── */
@@ -533,7 +539,7 @@ export default function FileBrowser({
                         Modified {sortKey === "modified" && "↑"}
                       </button>
                     </th>
-                    <th>Actions</th>
+                    {hasRowActions && <th>Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -541,7 +547,7 @@ export default function FileBrowser({
                     <tr
                       key={file.key}
                       data-file-index={i}
-                      tabIndex={0}
+                      tabIndex={hasRowActions ? 0 : undefined}
                       onKeyDown={(e) => handleFileKeyDown(e, file, i)}
                     >
                       <td>
@@ -558,29 +564,31 @@ export default function FileBrowser({
                         {file.last_modified ? formatRelativeTime(file.last_modified) : "—"}
                       </td>
                       <td>
-                        <div className="row-actions" style={{ display: "flex", gap: "0.5rem" }}>
-                          {sourceId && file.key && (
-                            <a
-                              href={`http://localhost:8007/api/sources/${sourceId}/files?key=${encodeURIComponent(file.key)}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="btn btn-sm btn-secondary"
-                              style={{ textDecoration: "none" }}
-                            >
-                              Open & Visualize
-                            </a>
-                          )}
-                          {(allowDelete || propOnDelete) && (
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-danger-ghost"
-                              onClick={() => void handleDelete(file)}
-                              aria-label={`Delete ${file.key}`}
-                            >
-                              Delete
-                            </button>
-                          )}
-                        </div>
+                        {hasRowActions && (
+                          <div className="row-actions" style={{ display: "flex", gap: "0.5rem" }}>
+                            {allowPreview && sourceId && file.key && (
+                              <a
+                                href={`/api/sources/${sourceId}/files/content?key=${encodeURIComponent(file.key)}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn btn-sm btn-secondary"
+                                style={{ textDecoration: "none" }}
+                              >
+                                Open & Visualize
+                              </a>
+                            )}
+                            {canDelete && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger-ghost"
+                                onClick={() => void handleDelete(file)}
+                                aria-label={`Delete ${file.key}`}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}

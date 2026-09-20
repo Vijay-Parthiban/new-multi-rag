@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.exceptions import app_error_handler
-from apps.api.routes import directories, files, knowledge, pipelines, sources, uploads
+from apps.api.routes import directories, files, knowledge_products, pipelines, sources, uploads
 from src.file_manager.core.errors import AppError
 from src.file_manager.utils.paths import ensure_storage_layout
 from src.shared.db.session import close_db, init_db
@@ -21,9 +21,13 @@ logger = logging.getLogger("api")
 async def lifespan(_app: FastAPI):
     ensure_storage_layout()
     await init_db()
-    from src.ingestion_service.core.pathway_sync import init_all_source_pollers
     import asyncio
+
+    from src.ingestion_service.core.knowledge_sync import init_all_knowledge_pollers
+    from src.ingestion_service.core.pathway_sync import init_all_source_pollers
+
     asyncio.create_task(init_all_source_pollers())
+    asyncio.create_task(init_all_knowledge_pollers())
     yield
     await close_redis()
     await close_db()
@@ -55,7 +59,7 @@ app.include_router(directories.router)
 app.include_router(files.router)
 app.include_router(pipelines.router)
 app.include_router(sources.router)
-app.include_router(knowledge.router)
+app.include_router(knowledge_products.router)
 
 
 @app.get("/health")

@@ -1,7 +1,8 @@
-"""Destination field schemas and default config builders for Knowledge Profiles."""
+"""Destination field schemas, default config builders and store namespacing for Knowledge Products."""
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -67,6 +68,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "name": "Qdrant",
             "category": "Vector Engine",
             "description": "Dense vector similarity search with HNSW indexing",
+            "namespace_fields": ["collection_name"],
             "default_config": {
                 "url": settings.qdrant_url,
                 "api_key": settings.qdrant_api_key,
@@ -100,6 +102,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "name": "OpenSearch",
             "category": "Lexical & Sparse Search",
             "description": "BM25 lexical indexing with optional sparse model metadata",
+            "namespace_fields": ["index_name"],
             "default_config": {
                 "endpoint_url": settings.opensearch_url,
                 "index_name": "knowledge_lexical_index",
@@ -128,49 +131,15 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             ],
         },
         {
-            "id": "graph_neo4j",
-            "name": "Neo4j (GraphRAG)",
-            "category": "Knowledge Graph Store",
-            "description": "Document-chunk graph with optional LiteLLM entity extraction",
-            "default_config": {
-                "bolt_uri": settings.neo4j_bolt_uri,
-                "http_url": settings.neo4j_http_url,
-                "username": settings.neo4j_user,
-                "password": settings.neo4j_password,
-                "auth_disabled": settings.neo4j_auth_disabled,
-                "database": "neo4j",
-                "entity_extraction_enabled": False,
-                "entity_extraction_model": "gpt-4o-mini",
-                "litellm_base_url": settings.litellm_base_url,
-                "litellm_api_key": settings.openai_api_key,
-                "community_reports_enabled": False,
-                "entity_resolution_mode": "exact_match",
-                "max_entities_per_chunk": 10,
-            },
-            "fields": [
-                *_litellm_fields(settings),
-                _field("bolt_uri", label="Bolt URI", required=True, group="Connection"),
-                _field("http_url", label="HTTP URL", group="Connection", description="Used by inspect/visualizer APIs"),
-                _field("auth_disabled", label="Disable Authentication", field_type="boolean", group="Connection"),
-                _field("username", label="Username", group="Connection"),
-                _field("password", label="Password", field_type="password", group="Connection"),
-                _field("database", label="Database", group="Connection"),
-                _field("entity_extraction_enabled", label="Enable Entity Extraction", field_type="boolean", group="GraphRAG", description="Extract entities via LiteLLM and link Chunk->Entity nodes"),
-                _field("entity_extraction_model", label="Entity Extraction Model", field_type="model", model_kind="chat", group="GraphRAG"),
-                _field("max_entities_per_chunk", label="Max Entities / Chunk", field_type="number", group="GraphRAG", advanced=True, min_value=1, max_value=50),
-                _field("community_reports_enabled", label="Community Reports", field_type="boolean", group="GraphRAG", advanced=True),
-                _field("entity_resolution_mode", label="Entity Resolution", field_type="select", group="GraphRAG", advanced=True, options=[{"value": "exact_match", "label": "Exact Match"}, {"value": "fuzzy", "label": "Fuzzy"}, {"value": "llm", "label": "LLM-assisted"}]),
-            ],
-        },
-        {
             "id": "relational_pgvector",
             "name": "PostgreSQL (pgvector)",
             "category": "Multi-Model Relational DB",
             "description": "Relational chunk storage with optional pgvector embeddings",
+            "namespace_fields": ["schema_name"],
             "default_config": {
                 "connection_url": settings.database_url.replace("+asyncpg", ""),
                 "schema_name": "public",
-                "table_name": "knowledge_chunks",
+                "table_name": "chunks",
                 "store_embeddings": True,
                 "embedding_model": settings.embedding_model,
                 "litellm_base_url": settings.litellm_base_url,
@@ -196,6 +165,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "name": "RedisVL",
             "category": "Semantic Cache & Summary Store",
             "description": "Redis-backed chunk cache with optional LiteLLM summaries",
+            "namespace_fields": ["index_prefix"],
             "default_config": {
                 "redis_url": settings.redis_url,
                 "index_prefix": "knowledge_cache",
@@ -254,3 +224,64 @@ def normalize_destination_payload(destinations: list[dict[str, Any]], settings: 
             }
         )
     return normalized
+
+
+def namespace_fields_for(destination_type: str, settings: Settings) -> list[str]:
+    """Config keys that make this destination's store unique. Empty if unknown."""
+    for item in build_destination_types(settings):
+        if item["id"] == destination_type:
+            return list(item.get("namespace_fields") or [])
+    return []
+
+
+def slugify_product_name(name: str) -> str:
+    """Lowercase a-z0-9 runs joined by '_', trimmed, max 32 chars.
+
+    The result is safe inside a Postgres identifier, an OpenSearch index name
+    and a Redis key prefix without quoting.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:32].strip("_")
+    return slug or "product"
+
+
+def product_store_names(destination_type: str, slug: str, suffix: str) -> dict[str, str]:
+    """Store names for one Knowledge Product on one destination.
+
+    ``suffix`` is the first 8 hex characters of the product id, so two products
+    with the same name still get different stores.
+    """
+    if destination_type in ("vector_qdrant", "lexical_opensearch"):
+        key = "collection_name" if destination_type == "vector_qdrant" else "index_name"
+        return {key: f"kp_{slug}_{suffix}"}
+    if destination_type == "relational_pgvector":
+        # The schema carries the identity. The table name is fixed and comes
+        # from the catalogue default, so it is not a namespace field: two
+        # products sharing one table name inside different schemas do not clash.
+        return {"schema_name": f"kp_{slug}_{suffix}"}
+    if destination_type == "cache_redisvl":
+        return {"index_prefix": f"kp:{slug}:{suffix}"}
+    return {}
+
+
+def apply_store_namespace(
+    destination_type: str,
+    config: dict[str, Any],
+    slug: str,
+    suffix: str,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Replace the static store defaults in ``config`` with per-product names.
+
+    A value that the user typed and that differs from the catalogue default is
+    kept. An empty value or the shared default is replaced.
+    """
+    result = dict(config)
+    names = product_store_names(destination_type, slug, suffix)
+    defaults = get_default_config(destination_type, settings)
+    for key in namespace_fields_for(destination_type, settings):
+        if key not in names:
+            continue
+        current = result.get(key)
+        if current is None or current == "" or current == defaults.get(key):
+            result[key] = names[key]
+    return result

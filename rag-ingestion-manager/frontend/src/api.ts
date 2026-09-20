@@ -5,7 +5,7 @@ export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
 export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;
 
-function authHeaders(apiKey: string = API_KEY): HeadersInit {
+export function authHeaders(apiKey: string = API_KEY): HeadersInit {
   return apiKey ? { "X-API-Key": apiKey } : {};
 }
 
@@ -143,7 +143,7 @@ export interface PipelineCatalogEntry {
 
 export interface PipelineRecord {
   id: string;
-  knowledge_profile_id?: string | null;
+  knowledge_product_id?: string | null;
   name: string;
   description: string;
   rag_strategy: string;
@@ -196,7 +196,7 @@ export interface CreatePipelineRequest {
   scraper_max_depth?: number;
   scraper_max_pages?: number;
   scraper_mode?: string;
-  knowledge_profile_id?: string;
+  knowledge_product_id?: string;
 }
 export interface PipelinePatchRequest {
   directory_names?: string[];
@@ -273,6 +273,7 @@ export interface KnowledgeDestinationOption {
   name: string;
   category: string;
   description: string;
+  namespace_fields?: string[];
   default_config: Record<string, unknown>;
   fields?: KnowledgeDestinationField[];
 }
@@ -291,6 +292,7 @@ export interface LiteLLMModelsResponse {
 
 export interface KnowledgeDestinationConfig {
   id?: string;
+  knowledge_product_id?: string;
   destination_type: string;
   enabled: boolean;
   config: Record<string, unknown>;
@@ -299,7 +301,7 @@ export interface KnowledgeDestinationConfig {
   error_message?: string | null;
 }
 
-export interface KnowledgeProfileSource {
+export interface KnowledgeProductSource {
   source_id: string;
   name: string;
   source_type?: string | null;
@@ -311,30 +313,62 @@ export interface KnowledgeProfileSource {
   last_sync_at?: string | null;
 }
 
-export interface KnowledgeProfile {
+export interface KnowledgeProduct {
   id: string;
   name: string;
   description?: string | null;
   enabled: boolean;
+  monitor_mode: "live" | "scheduled";
+  sync_interval_seconds?: number | null;
+  sync_interval_minutes?: number | null;
   status: string;
   error_message?: string | null;
   last_sync_at?: string | null;
   created_at?: string;
   updated_at?: string;
-  sources: KnowledgeProfileSource[];
+  sources: KnowledgeProductSource[];
   destinations: KnowledgeDestinationConfig[];
   pipelines?: PipelineRecord[];
+  files_total: number;
+  files_synced: number;
+  files_pending: number;
+  files_failed: number;
+  pages_indexed: number;
 }
-export interface KnowledgeProfileCreateRequest {
+
+export interface KnowledgeProductCreateRequest {
   name: string;
   description?: string;
   enabled?: boolean;
+  monitor_mode?: "live" | "scheduled";
+  sync_interval_seconds?: number | null;
+  sync_interval_minutes?: number | null;
   source_ids?: string[];
   destinations?: {
     destination_type: string;
     enabled: boolean;
     config: Record<string, unknown>;
   }[];
+}
+
+export interface ProductFileEntry {
+  id: string;
+  file_key: string;
+  source_id: string;
+  source_name: string;
+  status: string;
+  pages_indexed: number;
+  size_bytes: number | null;
+  etag: string | null;
+  destinations_synced: string[];
+  error_message: string | null;
+  last_synced_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ProductFilesResponse {
+  files: ProductFileEntry[];
+  total: number;
 }
 
 export interface TestConnectionResponse {
@@ -344,72 +378,120 @@ export interface TestConnectionResponse {
   details?: Record<string, unknown>;
 }
 
-export interface KnowledgeSyncResponse {
-  status: string;
-  profile_id: string;
-  files_processed: number;
-  destinations_synced: string[];
-  details?: Record<string, unknown>;
-}
 export async function getDestinationOptions(): Promise<KnowledgeDestinationOption[]> {
-  return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-profiles/destinations/options");
+  return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-products/destinations/options");
 }
 
 export async function getLiteLLMModels(modelKind: "all" | "embedding" | "chat" | "sparse" = "all"): Promise<LiteLLMModelsResponse> {
-  return apiFetch<LiteLLMModelsResponse>(`/api/knowledge-profiles/config/litellm-models?model_kind=${modelKind}`);
+  return apiFetch<LiteLLMModelsResponse>(`/api/knowledge-products/config/litellm-models?model_kind=${modelKind}`);
 }
 
-export async function listKnowledgeProfiles(): Promise<KnowledgeProfile[]> {
-  return apiFetch<KnowledgeProfile[]>("/api/knowledge-profiles");
+export async function listKnowledgeProducts(): Promise<KnowledgeProduct[]> {
+  return apiFetch<KnowledgeProduct[]>("/api/knowledge-products");
 }
 
-export async function getKnowledgeProfile(profileId: string): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`);
+export async function getKnowledgeProduct(productId: string): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`);
 }
 
-export async function createKnowledgeProfile(
-  body: KnowledgeProfileCreateRequest
-): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>("/api/knowledge-profiles", {
+export async function createKnowledgeProduct(
+  body: KnowledgeProductCreateRequest
+): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>("/api/knowledge-products", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-export async function updateKnowledgeProfile(
-  profileId: string,
-  body: Partial<KnowledgeProfileCreateRequest>
-): Promise<KnowledgeProfile> {
-  return apiFetch<KnowledgeProfile>(`/api/knowledge-profiles/${profileId}`, {
-    method: "PUT",
+export async function updateKnowledgeProduct(
+  productId: string,
+  body: Partial<KnowledgeProductCreateRequest>
+): Promise<KnowledgeProduct> {
+  return apiFetch<KnowledgeProduct>(`/api/knowledge-products/${productId}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-export async function deleteKnowledgeProfile(profileId: string): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/api/knowledge-profiles/${profileId}`, {
+export async function deleteKnowledgeProduct(productId: string): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/api/knowledge-products/${productId}`, {
     method: "DELETE",
   });
 }
 
 export async function testDestinationConnection(
-  profileId: string,
+  productId: string,
   destinationType: string,
   config: Record<string, any>
 ): Promise<TestConnectionResponse> {
-  return apiFetch<TestConnectionResponse>(`/api/knowledge-profiles/${profileId}/test-connection`, {
+  return apiFetch<TestConnectionResponse>(`/api/knowledge-products/${productId}/test-connection`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ destination_type: destinationType, config }),
   });
 }
 
-export async function syncKnowledgeProfile(profileId: string): Promise<KnowledgeSyncResponse> {
-  return apiFetch<KnowledgeSyncResponse>(`/api/knowledge-profiles/${profileId}/sync`, {
+export async function listProductFiles(
+  productId: string,
+  params: { status?: string; limit?: number; offset?: number } = {}
+): Promise<ProductFilesResponse> {
+  const search = new URLSearchParams();
+  if (params.status) search.set("status", params.status);
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
+  const suffix = search.toString() ? `?${search}` : "";
+  return apiFetch<ProductFilesResponse>(`/api/knowledge-products/${productId}/files${suffix}`);
+}
+
+export async function pauseProductDestination(
+  productId: string,
+  destinationId: string
+): Promise<KnowledgeDestinationConfig> {
+  return apiFetch<KnowledgeDestinationConfig>(
+    `/api/knowledge-products/${productId}/destinations/${destinationId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    }
+  );
+}
+
+export async function resumeProductDestination(
+  productId: string,
+  destinationId: string
+): Promise<KnowledgeDestinationConfig> {
+  return apiFetch<KnowledgeDestinationConfig>(
+    `/api/knowledge-products/${productId}/destinations/${destinationId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    }
+  );
+}
+
+export interface DestinationToggleResult {
+  status: string;
+  destinations: { id: string; destination_type: string; enabled: boolean; status: string }[];
+}
+
+export async function pauseAllProductDestinations(productId: string): Promise<DestinationToggleResult> {
+  return apiFetch<DestinationToggleResult>(`/api/knowledge-products/${productId}/pause-all`, {
     method: "POST",
   });
+}
+
+export async function resumeAllProductDestinations(productId: string): Promise<DestinationToggleResult> {
+  return apiFetch<DestinationToggleResult>(`/api/knowledge-products/${productId}/resume-all`, {
+    method: "POST",
+  });
+}
+
+export function productEventsPath(productId: string): string {
+  return `/api/knowledge-products/${productId}/events`;
 }
 
 export interface DestinationInspectData {
@@ -438,23 +520,9 @@ export interface DestinationInspectData {
     content?: string;
     score?: number;
   }>;
-  // Neo4j
-  nodes?: Array<{
-    id: string;
-    label: string;
-    type: string;
-    color: string;
-    snippet?: string;
-  }>;
-  links?: Array<{
-    source: string;
-    target: string;
-    label: string;
-  }>;
-  total_nodes?: number;
-  total_edges?: number;
   // PGVector Relational
   table_name?: string;
+  schema_name?: string;
   total_rows?: number;
   rows?: Array<{
     id: number;
@@ -467,7 +535,6 @@ export interface DestinationInspectData {
   prefix?: string;
   total_cached_keys?: number;
   used_memory_human?: string;
-  cache_hit_rate?: number;
   keys?: Array<{
     key: string;
     ttl: number;
@@ -476,11 +543,11 @@ export interface DestinationInspectData {
 }
 
 export async function inspectDestinationStore(
-  profileId: string,
+  productId: string,
   destinationType: string
 ): Promise<DestinationInspectData> {
   return apiFetch<DestinationInspectData>(
-    `/api/knowledge-profiles/${profileId}/inspect/${destinationType}`
+    `/api/knowledge-products/${productId}/inspect/${destinationType}`
   );
 }
 
@@ -1329,20 +1396,5 @@ export async function getSourceFileContent(sourceId: string, key: string): Promi
     throw new Error(`Failed to fetch file content: ${res.statusText}`);
   }
   return res.text();
-}
-export async function triggerConnectorSync(sourceId: string, _connectorId?: string): Promise<TriggerSyncResponse> {
-  return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
-}
-
-export interface TriggerSyncResponse {
-  status: string;
-  source_id?: string;
-  connector_type?: string;
-  minio_bucket?: string;
-  message?: string;
-}
-
-export async function triggerSourceSync(sourceId: string): Promise<TriggerSyncResponse> {
-  return apiFetch<TriggerSyncResponse>(`/api/sources/${sourceId}/sync`, { method: "POST" });
 }
 
