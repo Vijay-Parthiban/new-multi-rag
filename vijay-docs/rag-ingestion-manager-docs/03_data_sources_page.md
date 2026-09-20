@@ -311,8 +311,8 @@ Two checks cover this page.
 **2. Unit tests.** `backend/tests/test_connector_config_validation.py` (7 cases) pins the validator contract that decides whether a connector ever syncs:
 
 ```
-cd rag-ingestion-manager/backend && python -m pytest tests -q
-# 14 passed
+cd rag-ingestion-manager/backend && uv run pytest tests -q
+# 23 passed
 ```
 
 Frontend: `npx tsc --noEmit` reports no errors and `npx vite build` succeeds.
@@ -335,7 +335,7 @@ Measured against the running API on a connector created with `monitor_mode: "sch
 | Sources page pause toggle | card button flips Pause All ⇄ Resume All, subtitle flips to "Paused — polling stopped", banner names the connector count | pass |
 | Detail page pause | header `Pause All Connectors`, per-connector `Pause` → `Resume`, mode line shows "Paused", badge shows `Paused` | pass |
 
-`pytest tests -q` → 14 passed. `npx tsc --noEmit` → no errors. `npx vite build` → succeeds.
+`uv run pytest tests -q` → 23 passed (14 at the time of this run; the Knowledge Products work added `test_knowledge_product_files.py`). `npx tsc --noEmit` → no errors. `npx vite build` → succeeds.
 
 ## 8. Known limitations
 

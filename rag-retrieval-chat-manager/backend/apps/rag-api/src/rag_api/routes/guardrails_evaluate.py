@@ -18,7 +18,7 @@ from eval_core.guardrails_runner import (
     aggregate_guardrails_metrics,
     evaluate_guardrails_item,
 )
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
 from rag_db.repositories.guardrails_evaluation_repository import GuardrailsEvaluationRepository

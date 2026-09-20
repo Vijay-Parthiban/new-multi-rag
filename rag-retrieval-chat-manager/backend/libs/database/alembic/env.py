@@ -2,7 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from rag_db.models.base import Base
-from rag_db.models import chat, evaluation  # noqa: F401
+from rag_db.models import chat, evaluation, guardrails  # noqa: F401
 from rag_shared.config import get_settings
 
 config = context.config

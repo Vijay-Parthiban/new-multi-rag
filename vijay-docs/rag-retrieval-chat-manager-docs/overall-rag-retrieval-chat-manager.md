@@ -33,7 +33,7 @@ Repository layout:
      v                      v                       v                 v
  Qdrant :6333        LiteLLM proxy :4000      guardrails-service   Redis :6379/0
  scrape_embeddings   embeddings / rerank /    POST /parse/{guard}  RQ queue "eval"
- dense + sparse      chat / vision models     (default :8002)
+ dense + sparse      chat / vision models     (compose maps 18000)
  named vectors, RRF                                              |
      ^                      ^                                    v
      |                      |                       +----------------------------+
@@ -48,14 +48,45 @@ Repository layout:
 
 | Process | Entrypoint | Port | Notes |
 |---|---|---|---|
-| rag-api | `rag_api.main:run` → `uvicorn rag_api.main:app` | 8001 (`API_PORT`) | `rag_shared/config.py:50`; compose maps `8001:8001` |
-| eval-worker | `eval_worker.main:run` → `rq worker eval` | none | Consumes RQ queue `eval`; `rq_eval_queue` default `rag_shared/config.py:18` |
-| migrate | `rag-db-migrate` (`rag_db.migrate:main`) | none | Runs Alembic to head before api/worker start |
-| frontend (dev) | `npm run dev` (Vite) | 5174 | `frontend/vite.config.ts:6` |
-| Qdrant | external | 6333 | `qdrant_url` default `rag_shared/config.py:20` |
-| LiteLLM proxy | external | 4000 | `litellm_base_url` default `rag_shared/config.py:24` |
-| guardrails-service | external (`guardrails-service/`) | default 8002 | `rag_shared/guardrails_client.py:13` |
+| rag-api | `rag_api.main:run` → `uvicorn rag_api.main:app` | 8001 (`API_PORT`) | compose maps `8001:8001` |
+| eval-worker | `eval_worker.main:run` → `rq worker eval` | none | Consumes RQ queue `eval`; `rq_eval_queue` default `redis://…/0` |
+| migrate | `rag-db-migrate` (`rag_db.migrate:main`) | none | Runs Alembic to head before api/worker start. Resolves `libs/database` via `/app/libs/database` in Docker, else `parents[2]` of `migrate.py` |
+| frontend (dev) | `vite --force` | 5174 | `frontend/vite.config.ts`. No dev proxy: the browser calls 8001 and 8007 directly, so those APIs must send CORS headers |
+| Postgres (rag DB) | container `postgres` | 5432 | database `rag`, role `crawler` |
+| Redis | container `redis` | 6379 | RQ queue `eval` only; db 0 |
+| Qdrant | container | 6333 | `qdrant_url`; holds `scrape_embeddings`, written by the scraper |
+| LiteLLM proxy | host process | 4000 | `litellm_base_url` — embeddings, rerank, chat, vision |
+| guardrails-service | `guardrails-service/server.py` | 18000 → 8000 | compose maps `18000:8000`; `rag_shared/guardrails_client.py` default is `http://localhost:8002`, so the client default and the compose port disagree |
+| web-scrapper API | `web-scrapper-workspace` | 8000 | `SCRAPER_URL`; source of the crawl/scrape jobs the Tracking page lists |
 | rag-ingestion-manager | external | 8007 | Knowledge Products proxy target |
+| otel-collector | container `otel` | 4317 / 4318 | OTLP; absent from a native run, so set `OTEL_TRACING_ENABLED=false` |
+
+### 3.1 Local (non-Docker) run
+
+The Docker images need `rag-app-workspace/`, which no longer exists, so the services run natively. `backend/.env` holds Docker service hostnames (`postgres`, `redis`, `qdrant`), so pass host overrides as process environment — a real env var beats the `.env` file in pydantic-settings.
+
+```bash
+cd rag-retrieval-chat-manager/backend
+uv sync --all-packages                      # required: uv sync alone installs only the root
+
+# Prerequisites, once: a `rag` database and a `crawler` role in the running Postgres.
+DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" uv run rag-db-migrate
+
+DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" \
+REDIS_URL="redis://localhost:6379/0" \
+QDRANT_URL="http://localhost:6333" \
+LITELLM_BASE_URL="http://localhost:4000" \
+OTEL_TRACING_ENABLED=false \
+  uv run uvicorn rag_api.main:app --host 0.0.0.0 --port 8001
+
+# eval worker, same env
+uv run rq worker eval --url redis://localhost:6379/0
+
+# frontend — no .env needed; api.ts defaults to 8007 and 8001
+cd ../frontend && node node_modules/vite/bin/vite.js --force --host 0.0.0.0 --port 5174
+```
+
+`npx vite` cannot spawn on Windows (`os error 193`), so call the vite entry script through `node` directly.
 
 Auth: the app registers `dependencies=[Depends(verify_api_key)]` (`apps/rag-api/src/rag_api/main.py:62`); `verify_api_key` comes from `platform_common.auth` and accepts `X-API-Key` or the `api_key` query parameter, and is a no-op when `api_key` is empty (`rag_shared/config.py:51`).
 
@@ -107,7 +138,12 @@ Postgres, SQLAlchemy 2.x via `get_session_factory()` (`libs/database/src/rag_db/
 | Online/offline eval | `golden_datasets`, `golden_dataset_items`, `evaluation_runs`, `evaluation_run_items` | `.../models/evaluation.py:14,26,41,57` |
 | Guardrails | `guardrails_configs`, `guardrails_traces`, `guardrails_golden_datasets`, `guardrails_golden_dataset_items`, `guardrails_eval_runs`, `guardrails_eval_run_items` | `.../models/guardrails.py:14,30,47,59,75,93` |
 
-Repositories: `chat_repository.py`, `evaluation_repository.py`, `guardrails_repository.py`, `guardrails_evaluation_repository.py`. Schema is versioned with Alembic (`rag_db.migrate:main`, CLI `rag-db-migrate`). Redis holds only the RQ queue (`redis_url` default `redis://redis:6379/0`); there is no semantic cache layer.
+Repositories: `chat_repository.py`, `evaluation_repository.py`, `guardrails_repository.py`, `guardrails_evaluation_repository.py`. Schema is versioned with Alembic (`rag_db.migrate:main`, CLI `rag-db-migrate`); head is `002_guardrails_tables`. Redis holds only the RQ queue (`redis_url` default `redis://redis:6379/0`); there is no semantic cache layer.
+
+Two points to know before you touch this layer:
+
+- **`get_engine()` caches one engine per URL** (`libs/database/src/rag_db/services/database.py`). It used to call `create_engine()` on every request, which opened a fresh pool and abandoned the old one; the app drained Postgres `max_connections` (97 idle `crawler` connections) and every DB-backed endpoint then answered `500`. `@lru_cache` on the engine, plus `pool_size=5, max_overflow=10`.
+- **The guardrails tables come from migration `002`, not `001`.** `001_initial_schema` predates the guardrails models, and `alembic/env.py` imported only `chat` and `evaluation`, so the six guardrails tables were never created and every guardrails page failed with "relation does not exist". `002` creates them from `Base.metadata`, so the columns cannot drift from `rag_db/models/guardrails.py`. Any new model module must be added to the `env.py` import list or it will be invisible to autogenerate.
 
 ## 8. Tracing & Observability
 
@@ -168,8 +204,20 @@ Repositories: `chat_repository.py`, `evaluation_repository.py`, `guardrails_repo
 5. **Async quality scoring**: chat-level Ragas metrics are computed by the `eval-worker` process, not in the request path; the response carries `metrics_status` (`pending` when a metrics job was enqueued, `skipped` when metrics are disabled or the turn was blocked) for the client to poll.
 
 ## 11. Known Gaps in the Working Tree
-- `POST /chat/stream` (`routes/chat.py:493`) lazily imports a query-routing module (`routes/chat.py:506`) and calls `RAGPipeline.stream_chat` / `stream_chat_self_corrective`; neither the routing module nor those pipeline methods exist in this repository (`libs/rag-core/src/rag_core/pipeline.py` implements only retrieve/rerank/chat/generate), and `PipelineConfig` has no `rag_mode` field. Streaming chat therefore cannot execute as written.
-- `Settings` (`rag_shared/config.py`) declares no guardrails URL/timeout and no `ingestion_service_url` field; the guardrails client default (`http://localhost:8002`) and the proxy default (`http://localhost:8007`) are the effective values.
+
+Open:
+
+- `POST /chat/stream` (`routes/chat.py:493`) lazily imports a query-routing module (`routes/chat.py:506`) and calls `RAGPipeline.stream_chat` / `stream_chat_self_corrective`; neither the routing module nor those pipeline methods exist in this repository (`libs/rag-core/src/rag_core/pipeline.py` implements only retrieve/rerank/chat/generate), and `PipelineConfig` has no `rag_mode` field. Streaming chat therefore cannot execute as written. The Chat page does not call it, so the page loads.
+- `Settings` (`rag_shared/config.py`) declares no guardrails URL/timeout and no `ingestion_service_url` field; the guardrails client default (`http://localhost:8002`) and the proxy default (`http://localhost:8007`) are the effective values. The guardrails client default does not match the compose mapping (`18000:8000`), so a guard actually evaluated in chat needs `GUARDRAILS_URL` set by hand.
+- The guardrails service is not part of the native run. The three Guardrails pages read and write through `rag-api`, so they load and work; only live guard evaluation during a chat needs the separate service on 18000.
+- `uv run pytest tests/unit -q` → **20 failed, 32 passed**, and this predates the 2026-09-20 fixes. Two causes: `test_dataset_upload.py` asserts the golden dataset holds ≥20 items while the committed file holds 5, and `test_stats.py` fails only when the whole suite runs together (each test passes alone).
+
+Fixed on 2026-09-20 and no longer open:
+
+- The four `DELETE` routes that annotate `-> Response` now import it. Without the import `/openapi.json` returned 500 with a Pydantic `class-not-fully-defined` error.
+- `routes/prompts.py` calls `has_override` / `write_override` / `clear_override` with the current `(package, name)` signature. It previously passed a filename alone, so `GET /prompts` returned 500.
+- `libs/vector-core/pyproject.toml` resolves `platform-common` four levels up. It said three, which made `uv sync` fail outside Docker.
+- `rag_db.migrate` finds `libs/database` via `parents[2]`. It said `parents[1]`, which is `libs/database/src` and holds no `alembic.ini`.
 
 ## 12. Related Documentation
 - [12 — Evaluation Metrics Reference](./12_evaluation_metrics_reference.md)

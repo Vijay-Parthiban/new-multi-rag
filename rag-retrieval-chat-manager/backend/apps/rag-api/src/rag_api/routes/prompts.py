@@ -173,7 +173,7 @@ def list_prompts() -> PromptListResponse:
                 package=meta.package,
                 label=meta.label,
                 description=meta.description,
-                is_overridden=has_override(meta.filename),
+                is_overridden=has_override(meta.package, meta.filename),
                 preview=preview,
             )
         )
@@ -188,7 +188,7 @@ def list_prompts() -> PromptListResponse:
 def update_prompts_bulk(body: BulkUpdateRequest) -> PromptListResponse:
     for item in body.items:
         meta = _get_meta(item.id)
-        write_override(meta.filename, item.content)
+        write_override(meta.package, meta.filename, item.content)
     _invalidate_caches()
     return list_prompts()
 
@@ -196,7 +196,7 @@ def update_prompts_bulk(body: BulkUpdateRequest) -> PromptListResponse:
 @router.post("/reset", response_model=ResetResponse)
 def reset_all_prompts() -> ResetResponse:
     known = [m.filename for m in PROMPT_CATALOG]
-    clear_all_overrides(known_ids=known)
+    clear_all_overrides()
     _invalidate_caches()
     return ResetResponse(reset=known, overrides_dir=str(overrides_root()))
 
@@ -211,7 +211,7 @@ def get_prompt(prompt_id: str) -> PromptDetail:
         package=meta.package,
         label=meta.label,
         description=meta.description,
-        is_overridden=has_override(meta.filename),
+        is_overridden=has_override(meta.package, meta.filename),
         packaged_content=packaged,
         active_content=_active(meta),
         overrides_dir=str(overrides_root()),
@@ -221,7 +221,7 @@ def get_prompt(prompt_id: str) -> PromptDetail:
 @router.put("/{prompt_id}", response_model=PromptDetail)
 def update_prompt(prompt_id: str, body: UpdatePromptRequest) -> PromptDetail:
     meta = _get_meta(prompt_id)
-    write_override(meta.filename, body.content)
+    write_override(meta.package, meta.filename, body.content)
     _invalidate_caches()
     return get_prompt(meta.id)
 
@@ -229,6 +229,6 @@ def update_prompt(prompt_id: str, body: UpdatePromptRequest) -> PromptDetail:
 @router.post("/{prompt_id}/reset", response_model=PromptDetail)
 def reset_prompt(prompt_id: str) -> PromptDetail:
     meta = _get_meta(prompt_id)
-    clear_override(meta.filename)
+    clear_override(meta.package, meta.filename)
     _invalidate_caches()
     return get_prompt(meta.id)

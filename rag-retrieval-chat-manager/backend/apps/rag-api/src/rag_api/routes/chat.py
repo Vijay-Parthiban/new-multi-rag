@@ -4,7 +4,7 @@ import uuid
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from rag_core import PipelineRequest
 from rag_db.models.chat import ChatPipelineTrace

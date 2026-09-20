@@ -109,24 +109,28 @@ No template variables are substituted anywhere. The strings contain literal `{co
 
 ---
 
-## 6. Known Implementation Caveats (verified in the current tree)
-The route handlers call the override helpers with the wrong argument lists, so every endpoint in Section 3 raises `TypeError`. Verified by direct invocation of the route functions:
+## 6. Resolved Implementation Caveat (2026-09-20)
+Every handler in Section 3 previously raised `TypeError`: the route called the override helpers with a filename alone, while the helpers take `(package_name, name)`. Fixed on 2026-09-20; all six call sites now pass `meta.package` as well. The table records what was wrong and the signature each call must satisfy.
 
-| Handler | Call site | Helper signature |
+| Handler | Was | Helper signature |
 |---|---|---|
 | `list_prompts` | `has_override(meta.filename)` (`routes/prompts.py:176`) | `has_override(package_name, name)` (`prompt_overrides.py:21`) |
 | `get_prompt` | `has_override(meta.filename)` (`routes/prompts.py:214`) | same |
 | `update_prompt` | `write_override(meta.filename, body.content)` (`routes/prompts.py:224`) | `write_override(package_name, name, content)` (`prompt_overrides.py:32`) |
 | `update_prompts_bulk` | `write_override(meta.filename, item.content)` (`routes/prompts.py:191`) | same |
 | `reset_prompt` | `clear_override(meta.filename)` (`routes/prompts.py:232`) | `clear_override(package_name, name)` (`prompt_overrides.py:37`) |
-| `reset_all_prompts` | `clear_all_overrides(known_ids=known)` (`routes/prompts.py:199`) | `clear_all_overrides()` (`prompt_overrides.py:45`) |
+| `reset_all_prompts` | `clear_all_overrides(known_ids=known)` (`routes/prompts.py:199`) | `clear_all_overrides()` — takes no arguments (`prompt_overrides.py:45`) |
 
-Observed results: `list_prompts` -> `TypeError: has_override() missing 1 required positional argument: 'name'`; `reset_all_prompts` -> `TypeError: clear_all_overrides() got an unexpected keyword argument 'known_ids'`; `get_prompt` / `update_prompt` / `reset_prompt` fail the same way. Consequence for the page: loading the list or saving/resetting an override surfaces the API error, and the "Overrides dir" line, badges and editor are never populated.
+Observed before the fix: `list_prompts` -> `TypeError: has_override() missing 1 required positional argument: 'name'`; `reset_all_prompts` -> `TypeError: clear_all_overrides() got an unexpected keyword argument 'known_ids'`. `GET /prompts` returned 500, so the page showed only its error state.
+
+After the fix `GET /prompts` returns 200 with all six catalog entries and the overrides directory. `reset_all_prompts` reports the catalog filenames and `clear_all_overrides()` clears every `*.txt` under the temp overrides directory, which only this route writes.
+
+One caveat remains: an override is keyed by `(package, name)` while `reset_all_prompts` clears the directory wholesale rather than filtering by the catalog, so it also removes an override whose catalog entry was deleted.
 
 ---
 
 ## 7. Page UI Behaviour
-Layout and interactions as implemented in `frontend/src/pages/PromptsPage.tsx` (note: every backend call below currently fails per Section 6, so only the error state is observable end-to-end):
+Layout and interactions as implemented in `frontend/src/pages/PromptsPage.tsx`. The backend calls work as of 2026-09-20 (see Section 6), so the populated state below is observable end to end:
 
 ```
 +------------------------------------------------------------------------------------------------+

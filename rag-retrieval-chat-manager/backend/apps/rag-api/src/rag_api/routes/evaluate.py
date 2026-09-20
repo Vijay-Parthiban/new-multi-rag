@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from eval_core.dataset_schema import GoldenDatasetPayload, parse_golden_dataset_json
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
 from rag_shared.config import Settings, get_settings

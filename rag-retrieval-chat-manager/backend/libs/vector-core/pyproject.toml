@@ -12,7 +12,7 @@ dependencies = [
 
 [tool.uv.sources]
 rag-shared = { workspace = true }
-platform-common = { path = "../../../shared-libs/platform-common", editable = true }
+platform-common = { path = "../../../../shared-libs/platform-common", editable = true }
 
 [build-system]
 requires = ["hatchling"]

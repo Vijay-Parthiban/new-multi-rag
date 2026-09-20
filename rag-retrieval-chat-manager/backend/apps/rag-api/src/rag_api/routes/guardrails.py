@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from rag_db.repositories.guardrails_repository import GuardrailsRepository
 from rag_db.services.database import get_session_factory

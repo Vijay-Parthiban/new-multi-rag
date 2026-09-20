@@ -47,8 +47,16 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 
 ## Verification
 
-- Knowledge fanout E2E scripts: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py` (CRUD propagation and store isolation) and `rag-ingestion-manager/backend/scripts/e2e_knowledge_pause.py` (pause and resume)
+- Knowledge fanout E2E scripts: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py` (20 checks — CRUD propagation and store isolation) and `rag-ingestion-manager/backend/scripts/e2e_knowledge_pause.py` (14 checks — pause and resume)
 - Legacy Neo4j purge script: `rag-ingestion-manager/backend/scripts/purge_neo4j_legacy.py`
 - Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 23 passing): `tests/test_page_yielder.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_knowledge_product_files.py`, `tests/test_connector_config_validation.py`
-- Retrieval unit tests: `rag-retrieval-chat-manager/backend/tests/unit/` (16 test modules, `uv run pytest tests/unit -v`)
+- Retrieval unit tests: `rag-retrieval-chat-manager/backend/tests/unit/` — 52 tests, **20 failing** as of 2026-09-20 and the failures pre-date that day's fixes. `test_dataset_upload.py` asserts a 20-item golden dataset while the committed file holds 5; `test_stats.py` fails only when the suite runs as a whole, because each test passes alone
 - Retrieval integration test: `rag-retrieval-chat-manager/backend/tests/integration/test_qdrant_retrieve.py` (requires a reachable Qdrant)
+- Retrieval schema head: `002_guardrails_tables` (`uv run rag-db-migrate` from `rag-retrieval-chat-manager/backend`)
+
+## Running the stack
+
+`overall-detailed.md` §4 holds the commands. Two things trip people up:
+
+- The retrieval `backend/.env` uses Docker service hostnames, so a host run needs `DATABASE_URL`, `REDIS_URL` and `QDRANT_URL` passed as process environment. `uv sync --all-packages` is required; plain `uv sync` installs only the root project.
+- Two Qdrant instances can be running: host `6333` (compose-declared, holds the scraper's `scrape_embeddings`) and host `6335` (holds the ingestion fanout `kp_*` collections). Point a reader at whichever one holds the data it needs.
