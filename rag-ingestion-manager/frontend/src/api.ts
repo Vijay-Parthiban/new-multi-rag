@@ -32,9 +32,27 @@ export class ApiError extends Error {
 
 async function parseError(res: Response): Promise<never> {
   try {
-    const body = (await res.json()) as ApiErrorBody;
+    const body = (await res.json()) as ApiErrorBody & { detail?: unknown };
     if (body.error) {
       throw new ApiError(res.status, body);
+    }
+    // FastAPI serialises HTTPException as {"detail": ...}. The detail is a
+    // string, or an object that carries the message under "message". Without
+    // this every API error reached the UI as the bare statusText ("Conflict").
+    const detail = body.detail;
+    if (typeof detail === "string") {
+      throw new ApiError(res.status, { error: { code: "HTTP_ERROR", message: detail } });
+    }
+    if (detail && typeof detail === "object") {
+      const obj = detail as { code?: unknown; message?: unknown };
+      if (typeof obj.message === "string") {
+        throw new ApiError(res.status, {
+          error: {
+            code: typeof obj.code === "string" ? obj.code : "HTTP_ERROR",
+            message: obj.message,
+          },
+        });
+      }
     }
   } catch (e) {
     if (e instanceof ApiError) throw e;
@@ -287,6 +305,8 @@ export interface LiteLLMModelsResponse {
   source: "litellm" | "fallback";
   litellm_base_url: string;
   models: LiteLLMModelOption[];
+  default_embedding_model?: string;
+  default_caption_model?: string;
   warning?: string;
 }
 
@@ -299,6 +319,62 @@ export interface KnowledgeDestinationConfig {
   status?: string;
   last_sync_at?: string | null;
   error_message?: string | null;
+}
+
+export interface IngestionProfileDestinationConfig {
+  id?: string;
+  ingestion_profile_id?: string;
+  destination_type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type IngestionModalityMode = "text" | "text_images";
+
+export interface IngestionProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  chunk_size: number;
+  chunk_overlap: number;
+  modality_mode: IngestionModalityMode;
+  text_embedding_model: string;
+  caption_model?: string | null;
+  image_min_pixels: number;
+  product_count: number;
+  destinations: IngestionProfileDestinationConfig[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IngestionProfileCreateRequest {
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  modality_mode?: IngestionModalityMode;
+  text_embedding_model?: string;
+  caption_model?: string | null;
+  image_min_pixels?: number;
+  destinations?: {
+    destination_type: string;
+    enabled: boolean;
+    config: Record<string, unknown>;
+  }[];
+}
+
+export interface ApplyProfileResult {
+  status: string;
+  profile_id: string;
+  profile_name: string;
+  added: string[];
+  updated: string[];
+  removed: string[];
+  purged_files: number;
 }
 
 export interface KnowledgeProductSource {
@@ -318,6 +394,14 @@ export interface KnowledgeProduct {
   name: string;
   description?: string | null;
   enabled: boolean;
+  ingestion_profile_id?: string | null;
+  ingestion_profile_name?: string | null;
+  chunk_size?: number | null;
+  chunk_overlap?: number | null;
+  modality_mode?: IngestionModalityMode;
+  text_embedding_model?: string | null;
+  caption_model?: string | null;
+  image_min_pixels?: number | null;
   monitor_mode: "live" | "scheduled";
   sync_interval_seconds?: number | null;
   sync_interval_minutes?: number | null;
@@ -344,6 +428,7 @@ export interface KnowledgeProductCreateRequest {
   sync_interval_seconds?: number | null;
   sync_interval_minutes?: number | null;
   source_ids?: string[];
+  ingestion_profile_id?: string;
   destinations?: {
     destination_type: string;
     enabled: boolean;
@@ -492,6 +577,51 @@ export async function resumeAllProductDestinations(productId: string): Promise<D
 
 export function productEventsPath(productId: string): string {
   return `/api/knowledge-products/${productId}/events`;
+}
+
+export async function listIngestionProfiles(): Promise<IngestionProfile[]> {
+  return apiFetch<IngestionProfile[]>("/api/ingestion-profiles");
+}
+
+export async function createIngestionProfile(
+  body: IngestionProfileCreateRequest
+): Promise<IngestionProfile> {
+  return apiFetch<IngestionProfile>("/api/ingestion-profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateIngestionProfile(
+  profileId: string,
+  body: Partial<IngestionProfileCreateRequest>
+): Promise<IngestionProfile> {
+  return apiFetch<IngestionProfile>(`/api/ingestion-profiles/${profileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteIngestionProfile(
+  profileId: string
+): Promise<{ status: string; profile_id: string }> {
+  return apiFetch<{ status: string; profile_id: string }>(
+    `/api/ingestion-profiles/${profileId}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function applyProductProfile(
+  productId: string,
+  ingestionProfileId?: string
+): Promise<ApplyProfileResult> {
+  return apiFetch<ApplyProfileResult>(`/api/knowledge-products/${productId}/apply-profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ingestion_profile_id: ingestionProfileId ?? null }),
+  });
 }
 
 export interface DestinationInspectData {

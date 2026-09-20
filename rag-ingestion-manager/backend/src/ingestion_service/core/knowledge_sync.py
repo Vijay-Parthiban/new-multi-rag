@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.shared.db.models import KnowledgeProduct, KnowledgeProductSource, SourceMonitorMode
+from src.shared.queue.client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,30 @@ _SYNCING_PRODUCTS: set[uuid.UUID] = set()
 LIVE_INTERVAL_SECONDS = 3
 DEFAULT_INTERVAL_SECONDS = 300
 MIN_INTERVAL_SECONDS = 5
+# A cross-process sync lock must outlive the longest realistic fanout. A process
+# that dies mid-sync leaves the key to expire on its own.
+SYNC_LOCK_TTL_SECONDS = 900
+
+
+def _sync_lock_key(product_id: uuid.UUID) -> str:
+    return f"knowledge:sync:lock:{product_id}"
+
+
+async def _release_sync_lock(lock: Any, key: str, token: str) -> None:
+    """Release the lock, but only if this process still holds it.
+
+    The compare-and-delete runs as one script, so a lock that already expired and
+    was taken by another process is not deleted underneath it.
+    """
+    try:
+        await lock.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end",
+            1,
+            key,
+            token,
+        )
+    except Exception as exc:
+        logger.warning("knowledge_sync_lock_release_failed key=%s error=%s", key, exc)
 
 
 def resolved_interval_seconds(product: KnowledgeProduct) -> int:
@@ -127,6 +152,24 @@ async def sync_knowledge_product(product_id: uuid.UUID) -> dict[str, Any]:
         logger.info("knowledge_sync_already_in_progress product=%s", product_id)
         return {"status": "skipped", "message": "A sync is already running for this product."}
 
+    # The in-process set above does not stop a second process. The API hosts the
+    # Knowledge Product poller while the pathway worker kicks the same products
+    # after a source change, so without a shared guard both fan out one file and
+    # three stores end up with duplicate documents.
+    lock_key = _sync_lock_key(product_id)
+    lock_token = uuid.uuid4().hex
+    lock = await get_redis()
+    try:
+        acquired = await lock.set(lock_key, lock_token, nx=True, ex=SYNC_LOCK_TTL_SECONDS)
+    except Exception as exc:
+        # A lock we cannot take is not a reason to stop ingesting.
+        logger.warning("knowledge_sync_lock_unavailable product=%s error=%s", product_id, exc)
+        acquired = True
+
+    if not acquired:
+        logger.info("knowledge_sync_locked_elsewhere product=%s", product_id)
+        return {"status": "skipped", "message": "Another process is syncing this product."}
+
     _SYNCING_PRODUCTS.add(product_id)
     try:
         async with AsyncSessionLocal() as db:
@@ -167,6 +210,7 @@ async def sync_knowledge_product(product_id: uuid.UUID) -> dict[str, Any]:
             return result
     finally:
         _SYNCING_PRODUCTS.discard(product_id)
+        await _release_sync_lock(lock, lock_key, lock_token)
 
 
 async def init_all_knowledge_pollers() -> None:

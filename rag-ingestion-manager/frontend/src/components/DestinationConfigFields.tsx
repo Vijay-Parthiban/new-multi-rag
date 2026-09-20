@@ -34,6 +34,8 @@ const hintStyle: React.CSSProperties = {
 const coerceValue = (field: KnowledgeDestinationField, raw: string): unknown => {
   if (field.type === "boolean") return raw === "true"
   if (field.type === "number") {
+    // Number("") is 0, which would store a zero when the user clears the field.
+    if (raw.trim() === "") return ""
     const parsed = Number(raw)
     return Number.isNaN(parsed) ? raw : parsed
   }
@@ -213,6 +215,11 @@ export default function DestinationConfigFields({
                   <input
                     id={fieldId}
                     type={field.type === "password" ? "password" : field.type === "number" ? "number" : "text"}
+                    min={field.min ?? undefined}
+                    max={field.max ?? undefined}
+                    // Without this the browser applies step=1 and refuses a
+                    // fractional value such as BM25 k1 1.2 or b 0.75.
+                    step={field.type === "number" ? "any" : undefined}
                     value={renderValue(value)}
                     placeholder={field.placeholder || ""}
                     onChange={(e) => handleFieldChange(field, e.target.value)}

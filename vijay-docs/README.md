@@ -1,6 +1,6 @@
 # new-multi-rag — Documentation Index
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-21
 
 This folder is the canonical documentation set for the `new-multi-rag` platform. Service-level READMEs point here rather than duplicating architecture content at the repo root.
 
@@ -20,6 +20,7 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 | [03 — Data Sources](./rag-ingestion-manager-docs/03_data_sources_page.md) | Source buckets, NiFi connector catalogue, live/scheduled polling, sync, delete, file management |
 | [04 — Knowledge Store Fanout](./rag-ingestion-manager-docs/04_knowledge_store_page.md) | Knowledge products, 4 destination sinks, automatic sync, pause/resume, live fanout timeline, visualizers |
 | [05 — Document Upload (removed)](./rag-ingestion-manager-docs/05_document_upload_page.md) | Why the `/upload` page was removed, where uploads live now, and the file-format support matrix |
+| [06 — Ingestion Profiles](./rag-ingestion-manager-docs/06_ingestion_profiles_page.md) | Saved destination and chunking profiles: env-only connections, text or text-with-images modality, copy-on-create semantics, apply-profile purge and re-sync |
 
 ## RAG Retrieval & Chat Manager (`rag-retrieval-chat-manager-docs/`)
 
@@ -47,9 +48,9 @@ This folder is the canonical documentation set for the `new-multi-rag` platform.
 
 ## Verification
 
-- Knowledge fanout E2E scripts: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py` (20 checks — CRUD propagation and store isolation) and `rag-ingestion-manager/backend/scripts/e2e_knowledge_pause.py` (14 checks — pause and resume)
+- Knowledge E2E scripts, all green against the live four stores on 2026-09-21: `rag-ingestion-manager/backend/scripts/e2e_knowledge_fanout.py` (21 checks — CRUD propagation, store isolation, a supplied store name overwritten by the derived one), `e2e_knowledge_pause.py` (14 checks — pause and resume), `e2e_ingestion_profiles.py` (50 checks — profile store isolation, per-page chunking, `apply-profile` re-sync and `409 PROFILE_IN_USE`) and `e2e_ingestion_modality.py` (29 checks — env-only field surface, derived dimension, `text` versus `text_images`, `422 CAPTION_MODEL_REQUIRED`)
 - Legacy Neo4j purge script: `rag-ingestion-manager/backend/scripts/purge_neo4j_legacy.py`
-- Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 23 passing): `tests/test_page_yielder.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_knowledge_product_files.py`, `tests/test_connector_config_validation.py`
+- Ingestion unit tests (`uv run pytest tests -q` from `rag-ingestion-manager/backend`, 45 passing): `tests/test_page_yielder.py`, `tests/test_page_yielder_figures.py`, `tests/test_fanout_payload.py`, `tests/test_knowledge_destination_schemas.py`, `tests/test_knowledge_product_files.py`, `tests/test_connector_config_validation.py`, `tests/test_ingestion_profile_chunking.py` and `tests/test_ingestion_modality_resolvers.py`
 - Retrieval unit tests: `rag-retrieval-chat-manager/backend/tests/unit/` — 52 tests, **20 failing** as of 2026-09-20 and the failures pre-date that day's fixes. `test_dataset_upload.py` asserts a 20-item golden dataset while the committed file holds 5; `test_stats.py` fails only when the suite runs as a whole, because each test passes alone
 - Retrieval integration test: `rag-retrieval-chat-manager/backend/tests/integration/test_qdrant_retrieve.py` (requires a reachable Qdrant)
 - Retrieval schema head: `002_guardrails_tables` (`uv run rag-db-migrate` from `rag-retrieval-chat-manager/backend`)

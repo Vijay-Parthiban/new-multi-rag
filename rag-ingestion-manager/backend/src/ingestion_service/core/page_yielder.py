@@ -4,6 +4,9 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from src.shared.db.models import DEFAULT_IMAGE_MIN_PIXELS
 
 logger = logging.getLogger(__name__)
 
@@ -12,16 +15,40 @@ logger = logging.getLogger(__name__)
 class FilePage:
     page_index: int
     text: str
+    # A rendered page PNG on the legacy Pipeline path, or a downscaled JPEG of one
+    # embedded figure when the fanout asks for figures.
     image_png: bytes | None = None
+    chunk_index: int = 0
+    modality: str = "text"
+    image_ref: dict[str, int] | None = None
 
 
-def iter_file_pages(path: Path, mime_type: str | None, original_name: str) -> Iterator[FilePage]:
-    """Yield one page at a time to limit RAM (PDF via PyMuPDF, structured formats via parsers)."""
+def iter_file_pages(
+    path: Path,
+    mime_type: str | None,
+    original_name: str,
+    *,
+    render_pages: bool = True,
+    include_figures: bool = False,
+    image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
+) -> Iterator[FilePage]:
+    """Yield one page at a time to limit RAM (PDF via PyMuPDF, structured formats via parsers).
+
+    ``render_pages`` and ``include_figures`` apply to PDFs only. ``render_pages``
+    is the Pipeline behaviour and stays the default, so the existing callers do
+    not change. The fanout passes ``render_pages=False, include_figures=True``:
+    it captions embedded figures and never needs a whole-page raster.
+    """
     suffix = path.suffix.lower()
     mime = (mime_type or "").lower()
 
     if suffix == ".pdf" or mime == "application/pdf":
-        yield from _iter_pdf_pages(path)
+        yield from _iter_pdf_pages(
+            path,
+            render_pages=render_pages,
+            include_figures=include_figures,
+            image_min_pixels=image_min_pixels,
+        )
         return
 
     if suffix == ".docx" or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
@@ -51,7 +78,35 @@ def iter_file_pages(path: Path, mime_type: str | None, original_name: str) -> It
     yield FilePage(page_index=0, text=text, image_png=None)
 
 
-def _iter_pdf_pages(path: Path) -> Iterator[FilePage]:
+def _figure_jpeg(doc: Any, xref: int, image_min_pixels: int) -> bytes | None:
+    """Downscaled JPEG for one embedded image, or None when it is too small.
+
+    Halves the dimensions while they exceed 1024 px, because vision-model cost
+    scales with image resolution.
+    """
+    import fitz
+
+    try:
+        pix = fitz.Pixmap(doc, xref)
+        if pix.n - pix.alpha >= 4:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+        if pix.width * pix.height < image_min_pixels:
+            return None
+        while max(pix.width, pix.height) > 1024:
+            pix.shrink(1)
+        return pix.tobytes("jpeg")
+    except Exception as exc:
+        logger.warning("pdf_figure_skipped xref=%s error=%s", xref, exc)
+        return None
+
+
+def _iter_pdf_pages(
+    path: Path,
+    *,
+    render_pages: bool = True,
+    include_figures: bool = False,
+    image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
+) -> Iterator[FilePage]:
     import fitz
 
     doc = fitz.open(path)
@@ -59,10 +114,27 @@ def _iter_pdf_pages(path: Path) -> Iterator[FilePage]:
         for i in range(len(doc)):
             page = doc[i]
             text = page.get_text("text") or ""
-            pix = page.get_pixmap(dpi=150)
-            png_bytes = pix.tobytes("png")
-            yield FilePage(page_index=i, text=text, image_png=png_bytes)
-            del pix
+            if render_pages:
+                pix = page.get_pixmap(dpi=150)
+                png_bytes = pix.tobytes("png")
+                yield FilePage(page_index=i, text=text, image_png=png_bytes)
+                del pix
+            else:
+                yield FilePage(page_index=i, text=text)
+
+            if not include_figures:
+                continue
+            for n, info in enumerate(page.get_images(full=True)):
+                image = _figure_jpeg(doc, info[0], image_min_pixels)
+                if image is None:
+                    continue
+                yield FilePage(
+                    page_index=i,
+                    text="",
+                    image_png=image,
+                    modality="image",
+                    image_ref={"page_index": i, "image_index": n},
+                )
     finally:
         doc.close()
 

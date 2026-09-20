@@ -18,6 +18,7 @@ import re
 import tempfile
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,9 +29,17 @@ from src.ingestion_service.core.knowledge_events import publish
 from src.ingestion_service.core.page_yielder import FilePage, iter_file_pages
 from src.ingestion_service.embeddings.client import EmbeddingClient
 from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
+from src.ingestion_service.utils.text_splitter import chunk_text
 from src.ingestion_service.vector.qdrant_store import QdrantVectorStore
 from src.shared.config.settings import get_settings
-from src.shared.db.models import KnowledgeProduct, KnowledgeProductFile
+from src.shared.db.models import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_IMAGE_MIN_PIXELS,
+    DEFAULT_MODALITY_MODE,
+    KnowledgeProduct,
+    KnowledgeProductFile,
+)
 from src.shared.storage.s3_client import get_object, list_objects
 
 logger = logging.getLogger(__name__)
@@ -39,11 +48,8 @@ _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 
 
 def _resolve_opensearch_url(dest_config: dict[str, Any], settings: Any) -> str:
-    return (
-        dest_config.get("endpoint_url")
-        or dest_config.get("url")
-        or settings.opensearch_url
-    ).rstrip("/")
+    """The OpenSearch endpoint, which is deployment configuration, not per product."""
+    return settings.opensearch_url.rstrip("/")
 
 
 def _resolve_pg_table(dest_config: dict[str, Any]) -> str:
@@ -68,14 +74,14 @@ def _normalize_pg_url(url: str | None) -> str | None:
 
 
 def pg_connection_urls(dest_config: dict[str, Any], settings: Any) -> list[str]:
-    """Candidate Postgres URLs for a destination, best first.
+    """Candidate Postgres URLs, best first.
 
-    The configured URL wins. The ingestion database is next, which is right for
-    a Postgres-backed deployment. Non-Postgres URLs are dropped: the dev default
-    is SQLite, and psycopg cannot open it.
+    The ingestion database is the only configured source; the literal is the
+    compose default for a dev deploy whose DATABASE_URL is SQLite. Non-Postgres
+    URLs are dropped, because the dev default is SQLite and psycopg cannot open
+    it.
     """
     candidates = [
-        _normalize_pg_url(dest_config.get("connection_url")),
         _normalize_pg_url(settings.database_url),
         "postgresql://ingestion:ingestion@localhost:5432/ingestion",
     ]
@@ -97,16 +103,6 @@ def connect_pg(dest_config: dict[str, Any], settings: Any):
     return None
 
 
-def _resolve_litellm(dest_config: dict[str, Any], settings: Any) -> tuple[str, str]:
-    base_url = dest_config.get("litellm_base_url") or settings.litellm_base_url
-    api_key = dest_config.get("litellm_api_key") or settings.openai_api_key
-    return base_url, api_key
-
-
-def _resolve_embedding_model(dest_config: dict[str, Any], settings: Any) -> str:
-    return dest_config.get("embedding_model") or settings.embedding_model
-
-
 def _qualified_pg_table(dest_config: dict[str, Any]) -> str:
     table_name = _resolve_pg_table(dest_config)
     schema = _pg_schema(dest_config)
@@ -116,12 +112,13 @@ def _qualified_pg_table(dest_config: dict[str, Any]) -> str:
 
 
 def _opensearch_auth(dest_config: dict[str, Any]) -> tuple[str, str] | None:
-    auth_type = (dest_config.get("auth_type") or "none").lower()
-    if auth_type == "basic":
-        username = dest_config.get("username") or ""
-        password = dest_config.get("password") or ""
-        if username:
-            return username, password
+    """Basic auth for OpenSearch, read from the deployment environment.
+
+    Returns ``None`` when no username is configured, which sends no header.
+    """
+    settings = get_settings()
+    if settings.opensearch_username:
+        return settings.opensearch_username, settings.opensearch_password
     return None
 
 
@@ -152,13 +149,226 @@ def _build_fanout_payload(
         "original_name": file_name,
         "title": file_name,
         "page_index": page.page_index,
-        "chunk_index": page.page_index,
+        "chunk_index": page.chunk_index,
+        "modality": page.modality,
+        "image_ref": page.image_ref,
+        # A caption is text, so type stays "text" and every existing retrieval
+        # consumer keeps working. modality is additive.
         "type": "text",
         "content": content,
         "text": content,
         "knowledge_product_id": str(product_id),
         "created_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _resolve_chunking(product: Any) -> tuple[int, int]:
+    """Chunk size and overlap for this product, from its Ingestion Profile.
+
+    A product with no profile keeps the values the Pipeline form uses, so an old
+    product behaves like the old default.
+    """
+    profile = getattr(product, "ingestion_profile", None)
+    if profile is None:
+        return DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+    size = int(profile.chunk_size or DEFAULT_CHUNK_SIZE)
+    overlap = int(profile.chunk_overlap or DEFAULT_CHUNK_OVERLAP)
+    # A stored row could predate the API bound, and an overlap at or above the
+    # size would emit chunks wider than the window.
+    return size, min(overlap, max(0, size - 1))
+
+
+def _chunk_pages(pages: list[FilePage], chunk_size: int, chunk_overlap: int) -> list[FilePage]:
+    """Split every page into chunks, one FilePage per chunk.
+
+    ``page_index`` keeps the source page and ``chunk_index`` counts the chunks
+    inside it. A page whose text is blank yields no chunk, which is what the
+    writers did with it before chunking existed.
+
+    ``modality`` and ``image_ref`` carry over, because a caption is a chunk of a
+    figure and every writer and the store payload need to know that.
+    """
+    out: list[FilePage] = []
+    for page in pages:
+        for index, text in enumerate(chunk_text(page.text or "", chunk_size, chunk_overlap)):
+            out.append(
+                FilePage(
+                    page_index=page.page_index,
+                    text=text,
+                    image_png=page.image_png if index == 0 else None,
+                    chunk_index=index,
+                    modality=page.modality,
+                    image_ref=page.image_ref,
+                )
+            )
+    return out
+
+
+def _assign_image_chunk_indexes(pages: list[FilePage]) -> list[FilePage]:
+    """Give every figure page a chunk_index above its page's text chunks.
+
+    A text page and its figures share ``page_index``, so figures must not restart
+    at zero or two records collide on the same Redis key and the same
+    ``(page_index, chunk_index)`` pair.
+    """
+    next_index: dict[int, int] = {}
+    for page in pages:
+        if page.modality != "image":
+            next_index[page.page_index] = max(
+                next_index.get(page.page_index, 0), page.chunk_index + 1
+            )
+    out: list[FilePage] = []
+    for page in pages:
+        if page.modality != "image":
+            out.append(page)
+            continue
+        index = next_index.get(page.page_index, 0)
+        next_index[page.page_index] = index + 1
+        out.append(replace(page, chunk_index=index))
+    return out
+
+
+CAPTION_PROMPT = (
+    "Describe this document image for a search index. State the figure type, every visible "
+    "label, axis name, number and table value. Answer in plain prose. Add no commentary."
+)
+
+
+def _resolve_modality_mode(product: Any) -> str:
+    profile = getattr(product, "ingestion_profile", None)
+    if profile is None:
+        return DEFAULT_MODALITY_MODE
+    mode = profile.modality_mode
+    return mode.value if hasattr(mode, "value") else str(mode)
+
+
+def _resolve_caption_model(product: Any) -> str:
+    """Caption model for this product. Falls back to the environment value.
+
+    The profile API rejects ``text_images`` without a caption model, so the
+    fallback only covers a row that reached the database without that check.
+    """
+    profile = getattr(product, "ingestion_profile", None)
+    stored = profile.caption_model if profile else None
+    return stored or get_settings().caption_model
+
+
+def _resolve_text_embedding_model(product: Any) -> str:
+    """The one text embedding model this product uses for every destination."""
+    profile = getattr(product, "ingestion_profile", None)
+    stored = profile.text_embedding_model if profile else None
+    return stored or get_settings().embedding_model
+
+
+def _resolve_image_min_pixels(product: Any) -> int:
+    profile = getattr(product, "ingestion_profile", None)
+    stored = profile.image_min_pixels if profile else None
+    return int(stored) if stored else DEFAULT_IMAGE_MIN_PIXELS
+
+
+def _caption_image(image_bytes: bytes, *, model: str, settings: Any) -> str:
+    """One vision-model caption for one figure. Raises on a transport or API error."""
+    import base64
+
+    import httpx
+
+    data_uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+    with httpx.Client(timeout=60.0) as client:
+        response = client.post(
+            f"{settings.litellm_base_url.rstrip('/')}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            json={
+                "model": model,
+                "temperature": 0,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": CAPTION_PROMPT},
+                            {"type": "image_url", "image_url": {"url": data_uri}},
+                        ],
+                    }
+                ],
+            },
+        )
+        response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"]).strip()
+
+
+def _caption_pages(pages: list[FilePage], *, model: str, settings: Any) -> tuple[list[FilePage], int]:
+    """Replace every figure page's bytes with a caption. Returns (pages, skipped).
+
+    A figure whose caption fails is dropped and the rest of the file continues:
+    one bad figure must not fail the file.
+    """
+    out: list[FilePage] = []
+    skipped = 0
+    for page in pages:
+        if page.modality != "image" or not page.image_png:
+            out.append(page)
+            continue
+        try:
+            caption = _caption_image(page.image_png, model=model, settings=settings)
+        except Exception as exc:
+            logger.warning(
+                "fanout_caption_failed page=%d image_ref=%s error=%s",
+                page.page_index,
+                page.image_ref,
+                exc,
+            )
+            skipped += 1
+            continue
+        if not caption:
+            skipped += 1
+            continue
+        out.append(
+            FilePage(
+                page_index=page.page_index,
+                text=caption,
+                image_png=None,
+                modality="image",
+                image_ref=page.image_ref,
+            )
+        )
+    return out, skipped
+
+
+@dataclass
+class ChunkRecord:
+    """One chunk plus the vector every vector destination reuses."""
+
+    page: FilePage
+    dense_vector: list[float] | None = None
+
+
+def _embed_records(records: list[ChunkRecord], *, model: str, settings: Any) -> None:
+    """Fill ``dense_vector`` on every record in place. One embed call per chunk.
+
+    Every vector must have the same length. The client falls back to a local model
+    when the proxy call fails, and that model has a different dimension, so a
+    partial outage inside one batch would otherwise store a mixed set of vectors.
+    A disagreement is an error, not something to store.
+    """
+    embedder = EmbeddingClient(
+        base_url=settings.litellm_base_url,
+        api_key=settings.openai_api_key,
+        model=model,
+    )
+    dimension: int | None = None
+    for record in records:
+        text = (record.page.text or "").strip()
+        if not text:
+            continue
+        vector = embedder.embed_passage(text)
+        if dimension is None:
+            dimension = len(vector)
+        elif len(vector) != dimension:
+            raise RuntimeError(
+                f"The embedder returned {len(vector)}-dimension vectors after "
+                f"{dimension}-dimension ones in the same batch. Model '{model}' "
+                "answered part of the batch; the rest fell back to a local model."
+            )
+        record.dense_vector = vector
 
 
 def _is_local_source(s: Any) -> bool:
@@ -207,7 +417,21 @@ async def execute_universal_fanout_sync(
     # for a changed or deleted file must still lose it.
     all_by_type = {d.destination_type: d for d in (product.destinations or [])}
     enabled_types = {d.destination_type for d in enabled_destinations}
+    chunk_size, chunk_overlap = _resolve_chunking(product)
     linked_sources = [s.source for s in (product.sources or []) if s.source]
+
+    settings = get_settings()
+    modality_mode = _resolve_modality_mode(product)
+    caption_model = _resolve_caption_model(product)
+    embedding_model = _resolve_text_embedding_model(product)
+    image_min_pixels = _resolve_image_min_pixels(product)
+    # Vector work is per tick, not per destination: Qdrant always needs a vector,
+    # and Postgres needs one only when its embedding column is on.
+    pg_dest = all_by_type.get("relational_pgvector")
+    pg_store_embeddings = bool(((pg_dest.config if pg_dest else {}) or {}).get("store_embeddings", True))
+    needs_vectors = "vector_qdrant" in enabled_types or (
+        "relational_pgvector" in enabled_types and pg_store_embeddings
+    )
 
     empty = {
         "status": "success",
@@ -217,6 +441,7 @@ async def execute_universal_fanout_sync(
         "files_deleted": 0,
         "files_unchanged": 0,
         "pages_processed": 0,
+        "images_skipped": 0,
         "destinations_synced": [],
     }
 
@@ -233,6 +458,7 @@ async def execute_universal_fanout_sync(
     total_deleted = 0
     total_unchanged = 0
     total_pages = 0
+    total_images_skipped = 0
     destinations_synced: list[str] = []
 
     publish(product_id, "tick_start")
@@ -329,12 +555,21 @@ async def execute_universal_fanout_sync(
                     tmp_path = Path(tmp.name)
 
                 try:
-                    pages = list(iter_file_pages(tmp_path, mime_type=None, original_name=key))
+                    source_pages = list(
+                        iter_file_pages(
+                            tmp_path,
+                            mime_type=None,
+                            original_name=key,
+                            render_pages=False,
+                            include_figures=modality_mode == "text_images",
+                            image_min_pixels=image_min_pixels,
+                        )
+                    )
                 finally:
                     if tmp_path.exists():
                         tmp_path.unlink()
 
-                if not pages:
+                if not source_pages:
                     logger.warning("fanout_no_pages file=%s", key)
                     row.etag = token
                     row.size_bytes = size
@@ -342,8 +577,35 @@ async def execute_universal_fanout_sync(
                     await db.commit()
                     continue
 
+                if modality_mode == "text_images":
+                    source_pages, images_skipped = _caption_pages(
+                        source_pages, model=caption_model, settings=settings
+                    )
+                    if images_skipped:
+                        total_images_skipped += images_skipped
+                        publish(
+                            product_id,
+                            "image_caption",
+                            file_key=key,
+                            images_skipped=images_skipped,
+                        )
+
+                pages = _chunk_pages(source_pages, chunk_size, chunk_overlap)
+                pages = _assign_image_chunk_indexes(pages)
+                if not pages:
+                    # Every page was blank. Without this the writers get an empty
+                    # list, write nothing and still report success, which marks the
+                    # destinations synced while the stores hold no documents.
+                    logger.warning("fanout_no_chunks file=%s pages=%d", key, len(source_pages))
+                    row.etag = token
+                    row.size_bytes = size
+                    row.pages_indexed = len(source_pages)
+                    row.status = "pending" if missing else "synced"
+                    await db.commit()
+                    continue
+
                 total_files += 1
-                total_pages += len(pages)
+                total_pages += len(source_pages)
                 if changed:
                     if row.id is not None and already:
                         total_updated += 1
@@ -356,6 +618,15 @@ async def execute_universal_fanout_sync(
                 for dest_type in missing:
                     publish(product_id, "destination_start", file_key=key, destination_type=dest_type)
 
+                records = [ChunkRecord(page=page) for page in pages]
+                if needs_vectors:
+                    # A failure here reaches the per-file handler below, which
+                    # leaves destinations_synced untouched so the next tick
+                    # retries every destination. No store is half-written.
+                    await asyncio.to_thread(
+                        _embed_records, records, model=embedding_model, settings=settings
+                    )
+
                 results = await asyncio.gather(
                     *[
                         _fanout_to_destination(
@@ -364,7 +635,7 @@ async def execute_universal_fanout_sync(
                             source_id=source.id,
                             product_id=product_id,
                             file_key=key,
-                            pages=pages,
+                            records=records,
                         )
                         for dest_type in missing
                     ],
@@ -399,14 +670,14 @@ async def execute_universal_fanout_sync(
                         "destination_done",
                         file_key=key,
                         destination_type=dest_type,
-                        pages=len(pages),
+                        pages=len(source_pages),
                     )
 
                 row.destinations_synced = synced
                 row.etag = token
                 row.size_bytes = size
                 row.content_hash = hashlib.sha256(data).hexdigest()
-                row.pages_indexed = len(pages)
+                row.pages_indexed = len(source_pages)
                 row.error_message = error_message
                 row.status = "synced" if set(synced) >= enabled_types else "failed" if error_message else "pending"
                 row.last_synced_at = datetime.now(UTC)
@@ -415,7 +686,7 @@ async def execute_universal_fanout_sync(
                 if error_message:
                     publish(product_id, "file_failed", source_id=str(source.id), file_key=key, error=error_message)
                 else:
-                    publish(product_id, "file_synced", source_id=str(source.id), file_key=key, pages=len(pages))
+                    publish(product_id, "file_synced", source_id=str(source.id), file_key=key, pages=len(source_pages))
             except Exception as exc:
                 logger.error(
                     "fanout_file_processing_failed bucket=%s key=%s error=%s",
@@ -480,6 +751,7 @@ async def execute_universal_fanout_sync(
         "files_deleted": total_deleted,
         "files_unchanged": total_unchanged,
         "pages_processed": total_pages,
+        "images_skipped": total_images_skipped,
         "destinations_synced": destinations_synced,
     }
 
@@ -490,9 +762,9 @@ async def _fanout_to_destination(
     source_id: uuid.UUID,
     product_id: uuid.UUID,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
-    """Fan out page content and embeddings to a specific destination engine."""
+    """Fan out chunk content and shared vectors to a specific destination engine."""
     await asyncio.to_thread(
         _sync_fanout_to_destination,
         dest_type,
@@ -500,7 +772,7 @@ async def _fanout_to_destination(
         str(source_id),
         str(product_id),
         file_key,
-        pages,
+        records,
     )
 
 
@@ -563,8 +835,8 @@ async def purge_file_from_destinations(
 def _purge_qdrant(dest_config: dict[str, Any], source_id: str, file_key: str) -> None:
     settings = get_settings()
     collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
-    url = dest_config.get("url") or settings.qdrant_url
-    api_key = dest_config.get("api_key") or settings.qdrant_api_key
+    url = settings.qdrant_url
+    api_key = settings.qdrant_api_key
     try:
         from qdrant_client import QdrantClient, models
 
@@ -624,7 +896,7 @@ def _purge_opensearch(dest_config: dict[str, Any], source_id: str, file_key: str
 
 def _purge_redis(dest_config: dict[str, Any], source_id: str, file_key: str) -> None:
     settings = get_settings()
-    url = dest_config.get("redis_url") or dest_config.get("url") or settings.redis_url
+    url = settings.redis_url
     prefix = _redis_prefix(dest_config)
     try:
         import redis
@@ -664,36 +936,30 @@ def _write_qdrant(
     source_id: str,
     product_id: str,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
     settings = get_settings()
     collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
-    url = dest_config.get("url") or settings.qdrant_url
-    api_key = dest_config.get("api_key") or settings.qdrant_api_key
-    litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
-    embedding_model = _resolve_embedding_model(dest_config, settings)
-
-    embedder = EmbeddingClient(
-        base_url=litellm_base_url,
-        api_key=litellm_api_key,
-        model=embedding_model,
-    )
+    url = settings.qdrant_url
+    api_key = settings.qdrant_api_key
 
     points = []
-    for p in pages:
-        text = p.text or ""
-        if not text.strip():
+    for record in records:
+        if not (record.page.text or "").strip():
             continue
-        emb = embedder.embed_passage(text)
+        if record.dense_vector is None:
+            # Vector work is skipped only when no enabled destination needs a
+            # vector, and then this writer is not called.
+            continue
         payload = _build_fanout_payload(
             source_id=uuid.UUID(source_id),
             product_id=uuid.UUID(product_id),
             file_key=file_key,
-            page=p,
+            page=record.page,
         )
         points.append({
             "point_id": str(uuid.uuid4()),
-            "dense_vector": emb,
+            "dense_vector": record.dense_vector,
             "payload": payload,
         })
 
@@ -701,15 +967,25 @@ def _write_qdrant(
         return
 
     qdrant = QdrantVectorStore(url=url, collection=collection_name, api_key=api_key)
-    configured_size = dest_config.get("vector_size")
-    vector_size = int(configured_size) if configured_size else len(points[0]["dense_vector"])
-    qdrant.ensure_collection(vector_size=vector_size, enable_sparse=False)
+    # The dimension comes from the model output, so a model change can never
+    # disagree with the collection.
+    vector_size = len(points[0]["dense_vector"])
+    qdrant.ensure_collection(
+        vector_size=vector_size,
+        enable_sparse=False,
+        hnsw_m=int(dest_config.get("hnsw_m") or 16),
+        hnsw_ef_construct=int(dest_config.get("hnsw_ef_construct") or 100),
+        # Recreating here would delete every point the product already has.
+        # apply-profile purges a store before a deliberate model change, so a
+        # mismatch at this point means the embedder changed under us.
+        recreate_on_mismatch=False,
+    )
     qdrant.upsert_batch(points)
     logger.info(
-        "qdrant_fanout_complete collection=%s model=%s points_count=%d",
+        "qdrant_fanout_complete collection=%s points_count=%d vector_size=%d",
         collection_name,
-        embedding_model,
         len(points),
+        vector_size,
     )
 
 
@@ -718,7 +994,7 @@ def _write_opensearch(
     source_id: str,
     product_id: str,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
     settings = get_settings()
     index_name = dest_config.get("index_name", "knowledge_lexical_index")
@@ -738,19 +1014,23 @@ def _write_opensearch(
                 }
             }
             client.put(f"{url}/{index_name}", json=index_settings, auth=auth)
-            for p in pages:
-                text = p.text or ""
+            for record in records:
+                page = record.page
+                text = page.text or ""
                 if not text.strip():
                     continue
                 payload = _build_fanout_payload(
                     source_id=uuid.UUID(source_id),
                     product_id=uuid.UUID(product_id),
                     file_key=file_key,
-                    page=p,
+                    page=page,
                 )
                 doc = {
                     "file_key": file_key,
-                    "page_index": p.page_index,
+                    "page_index": page.page_index,
+                    "chunk_index": page.chunk_index,
+                    "modality": page.modality,
+                    "image_ref": page.image_ref,
                     "content": payload["content"],
                     "text": payload["content"],
                     "source_id": payload["source_id"],
@@ -761,7 +1041,9 @@ def _write_opensearch(
                     "bm25_b": dest_config.get("bm25_b"),
                 }
                 client.post(f"{url}/{index_name}/_doc", json=doc, auth=auth)
-        logger.info("opensearch_lexical_indexed index=%s file=%s pages=%d", index_name, file_key, len(pages))
+        logger.info(
+            "opensearch_lexical_indexed index=%s file=%s docs=%d", index_name, file_key, len(records)
+        )
     except Exception as exc:
         # Re-raise: the fanout records a per-destination failure from it.
         logger.warning("opensearch_indexing_failed index=%s file=%s error=%s", index_name, file_key, exc)
@@ -773,21 +1055,13 @@ def _write_postgres(
     source_id: str,
     product_id: str,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
     settings = get_settings()
     table_name = _qualified_pg_table(dest_config)
     schema = _pg_schema(dest_config)
     store_embeddings = bool(dest_config.get("store_embeddings", True))
-    litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
-    embedding_model = _resolve_embedding_model(dest_config, settings)
-    embedder = None
-    if store_embeddings:
-        embedder = EmbeddingClient(
-            base_url=litellm_base_url,
-            api_key=litellm_api_key,
-            model=embedding_model,
-        )
+    vector_dim = next((len(r.dense_vector) for r in records if r.dense_vector), 0)
     try:
         conn = connect_pg(dest_config, settings)
         if not conn:
@@ -806,8 +1080,10 @@ def _write_postgres(
                             file_key TEXT NOT NULL,
                             source_id TEXT,
                             page_index INT NOT NULL,
+                            chunk_index INT NOT NULL DEFAULT 0,
+                            modality TEXT NOT NULL DEFAULT 'text',
                             content TEXT,
-                            embedding vector({int(dest_config.get("vector_size") or 2048)}),
+                            embedding vector({vector_dim}),
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                         );
                     """)
@@ -818,34 +1094,71 @@ def _write_postgres(
                             file_key TEXT NOT NULL,
                             source_id TEXT,
                             page_index INT NOT NULL,
+                            chunk_index INT NOT NULL DEFAULT 0,
+                            modality TEXT NOT NULL DEFAULT 'text',
                             content TEXT,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                         );
                     """)
-                # A table created by an older version has no source_id.
+                # A table created by an older version has no source_id, no
+                # chunk_index and no modality.
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS source_id TEXT")
+                cur.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS chunk_index INT NOT NULL DEFAULT 0"
+                )
+                cur.execute(
+                    f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS modality TEXT NOT NULL DEFAULT 'text'"
+                )
                 cur.execute(
                     f"CREATE INDEX IF NOT EXISTS ix_{_resolve_pg_table(dest_config)}_source_file "
                     f"ON {table_name} (source_id, file_key)"
                 )
-                for p in pages:
-                    text = p.text or ""
+                if store_embeddings and vector_dim:
+                    if vector_dim <= 2000:
+                        # The index the removed algorithm and operator fields used
+                        # to describe. Cosine is the only metric the shared
+                        # embedder is normalised for.
+                        cur.execute(
+                            f"CREATE INDEX IF NOT EXISTS ix_{_resolve_pg_table(dest_config)}_embedding "
+                            f"ON {table_name} USING hnsw (embedding vector_cosine_ops)"
+                        )
+                    else:
+                        # pgvector caps an hnsw index at 2000 dimensions for the
+                        # vector type. Above it the column is still correct and a
+                        # search is an exact scan, only slower.
+                        logger.warning(
+                            "pgvector_hnsw_skipped table=%s dimensions=%d limit=2000",
+                            table_name,
+                            vector_dim,
+                        )
+                for record in records:
+                    page = record.page
+                    text = page.text or ""
                     if not text.strip():
                         continue
-                    if store_embeddings and embedder is not None:
-                        embedding = embedder.embed_passage(text)
+                    if store_embeddings and record.dense_vector is not None:
                         cur.execute(
-                            f"INSERT INTO {table_name} (file_key, source_id, page_index, content, embedding) "
-                            "VALUES (%s, %s, %s, %s, %s)",
-                            (file_key, source_id, p.page_index, text, embedding),
+                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, content, embedding) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                file_key,
+                                source_id,
+                                page.page_index,
+                                page.chunk_index,
+                                page.modality,
+                                text,
+                                record.dense_vector,
+                            ),
                         )
                     else:
                         cur.execute(
-                            f"INSERT INTO {table_name} (file_key, source_id, page_index, content) "
-                            "VALUES (%s, %s, %s, %s)",
-                            (file_key, source_id, p.page_index, text),
+                            f"INSERT INTO {table_name} (file_key, source_id, page_index, chunk_index, modality, content) "
+                            "VALUES (%s, %s, %s, %s, %s, %s)",
+                            (file_key, source_id, page.page_index, page.chunk_index, page.modality, text),
                         )
-        logger.info("pgvector_relational_upserted table=%s file=%s pages=%d", table_name, file_key, len(pages))
+        logger.info(
+            "pgvector_relational_upserted table=%s file=%s docs=%d", table_name, file_key, len(records)
+        )
     except Exception as exc:
         logger.warning("pgvector_failed file=%s error=%s", file_key, exc)
         raise
@@ -856,7 +1169,7 @@ def _write_redis(
     source_id: str,
     product_id: str,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
     settings = get_settings()
     index_prefix = _redis_prefix(dest_config)
@@ -868,20 +1181,24 @@ def _write_redis(
 
         import redis
 
-        redis_url = dest_config.get("redis_url") or settings.redis_url
+        redis_url = settings.redis_url
         r = redis.from_url(redis_url)
-        for p in pages:
-            text = p.text or ""
+        for record in records:
+            page = record.page
+            text = page.text or ""
             if not text.strip():
                 continue
-            key = f"{base}:{p.page_index}"
+            key = f"{base}:{page.page_index}:{page.chunk_index}"
             payload = {
                 "content": text,
                 "file_key": file_key,
                 "source_id": source_id,
-                "page_index": p.page_index,
+                "page_index": page.page_index,
+                "chunk_index": page.chunk_index,
+                "modality": page.modality,
+                "image_ref": page.image_ref,
                 "similarity_threshold": dest_config.get("similarity_threshold"),
-                "embedding_model": dest_config.get("embedding_model"),
+                "embedding_model": settings.embedding_model,
             }
             if parent_child_mapping:
                 payload["parent_key"] = base
@@ -889,16 +1206,19 @@ def _write_redis(
             if parent_child_mapping:
                 r.sadd(f"{base}:children", key)
         if dest_config.get("raptor_summaries"):
-            summary_model = dest_config.get("summary_model") or "gpt-4o-mini"
-            litellm_base_url, litellm_api_key = _resolve_litellm(dest_config, settings)
-            combined = "\n".join((page.text or "")[:500] for page in pages if (page.text or "").strip())
+            summary_model = dest_config.get("summary_model") or settings.summary_model
+            combined = "\n".join(
+                (record.page.text or "")[:500]
+                for record in records
+                if (record.page.text or "").strip()
+            )
             if combined.strip():
                 import httpx
 
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(
-                        f"{litellm_base_url.rstrip('/')}/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {litellm_api_key}"},
+                        f"{settings.litellm_base_url.rstrip('/')}/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
                         json={
                             "model": summary_model,
                             "messages": [
@@ -913,13 +1233,13 @@ def _write_redis(
                     response.raise_for_status()
                     summary = response.json()["choices"][0]["message"]["content"]
                     r.set(f"{base}:summary", summary, ex=ttl_seconds)
-        logger.info("redisvl_semantic_cached prefix=%s file=%s pages=%d", index_prefix, file_key, len(pages))
+        logger.info("redisvl_semantic_cached prefix=%s file=%s docs=%d", index_prefix, file_key, len(records))
     except Exception as exc:
         logger.warning("redisvl_failed file=%s error=%s", file_key, exc)
         raise
 
 
-_WRITERS: dict[str, Callable[[dict[str, Any], str, str, str, list[FilePage]], None]] = {
+_WRITERS: dict[str, Callable[[dict[str, Any], str, str, str, list[ChunkRecord]], None]] = {
     "vector_qdrant": _write_qdrant,
     "lexical_opensearch": _write_opensearch,
     "elasticsearch": _write_opensearch,
@@ -946,11 +1266,11 @@ def _sync_fanout_to_destination(
     source_id: str,
     product_id: str,
     file_key: str,
-    pages: list[FilePage],
+    records: list[ChunkRecord],
 ) -> None:
     writer = _WRITERS.get(dest_type)
     if writer is None:
         logger.warning("fanout_destination_unsupported type=%s file=%s", dest_type, file_key)
         return
-    logger.info("fanning_out_to_destination type=%s file=%s pages=%d", dest_type, file_key, len(pages))
-    writer(dest_config, source_id, product_id, file_key, pages)
+    logger.info("fanning_out_to_destination type=%s file=%s docs=%d", dest_type, file_key, len(records))
+    writer(dest_config, source_id, product_id, file_key, records)

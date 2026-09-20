@@ -68,7 +68,25 @@ class QdrantVectorStore:
             )
         return self._async_client
 
-    def ensure_collection(self, vector_size: int, *, enable_sparse: bool = True) -> None:
+    def ensure_collection(
+        self,
+        vector_size: int,
+        *,
+        enable_sparse: bool = True,
+        hnsw_m: int | None = None,
+        hnsw_ef_construct: int | None = None,
+        recreate_on_mismatch: bool = True,
+    ) -> None:
+        """Create the collection, and make sure it matches ``vector_size``.
+
+        ``hnsw_m`` and ``hnsw_ef_construct`` apply only when the collection is
+        created. When neither is given, the Qdrant server defaults apply.
+
+        ``recreate_on_mismatch`` is the recovery path for a deliberate model
+        change: it deletes a collection whose size disagrees and builds a new one.
+        Pass ``False`` when the caller cannot afford to lose existing points, so a
+        mismatch raises instead of destroying data.
+        """
         if self._client.collection_exists(self._collection):
             info = self._client.get_collection(self._collection)
             vectors = info.config.params.vectors
@@ -80,6 +98,12 @@ class QdrantVectorStore:
                         f"'{DENSE_VECTOR_NAME}'"
                     )
                 if dense.size != vector_size:
+                    if not recreate_on_mismatch:
+                        raise ValueError(
+                            f"Qdrant collection {self._collection} holds {dense.size}-dimension "
+                            f"vectors but the embedder produced {vector_size}. The collection was "
+                            "not recreated, because that would delete every point in it."
+                        )
                     logger.warning(
                         "Collection %s dense vector size mismatch (existing=%d, new=%d); recreating collection...",
                         self._collection,
@@ -106,6 +130,12 @@ class QdrantVectorStore:
                         )
             else:
                 if vectors.size != vector_size:
+                    if not recreate_on_mismatch:
+                        raise ValueError(
+                            f"Qdrant collection {self._collection} holds {vectors.size}-dimension "
+                            f"vectors but the embedder produced {vector_size}. The collection was "
+                            "not recreated, because that would delete every point in it."
+                        )
                     logger.warning(
                         "Collection %s vector size mismatch (existing=%d, new=%d); recreating collection...",
                         self._collection,
@@ -127,6 +157,10 @@ class QdrantVectorStore:
                 SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(modifier=qmodels.Modifier.IDF)
             }
 
+        hnsw_config = None
+        if hnsw_m is not None or hnsw_ef_construct is not None:
+            hnsw_config = qmodels.HnswConfigDiff(m=hnsw_m, ef_construct=hnsw_ef_construct)
+
         self._client.create_collection(
             collection_name=self._collection,
             vectors_config={
@@ -135,6 +169,7 @@ class QdrantVectorStore:
                 )
             },
             sparse_vectors_config=sparse_vectors_config,
+            hnsw_config=hnsw_config,
         )
         logger.info(
             "qdrant_collection_created collection=%s size=%d sparse=%s",

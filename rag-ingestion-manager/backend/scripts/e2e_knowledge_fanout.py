@@ -2,7 +2,7 @@
 
 Proves, against a running ingestion API and live destination stores:
   1. Two products over the same bucket get different stores on all four sinks.
-  2. A clashing store name is rejected with 422 DESTINATION_STORE_CONFLICT.
+  2. A supplied store name cannot override the derived one.
   3. Create alone starts ingestion; there is no manual sync route.
   4. Add propagates to all four sinks.
   5. Replace updates in place instead of duplicating.
@@ -255,7 +255,10 @@ def main() -> int:
             check(bool(value_a) and value_a != value_b, f"{dest}: {key} differs", report["store_names"][dest])
             check(str(value_a).startswith("kp") or str(value_a).startswith("kp:"), f"{dest}: namespaced", value_a)
 
-        print("\n=== 3. A clashing store name is rejected ===")
+        print("\n=== 3. A supplied store name cannot override the derived one ===")
+        # The store name is no longer user input. A config that carries one is
+        # overwritten, so two products cannot collide through it and the
+        # DESTINATION_STORE_CONFLICT guard is unreachable from the API.
         clash = {
             **payload_base,
             "name": f"E2E Clash {suffix}",
@@ -268,14 +271,25 @@ def main() -> int:
             ],
         }
         resp_clash = client.post(f"{api}/api/knowledge-products", json=clash)
-        detail = resp_clash.json().get("detail") if resp_clash.status_code == 422 else {}
-        report["conflict"] = {"status": resp_clash.status_code, "detail": detail}
-        check(resp_clash.status_code == 422, "422 on a duplicate collection_name", resp_clash.text[:200])
-        check(
-            isinstance(detail, dict) and detail.get("code") == "DESTINATION_STORE_CONFLICT",
-            "DESTINATION_STORE_CONFLICT code returned",
-            detail,
-        )
+        report["conflict"] = {"status": resp_clash.status_code, "body": resp_clash.text[:200]}
+        check(resp_clash.status_code in (200, 201), "the product is created", resp_clash.text[:200])
+        if resp_clash.status_code in (200, 201):
+            clash_product = resp_clash.json()
+            created.append(clash_product["id"])
+            supplied = (a_by_type["vector_qdrant"]["config"] or {})["collection_name"]
+            received = (clash_product["destinations"][0]["config"] or {}).get("collection_name")
+            report["conflict"]["supplied"] = supplied
+            report["conflict"]["received"] = received
+            check(
+                received != supplied,
+                "the supplied store name is overwritten by the derived one",
+                received,
+            )
+            check(
+                str(received).startswith("kp"),
+                "the colliding product got its own derived store",
+                received,
+            )
 
         print("\n=== 4. Manual sync is gone ===")
         resp_sync = client.post(f"{api}/api/knowledge-products/{product_a['id']}/sync")

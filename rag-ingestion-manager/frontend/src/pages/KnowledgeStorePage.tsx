@@ -1,24 +1,24 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
+  applyProductProfile,
   createKnowledgeProduct,
   deleteKnowledgeProduct,
   deletePipeline,
   getDestinationOptions,
-  getLiteLLMModels,
+  listIngestionProfiles,
   listKnowledgeProducts,
   listSources,
   pauseAllProductDestinations,
   resumeAllProductDestinations,
   testDestinationConnection,
   updateKnowledgeProduct,
+  IngestionProfile,
   KnowledgeDestinationOption,
   KnowledgeProduct,
-  LiteLLMModelOption,
   SourceRecord,
 } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
-import DestinationConfigFields from "../components/DestinationConfigFields";
 import {
   IconClose,
   IconDatabase,
@@ -51,27 +51,26 @@ export default function KnowledgeStorePage() {
   const [formIntervalValue, setFormIntervalValue] = useState<number>(300);
   const [formIntervalUnit, setFormIntervalUnit] = useState<"seconds" | "minutes">("seconds");
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
-  const [destConfigs, setDestConfigs] = useState<
-    Record<string, { enabled: boolean; config: Record<string, unknown> }>
-  >({});
+  const [profiles, setProfiles] = useState<IngestionProfile[]>([]);
+  const [formProfileId, setFormProfileId] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [litellmModels, setLitellmModels] = useState<LiteLLMModelOption[]>([]);
-  const [litellmWarning, setLitellmWarning] = useState<string | null>(null);
   const [productToDelete, setProductToDelete] = useState<KnowledgeProduct | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [prods, srcs, destOpts] = await Promise.all([
+      const [prods, srcs, destOpts, profs] = await Promise.all([
         listKnowledgeProducts(),
         listSources(),
         getDestinationOptions(),
+        listIngestionProfiles(),
       ]);
       setProducts(prods);
       setSources(srcs);
       setDestinationOptions(destOpts);
+      setProfiles(profs);
     } catch (err: unknown) {
       console.error("Failed to load Knowledge Store data:", err);
     } finally {
@@ -83,32 +82,6 @@ export default function KnowledgeStorePage() {
     loadData();
   }, []);
 
-  const buildInitialDestConfigs = (product?: KnowledgeProduct | null) => {
-    const initialDest: Record<string, { enabled: boolean; config: Record<string, unknown> }> = {};
-    destinationOptions.forEach((opt) => {
-      const existing = product?.destinations.find((d) => d.destination_type === opt.id);
-      initialDest[opt.id] = {
-        enabled: existing ? existing.enabled : true,
-        config: {
-          ...opt.default_config,
-          ...(existing?.config || {}),
-        },
-      };
-    });
-    return initialDest;
-  };
-
-  const loadLiteLLMModels = async () => {
-    try {
-      const response = await getLiteLLMModels("all");
-      setLitellmModels(response.models);
-      setLitellmWarning(response.warning || null);
-    } catch {
-      setLitellmModels([]);
-      setLitellmWarning("Could not load LiteLLM models. You can still type model names manually.");
-    }
-  };
-
   const openCreateModal = async () => {
     setEditingProduct(null);
     setFormName("");
@@ -118,10 +91,9 @@ export default function KnowledgeStorePage() {
     setFormIntervalValue(300);
     setFormIntervalUnit("seconds");
     setSelectedSourceIds(sources.map((s) => s.id));
-    setDestConfigs(buildInitialDestConfigs());
+    setFormProfileId(profiles[0]?.id ?? "");
     setErrorMsg(null);
     setIsModalOpen(true);
-    await loadLiteLLMModels();
   };
 
   const openEditModal = async (product: KnowledgeProduct) => {
@@ -138,10 +110,9 @@ export default function KnowledgeStorePage() {
       setFormIntervalUnit("seconds");
     }
     setSelectedSourceIds(product.sources.map((s) => s.source_id));
-    setDestConfigs(buildInitialDestConfigs(product));
+    setFormProfileId(product.ingestion_profile_id || "");
     setErrorMsg(null);
     setIsModalOpen(true);
-    await loadLiteLLMModels();
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -154,19 +125,13 @@ export default function KnowledgeStorePage() {
       setErrorMsg("Select at least one MinIO bucket source.");
       return;
     }
-    if (!Object.values(destConfigs).some((d) => d.enabled)) {
-      setErrorMsg("Enable at least one destination.");
+    if (!formProfileId) {
+      setErrorMsg("Select an ingestion profile.");
       return;
     }
 
     setSaving(true);
     setErrorMsg(null);
-
-    const formattedDestinations = Object.entries(destConfigs).map(([destination_type, val]) => ({
-      destination_type,
-      enabled: val.enabled,
-      config: val.config,
-    }));
 
     const schedule =
       formMonitorMode === "live"
@@ -182,16 +147,20 @@ export default function KnowledgeStorePage() {
           description: formDescription,
           enabled: formEnabled,
           source_ids: selectedSourceIds,
-          destinations: formattedDestinations,
           ...schedule,
         });
+        // PATCH cannot attach a profile: attaching copies destination rows and
+        // purges the stores it removes, which belongs to apply-profile alone.
+        if (formProfileId !== editingProduct.ingestion_profile_id) {
+          await applyProductProfile(editingProduct.id, formProfileId);
+        }
       } else {
         await createKnowledgeProduct({
           name: formName,
           description: formDescription,
           enabled: formEnabled,
           source_ids: selectedSourceIds,
-          destinations: formattedDestinations,
+          ingestion_profile_id: formProfileId,
           ...schedule,
         });
       }
@@ -294,6 +263,8 @@ export default function KnowledgeStorePage() {
     (acc, p) => acc + p.destinations.filter((d) => d.enabled).length,
     0
   );
+
+  const selectedProfile = profiles.find((p) => p.id === formProfileId) || null;
 
   return (
     <div className="page-container" style={{ padding: "24px", maxWidth: "1400px", margin: "0 auto" }}>
@@ -533,6 +504,13 @@ export default function KnowledgeStorePage() {
                         {product.status.toUpperCase()}
                       </span>
                       <span className="status-badge status-paused">{monitorLabel(product)}</span>
+                      {product.ingestion_profile_name ? (
+                        <span className="status-badge status-paused">
+                          {product.ingestion_profile_name}
+                        </span>
+                      ) : (
+                        <span className="status-badge status-failed">Legacy: inline config</span>
+                      )}
                     </div>
                     {product.description && (
                       <p style={{ margin: "6px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
@@ -1029,6 +1007,94 @@ export default function KnowledgeStorePage() {
                   />
                 </div>
 
+                {/* Ingestion Profile */}
+                <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "baseline",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    <label
+                      htmlFor="ingestion-profile"
+                      style={{ fontSize: "13px", fontWeight: 600, color: "#cbd5e1" }}
+                    >
+                      Ingestion Profile *
+                    </label>
+                    <Link
+                      to="/ingestion-profiles"
+                      style={{ fontSize: "12px", color: "#7dd3fc" }}
+                    >
+                      Manage Ingestion Profiles
+                    </Link>
+                  </div>
+                  <select
+                    id="ingestion-profile"
+                    value={formProfileId}
+                    onChange={(e) => setFormProfileId(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "10px 14px",
+                      borderRadius: "10px",
+                      background: "rgba(30, 41, 59, 0.8)",
+                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                      color: "#f8fafc",
+                      fontSize: "14px",
+                    }}
+                  >
+                    <option value="">Select an ingestion profile</option>
+                    {profiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {profiles.length === 0 && (
+                    <div style={{ fontSize: "12px", color: "#fbbf24", marginTop: "6px" }}>
+                      No Ingestion Profiles yet. <Link to="/ingestion-profiles">Create one first.</Link>
+                    </div>
+                  )}
+                  <div style={{ fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                    Store names are assigned to this product when it is created.
+                  </div>
+
+                  {selectedProfile && (
+                    <div
+                      style={{
+                        marginTop: "12px",
+                        padding: "12px 14px",
+                        borderRadius: "10px",
+                        background: "rgba(30, 41, 59, 0.5)",
+                        border: "1px solid rgba(255, 255, 255, 0.08)",
+                      }}
+                    >
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+                        {selectedProfile.destinations.filter((dest) => dest.enabled).map((dest) => (
+                          <span
+                            key={dest.destination_type}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "999px",
+                              background: "rgba(30, 41, 59, 0.9)",
+                              border: "1px solid rgba(255, 255, 255, 0.1)",
+                              fontSize: "12px",
+                              color: "#cbd5e1",
+                            }}
+                          >
+                            {destinationOptions.find((o) => o.id === dest.destination_type)?.name ||
+                              dest.destination_type}
+                          </span>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#94a3b8" }}>
+                        Chunk {selectedProfile.chunk_size} / {selectedProfile.chunk_overlap}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Sync schedule */}
                 <div
                   style={{
@@ -1192,91 +1258,6 @@ export default function KnowledgeStorePage() {
                       );
                     })
                   )}
-                </div>
-              </div>
-
-              {/* Destination Configurations */}
-              <div style={{ marginBottom: "32px" }}>
-                <label style={{ display: "block", fontSize: "14px", fontWeight: 700, color: "#cbd5e1", marginBottom: "12px" }}>
-                  Configure Destination Stores
-                </label>
-                {litellmWarning && (
-                  <div style={{ fontSize: "12px", color: "#fbbf24", marginBottom: "10px" }}>
-                    {litellmWarning}
-                  </div>
-                )}
-                {litellmModels.length > 0 && (
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
-                    LiteLLM models loaded: {litellmModels.length} available for embedding, chat, and sparse fields.
-                  </div>
-                )}
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                  {destinationOptions.map((opt) => {
-                    const current = destConfigs[opt.id] || { enabled: true, config: opt.default_config };
-                    return (
-                      <div
-                        key={opt.id}
-                        style={{
-                          background: "rgba(30, 41, 59, 0.5)",
-                          border: "1px solid rgba(255, 255, 255, 0.08)",
-                          borderRadius: "12px",
-                          padding: "16px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            marginBottom: "12px",
-                          }}
-                        >
-                          <div>
-                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#38bdf8", textTransform: "uppercase" }}>
-                              {opt.category}
-                            </span>
-                            <h4 style={{ margin: "2px 0 0 0", fontSize: "15px", fontWeight: 700, color: "#f8fafc" }}>
-                              {opt.name}
-                            </h4>
-                          </div>
-
-                          <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-                            <span style={{ fontSize: "12px", color: "#94a3b8" }}>Enable Fanout</span>
-                            <input
-                              type="checkbox"
-                              checked={current.enabled}
-                              onChange={(e) => {
-                                setDestConfigs({
-                                  ...destConfigs,
-                                  [opt.id]: { ...current, enabled: e.target.checked },
-                                });
-                              }}
-                            />
-                          </label>
-                        </div>
-
-                        {current.enabled && (
-                          <div style={{ marginTop: "12px" }}>
-                            <DestinationConfigFields
-                              option={opt}
-                              config={current.config}
-                              litellmModels={litellmModels}
-                              onChange={(nextConfig) => {
-                                setDestConfigs({
-                                  ...destConfigs,
-                                  [opt.id]: {
-                                    ...current,
-                                    config: nextConfig,
-                                  },
-                                });
-                              }}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
                 </div>
               </div>
 

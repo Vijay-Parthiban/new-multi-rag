@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  applyProductProfile,
   getDestinationOptions,
   getKnowledgeProduct,
   getLiteLLMModels,
@@ -18,6 +19,7 @@ import {
 } from "../api";
 import { useProductEvents } from "../hooks/useProductEvents";
 import DestinationConfigFields from "../components/DestinationConfigFields";
+import ConfirmDialog from "../components/ConfirmDialog";
 import StatusBadge from "../components/StatusBadge";
 import {
   IconClock,
@@ -26,6 +28,7 @@ import {
   IconFile,
   IconGrid,
   IconPause,
+  IconPipeline,
   IconPlay,
   IconRefresh,
   IconSources,
@@ -59,6 +62,10 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
   const [editingDestination, setEditingDestination] = useState<KnowledgeDestinationConfig | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, unknown>>({});
   const [savingDestination, setSavingDestination] = useState<boolean>(false);
+
+  const [applyOpen, setApplyOpen] = useState<boolean>(false);
+  const [applying, setApplying] = useState<boolean>(false);
+  const [applyStatus, setApplyStatus] = useState<string | null>(null);
 
   const { events, connected } = useProductEvents(id || null);
 
@@ -102,6 +109,25 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
       .then((res) => setLitellmModels(res.models))
       .catch(() => setLitellmModels([]));
   }, []);
+
+  const handleApplyProfile = async () => {
+    if (!id) return;
+    setApplying(true);
+    try {
+      const result = await applyProductProfile(id);
+      setApplyStatus(
+        `Applied "${result.profile_name}": +${result.added.length} added, ` +
+          `${result.updated.length} updated, ${result.removed.length} removed, ` +
+          `${result.purged_files} purged.`
+      );
+      await load();
+    } catch (err: unknown) {
+      setApplyStatus(err instanceof Error ? err.message : "Failed to apply the Ingestion Profile.");
+    } finally {
+      setApplying(false);
+      setApplyOpen(false);
+    }
+  };
 
   const optionFor = (destinationType: string) =>
     options.find((o) => o.id === destinationType);
@@ -256,6 +282,17 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
             </h1>
             <StatusBadge status={product.status} />
             <span className="status-badge status-paused">{monitorText}</span>
+            {product.ingestion_profile_name && (
+              <span className="status-badge status-paused">Profile: {product.ingestion_profile_name}</span>
+            )}
+            {product.ingestion_profile_name && (
+              <span className="status-badge status-paused">
+                Chunk {product.chunk_size} / {product.chunk_overlap}
+              </span>
+            )}
+            {product.modality_mode === "text_images" && (
+              <span className="status-badge status-paused">Modality: Text + images</span>
+            )}
           </div>
           {product.description && (
             <p style={{ margin: "0.4rem 0 0 0", fontSize: "0.875rem", color: "#8b949e" }}>
@@ -594,11 +631,40 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
         initialDestinationType={visualizerDestType}
       />
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.5rem" }}>
+        {applyStatus && (
+          <span style={{ fontSize: "0.8125rem", color: "#8b949e", marginRight: "0.25rem" }}>
+            {applyStatus}
+          </span>
+        )}
+        {product.ingestion_profile_name && (
+          <button
+            className="btn btn-sm btn-secondary"
+            onClick={() => setApplyOpen(true)}
+            disabled={applying}
+          >
+            <IconPipeline size={13} /> Apply Profile
+          </button>
+        )}
         <button className="btn btn-sm btn-secondary" onClick={load} disabled={loading}>
           <IconRefresh size={13} /> Refresh
         </button>
       </div>
+
+      <ConfirmDialog
+        open={applyOpen}
+        title="Apply Ingestion Profile?"
+        message={`Copy the current values of '${product.ingestion_profile_name ?? ""}' onto this product.`}
+        details={[
+          "Destination stores the profile no longer lists are purged.",
+          "A store whose configuration changed is purged and re-synced.",
+        ]}
+        confirmLabel="Apply profile"
+        cancelLabel="Cancel"
+        busy={applying}
+        onConfirm={handleApplyProfile}
+        onCancel={() => setApplyOpen(false)}
+      />
     </div>
   );
 }

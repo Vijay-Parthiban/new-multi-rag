@@ -13,6 +13,7 @@ There is no manual sync route: the product poller in
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -38,6 +39,10 @@ from apps.api.routes.knowledge_destination_schemas import (
 )
 from src.shared.config.settings import get_settings
 from src.shared.db.models import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MODALITY_MODE,
+    IngestionProfile,
     KnowledgeProduct,
     KnowledgeProductDestination,
     KnowledgeProductFile,
@@ -53,6 +58,11 @@ router = APIRouter(prefix="/api/knowledge-products", tags=["knowledge-products"]
 settings = get_settings()
 
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _profile_modality_mode(profile: IngestionProfile) -> str:
+    mode = profile.modality_mode
+    return mode.value if hasattr(mode, "value") else str(mode or DEFAULT_MODALITY_MODE)
 
 
 def _destination_types() -> list[dict[str, Any]]:
@@ -77,6 +87,7 @@ class KnowledgeProductCreateRequest(BaseModel):
     sync_interval_minutes: int | None = Field(default=None, ge=1)
     source_ids: list[str] = Field(default_factory=list)
     destinations: list[DestinationConfigInput] = Field(default_factory=list)
+    ingestion_profile_id: str | None = Field(default=None)
 
 
 class KnowledgeProductUpdateRequest(BaseModel):
@@ -97,6 +108,10 @@ class DestinationToggleRequest(BaseModel):
 class TestConnectionRequest(BaseModel):
     destination_type: str
     config: dict[str, Any]
+
+
+class ApplyProfileRequest(BaseModel):
+    ingestion_profile_id: str | None = Field(default=None)
 
 
 # ── Serialization Helpers ────────────────────────────────────────────────────
@@ -203,6 +218,34 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
         "name": product.name,
         "description": product.description,
         "enabled": product.enabled,
+        "ingestion_profile_id": (
+            str(product.ingestion_profile_id) if product.ingestion_profile_id else None
+        ),
+        "ingestion_profile_name": (
+            product.ingestion_profile.name if product.ingestion_profile else None
+        ),
+        "chunk_size": (
+            product.ingestion_profile.chunk_size if product.ingestion_profile else None
+        ),
+        "chunk_overlap": (
+            product.ingestion_profile.chunk_overlap if product.ingestion_profile else None
+        ),
+        # A product with no profile reports the fallback the fanout uses, so the
+        # UI never has to guess.
+        "modality_mode": (
+            _profile_modality_mode(product.ingestion_profile)
+            if product.ingestion_profile
+            else DEFAULT_MODALITY_MODE
+        ),
+        "text_embedding_model": (
+            product.ingestion_profile.text_embedding_model if product.ingestion_profile else None
+        ),
+        "caption_model": (
+            product.ingestion_profile.caption_model if product.ingestion_profile else None
+        ),
+        "image_min_pixels": (
+            product.ingestion_profile.image_min_pixels if product.ingestion_profile else None
+        ),
         "monitor_mode": mode,
         "sync_interval_seconds": product.sync_interval_seconds,
         "sync_interval_minutes": product.sync_interval_minutes,
@@ -319,6 +362,107 @@ async def _prepare_destinations(
     return prepared
 
 
+async def _load_profile(db: AsyncSession, profile_id: str) -> IngestionProfile:
+    """Load an Ingestion Profile with its destinations, or raise 404."""
+    try:
+        profile_uuid = uuid.UUID(profile_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=404, detail=f"Ingestion Profile '{profile_id}' not found."
+        ) from None
+    res = await db.execute(
+        select(IngestionProfile)
+        .options(selectinload(IngestionProfile.destinations))
+        .where(IngestionProfile.id == profile_uuid)
+    )
+    profile = res.scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Ingestion Profile '{profile_id}' not found.")
+    return profile
+
+
+async def _destinations_from_profile(
+    db: AsyncSession, product: KnowledgeProduct, profile: IngestionProfile
+) -> list[dict[str, Any]]:
+    """Copy a profile's destinations onto a product, namespaced to this product.
+
+    The profile holds the catalogue defaults for the store names; this is where
+    they become ``kp_<slug>_<id8>``, so two products sharing one profile stay
+    isolated.
+    """
+    inputs = [
+        DestinationConfigInput(
+            destination_type=d.destination_type,
+            enabled=d.enabled,
+            config=dict(d.config or {}),
+        )
+        for d in sorted(profile.destinations, key=lambda d: d.destination_type)
+    ]
+    return await _prepare_destinations(db, product.id, product.name, inputs)
+
+
+def _pipeline_fingerprint(profile: IngestionProfile | None) -> str:
+    """Hash of the settings that decide what a writer produces.
+
+    A product with no profile rides on the fanout defaults, so its fingerprint is
+    the hash of those defaults.
+    """
+    if profile is None:
+        parts = (
+            str(DEFAULT_CHUNK_SIZE),
+            str(DEFAULT_CHUNK_OVERLAP),
+            DEFAULT_MODALITY_MODE,
+            settings.embedding_model,
+            settings.caption_model,
+            str(settings.image_min_pixels),
+        )
+    else:
+        parts = (
+            str(profile.chunk_size),
+            str(profile.chunk_overlap),
+            _profile_modality_mode(profile),
+            profile.text_embedding_model or "",
+            profile.caption_model or "",
+            str(profile.image_min_pixels),
+        )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+async def _purge_for_destination_types(
+    db: AsyncSession, product: KnowledgeProduct, destination_types: list[str]
+) -> int:
+    """Purge the given types for every file this product indexed.
+
+    Returns the number of purge calls. ``destinations_synced`` is trimmed too, so
+    the next tick rewrites those files into the new stores. Call this BEFORE the
+    destination rows change: the purgers read the old config off those rows.
+    """
+    from src.ingestion_service.core.universal_fanout import purge_file_from_destinations
+
+    if not destination_types:
+        return 0
+    targets = set(destination_types)
+    res = await db.execute(
+        select(KnowledgeProductFile).where(
+            KnowledgeProductFile.knowledge_product_id == product.id
+        )
+    )
+    purged = 0
+    for row in res.scalars().all():
+        synced = list(row.destinations_synced or [])
+        hit = sorted(targets & set(synced))
+        if not hit:
+            continue
+        for dest_type in hit:
+            await purge_file_from_destinations(
+                product, str(row.source_id), row.file_key, destination_types=[dest_type]
+            )
+            purged += 1
+        row.destinations_synced = [t for t in synced if t not in targets]
+    await db.commit()
+    return purged
+
+
 def _schedule_error() -> HTTPException:
     return HTTPException(
         status_code=422,
@@ -357,7 +501,10 @@ async def list_litellm_models(
 ):
     """List models from the LiteLLM proxy (/v1/models) with env-based fallback."""
     fallback_embedding = settings.unique_embedding_models
-    fallback_chat = [settings.embedding_model, "gpt-4o-mini", "gpt-4o"]
+    # Only models this deployment serves. The previous list offered gpt-4o-mini
+    # and gpt-4o, which the proxy here does not serve, so a user who hit the
+    # fallback picked a name that would fail at ingest time.
+    fallback_chat = [settings.summary_model, settings.caption_model]
     fallback_sparse = [settings.sparse_embedding_model]
 
     def _classify_model(model_id: str) -> str:
@@ -395,6 +542,11 @@ async def list_litellm_models(
                 "source": "litellm",
                 "litellm_base_url": settings.litellm_base_url,
                 "models": models,
+                # The deployment's own choice. The proxy list order is not a
+                # preference, and its first embedding model may be one this
+                # deployment cannot use.
+                "default_embedding_model": settings.embedding_model,
+                "default_caption_model": settings.caption_model,
             }
     except Exception as exc:
         logger.warning("litellm_models_fetch_failed error=%s", exc)
@@ -413,6 +565,8 @@ async def list_litellm_models(
         "source": "fallback",
         "litellm_base_url": settings.litellm_base_url,
         "models": models,
+        "default_embedding_model": settings.embedding_model,
+        "default_caption_model": settings.caption_model,
         "warning": "Could not reach LiteLLM proxy; showing environment defaults.",
     }
 
@@ -475,7 +629,15 @@ async def create_knowledge_product(
         if source_obj:
             db.add(KnowledgeProductSource(knowledge_product_id=product.id, source_id=source_obj.id))
 
-    for dest in await _prepare_destinations(db, product.id, product.name, req.destinations):
+    if req.ingestion_profile_id:
+        profile = await _load_profile(db, req.ingestion_profile_id)
+        product.ingestion_profile_id = profile.id
+        product.pipeline_fingerprint = _pipeline_fingerprint(profile)
+        prepared = await _destinations_from_profile(db, product, profile)
+    else:
+        prepared = await _prepare_destinations(db, product.id, product.name, req.destinations)
+
+    for dest in prepared:
         db.add(
             KnowledgeProductDestination(
                 knowledge_product_id=product.id,
@@ -685,6 +847,99 @@ async def update_knowledge_product(
     return _product_to_dict(updated, counters.get(product.id))
 
 
+@router.post("/{product_id}/apply-profile")
+async def apply_ingestion_profile(
+    product_id: uuid.UUID,
+    req: ApplyProfileRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-copy the linked Ingestion Profile onto this product's destinations.
+
+    Stores the profile no longer lists are purged and their rows dropped. A store
+    whose configuration changed is purged as well, so the next tick writes the new
+    store instead of leaving stale documents behind in the old one.
+    """
+    product = await _load_product(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Knowledge Product '{product_id}' not found.")
+
+    profile_id = req.ingestion_profile_id or (
+        str(product.ingestion_profile_id) if product.ingestion_profile_id else None
+    )
+    if not profile_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROFILE_REQUIRED",
+                "message": (
+                    "This Knowledge Product has no Ingestion Profile. "
+                    "Send ingestion_profile_id."
+                ),
+            },
+        )
+
+    profile = await _load_profile(db, profile_id)
+    prepared = await _destinations_from_profile(db, product, profile)
+
+    existing = {d.destination_type: d for d in (product.destinations or [])}
+    incoming = {p["destination_type"]: p for p in prepared}
+    removed = sorted(set(existing) - set(incoming))
+    stale = sorted(
+        t
+        for t in incoming
+        if t in existing and (existing[t].config or {}) != incoming[t]["config"]
+    )
+
+    # Chunking and modality change what a writer produces without changing a
+    # destination config, so a config diff alone would leave the old documents in
+    # place forever. The product stores the fingerprint of what it last synced
+    # with; a different one makes every destination stale. A destination the
+    # profile dropped is still removed, so it is not widened here.
+    pipeline_changed = product.pipeline_fingerprint != _pipeline_fingerprint(profile)
+    if pipeline_changed:
+        stale = sorted(set(incoming) - set(removed))
+
+    # Purge before the rows change: the purgers read the old config off them.
+    purged = await _purge_for_destination_types(db, product, sorted(set(removed) | set(stale)))
+
+    for dest_type in removed:
+        await db.delete(existing[dest_type])
+
+    for dest_type, entry in incoming.items():
+        if dest_type in existing:
+            row = existing[dest_type]
+            row.config = entry["config"]
+            row.enabled = entry["enabled"]
+        else:
+            db.add(
+                KnowledgeProductDestination(
+                    knowledge_product_id=product.id,
+                    destination_type=dest_type,
+                    enabled=entry["enabled"],
+                    config=entry["config"],
+                    status="idle",
+                )
+            )
+
+    product.ingestion_profile_id = profile.id
+    product.pipeline_fingerprint = _pipeline_fingerprint(profile)
+    await db.commit()
+
+    from src.ingestion_service.core.knowledge_sync import register_knowledge_poller
+
+    await register_knowledge_poller(product.id)
+
+    return {
+        "status": "applied",
+        "profile_id": str(profile.id),
+        "profile_name": profile.name,
+        "added": sorted(set(incoming) - set(existing)),
+        "updated": stale,
+        "removed": removed,
+        "purged_files": purged,
+    }
+
+
 @router.patch("/{product_id}/destinations/{destination_id}")
 async def toggle_product_destination(
     product_id: uuid.UUID,
@@ -796,8 +1051,8 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
 
     try:
         if dest_type == "vector_qdrant":
-            url = cfg.get("url") or settings.qdrant_url
-            api_key = cfg.get("api_key") or getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
+            url = settings.qdrant_url
+            api_key = getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
             headers = {"api-key": api_key} if api_key else {}
 
             candidate_urls = [url]
@@ -827,7 +1082,7 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
             }
 
         elif dest_type == "lexical_opensearch":
-            url = cfg.get("endpoint_url", "http://localhost:9200").rstrip("/")
+            url = settings.opensearch_url.rstrip("/")
             candidate_urls = [url]
             if "http://opensearch:9200" not in candidate_urls:
                 candidate_urls.append("http://opensearch:9200")
@@ -852,7 +1107,7 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
             }
 
         elif dest_type == "relational_pgvector":
-            conn_url = cfg.get("connection_url", "postgresql://...")
+            conn_url = settings.database_url.replace("+asyncpg", "")
             schema = cfg.get("schema_name") or "public"
             table = cfg.get("table_name") or "knowledge_chunks"
             return {
@@ -864,7 +1119,7 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
             }
 
         elif dest_type in ["cache_redis", "cache_redisvl"]:
-            redis_url = cfg.get("redis_url", "redis://localhost:6379")
+            redis_url = settings.redis_url
             prefix = cfg.get("index_prefix") or "knowledge_cache"
             return {
                 "status": "success",
@@ -892,9 +1147,15 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
 async def inspect_destination_store(
     product_id: uuid.UUID,
     destination_type: str,
+    file_key: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Read this product's live content from one destination store."""
+    """Read this product's live content from one destination store.
+
+    ``file_key`` narrows the result to one file and lifts the sample cap, so every
+    count in the response describes that file. Without it the store maximum
+    applies and the counts describe the whole store.
+    """
     res = await db.execute(
         select(KnowledgeProduct)
         .options(selectinload(KnowledgeProduct.destinations))
@@ -908,8 +1169,8 @@ async def inspect_destination_store(
     cfg = (dest_obj.config or {}) if dest_obj else {}
 
     if destination_type == "vector_qdrant":
-        url = cfg.get("url") or settings.qdrant_url
-        api_key = cfg.get("api_key") or getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
+        url = settings.qdrant_url
+        api_key = getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
         coll_name = cfg.get("collection_name", "knowledge_qdrant_collection")
         headers = {"api-key": api_key} if api_key else {}
         try:
@@ -917,10 +1178,21 @@ async def inspect_destination_store(
                 c_resp = await client.get(f"{url}/collections/{coll_name}", headers=headers)
                 c_info = c_resp.json().get("result", {}) if c_resp.status_code == 200 else {}
 
+                scroll_body: dict[str, Any] = {
+                    # A file-scoped read must return every one of its points, not
+                    # a sample of 50, or a caller counting them sees too few.
+                    "limit": 1000 if file_key else 50,
+                    "with_payload": True,
+                    "with_vector": True,
+                }
+                if file_key:
+                    scroll_body["filter"] = {
+                        "must": [{"key": "file_key", "match": {"value": file_key}}]
+                    }
                 p_resp = await client.post(
                     f"{url}/collections/{coll_name}/points/scroll",
                     headers=headers,
-                    json={"limit": 50, "with_payload": True, "with_vector": True},
+                    json=scroll_body,
                 )
                 raw_points = p_resp.json().get("result", {}).get("points", []) if p_resp.status_code == 200 else []
 
@@ -942,7 +1214,8 @@ async def inspect_destination_store(
                 return {
                     "destination_type": destination_type,
                     "collection_name": coll_name,
-                    "total_points": c_info.get("points_count", len(raw_points)),
+                    "file_key": file_key,
+                    "total_points": len(raw_points) if file_key else c_info.get("points_count", len(raw_points)),
                     "status": c_info.get("status", "green"),
                     "points": projected_points,
                 }
@@ -950,13 +1223,27 @@ async def inspect_destination_store(
             return {"destination_type": destination_type, "error": str(exc), "points": []}
 
     elif destination_type in ["lexical_opensearch", "elasticsearch"]:
-        url = (cfg.get("endpoint_url") or cfg.get("url") or settings.opensearch_url).rstrip("/")
+        url = settings.opensearch_url.rstrip("/")
         index_name = cfg.get("index_name", "knowledge_lexical_index")
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
+                search_body: dict[str, Any] = {
+                    "size": 1000 if file_key else 200,
+                    "query": {"match_all": {}},
+                }
+                if file_key:
+                    search_body["query"] = {
+                        "bool": {
+                            "should": [
+                                {"term": {"file_key.keyword": file_key}},
+                                {"match_phrase": {"file_key": file_key}},
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    }
                 s_resp = await client.post(
                     f"{url}/{index_name}/_search",
-                    json={"size": 30, "query": {"match_all": {}}},
+                    json=search_body,
                 )
                 hits_data = s_resp.json().get("hits", {}) if s_resp.status_code == 200 else {}
                 hits = hits_data.get("hits", [])
@@ -976,12 +1263,16 @@ async def inspect_destination_store(
                 return {
                     "destination_type": destination_type,
                     "index_name": index_name,
+                    "file_key": file_key,
                     "total_docs": hits_data.get("total", {}).get("value", len(hits)),
                     "terms": sorted_terms,
                     "documents": [{
                         "id": h.get("_id"),
                         "file_key": h.get("_source", {}).get("file_key"),
                         "page_index": h.get("_source", {}).get("page_index"),
+                        "chunk_index": h.get("_source", {}).get("chunk_index"),
+                        "modality": h.get("_source", {}).get("modality") or "text",
+                        "image_ref": h.get("_source", {}).get("image_ref"),
                         "content": h.get("_source", {}).get("content") or h.get("_source", {}).get("text"),
                         "score": h.get("_score"),
                     } for h in hits],
@@ -1002,24 +1293,36 @@ async def inspect_destination_store(
                 raise RuntimeError("Could not connect to PostgreSQL with the configured or default credentials")
             with conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        f"SELECT id, file_key, page_index, content, created_at "
-                        f"FROM {table_name} ORDER BY id DESC LIMIT 50;"
-                    )
-                    rows = cur.fetchall()
-                    cur.execute(f"SELECT count(*) FROM {table_name};")
-                    total_count = cur.fetchone()[0]
+                    if file_key:
+                        cur.execute(
+                            f"SELECT id, file_key, page_index, chunk_index, modality, content, created_at "
+                            f"FROM {table_name} WHERE file_key = %s ORDER BY chunk_index, id LIMIT 1000;",
+                            (file_key,),
+                        )
+                        rows = cur.fetchall()
+                        total_count = len(rows)
+                    else:
+                        cur.execute(
+                            f"SELECT id, file_key, page_index, chunk_index, modality, content, created_at "
+                            f"FROM {table_name} ORDER BY id DESC LIMIT 50;"
+                        )
+                        rows = cur.fetchall()
+                        cur.execute(f"SELECT count(*) FROM {table_name};")
+                        total_count = cur.fetchone()[0]
                     return {
                         "destination_type": destination_type,
                         "table_name": table_name,
                         "schema_name": schema,
+                        "file_key": file_key,
                         "total_rows": total_count,
                         "rows": [{
                             "id": r[0],
                             "file_key": r[1],
                             "page_index": r[2],
-                            "content": r[3],
-                            "created_at": str(r[4]),
+                            "chunk_index": r[3],
+                            "modality": r[4] or "text",
+                            "content": r[5],
+                            "created_at": str(r[6]),
                         } for r in rows],
                     }
         except Exception as exc:
@@ -1028,24 +1331,34 @@ async def inspect_destination_store(
     elif destination_type in ["cache_redis", "cache_redisvl"]:
         import redis
 
-        redis_url = cfg.get("redis_url") or cfg.get("url") or settings.redis_url
+        redis_url = settings.redis_url
         prefix = cfg.get("index_prefix") or "knowledge_cache"
         try:
             r = redis.from_url(redis_url)
-            keys = r.keys(f"{prefix}:*")
+            pattern = f"{prefix}:*{file_key}*" if file_key else f"{prefix}:*"
+            keys = r.keys(pattern)
             items = []
-            for k in keys[:30]:
+            for k in keys[:200]:
                 ttl = r.ttl(k)
                 val_type = r.type(k)
-                items.append({
+                type_name = val_type.decode("utf-8") if isinstance(val_type, bytes) else str(val_type)
+                entry = {
                     "key": k.decode("utf-8") if isinstance(k, bytes) else str(k),
                     "ttl": ttl,
-                    "type": val_type.decode("utf-8") if isinstance(val_type, bytes) else str(val_type),
-                })
+                    "type": type_name,
+                }
+                # A cached chunk is a JSON string. Returning it is what lets the
+                # reader see the stored modality and caption.
+                if type_name == "string":
+                    raw = r.get(k)
+                    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw or "")
+                    entry["value"] = text[:4000]
+                items.append(entry)
             info = r.info("memory")
             return {
                 "destination_type": destination_type,
                 "prefix": prefix,
+                "file_key": file_key,
                 "total_cached_keys": len(keys),
                 "used_memory_human": info.get("used_memory_human", "N/A"),
                 "keys": items,

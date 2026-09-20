@@ -59,8 +59,33 @@ class SourceMonitorMode(str, enum.Enum):
     SCHEDULED = "scheduled"
 
 
+class IngestionModality(str, enum.Enum):
+    """What an Ingestion Profile sends to the stores.
+
+    TEXT keeps selectable text and tables and ignores images. TEXT_IMAGES adds one
+    vision-LLM caption per embedded figure.
+    """
+
+    TEXT = "text"
+    TEXT_IMAGES = "text_images"
+
+
 def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
     return [member.value for member in enum_cls]
+
+
+# Chunking defaults. The Ingestion Profile columns, the profile API and the fanout
+# fallback all read these, so a product without a profile chunks like the Pipeline
+# form always did.
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 120
+
+# Modality defaults. DEFAULT_TEXT_EMBEDDING_MODEL must name a model the LiteLLM
+# proxy serves; the fanout derives the vector dimension from its output.
+DEFAULT_TEXT_EMBEDDING_MODEL = "nvidia-embed-textonly"
+DEFAULT_CAPTION_MODEL = "groq-vision"
+DEFAULT_MODALITY_MODE = "text"
+DEFAULT_IMAGE_MIN_PIXELS = 10000
 
 
 class Directory(Base):
@@ -341,6 +366,14 @@ class KnowledgeProduct(Base):
     )
     sync_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sync_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingestion_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ingestion_profiles.id", ondelete="SET NULL"), nullable=True
+    )
+    # Hash of the pipeline settings this product last synced with: chunking,
+    # modality, embedding and caption model, image threshold. apply-profile
+    # compares it, because those settings change what a writer produces without
+    # changing a destination config.
+    pipeline_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="idle", server_default="idle")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -361,6 +394,7 @@ class KnowledgeProduct(Base):
     files: Mapped[list["KnowledgeProductFile"]] = relationship(
         back_populates="knowledge_product", cascade="all, delete-orphan", lazy="selectin"
     )
+    ingestion_profile: Mapped["IngestionProfile | None"] = relationship(lazy="selectin")
 
 
 class KnowledgeProductSource(Base):
@@ -446,6 +480,90 @@ class KnowledgeProductFile(Base):
     )
 
     knowledge_product: Mapped["KnowledgeProduct"] = relationship(back_populates="files")
+
+
+class IngestionProfile(Base):
+    """Reusable ingestion configuration: destination stores plus chunking parameters.
+
+    A Knowledge Product copies these destinations into its own rows at creation,
+    so editing a profile never changes a product that already exists.
+    """
+
+    __tablename__ = "ingestion_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    chunk_size: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_CHUNK_SIZE, server_default=str(DEFAULT_CHUNK_SIZE)
+    )
+    chunk_overlap: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_CHUNK_OVERLAP, server_default=str(DEFAULT_CHUNK_OVERLAP)
+    )
+    modality_mode: Mapped[IngestionModality] = mapped_column(
+        Enum(
+            IngestionModality,
+            name="ingestion_modality",
+            values_callable=_enum_values,
+            create_constraint=False,
+        ),
+        default=IngestionModality.TEXT,
+        server_default=DEFAULT_MODALITY_MODE,
+        nullable=False,
+    )
+    text_embedding_model: Mapped[str] = mapped_column(
+        String(128),
+        default=DEFAULT_TEXT_EMBEDDING_MODEL,
+        server_default=DEFAULT_TEXT_EMBEDDING_MODEL,
+    )
+    caption_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    image_min_pixels: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_IMAGE_MIN_PIXELS, server_default=str(DEFAULT_IMAGE_MIN_PIXELS)
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    destinations: Mapped[list["IngestionProfileDestination"]] = relationship(
+        back_populates="ingestion_profile", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class IngestionProfileDestination(Base):
+    """Destination configuration held by an Ingestion Profile.
+
+    A profile carries no store name: the store identity, the connection values and
+    the vector dimension are all derived. The product copy is what assigns
+    ``kp_<slug>_<id8>`` to each namespace key.
+    """
+
+    __tablename__ = "ingestion_profile_destinations"
+    __table_args__ = (
+        Index(
+            "ix_ingestion_profile_dest_type_unique",
+            "ingestion_profile_id",
+            "destination_type",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ingestion_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ingestion_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    destination_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    ingestion_profile: Mapped["IngestionProfile"] = relationship(
+        back_populates="destinations", lazy="selectin"
+    )
 
 
 class IndexedFile(Base):

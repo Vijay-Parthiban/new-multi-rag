@@ -40,28 +40,7 @@ def _field(
     }
 
 
-def _litellm_fields(settings: Settings) -> list[dict[str, Any]]:
-    return [
-        _field(
-            "litellm_base_url",
-            label="LiteLLM Base URL",
-            description="OpenAI-compatible proxy base URL (Docker: http://host.docker.internal:4000)",
-            placeholder=settings.litellm_base_url,
-            group="LiteLLM",
-        ),
-        _field(
-            "litellm_api_key",
-            label="LiteLLM API Key",
-            field_type="password",
-            description="API key sent as Bearer token to LiteLLM",
-            placeholder=settings.openai_api_key,
-            group="LiteLLM",
-        ),
-    ]
-
-
 def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
-    litellm = _litellm_fields(settings)
     return [
         {
             "id": "vector_qdrant",
@@ -70,31 +49,12 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "description": "Dense vector similarity search with HNSW indexing",
             "namespace_fields": ["collection_name"],
             "default_config": {
-                "url": settings.qdrant_url,
-                "api_key": settings.qdrant_api_key,
-                "collection_name": "knowledge_qdrant_collection",
-                "embedding_model": settings.embedding_model,
-                "litellm_base_url": settings.litellm_base_url,
-                "litellm_api_key": settings.openai_api_key,
-                "vector_size": 2048,
-                "distance": "Cosine",
                 "hnsw_m": 16,
                 "hnsw_ef_construct": 100,
-                "quantization": "none",
-                "on_disk_payload": True,
             },
             "fields": [
-                *_litellm_fields(settings),
-                _field("embedding_model", label="Embedding Model", field_type="model", model_kind="embedding", required=True, group="Embeddings", description="LiteLLM embedding model used during fanout"),
-                _field("url", label="Qdrant URL", required=True, group="Connection"),
-                _field("api_key", label="Qdrant API Key", field_type="password", group="Connection"),
-                _field("collection_name", label="Collection Name", required=True, group="Collection"),
-                _field("vector_size", label="Vector Dimensions", field_type="number", group="Collection", description="Expected embedding size; auto-detected from model output when mismatched"),
-                _field("distance", label="Distance Metric", field_type="select", group="Collection", options=[{"value": "Cosine", "label": "Cosine"}, {"value": "Euclid", "label": "Euclid"}, {"value": "Dot", "label": "Dot"}]),
-                _field("hnsw_m", label="HNSW M", field_type="number", group="HNSW Tuning", advanced=True, min_value=4, max_value=64),
-                _field("hnsw_ef_construct", label="HNSW ef_construct", field_type="number", group="HNSW Tuning", advanced=True, min_value=32, max_value=512),
-                _field("quantization", label="Quantization", field_type="select", group="HNSW Tuning", advanced=True, options=[{"value": "none", "label": "None"}, {"value": "int8_scalar", "label": "INT8 Scalar"}, {"value": "binary", "label": "Binary"}]),
-                _field("on_disk_payload", label="Store Payload On Disk", field_type="boolean", group="Collection", advanced=True),
+                _field("hnsw_m", label="HNSW M", field_type="number", group="HNSW Tuning", description="Edges per node. 16 matches the Qdrant default and suits most corpora.", min_value=4, max_value=64),
+                _field("hnsw_ef_construct", label="HNSW ef_construct", field_type="number", group="HNSW Tuning", description="Build-time candidate list. 100 matches the Qdrant default and suits most corpora.", min_value=32, max_value=512),
             ],
         },
         {
@@ -104,11 +64,6 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "description": "BM25 lexical indexing with optional sparse model metadata",
             "namespace_fields": ["index_name"],
             "default_config": {
-                "endpoint_url": settings.opensearch_url,
-                "index_name": "knowledge_lexical_index",
-                "auth_type": "none",
-                "username": "",
-                "password": "",
                 "bm25_k1": 1.2,
                 "bm25_b": 0.75,
                 "sparse_model": settings.sparse_embedding_model,
@@ -117,17 +72,12 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
                 "refresh_interval": "1s",
             },
             "fields": [
-                _field("endpoint_url", label="OpenSearch URL", required=True, group="Connection"),
-                _field("index_name", label="Index Name", required=True, group="Index"),
-                _field("auth_type", label="Authentication", field_type="select", group="Connection", options=[{"value": "none", "label": "None"}, {"value": "basic", "label": "Basic Auth"}]),
-                _field("username", label="Username", group="Connection", advanced=True),
-                _field("password", label="Password", field_type="password", group="Connection", advanced=True),
-                _field("sparse_model", label="Sparse Model", field_type="model", model_kind="sparse", group="Lexical", description="Sparse model name stored in index metadata (LiteLLM / fastembed)"),
-                _field("bm25_k1", label="BM25 k1", field_type="number", group="BM25 Tuning", advanced=True),
-                _field("bm25_b", label="BM25 b", field_type="number", group="BM25 Tuning", advanced=True),
-                _field("number_of_shards", label="Shards", field_type="number", group="Index", advanced=True, min_value=1),
-                _field("number_of_replicas", label="Replicas", field_type="number", group="Index", advanced=True, min_value=0),
-                _field("refresh_interval", label="Refresh Interval", group="Index", advanced=True, placeholder="1s"),
+                _field("sparse_model", label="Sparse Model", field_type="model", model_kind="sparse", group="Lexical", description="Recorded in the index metadata. The default is the fastembed BM25 model."),
+                _field("bm25_k1", label="BM25 k1", field_type="number", group="BM25 Tuning", description="Term frequency saturation. 1.2 is the OpenSearch default and suits most text.", min_value=0),
+                _field("bm25_b", label="BM25 b", field_type="number", group="BM25 Tuning", description="Length normalisation. 0.75 is the OpenSearch default and suits most text.", min_value=0, max_value=1),
+                _field("number_of_shards", label="Shards", field_type="number", group="Index", advanced=True, description="1 suits a small corpus. Raise it for a corpus larger than a few GB.", min_value=1),
+                _field("number_of_replicas", label="Replicas", field_type="number", group="Index", advanced=True, description="0 suits this single-node cluster. A replica would stay unassigned.", min_value=0),
+                _field("refresh_interval", label="Refresh Interval", group="Index", advanced=True, description="1s is the OpenSearch default. Raise it to index faster.", placeholder="1s"),
             ],
         },
         {
@@ -137,27 +87,12 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "description": "Relational chunk storage with optional pgvector embeddings",
             "namespace_fields": ["schema_name"],
             "default_config": {
-                "connection_url": settings.database_url.replace("+asyncpg", ""),
-                "schema_name": "public",
                 "table_name": "chunks",
                 "store_embeddings": True,
-                "embedding_model": settings.embedding_model,
-                "litellm_base_url": settings.litellm_base_url,
-                "litellm_api_key": settings.openai_api_key,
-                "vector_size": 2048,
-                "index_algorithm": "hnsw",
-                "distance_op": "vector_cosine_ops",
             },
             "fields": [
-                *_litellm_fields(settings),
-                _field("connection_url", label="PostgreSQL URL", required=True, group="Connection", description="postgresql://user:pass@host:5432/db"),
-                _field("schema_name", label="Schema", group="Table"),
-                _field("table_name", label="Table Name", required=True, group="Table"),
-                _field("store_embeddings", label="Store Embeddings", field_type="boolean", group="Vectors", description="When enabled, stores pgvector column populated via LiteLLM embeddings"),
-                _field("embedding_model", label="Embedding Model", field_type="model", model_kind="embedding", group="Vectors"),
-                _field("vector_size", label="Vector Dimensions", field_type="number", group="Vectors"),
-                _field("index_algorithm", label="Index Algorithm", field_type="select", group="Vectors", advanced=True, options=[{"value": "hnsw", "label": "HNSW"}, {"value": "ivfflat", "label": "IVFFlat"}, {"value": "none", "label": "None"}]),
-                _field("distance_op", label="Distance Operator", field_type="select", group="Vectors", advanced=True, options=[{"value": "vector_cosine_ops", "label": "Cosine"}, {"value": "vector_l2_ops", "label": "L2"}, {"value": "vector_ip_ops", "label": "Inner Product"}]),
+                _field("store_embeddings", label="Store Embeddings", field_type="boolean", group="Vectors", description="On by default. The pgvector column carries the shared embedding model output."),
+                _field("table_name", label="Table Name", required=True, group="Table", advanced=True, description="The schema already scopes this, so 'chunks' is safe for every product."),
             ],
         },
         {
@@ -167,27 +102,18 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
             "description": "Redis-backed chunk cache with optional LiteLLM summaries",
             "namespace_fields": ["index_prefix"],
             "default_config": {
-                "redis_url": settings.redis_url,
-                "index_prefix": "knowledge_cache",
                 "ttl_seconds": 86400,
                 "similarity_threshold": 0.85,
-                "embedding_model": settings.embedding_model,
-                "litellm_base_url": settings.litellm_base_url,
-                "litellm_api_key": settings.openai_api_key,
                 "parent_child_mapping": True,
                 "raptor_summaries": False,
-                "summary_model": "gpt-4o-mini",
+                "summary_model": settings.summary_model,
             },
             "fields": [
-                *_litellm_fields(settings),
-                _field("redis_url", label="Redis URL", required=True, group="Connection"),
-                _field("index_prefix", label="Key Prefix", required=True, group="Cache"),
-                _field("ttl_seconds", label="TTL (seconds)", field_type="number", group="Cache", min_value=60),
-                _field("similarity_threshold", label="Semantic Similarity Threshold", field_type="number", group="Cache", description="Used when semantic dedup is enabled", min_value=0, max_value=1),
-                _field("embedding_model", label="Cache Embedding Model", field_type="model", model_kind="embedding", group="Semantic Cache"),
-                _field("parent_child_mapping", label="Parent-Child Mapping", field_type="boolean", group="Structure"),
-                _field("raptor_summaries", label="RAPTOR Summaries", field_type="boolean", group="Summaries", description="Generate hierarchical summaries via LiteLLM"),
-                _field("summary_model", label="Summary Model", field_type="model", model_kind="chat", group="Summaries"),
+                _field("ttl_seconds", label="TTL (seconds)", field_type="number", group="Cache", description="86400 keeps a cached chunk for one day.", min_value=60),
+                _field("similarity_threshold", label="Semantic Similarity Threshold", field_type="number", group="Cache", description="0.85 is a safe cosine cut-off for near-duplicate detection.", min_value=0, max_value=1),
+                _field("parent_child_mapping", label="Parent-Child Mapping", field_type="boolean", group="Structure", description="On by default. Records the file-level parent key for every chunk."),
+                _field("raptor_summaries", label="RAPTOR Summaries", field_type="boolean", group="Summaries", description="Off by default, because it calls the summary model once per file.", advanced=True),
+                _field("summary_model", label="Summary Model", field_type="model", model_kind="chat", group="Summaries", description="Used only when RAPTOR Summaries is on.", advanced=True),
             ],
         },
     ]
@@ -270,18 +196,15 @@ def apply_store_namespace(
     suffix: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Replace the static store defaults in ``config`` with per-product names.
+    """Assign the per-product store names to ``config``, overwriting any value.
 
-    A value that the user typed and that differs from the catalogue default is
-    kept. An empty value or the shared default is replaced.
+    The store name is never user input, so the derived name always wins. A row
+    written before the field was removed can hold a stale name, and keeping it
+    would put two products in one store.
     """
     result = dict(config)
     names = product_store_names(destination_type, slug, suffix)
-    defaults = get_default_config(destination_type, settings)
     for key in namespace_fields_for(destination_type, settings):
-        if key not in names:
-            continue
-        current = result.get(key)
-        if current is None or current == "" or current == defaults.get(key):
+        if key in names:
             result[key] = names[key]
     return result

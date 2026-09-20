@@ -208,6 +208,11 @@ Supporting changes in the retrieval project:
   `files_total`, `files_synced`, `files_pending`, `files_failed` and `pages_indexed`. The
   ingestion API always returned these; the retrieval type had omitted them, so the ported page
   could not compile against it.
+* The ingestion product payload also gained `modality_mode`, `text_embedding_model`,
+  `caption_model` and `image_min_pixels` on 2026-09-21, plus `modality` and `image_ref` inside the
+  inspection payloads. This mirror surfaces none of them, because the ingestion product detail page
+  shows the modality badge and the mirror is view-only. Extra JSON keys are ignored, so no change is
+  needed here. Add them to the type only if this page must show them.
 * `createKnowledgeProduct`, `updateKnowledgeProduct`, `deleteKnowledgeProduct` and
   `KnowledgeProductCreateRequest` were **removed**. The view-only rewrite orphaned them, and
   keeping write bindings for a read-only page contradicts the design.

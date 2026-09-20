@@ -7,7 +7,15 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.exceptions import app_error_handler
-from apps.api.routes import directories, files, knowledge_products, pipelines, sources, uploads
+from apps.api.routes import (
+    directories,
+    files,
+    ingestion_profiles,
+    knowledge_products,
+    pipelines,
+    sources,
+    uploads,
+)
 from src.file_manager.core.errors import AppError
 from src.file_manager.utils.paths import ensure_storage_layout
 from src.shared.db.session import close_db, init_db
@@ -60,6 +68,7 @@ app.include_router(files.router)
 app.include_router(pipelines.router)
 app.include_router(sources.router)
 app.include_router(knowledge_products.router)
+app.include_router(ingestion_profiles.router)
 
 
 @app.get("/health")

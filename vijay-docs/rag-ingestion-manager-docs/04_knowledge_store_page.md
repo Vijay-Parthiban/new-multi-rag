@@ -21,9 +21,11 @@ dependency, a no-op unless `API_KEY` is configured).
 
 Two behaviour notes the UI labels do not make obvious:
 
-- Fanout granularity is **one record per document page**, not per text chunk. `universal_fanout.py` imports only
-  `iter_file_pages`; the recursive splitter `ingestion_service/utils/text_splitter.py:chunk_text()` belongs to the
-  pipeline indexer only.
+- Fanout granularity is **one record per text chunk**. `universal_fanout.py` calls `iter_file_pages()`, then
+  splits every page with `ingestion_service/utils/text_splitter.py:chunk_text()` using the product's
+  `chunk_size` and `chunk_overlap`. A product with no Ingestion Profile falls back to `1000 / 120`. `page_index`
+  keeps the source page and `chunk_index` numbers the chunks from `0` inside it. In `text_images` mode one more
+  record appears per figure caption, tagged `modality: "image"`.
 - The pages are a control plane. They never talk to Qdrant/OpenSearch/Postgres/Redis directly. Every action is an
   HTTP call to the ingestion API or a Server-Sent Events stream from it.
 
@@ -44,7 +46,9 @@ changes (see §7).
               | execute_universal_fanout_sync(db, product)     |
               |  - list objects with etag + size               |
               |  - download only when a destination needs it   |
-              |  - iter_file_pages() -> page-level records     |
+              |  - iter_file_pages() -> pages                  |
+              |  - _caption_pages() -> a caption per figure    |
+              |  - _chunk_pages() -> one record per chunk      |
               +----------------------+------------------------+
                                      |  asyncio.gather(return_exceptions=True)
         +----------------+-----------+-----------+----------------+
@@ -62,52 +66,65 @@ that still need it. A failing destination is recorded as a failure and the other
 
 ### Destination list (`GET /api/knowledge-products/destinations/options`)
 
-| id | name | category | namespace field |
+| id | name | category | product store name |
 |---|---|---|---|
-| `vector_qdrant` | Qdrant | Vector Engine | `collection_name` |
-| `lexical_opensearch` | OpenSearch | Lexical & Sparse Search | `index_name` |
-| `relational_pgvector` | PostgreSQL (pgvector) | Multi-Model Relational DB | `schema_name` |
-| `cache_redisvl` | RedisVL | Semantic Cache & Summary Store | `index_prefix` |
+| `vector_qdrant` | Qdrant | Vector Engine | `kp_<slug>_<id8>` |
+| `lexical_opensearch` | OpenSearch | Lexical & Sparse Search | `kp_<slug>_<id8>` |
+| `relational_pgvector` | PostgreSQL (pgvector) | Multi-Model Relational DB | `kp_<slug>_<id8>` (table stays `chunks`) |
+| `cache_redisvl` | RedisVL | Semantic Cache & Summary Store | `kp:<slug>:<id8>` |
 
 `graph_neo4j` was removed. Migration `010_knowledge_products` deletes the stored rows, and
 `backend/scripts/purge_neo4j_legacy.py` removes the graph nodes those rows pointed at.
 
-Each catalogue entry also carries `namespace_fields`, the list of config keys that identify its store. The API
-uses that list to derive store names and to detect a clash between products, so adding a destination needs no
-change to the isolation logic.
+Each catalogue entry also carries `namespace_fields`, the list of config keys that hold the derived store name. The
+API uses that list to assign store names and to detect a clash between products, so adding a destination needs no
+change to the isolation logic. A profile carries none of those keys, because the product copy derives and stores
+them.
 
 ### Sink details
 
 1. **Qdrant Vector DB (`vector_qdrant`)** — dense HNSW similarity search.
-   - The collection is created with `enable_sparse=False` and `vector_size` from config (default `2048`), falling
-     back to the first embedding's length.
-   - One point per non-empty page, point id = random UUID, payload = the fanout payload, dense vector =
-     `EmbeddingClient.embed_passage(page.text)`.
+   - The collection is created with `enable_sparse=False` and a dimension taken from the tick's embedding batch.
+     No config value is read, because the `vector_size` field is gone.
+   - `hnsw_m` and `hnsw_ef_construct` from the destination config are applied at creation.
+   - The writer refuses to recreate an existing collection whose dimension disagrees. It raises instead, because
+     a recreate would delete every point.
+   - One point per chunk, point id = random UUID, payload = the fanout payload with the real `chunk_index`, and
+     the dense vector is the one shared by the whole tick.
    - Purge matches on both `file_key` **and** `source_id`, so two sources holding the same key cannot purge each
      other.
 2. **OpenSearch Lexical (`lexical_opensearch`)** — BM25 document store.
    - The index is `PUT` with `number_of_shards` (default `1`), `number_of_replicas` (default `0`) and
      `refresh_interval` (default `"1s"`). No custom analyzer is created; `bm25_k1`, `bm25_b` and `sparse_model`
      are document metadata only.
+   - One document per chunk with `file_key`, `page_index`, `chunk_index`, `content`/`text`, `source_id`,
+     `source_locator`, `created_at`, `sparse_model`, `bm25_k1` and `bm25_b`.
    - Purge uses `_delete_by_query` with `file_key.keyword`/`match_phrase` **and** `source_id.keyword`. The
      `.keyword` subfield is required: both fields are dynamically mapped as `text`, and a term query against the
      analysed field matches nothing.
 3. **PostgreSQL / pgvector (`relational_pgvector`)** — one table per product.
    - The product's schema is created with `CREATE SCHEMA IF NOT EXISTS`, and the table is `chunks` inside it:
-     `id SERIAL PRIMARY KEY, file_key TEXT, source_id TEXT, page_index INT, content TEXT`, plus
-     `embedding vector(<vector_size|2048>)` when `store_embeddings` is true, plus
-     `created_at TIMESTAMPTZ DEFAULT NOW()`.
+     `id SERIAL PRIMARY KEY, file_key TEXT, source_id TEXT, page_index INT, chunk_index INT NOT NULL DEFAULT 0,
+     content TEXT, modality TEXT, embedding vector(<derived>)` when `store_embeddings` is true, plus
+     `created_at TIMESTAMPTZ DEFAULT NOW()`. One row per chunk. The `image_ref` value is not stored here.
+   - The vector dimension comes from the first record that carries a vector, so no field declares it.
+   - The writer creates `USING hnsw (embedding vector_cosine_ops)`. pgvector caps an HNSW index at 2000
+     dimensions. Above that the writer skips the index with a warning, and a search becomes an exact scan. The
+     model in this deployment returns 2048 dimensions, so the skip is the normal path.
    - `CREATE EXTENSION IF NOT EXISTS vector` runs before the table, so the destination works on a fresh database.
      The image must ship the extension; `docker-compose.yaml` uses `pgvector/pgvector:pg16`.
-   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS source_id` and `CREATE INDEX IF NOT EXISTS` upgrade a table made
+   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS source_id` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS
+     chunk_index INT NOT NULL DEFAULT 0`, plus `CREATE INDEX IF NOT EXISTS`, upgrade a table made
      by an older version.
    - Purge and inspect both use the same connection resolver as the writer (`pg_connection_urls`,
      `connect_pg`), which drops non-Postgres candidates. Without that the dev SQLite default would be handed to
      psycopg.
-4. **RedisVL (`cache_redisvl`)** — per-page Redis JSON cache.
-   - Page key `"<index_prefix>:<source_id>:<file_key>:<page_index>"`, value JSON
-     `{content, file_key, source_id, page_index, similarity_threshold, embedding_model}`,
-     expiry `ttl_seconds` (default `86400`).
+4. **RedisVL (`cache_redisvl`)** — per-chunk Redis JSON cache.
+   - Chunk key `"<index_prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>"`, value JSON
+     `{content, file_key, source_id, page_index, chunk_index, modality, image_ref, similarity_threshold,
+     embedding_model}`, expiry `ttl_seconds` (default `86400`). Without the chunk part every chunk of one page
+     would write the same key and only the last would survive. The caption text is the `content` value, so the
+     inspect route can read it back.
    - With `parent_child_mapping` it also `SADD`s the key into `"<index_prefix>:<source_id>:<file_key>:children"`
      and writes `parent_key` into the payload.
    - With `raptor_summaries` it writes a 3-bullet LiteLLM summary to `"<prefix>:<source_id>:<file_key>:summary"`.
@@ -127,23 +144,31 @@ suffix = product_id.hex[:8]
 
 | destination | derived store name |
 |---|---|
-| `vector_qdrant` | `collection_name = kp_<slug>_<suffix>` |
-| `lexical_opensearch` | `index_name = kp_<slug>_<suffix>` |
-| `relational_pgvector` | `schema_name = kp_<slug>_<suffix>` (table stays `chunks`) |
-| `cache_redisvl` | `index_prefix = kp:<slug>:<suffix>` |
+| `vector_qdrant` | the `collection_name` key holds `kp_<slug>_<id8>` |
+| `lexical_opensearch` | the `index_name` key holds `kp_<slug>_<id8>` |
+| `relational_pgvector` | the `schema_name` key holds `kp_<slug>_<id8>` (table stays `chunks`) |
+| `cache_redisvl` | the `index_prefix` key holds `kp:<slug>:<id8>` |
 
-`apply_store_namespace(destination_type, config, slug, suffix, settings)` replaces a value that is empty or still
-equal to the catalogue default. A value the user typed is kept, so a custom store name survives every re-save.
+`<id8>` is the 8-character product-id suffix from the block above.
+
+`apply_store_namespace(destination_type, config, slug, suffix, settings)` assigns the derived name
+unconditionally, and it overwrites any stored value. A typed name does not survive, because the fields no longer
+exist. An Ingestion Profile carries **no** `collection_name`, `index_name`, `schema_name` or `index_prefix`, so
+only a product copy holds a store name.
+
 Because the table name is fixed and the schema carries the identity, two products may share a table name.
 
-**A clash is rejected.** `_validate_store_namespace` compares each incoming namespace value against every other
-product's stored config and answers `422` with:
+**The clash guard is a safety net.** `_validate_store_namespace` compares each incoming namespace value
+against every other product's stored config and answers `422` with:
 
 ```json
 {"detail": {"code": "DESTINATION_STORE_CONFLICT", "message": "…",
             "field": "collection_name", "value": "kp_a_1f2a3dcf",
             "destination_type": "vector_qdrant", "conflicting_product": "Product A"}}
 ```
+
+The API can no longer reach that guard, because a store name is always derived and never taken from input.
+The guard protects a direct database write and a future caller that supplies a name.
 
 Two products over the same bucket are safe. They index the same objects into separate stores, and the
 per-product ledger (§5) means one product's records never make another skip a file.
@@ -170,7 +195,7 @@ per-product ledger (§5) means one product's records never make another skip a f
 |  Configured Destination Stores                                                   |
 |  +-----------------------+  +-----------------------+  +----------------------+  |
 |  | Qdrant       [ACTIVE] |  | OpenSearch   [ACTIVE] |  | ...                  |  |
-|  | <collection_name>     |  | <index_name>          |  |                      |  |
+|  | <derived store name> |  | <derived store name> |  |                      |  |
 |  | [Test Link]           |  | [Test Link]           |  |                      |  |
 |  +-----------------------+  +-----------------------+  +----------------------+  |
 |  Linked RAG Pipelines (n): pipeline cards + [Create / Manage Pipelines]          |
@@ -194,7 +219,7 @@ The store-name snippet is derived from the option's own `namespace_fields`, with
 
 ```
 Overview > Knowledge Store > <name>
-<h1> <name>  [STATUS]  [Live polling | Scheduled every 30s]   [← Back] [Pause All Destinations]
+<h1> <name>  [STATUS]  [Modality: Text + images]  [Live polling | Scheduled every 30s]   [← Back] [Pause All Destinations]
 [ Source Buckets ] [ Files Indexed ] [ Pages Indexed ] [ Last Sync ]      (stats cards)
 Live Fanout:  MinIO bucket → Parse & chunk → <one chip per enabled destination>
               Added / Updated / Deleted / Unchanged / Pages  + Live|Reconnecting dot
@@ -215,6 +240,9 @@ page still feels live when the SSE stream is reconnecting.
   so the other destinations are sent back unchanged.
 - No sync button exists anywhere.
 
+The header shows a `Modality: Text + images` badge when the profile mode is `text_images`. The badge is absent in
+`text` mode. Only a linked profile supplies the mode, so a legacy product shows no badge.
+
 ---
 
 ## 5. The Ledger and Live Events
@@ -230,7 +258,7 @@ fanout used to write, and it is what makes two products over one bucket independ
 | `etag`, `size_bytes` | the metadata fingerprint used for change detection |
 | `content_hash` | SHA-256 of the downloaded bytes |
 | `status` | `pending`, `syncing`, `synced`, `failed` |
-| `pages_indexed` | page count of the last successful parse |
+| `pages_indexed` | **source page** count of the last successful parse; the chunks written per destination can be higher |
 | `destinations_synced` | JSON list of destination types that currently hold this file |
 | `error_message`, `last_synced_at` | last failure text and last success time |
 
@@ -248,6 +276,7 @@ Server-Sent Events.
 | `tick_start` | — |
 | `file_start` | `source_id`, `file_key`, `change` (`added` \| `updated` \| `resynced`) |
 | `destination_start` | `file_key`, `destination_type` |
+| `image_caption` | `file_key`, `images_skipped` |
 | `destination_done` | `file_key`, `destination_type`, `pages` |
 | `destination_failed` | `file_key`, `destination_type`, `error` |
 | `file_synced` | `source_id`, `file_key`, `pages` |
@@ -270,17 +299,21 @@ cannot disagree.
 One modal for create (`POST /api/knowledge-products`) and edit (`PATCH /api/knowledge-products/{id}`).
 
 - **Product Name** (required, 1–128 chars, unique → 400), **Product enabled** checkbox, **Description**.
+- **Ingestion Profile** select over `GET /api/ingestion-profiles`, with a `Manage Ingestion Profiles` link to
+  `/ingestion-profiles` and a read-only summary of the chosen profile: its enabled destination names and its
+  `Chunk <size> / <overlap>`. With no profile in the system the field shows
+  `No Ingestion Profiles yet. Create one first.` The summary never prints a store name, because the backend
+  assigns the per-product names at create time.
 - **Sync Mode**: a radio pair, **Immediate live sync** / **Scheduled sync**. Live hides the interval row. Scheduled
   shows a number input plus a unit select, `Seconds (minimum 5)` or `Minutes`.
 - **Link Data Sources**: checkboxes over `GET /api/sources`; on create every source is preselected. Local-FS
   sources are labelled `Local File System (storage/local_sources/<folder>)`, MinIO sources
   `MinIO Bucket (<bucket>)`.
-- **Configure Destination Stores**: one block per catalogue entry, each with an **Enable Fanout** checkbox and, when
-  enabled, the typed field grid from `components/DestinationConfigFields.tsx`.
-- Initial config values are `{...option.default_config, ...existing.config}`, so the store-name fields start at
-  the catalogue default and the API re-derives the per-product name on save.
 
-Client-side validation: a name is required, at least one source, and at least one enabled destination.
+The dialog no longer collects destination configuration. It has no store-name field, no connection field and no
+LiteLLM model picker. One profile holds that configuration, and the product copies it on save.
+
+Client-side validation: a name is required, at least one source, and an ingestion profile.
 
 Server-side schedule rules (`_apply_schedule`):
 
@@ -293,38 +326,69 @@ Server-side schedule rules (`_apply_schedule`):
 It renders `field.group` as uppercase headers, hides `advanced: true` fields behind a per-destination
 "Show advanced settings" toggle, and maps `string`/`number`/`password`/`boolean`/`select`/`model` to inputs.
 `model` fields list the LiteLLM models filtered by `field.model_kind`, fall back to the full list when the filter
-is empty, and degrade to a free-text input when no models load.
+is empty, and degrade to a free-text input when no models load. **The Knowledge Store dialog no longer renders
+this component.** The Ingestion Profiles editor does (document 06), and that editor is what loads the LiteLLM
+model lists.
 
-`field.min` / `field.max` are advisory metadata; neither the form nor `merge_destination_config()` clamps them.
+`field.min` / `field.max` reach a number input as its `min` and `max` attributes. A cleared number field stays
+empty, so it never stores a silent `0`. `merge_destination_config()` does not clamp a value.
 
 ### Field schemas and defaults per destination
 
-Defaults are built from `Settings`, so `.env` overrides the code defaults. `merge_destination_config()` keeps a
-user value only when it is neither `null` nor `""`.
+These fields belong to an Ingestion Profile. The profile stores the values, and the product copies them at
+create time with the per-product store names. Defaults come from `Settings` and from constants, so `.env`
+overrides the code defaults. `merge_destination_config()` keeps a user value only when it is neither `null` nor
+`""`.
 
-**`vector_qdrant`** — LiteLLM fields, `embedding_model` (model/embedding, required), `url` (required),
-`api_key`, `collection_name` (required, **namespace field**), `vector_size` (default `2048`), `distance`,
-`hnsw_m`, `hnsw_ef_construct`, `quantization`, `on_disk_payload` (last four advanced).
+The catalogue exposes **15 fields, down from 43**. Connection values, secrets and store names left the surface,
+and `.env` supplies every connection value. These keys are **removed**: `url`, `api_key`, `endpoint_url`,
+`auth_type`, `username`, `password`, `connection_url`, `redis_url`, `litellm_base_url`, `litellm_api_key`,
+`vector_size`, `distance`, `quantization`, `on_disk_payload`, `index_algorithm`, `distance_op`, and the
+per-destination `embedding_model`. The profile also carries no `collection_name`, `index_name`, `schema_name` or
+`index_prefix`, because the product copy derives them.
 
-**`lexical_opensearch`** — `endpoint_url` (required), `index_name` (required, **namespace field**), `auth_type`,
-`username`/`password` (advanced), `sparse_model`, `bm25_k1`, `bm25_b`, `number_of_shards`,
-`number_of_replicas`, `refresh_interval`. The only destination without LiteLLM fields.
+| destination | key | group | advanced | default |
+|---|---|---|---|---|
+| `vector_qdrant` | `hnsw_m` | HNSW Tuning | no | `16` |
+| `vector_qdrant` | `hnsw_ef_construct` | HNSW Tuning | no | `100` |
+| `lexical_opensearch` | `bm25_k1` | BM25 Tuning | no | `1.2` |
+| `lexical_opensearch` | `bm25_b` | BM25 Tuning | no | `0.75` |
+| `lexical_opensearch` | `sparse_model` | Lexical | no | from `sparse_embedding_model` |
+| `lexical_opensearch` | `number_of_shards` | Index | yes | `1` |
+| `lexical_opensearch` | `number_of_replicas` | Index | yes | `0` |
+| `lexical_opensearch` | `refresh_interval` | Index | yes | `"1s"` |
+| `relational_pgvector` | `store_embeddings` | Vectors | no | `True` |
+| `relational_pgvector` | `table_name` | Table | yes | `chunks` |
+| `cache_redisvl` | `ttl_seconds` | Cache | no | `86400` |
+| `cache_redisvl` | `similarity_threshold` | Cache | no | `0.85` |
+| `cache_redisvl` | `parent_child_mapping` | Structure | no | `True` |
+| `cache_redisvl` | `raptor_summaries` | Summaries | yes | `False` |
+| `cache_redisvl` | `summary_model` | Summaries | yes | `settings.summary_model` (`Gpt-oss-20b`) |
 
-**`relational_pgvector`** — LiteLLM fields, `connection_url` (required), `schema_name` (**namespace field**),
-`table_name` (default `chunks`), `store_embeddings`, `embedding_model`, `vector_size`, `index_algorithm`,
-`distance_op`.
+`hnsw_m` and `hnsw_ef_construct` moved from hidden to visible. Both reach the shared Qdrant store and apply at
+collection creation. `bm25_k1` and `bm25_b` also became visible, because each one changes retrieval quality.
 
-**`cache_redisvl`** — LiteLLM fields, `redis_url` (required), `index_prefix` (required, **namespace field**),
-`ttl_seconds`, `similarity_threshold`, `embedding_model`, `parent_child_mapping`, `raptor_summaries`,
-`summary_model`.
+Every default is the optimal starting value for this deployment, and each hint says so. `hnsw_m` 16 and
+`hnsw_ef_construct` 100 are the Qdrant defaults. `bm25_k1` 1.2 and `bm25_b` 0.75 are the OpenSearch defaults.
+`number_of_replicas` 0 is right for the single-node OpenSearch cluster here, because a replica would stay
+unassigned. `summary_model` was `gpt-4o-mini`, which the proxy does not serve, so it now comes from
+`SUMMARY_MODEL` and defaults to the small fast chat model the proxy does serve.
+
+A numeric destination field renders with `step="any"`. Without it the browser applies `step="1"` and refuses a
+fractional value, so `bm25_k1` 1.2, `bm25_b` 0.75 and `similarity_threshold` 0.85 all blocked the submit with
+"Please enter a valid value. The two nearest valid values are 1 and 2." The two chunking inputs stay
+integer-only, because the API declares them as integers.
 
 ### LiteLLM model picker
 
-`GET /api/knowledge-products/config/litellm-models?model_kind=<all|embedding|chat|sparse>` calls
-`<litellm_base_url>/v1/models` with a 10 s timeout and `Authorization: Bearer <openai_api_key>` when set. Models
-are classified by substring: `embed`/`embedding`/`nvidia-embed`/`bge`/`e5` → `embedding`;
+`GET /api/knowledge-products/config/litellm-models?model_kind=<all|embedding|chat|sparse>` calls the LiteLLM proxy
+`/v1/models` path at the configured base URL, with a 10 s timeout and `Authorization: Bearer <openai_api_key>`
+when set. Models are classified by substring: `embed`/`embedding`/`nvidia-embed`/`bge`/`e5` → `embedding`;
 `bm25`/`sparse`/`splade` → `sparse`; otherwise `chat`. When the proxy is unreachable the endpoint answers
-`source: "fallback"` with the environment lists and a warning the modal shows in amber.
+`source: "fallback"` with the environment lists and a warning the Ingestion Profiles editor shows in amber.
+
+The response also carries `default_embedding_model` and `default_caption_model`. The Ingestion Profile editor
+uses them to preselect the deployment's models instead of the first proxy entry.
 
 ---
 
@@ -377,6 +441,37 @@ stops the poller and clears the product's event history.
 `purge_file_from_destinations(product, source_id, file_key, destination_types=None)` is the shared entry point.
 With `destination_types=None` it purges every enabled destination.
 
+### Apply Profile
+
+`POST /api/knowledge-products/{id}/apply-profile` copies the linked Ingestion Profile again. The product stores
+a `pipeline_fingerprint` at creation and at apply. The hash covers the chunk size, the overlap, the modality
+mode, the embedding model, the caption model and the image threshold.
+
+| what changed | what the route purges |
+|---|---|
+| the fingerprint (chunking, modality, embedding model, caption model, image threshold) | every destination |
+| one destination config only | that destination |
+
+The route then re-registers the poller, which fires one sync. So a pipeline change writes every file again.
+
+The response reports three fields:
+
+| field | meaning |
+|---|---|
+| `updated` | destination types whose config changed |
+| `removed` | destination types the profile no longer lists |
+| `purged_files` | number of purge calls that ran |
+
+A whole response looks like this:
+
+```json
+{"status": "applied", "profile_id": "…", "profile_name": "…",
+ "added": ["cache_redisvl"], "updated": ["lexical_opensearch"],
+ "removed": ["relational_pgvector"], "purged_files": 3}
+```
+
+A purge that fails is swallowed, because all four purgers catch their own errors and log.
+
 ### Fanout payload (`_build_fanout_payload`)
 
 | Field | Value |
@@ -385,9 +480,11 @@ With `destination_types=None` it purges every enabled destination.
 | `source_id` | UUID of the linked `Source` |
 | `source_locator` / `file_key` | object key, e.g. `resumes/resume_alex.pdf` |
 | `file_name` / `original_name` / `title` | basename of the key |
-| `page_index` / `chunk_index` | both equal the page index (no chunker) |
+| `page_index` / `chunk_index` | the source page, and the chunk number inside that page from `0` |
+| `modality` | `"text"` for a text chunk, `"image"` for a figure caption |
+| `image_ref` | `{page_index, image_index}` on a caption, else `null` |
 | `type` | `"text"` |
-| `content` / `text` | stripped page text |
+| `content` / `text` | stripped chunk text |
 | `knowledge_product_id` | owning product UUID |
 | `created_at` | UTC ISO timestamp |
 
@@ -401,7 +498,8 @@ Per-sink projection: **Qdrant** the full payload plus the embedding; **OpenSearc
 `execute_universal_fanout_sync()` returns `{status, files_processed, files_added, files_updated, files_deleted,
 files_unchanged, pages_processed, destinations_synced}`. With no linked sources it returns the same shape with
 zeros and `message: "No linked MinIO source buckets to sync."`; with no enabled destination, the same with
-`message: "No destination is enabled."`.
+`message: "No destination is enabled."`. The summary also carries `images_skipped`, the number of figures whose
+caption failed. Such a figure is dropped and the text of the file still ingests.
 
 ---
 
@@ -421,8 +519,9 @@ zeros and `message: "No linked MinIO source buckets to sync."`; with no enabled 
 | `PATCH` | `/api/knowledge-products/{id}/destinations/{destination_id}` | body `{enabled}` — pause or resume one destination |
 | `POST` | `/api/knowledge-products/{id}/pause-all` | pause every destination in one update |
 | `POST` | `/api/knowledge-products/{id}/resume-all` | resume every destination in one update |
+| `POST` | `/api/knowledge-products/{id}/apply-profile` | copy the linked profile again; returns `{added, updated, removed, purged_files}` |
 | `POST` | `/api/knowledge-products/{id}/test-connection` | connectivity check for one destination |
-| `GET` | `/api/knowledge-products/{id}/inspect/{destination_type}` | visualizer payload |
+| `GET` | `/api/knowledge-products/{id}/inspect/{destination_type}?file_key=` | visualizer payload, optionally scoped to one file |
 
 Routes are declared literal-first, so `/destinations/options` and `/config/litellm-models` precede
 `/{product_id}`. `PUT` was replaced by `PATCH`, matching `/api/sources/{id}`.
@@ -432,11 +531,14 @@ Routes are declared literal-first, so `/destinations/options` and `/config/litel
 Create/update details:
 
 - Destination payloads pass through `normalize_destination_payload()`, which **drops unknown `destination_type`
-  values** and merges each config with its typed defaults, then through `apply_store_namespace()`.
+  values** and merges each config with its typed defaults, then through `apply_store_namespace()`. A create with
+  `ingestion_profile_id` takes its payloads from the profile: the profile carries no store name and the product
+  copy gets `kp_<slug>_<id8>`.
 - Creating links the sources, writes the destinations, and calls `register_knowledge_poller()` — which performs the
   first sync. No second call is needed.
-- `PATCH` **deletes destination rows whose type is absent from the payload**. Unchecking a destination in the UI
-  therefore stops it instead of leaving it running.
+- `PATCH` **deletes destination rows whose type is absent from the payload**. It keeps accepting `destinations`
+  for a product with no profile, and it does not accept `ingestion_profile_id`: attaching a profile copies rows
+  and purges stores, so it goes through `POST /{id}/apply-profile`.
 - `PATCH` calls `await db.refresh(product)` before serialising, because `updated_at` carries `onupdate=func.now()`
   and reading it without a refresh raises `MissingGreenlet`.
 - `pause-all`, `resume-all` and a destination toggle each perform one commit and then **one**
@@ -451,17 +553,25 @@ syntactically valid but unreachable sink.
 
 | destination_type | Source query | Payload |
 |---|---|---|
-| `vector_qdrant` | `GET /collections/{coll}`; `POST .../points/scroll` `{limit: 50, with_payload: true, with_vector: true}` | `collection_name`, `total_points`, `status`, `points[] = {id, x, y, z, payload, vector_len}`; `x/y/z` are sums of `vec[:10]`/`[10:20]`/`[20:30]` |
-| `lexical_opensearch` | `POST {url}/{index}/_search` `{size: 30, query: {match_all: {}}}` | `index_name`, `total_docs`, `terms[]` (top 25 from words > 3 chars), `documents[] = {id, file_key, page_index, content, score}` |
-| `relational_pgvector` | `SELECT id, file_key, page_index, content, created_at FROM {schema}.chunks ORDER BY id DESC LIMIT 50` + `count(*)` | `table_name` (qualified), `schema_name`, `total_rows`, `rows[]` |
-| `cache_redisvl` | `KEYS {prefix}:*`, first 30 keys with `TTL`/`TYPE`, `INFO memory` | `prefix`, `total_cached_keys`, `used_memory_human`, `keys[] = {key, ttl, type}` |
+| `vector_qdrant` | `GET /collections/{coll}`; `POST .../points/scroll` `{limit: 50, with_payload: true, with_vector: true}` | `collection_name`, `file_key`, `total_points`, `status`, `points[] = {id, x, y, z, payload, vector_len}`; `x/y/z` are sums of `vec[:10]`/`[10:20]`/`[20:30]`; `payload` carries `page_index`, `chunk_index`, `modality` and `image_ref` |
+| `lexical_opensearch` | `POST {url}/{index}/_search` `{size: 200, query: {match_all: {}}}` | `index_name`, `file_key`, `total_docs`, `terms[]` (top 25 from words > 3 chars), `documents[] = {id, file_key, page_index, chunk_index, content, modality, score}` |
+| `relational_pgvector` | `SELECT id, file_key, page_index, chunk_index, content, modality, created_at FROM {schema}.chunks ORDER BY id DESC LIMIT 50` + `count(*)` | `table_name` (qualified), `schema_name`, `file_key`, `total_rows`, `rows[]` (each row carries `chunk_index` and `modality`) |
+| `cache_redisvl` | `KEYS {prefix}:*`, first 200 keys with `TTL`/`TYPE`, `INFO memory` | `prefix`, `file_key`, `total_cached_keys`, `used_memory_human`, `keys[] = {key, ttl, type, value}`; the cached JSON value carries `modality` and `image_ref` |
+
+The optional `file_key` query parameter scopes a read to one file and lifts the sample cap, so every count
+describes that file. The Qdrant scroll then filters on `file_key`, the OpenSearch search term-matches
+`file_key.keyword`, the Postgres query adds `WHERE file_key = %s`, and the Redis pattern becomes
+`{prefix}:*{file_key}*`. Without the parameter the store maximum applies and the counts describe the whole
+store. A verification script needs this: the cap can hide part of one file's records in a large store.
 
 The Postgres branch uses the qualified `schema.chunks` name and the same connection resolver as the writer, so
 inspect reads the store the fanout wrote. The fake `cache_hit_rate: 0.88` field was removed; the Redis panel now
-shows the count of keys with a TTL, derived from the returned keys.
+shows the count of keys with a TTL, derived from the returned keys. Every store inspector returns `modality`, so
+a user can tell a caption from a text chunk.
 
-Pagination: nothing is paginated — 50 Qdrant points, 30 OpenSearch documents, 50 Postgres rows, 30 of the matched
-Redis keys (totals reported separately).
+Pagination: without `file_key`, nothing is paginated — 50 Qdrant points, 200 OpenSearch documents, 50 Postgres
+rows, 200 of the matched Redis keys (totals reported separately). With `file_key`, Qdrant returns up to 1000,
+OpenSearch up to 1000 and Postgres up to 1000 rows for that file.
 
 ---
 
@@ -492,6 +602,8 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
 
 - Tables: `knowledge_products`, `knowledge_product_sources`, `knowledge_product_destinations`,
   `knowledge_product_files`. `pipelines.knowledge_product_id` is the renamed foreign key.
+- `knowledge_products` carries `pipeline_fingerprint`, a hash of the chunking and modality settings.
+  `apply-profile` rebuilds every destination when that hash changes.
 - Alembic head: `010_knowledge_products` (`down_revision = 009_pipeline_knowledge_profile`). It renames the three
   tables and the index names, renames the foreign key columns, adds the three schedule columns, creates
   `knowledge_product_files`, deletes the `graph_neo4j` destination rows and deletes `indexed_files` rows whose
@@ -510,18 +622,25 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
 ### Tests and scripts
 
 - `backend/tests/test_knowledge_destination_schemas.py` — the catalogue has exactly four destinations and no
-  `graph_neo4j`; every entry declares `namespace_fields`; store names differ per product; namespacing replaces a
-  shared default but keeps a typed value.
+  `graph_neo4j`. Every entry declares `namespace_fields`. Store names differ per product. Namespacing always
+  assigns the derived name and overwrites a stored one. The field surface is the 15 surviving keys.
 - `backend/tests/test_knowledge_product_files.py` — `resolved_interval_seconds` for live, seconds, minutes, the
   default and the five-second floor; `_apply_schedule` for live clearing both intervals, seconds and minutes
   clearing each other, the `INTERVAL_REQUIRED` error, and keeping a stored interval.
+- `backend/tests/test_page_yielder_figures.py` — a PDF with one embedded figure yields a text page and one
+  `modality == "image"` page with a JPEG payload. `include_figures=False` yields one page. A high
+  `image_min_pixels` filters the figure out.
 - `backend/scripts/e2e_knowledge_fanout.py` — end-to-end CRUD against the live stores: two products over one
-  bucket, differing store names, `422 DESTINATION_STORE_CONFLICT`, `POST /sync` returns 404, add/replace/delete
-  propagate to all four sinks, and each product keeps its own copy.
+  bucket, differing store names, a supplied store name overwritten by the derived one, `POST /sync` returns 404,
+  add/replace/delete propagate to all four sinks, and each product keeps its own copy.
 - `backend/scripts/e2e_knowledge_pause.py` — pause-all stops every write; resume-all catches up; a
   per-destination pause excludes exactly that destination; resuming it catches up.
 - `backend/scripts/purge_neo4j_legacy.py` — one-shot removal of the `Chunk`/`Document`/`Entity` nodes the removed
   destination wrote. A migration must not do network I/O, so this is a script.
+- `backend/scripts/e2e_ingestion_profiles.py` — the store-isolation proof: a profile carries no store name, the
+  product copy gets `kp_*`, and a config change through `apply-profile` moves a store.
+- `backend/scripts/e2e_ingestion_modality.py` — the modality proof: the env-only field surface, the derived
+  dimension, a `text` sync that stores no image document, and `text_images` captions present in every store.
 
 Run them with:
 
@@ -530,6 +649,8 @@ cd rag-ingestion-manager/backend
 uv run pytest tests -q
 uv run python scripts/e2e_knowledge_fanout.py
 uv run python scripts/e2e_knowledge_pause.py
+uv run python scripts/e2e_ingestion_profiles.py --source-id <a real source uuid>
+uv run python scripts/e2e_ingestion_modality.py --source-id <a real source uuid>
 ```
 
 `pytest` must be present in the backend virtualenv (`uv sync --extra dev`); a system-wide `pytest` cannot import
@@ -546,6 +667,7 @@ MINIO_ENDPOINT=localhost:9000
 OPENSEARCH_URL=http://localhost:9200
 ```
 
-Postgres comes from `docker-compose.yaml` (`pgvector/pgvector:pg16`, database and user `ingestion`). The
-`relational_pgvector` destination default `connection_url` is the application database URL; when that is SQLite,
-`pg_connection_urls()` skips it and falls back to `postgresql://ingestion:ingestion@localhost:5432/ingestion`.
+Postgres comes from `docker-compose.yaml` (`pgvector/pgvector:pg16`, database and user `ingestion`). Every
+destination reads its connection from these settings, because no connection field exists any more. The writer
+uses `settings.database_url` as the PostgreSQL candidate. When that URL is SQLite, `pg_connection_urls()` skips it
+and falls back to `postgresql://ingestion:ingestion@localhost:5432/ingestion`.

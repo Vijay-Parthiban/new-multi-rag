@@ -9,11 +9,13 @@ import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
 import KnowledgeStorePage from "../pages/KnowledgeStorePage";
 import KnowledgeProductPage from "../pages/KnowledgeProductPage";
+import IngestionProfilesPage from "../pages/IngestionProfilesPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
   { to: "/browse", label: "Folders", icon: IconBrowse },
   { to: "/sources", label: "Sources", icon: IconSources },
+  { to: "/ingestion-profiles", label: "Ingestion Profiles", icon: IconIngestion },
   { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
 ];
 
@@ -100,6 +102,7 @@ export default function AppLayout() {
   const isHome = path === "/";
   const isBrowseExact = path === "/browse" || path === "/directories";
   const isSourcesExact = path === "/sources";
+  const isIngestionProfiles = path === "/ingestion-profiles";
   const isKnowledgeStore = path === "/knowledge-store";
   const isDirectory = params.type === "directory";
   const isViewer = params.type === "viewer";
@@ -123,7 +126,7 @@ export default function AppLayout() {
               end={end}
               className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
             >
-              <Icon className="sidebar-link-icon" />
+              <Icon className="sidebar-link-icon" size={16} />
               {label}
             </NavLink>
           ))}
@@ -149,6 +152,10 @@ export default function AppLayout() {
         </PersistentPage>
         <PersistentPage visible={isSourcesExact}>
           <SourcesPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isIngestionProfiles}>
+          <IngestionProfilesPage />
         </PersistentPage>
 
         <PersistentPage visible={isKnowledgeStore}>

@@ -25,7 +25,7 @@ The removed page was the only caller of the chunked-upload client. Its content-t
 - `frontend/src/hash.ts` (`computeFileHash`), exported but no longer imported anywhere.
 - `components/Sources/FileBrowser.tsx`, which is now the single upload surface.
 
-Parsing for indexing lives in `backend/src/ingestion_service/core/page_yielder.py`; the UI never parses anything. Chunking and embedding settings belong to RAG pipelines and Knowledge Products, not to any upload surface.
+Parsing for indexing lives in `backend/src/ingestion_service/core/page_yielder.py`; the UI never parses anything. Chunking settings belong to RAG pipelines and to Ingestion Profiles (the fanout reads its product's profile), and embedding settings belong to the destination configuration. None of them belong to an upload surface.
 
 ---
 
@@ -102,13 +102,23 @@ Upload itself only stores bytes. Indexing happens later, on one of two paths:
 
 **Path 1 — RAG pipeline sync (per linked pipeline).** The pipeline is enqueued by `_trigger_pipeline_syncs()`; the worker reads the source file and `ingestion_service/core/indexer.py` calls `chunk_text(text, pipeline.chunk_size, pipeline.chunk_overlap)` (`indexer.py:137`) where `chunk_text` is the recursive markdown/text splitter (`ingestion_service/utils/text_splitter.py:4`, splits on `^#+ ...` headings and blank lines, with word-level overflow splitting and overlap carried from the end of the previous chunk). Defaults from `apps/api/routes/pipelines.py:31-32`: `chunk_size = 1000` (allowed 100–8000), `chunk_overlap = 120` (allowed 0–2000); both are per-pipeline and settable on the Pipelines page.
 
-**Path 2 — Knowledge Product fanout (per linked product).** The product poller calls `sync_knowledge_product()` and then `execute_universal_fanout_sync(db, product)`. The fanout reads each source object, calls `iter_file_pages()` and writes **one record per page**; it does not call `chunk_text`. It records its own state in `knowledge_product_files`, not in `IndexedFile`. See document 04 for the per-destination payloads.
+**Path 2 — Knowledge Product fanout (per linked product).** The product poller calls `sync_knowledge_product()` and then `execute_universal_fanout_sync(db, product)`. The fanout reads each source object, calls `iter_file_pages()`, then splits **every source page** with `chunk_text()` using the linked Ingestion Profile's `chunk_size` and `chunk_overlap` (a product with no profile falls back to `1000 / 120`). Each chunk becomes one store document: `page_index` keeps the source page and `chunk_index` numbers the chunks from `0` inside it. The ledger's `pages_indexed` still counts source pages. It records its own state in `knowledge_product_files`, not in `IndexedFile`. See document 04 for the per-destination payloads and document 06 for the profile.
+
+**Fanout payload fields.** The payload carries `modality` and `image_ref` next to `page_index` and `chunk_index`:
+
+- `modality` is `"text"` for a text or table chunk. It is `"image"` for a figure caption.
+- `image_ref` is `{"page_index": N, "image_index": N}` for a figure caption. It is `null` for every other chunk.
+- `type` stays `"text"` for every chunk, including a caption. A caption is plain text, so existing consumers read that field unchanged.
+
+**Caption failures.** A figure whose caption call fails is dropped. The fanout does not retry it. The count appears in the sync summary as `images_skipped`. The fanout also publishes one `image_caption` SSE event for that file, so the loss stays visible.
 
 Embedding defaults and dimension behaviour:
-- Default embedding model `settings.embedding_model = nvidia-embed-passage`, called through the LiteLLM proxy at `LITELLM_BASE_URL` with `OPENAI_API_KEY`.
-- `EmbeddingClient` (`ingestion_service/embeddings/client.py`) catches LiteLLM failures and falls back to FastEmbed `BAAI/bge-small-en-v1.5` (384-dimension vectors); a failed image embedding returns a zero vector of 384 floats.
-- The Knowledge Product's Qdrant `vector_size` default is `2048`; `ensure_collection()` recreates the target collection when the stored dense vector size differs from the configured size (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:71-116`). When a product config has no `vector_size`, the fanout uses the length of the first embedding instead.
-- Uploading into a source triggers the fanout/pipeline sync in the background, but a product whose destinations are all paused, or a file whose ETag and size are unchanged since the last sync, is not re-indexed.
+- Default embedding model `settings.embedding_model = nvidia-embed-textonly`, called through the LiteLLM proxy at `LITELLM_BASE_URL` with `OPENAI_API_KEY`. A profile can override it through `text_embedding_model`.
+- The fanout embeds each chunk once per tick and shares that one vector with every vector destination. It does not embed once per writer.
+- The vector dimension comes from the embedding model output, not from a setting. The `vector_size` config key is gone.
+- `EmbeddingClient` (`ingestion_service/embeddings/client.py`) catches LiteLLM failures and falls back to FastEmbed `BAAI/bge-small-en-v1.5` (384-dimension vectors). The fanout rejects a batch whose vectors have mixed lengths, because of that fallback.
+- The fanout refuses to recreate an existing Qdrant collection whose dimension disagrees, because recreation deletes every point. `ensure_collection()` also honours `hnsw_m` and `hnsw_ef_construct` (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:71-116`).
+- Uploading into a source triggers the fanout/pipeline sync in the background. A product whose destinations are all paused is not re-indexed. A file whose ETag and size are unchanged since the last sync is not re-indexed either.
 
 ---
 
