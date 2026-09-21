@@ -14,6 +14,7 @@ import {
   type GuardrailsGoldenDatasetSummary,
 } from "../guardrailsEvalApi";
 import { formatRelativeTime } from "../utils/format";
+import { guardMeta, guardTitle } from "../utils/guardLabels";
 
 /**
  * POST /guardrails-evaluate/datasets/seed imports the golden/guardrails-dataset.json that
@@ -285,14 +286,17 @@ export default function GuardrailsEvaluationPage() {
         ]}
         actions={
           <div className="gr-eval-actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void onSeedDataset()}
-              disabled={busy}
-            >
-              {busy ? "Working…" : "Load bundled golden dataset"}
-            </button>
+            {/* Secondary here on purpose. The page's primary action is Start evaluation. */}
+            {datasets.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void onSeedDataset()}
+                disabled={busy}
+              >
+                {busy ? "Working…" : "Re-load bundled dataset"}
+              </button>
+            )}
             <button type="button" className="btn btn-secondary" onClick={() => void refresh()} disabled={busy}>
               Refresh
             </button>
@@ -327,8 +331,8 @@ export default function GuardrailsEvaluationPage() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-        <div className="panel">
+      <div className="gr-eval-grid">
+        <div className="panel golden-dataset-panel">
           <div className="panel-header">
             <h3 className="panel-title">Golden dataset</h3>
           </div>
@@ -410,11 +414,18 @@ export default function GuardrailsEvaluationPage() {
             )}
 
             {selectedConfig && (
-              <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
-                id={selectedConfig.id.slice(0, 8)}… · mode={selectedConfig.mode} · guards=
-                {(selectedConfig.guards || []).join(", ") || "—"} · settings for{" "}
-                {Object.keys(selectedConfig.settings ?? {}).length} validator(s)
-              </p>
+              <div className="gr-config-summary">
+                <span className="gr-summary-label">Runs as</span>
+                <span className="gr-tag gr-tag--phase">{selectedConfig.mode}</span>
+                {(selectedConfig.guards || []).map((id) => (
+                  <span key={id} className={`gr-tag gr-tag--${guardMeta(id).tone}`}>
+                    {guardTitle(id)}
+                  </span>
+                ))}
+                {(selectedConfig.guards || []).length === 0 && (
+                  <span className="muted">no validators selected</span>
+                )}
+              </div>
             )}
 
             <button
@@ -433,7 +444,7 @@ export default function GuardrailsEvaluationPage() {
         <div className="panel-header">
           <h3 className="panel-title">Runs</h3>
           <span className="muted" style={{ fontSize: "0.75rem" }}>
-            {runsCount} total
+            {runsCount === 1 ? "1 run" : `${runsCount} runs`}
           </span>
         </div>
         <div className="repo-table-wrap">
@@ -450,8 +461,12 @@ export default function GuardrailsEvaluationPage() {
             <tbody>
               {runs.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="muted">
-                    No runs yet for this dataset.
+                  <td colSpan={5} className="gr-runs-empty">
+                    <span>No runs yet for this dataset.</span>
+                    <span className="muted">
+                      Pick a config above and select Start guardrails evaluation. Each run takes
+                      about twenty seconds, because three rows call the LLM judge.
+                    </span>
                   </td>
                 </tr>
               ) : (
@@ -460,7 +475,17 @@ export default function GuardrailsEvaluationPage() {
                     <td className="mono">{formatRelativeTime(r.created_at || "")}</td>
                     <td>{r.status}</td>
                     <td>{r.config_snapshot?.name || r.config_id.slice(0, 8)}</td>
-                    <td className="mono">{percent(r.aggregate_metrics?.accuracy)}</td>
+                    <td>
+                      <div className="gr-run-score">
+                        <span className="gr-run-accuracy">
+                          {percent(r.aggregate_metrics?.accuracy)}
+                        </span>
+                        <span className="gr-run-counts">
+                          {(r.aggregate_metrics?.false_negatives ?? 0)} missed ·{" "}
+                          {(r.aggregate_metrics?.false_positives ?? 0)} false
+                        </span>
+                      </div>
+                    </td>
                     <td>
                       <button type="button" className="btn btn-sm btn-ghost" onClick={() => void onSelectRun(r)}>
                         Open

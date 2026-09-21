@@ -3686,7 +3686,10 @@ select.input option {
 
 .gr-config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  /* Bounded tracks keep a short summary readable. Full-width tracks left the card interior
+     mostly empty, and unbounded auto-fill left empty tracks when only one or two exist. */
+  grid-template-columns: repeat(auto-fill, minmax(340px, 460px));
+  justify-content: start;
   gap: 1rem;
 }
 
@@ -3855,94 +3858,422 @@ select.input option {
   color: var(--text-secondary);
 }
 
-.gr-analytics-row {
-  display: grid;
-  grid-template-columns: minmax(260px, 340px) 1fr;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
-  align-items: start;
-}
-
-@media (max-width: 800px) {
-  .gr-analytics-row {
-    grid-template-columns: 1fr;
-  }
-}
-
-.gr-chart-card--pie {
-  min-height: 280px;
-}
-
-.gr-pie-center-value {
-  fill: var(--text-primary);
-  font-size: 1.5rem;
-  font-weight: 700;
-  font-family: inherit;
-}
-
-.gr-pie-center-label {
-  fill: var(--text-secondary);
-  font-size: 0.65rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  font-family: inherit;
-}
-
-.gr-block-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 0;
-}
-
-.gr-block-card {
+.gr-guard-chip {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.2rem;
-  padding: 0.85rem 1rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
-  background: var(--bg-default);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.gr-guard-chip:hover {
+  border-color: var(--border-glow);
+  background: var(--bg-glass-hover);
+}
+
+.gr-guard-chip.selected {
+  border-color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.gr-guard-chip input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.gr-chip-label {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.gr-chip-desc {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-item-picker {
+  padding: 0 0.75rem 0.75rem;
+  border-top: 1px dashed var(--border-default);
+}
+
+.gr-item-picker-label {
+  margin: 0.6rem 0 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.gr-selected-tags,
+.gr-quick-picks,
+.gr-guard-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.gr-selected-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.25rem 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(37, 99, 235, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+}
+
+.gr-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
   color: inherit;
   cursor: pointer;
-  text-align: left;
-  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
 }
 
-.gr-block-card:hover {
+.gr-tag-remove:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}
+
+.gr-quick-picks {
+  margin: 0.4rem 0 0.35rem;
+}
+
+.gr-quick-pick {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-default);
+  cursor: pointer;
+}
+
+.gr-quick-pick:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.gr-keyword-row {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.gr-keyword-row .gr-input {
+  flex: 1;
+}
+
+.gr-add-row {
+  margin-top: 0.4rem;
+  position: relative;
+}
+
+.gr-add-items-btn {
+  font-weight: 600;
+}
+
+.gr-combobox {
+  position: relative;
+}
+
+.gr-combobox-input {
+  width: 100%;
+}
+
+.gr-combobox-list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-glow);
+}
+
+.gr-combobox-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.gr-combobox-option.highlighted,
+.gr-combobox-option:hover {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.gr-option-id {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.gr-combobox-empty {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-item-tag {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: rgba(14, 165, 233, 0.15);
+  color: #7dd3fc;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+
+.gr-form-error {
+  margin: 0.75rem 0 0;
+  font-size: 0.8125rem;
+  color: #f87171;
+}
+
+.gr-mode-radios {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.gr-mode-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.gr-mode-radio.selected {
+  border-color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.gr-mode-radio input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.gr-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  justify-content: flex-end;
+}
+
+/* ── Config Cards Grid ── */
+
+.gr-config-grid {
+  display: grid;
+  /* Bounded tracks keep a short summary readable. Full-width tracks left the card interior
+     mostly empty, and unbounded auto-fill left empty tracks when only one or two exist. */
+  grid-template-columns: repeat(auto-fill, minmax(340px, 460px));
+  justify-content: start;
+  gap: 1rem;
+}
+
+.gr-config-card {
+  padding: 1rem 1.125rem;
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.gr-config-card:hover {
+  border-color: var(--border-glow);
+  box-shadow: var(--shadow-glow);
+}
+
+.gr-config-card.inactive {
+  opacity: 0.6;
+}
+
+.gr-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.gr-config-header h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.gr-config-desc {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.gr-config-detail {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.gr-detail-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.gr-guard-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.gr-guard-tag {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.gr-mode-badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: rgba(6, 182, 212, 0.15);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  text-transform: capitalize;
+}
+
+.gr-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gr-badge-active {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.gr-badge-inactive {
+  background: rgba(156, 163, 175, 0.12);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+.gr-config-actions {
+  display: flex;
+  gap: 0.375rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-muted);
+}
+
+/* ── KPI Cards ── */
+
+.gr-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.gr-kpi-card {
+  padding: 1rem;
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  transition: border-color 0.2s;
+}
+
+.gr-kpi-card:hover {
   border-color: var(--border-glow);
 }
 
-.gr-block-card--ban {
-  border-color: rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.gr-block-card--pii {
-  border-color: rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.gr-block-card--toxic {
-  border-color: rgba(249, 115, 22, 0.35);
-  background: rgba(249, 115, 22, 0.08);
-}
-
-.gr-block-card-icon {
-  font-size: 1.1rem;
-}
-
-.gr-block-card-title {
-  font-size: 0.85rem;
+.gr-kpi-value {
+  font-size: 1.75rem;
   font-weight: 700;
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-emphasis) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
-.gr-block-card-count {
-  font-size: 0.72rem;
+.gr-kpi-blocked .gr-kpi-value {
+  background: linear-gradient(135deg, #ef4444 0%, #f87171 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.gr-kpi-passed .gr-kpi-value {
+  background: linear-gradient(135deg, #22c55e 0%, #86efac 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.gr-kpi-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--text-secondary);
 }
+
 
 .gr-guard-chip {
   display: inline-flex;
@@ -4097,32 +4428,6 @@ select.input option {
   font-weight: 600;
 }
 
-.gr-pie-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.gr-pie-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.gr-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.8125rem;
-}
-
-.gr-legend-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
 
 .gr-empty-chart {
   text-align: center;
@@ -5711,3 +6016,544 @@ select.input option {
   color: #b91c1c;
 }
 
+/* ── Guardrails: validator picker and settings ──
+   The create form used to render every validator with its parameters open, which buried the
+   page under sixteen panels. The picker and the settings are now separate panes. */
+
+.gr-form-split {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  margin-bottom: 1rem;
+}
+
+.gr-form-picker {
+  padding: 0.75rem;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  max-height: 62vh;
+  overflow-y: auto;
+  position: sticky;
+  top: 1rem;
+}
+
+.gr-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.gr-section-count {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-muted);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.gr-picker-group {
+  margin-bottom: 0.75rem;
+}
+
+.gr-picker-group:last-child {
+  margin-bottom: 0;
+}
+
+.gr-picker-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+
+.gr-picker-group-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.gr-picker-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.gr-picker-chip:hover {
+  background: var(--bg-glass-hover);
+  border-color: var(--border-default);
+}
+
+.gr-picker-chip.selected {
+  background: var(--accent-subtle);
+  border-color: var(--border-glow);
+}
+
+.gr-picker-chip:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.gr-picker-chip input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.gr-picker-name {
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gr-picker-chip--unavailable {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gr-form-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.gr-settings-empty {
+  padding: 1.75rem 1rem;
+  text-align: center;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.gr-settings-empty p {
+  margin: 0;
+}
+
+.gr-setting-card {
+  padding: 0.85rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.gr-setting-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.gr-setting-name {
+  margin-right: 0.4rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gr-setting-remove {
+  padding: 0.15rem 0.4rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.gr-setting-remove:hover {
+  color: var(--danger);
+  background: var(--danger-subtle);
+}
+
+.gr-setting-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.gr-setting-desc {
+  margin: 0.25rem 0 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* Cost and speed differ a lot by kind, so the tag carries the distinction. */
+.gr-tag--local {
+  border-color: var(--border-default);
+  color: var(--text-secondary);
+}
+
+.gr-tag--model {
+  border-color: rgba(210, 153, 34, 0.4);
+  color: var(--warn-text);
+}
+
+.gr-tag--llm {
+  border-color: rgba(139, 92, 246, 0.4);
+  color: #c4b5fd;
+}
+
+/* Columns of figures must not shift as the digits change. */
+.gr-kpi-value,
+.gr-bar-value,
+.gr-eval-metric-value,
+.gr-run-accuracy {
+  font-variant-numeric: tabular-nums;
+}
+
+[data-theme="light"] .gr-tag--llm {
+  border-color: rgba(109, 40, 217, 0.35);
+  color: #6d28d9;
+}
+
+[data-theme="light"] .gr-tag--model {
+  border-color: rgba(180, 83, 9, 0.35);
+  color: #b45309;
+}
+
+@media (max-width: 900px) {
+  .gr-form-split {
+    grid-template-columns: 1fr;
+  }
+
+  .gr-form-picker {
+    position: static;
+    max-height: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gr-picker-chip,
+  .gr-setting-remove {
+    transition: none;
+  }
+}
+
+/* ── Guardrails: block breakdown, proportion bar, guard tones ──
+   The donut was replaced because a two-way split renders as a circle. Bars and one stacked
+   bar with labelled legends carry the same numbers and stay readable. */
+
+.gr-bar-list--clickable {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.gr-guardbar {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.gr-guardbar:hover {
+  background: var(--bg-glass-hover);
+  border-color: var(--border-default);
+}
+
+.gr-guardbar--active {
+  background: var(--accent-subtle);
+  border-color: var(--border-glow);
+}
+
+/* The track is a span here, because a button may not contain a div. A span defaults to
+   inline, which ignores height and collapses the bar. */
+.gr-guardbar .gr-bar-track {
+  display: block;
+  width: 100%;
+}
+
+.gr-guardbar:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.gr-guard-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.gr-guard-chip--scope {
+  background: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
+}
+
+.gr-guard-chip--security {
+  background: rgba(236, 72, 153, 0.15);
+  color: #f472b6;
+}
+
+.gr-guard-chip--other {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+}
+
+.gr-prop {
+  margin-top: 0.5rem;
+}
+
+.gr-prop-track {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-inset);
+}
+
+.gr-prop-seg {
+  display: block;
+  height: 100%;
+  transition: width 0.25s ease;
+}
+
+.gr-prop-seg--blocked {
+  background: var(--danger);
+}
+
+.gr-prop-seg--passed {
+  background: var(--success-text);
+}
+
+.gr-prop-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gr-prop-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-prop-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.gr-prop-dot--blocked {
+  background: var(--danger);
+}
+
+.gr-prop-dot--passed {
+  background: var(--success-text);
+}
+
+.gr-prop-name {
+  color: var(--text-primary);
+}
+
+.gr-prop-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.gr-prop-pct {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gr-guardbar,
+  .gr-prop-seg {
+    transition: none;
+  }
+}
+
+/* Two-line time cell and a sticky header, so a long trace list stays readable. */
+
+.gr-cell-time {
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.gr-time-main {
+  display: block;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.gr-time-day {
+  display: block;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.gr-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-default);
+  backdrop-filter: blur(8px);
+}
+
+.gr-row-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.gr-fail-chip {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Guard Evaluation: config summary and inline run scores ── */
+
+.gr-config-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.gr-summary-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-run-score {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.gr-run-accuracy {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.gr-run-counts {
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Native file inputs sit oddly beside the styled selects, so they take the panel's own look. */
+.golden-dataset-panel input[type="file"] {
+  width: 100%;
+  padding: 0.4rem;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.18s ease;
+}
+
+.golden-dataset-panel input[type="file"]:hover {
+  border-color: var(--accent);
+}
+
+.golden-dataset-panel input[type="file"]::file-selector-button {
+  margin-right: 0.6rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.golden-dataset-panel input[type="file"]::file-selector-button:hover {
+  background: var(--bg-glass-hover);
+}
+
+.gr-eval-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 900px) {
+  .gr-eval-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The close control was a plain small button, which read as a dark blob at the drawer edge. */
+.gr-drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.gr-drawer-close:hover {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.gr-drawer-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gr-runs-empty {
+  padding: 1.25rem 1rem;
+  text-align: center;
+}
+
+.gr-runs-empty span {
+  display: block;
+}
+
+.gr-runs-empty .muted {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+}

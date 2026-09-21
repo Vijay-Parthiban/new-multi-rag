@@ -5,41 +5,65 @@ import {
     listGuardrailsTraces,
     getGuardrailsStats,
 } from "../api";
+import { guardMeta, guardTitle } from "../utils/guardLabels";
 
 type ViewMode = "table" | "charts";
 type BlockedFilter = "" | "true" | "false";
 
 const LIMIT = 25;
 
-const GUARD_META: Record<string, { icon: string; title: string; tone: string }> = {
-    ban_list: { icon: "🚫", title: "Banned keyword", tone: "ban" },
-    pii_check: { icon: "🔒", title: "Personal information", tone: "pii" },
-    toxic_language: { icon: "⚠️", title: "Toxic language", tone: "toxic" },
-};
-
-const GUARD_COLORS: Record<string, string> = {
-    ban_list: "#ef4444",
-    pii_check: "#f59e0b",
-    toxic_language: "#8b5cf6",
-};
-
-const CHART_COLORS = [
-    "#6366f1", "#f59e0b", "#ef4444", "#22c55e", "#06b6d4", "#ec4899",
-    "#8b5cf6", "#14b8a6",
-];
-
-function blocksByGuardData(perGuard: Record<string, number>): PieSlice[] {
-    return Object.entries(perGuard)
-        .filter(([, count]) => count > 0)
-        .map(([name, count], i) => ({
-            label: GUARD_META[name]?.title || name,
-            value: count,
-            color: GUARD_COLORS[name] || CHART_COLORS[i % CHART_COLORS.length],
-        }));
+/**
+ * One stacked bar with a labelled legend. A donut was wrong here: a two-way split with one
+ * dominant side renders as a circle. The legend carries the numbers, so the split does not
+ * depend on colour alone.
+ */
+function ProportionBar({
+    segments,
+}: {
+    segments: { label: string; value: number; tone: string }[];
+}) {
+    const total = segments.reduce((sum, s) => sum + s.value, 0);
+    const safeTotal = total || 1;
+    return (
+        <div className="gr-prop">
+            <div
+                className="gr-prop-track"
+                role="img"
+                aria-label={segments.map((s) => `${s.label}: ${s.value}`).join(", ")}
+            >
+                {segments.map((s) => (
+                    <span
+                        key={s.label}
+                        className={`gr-prop-seg gr-prop-seg--${s.tone}`}
+                        style={{ width: `${(s.value / safeTotal) * 100}%` }}
+                    />
+                ))}
+            </div>
+            <ul className="gr-prop-legend">
+                {segments.map((s) => (
+                    <li key={s.label}>
+                        <span className={`gr-prop-dot gr-prop-dot--${s.tone}`} aria-hidden="true" />
+                        <span className="gr-prop-name">{s.label}</span>
+                        <span className="gr-prop-value">{s.value}</span>
+                        <span className="gr-prop-pct">
+                            {total > 0 ? `${((s.value / safeTotal) * 100).toFixed(1)}%` : "0%"}
+                        </span>
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
 }
 
-function guardTitle(id: string): string {
-    return GUARD_META[id]?.title || id;
+/** The table shows time first and the day beneath it, so a 25-row list stays scannable. */
+function formatClock(iso: string | null): string {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDay(iso: string | null): string {
+    if (!iso) return "";
+    return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 /** Failed and total checks in one trace, read from the per-validator `guard_results`. */
@@ -125,7 +149,15 @@ export default function GuardrailsTracesPage() {
     }, [selectedTrace]);
 
     const totalPages = Math.max(1, Math.ceil(total / LIMIT));
-    const guardPie = stats ? blocksByGuardData(stats.per_guard) : [];
+    /** Blocks per guard, largest first, with each guard's share of all blocks. */
+    const guardBreakdown = useMemo(() => {
+        if (!stats) return [];
+        const total = stats.blocked_requests || 1;
+        return Object.entries(stats.per_guard)
+            .filter(([, count]) => count > 0)
+            .sort((a, b) => b[1] - a[1])
+            .map(([id, count]) => ({ id, count, share: (count / total) * 100 }));
+    }, [stats]);
 
     const guardOptions = useMemo(() => {
         const ids = new Set<string>();
@@ -193,33 +225,46 @@ export default function GuardrailsTracesPage() {
             )}
 
             {stats && (
-                <div className="gr-analytics-row">
-                    <div className="gr-chart-card gr-chart-card--pie">
-                        <h3>Blocks by Guard</h3>
-                        {guardPie.length > 0 ? (
-                            <PieChart data={guardPie} />
-                        ) : (
-                            <p className="gr-empty-chart">No blocked requests yet</p>
-                        )}
-                    </div>
-                    {Object.keys(stats.per_guard).length > 0 && (
-                        <div className="gr-block-cards">
-                            {Object.entries(stats.per_guard).map(([guard, count]) => {
-                                const meta = GUARD_META[guard] || { icon: "🛡️", title: guard, tone: "ban" };
+                <div className="gr-chart-card">
+                    <h3>Blocks by guard</h3>
+                    <p className="gr-chart-sub">
+                        Each row is a validator that blocked. Select one to filter the table below.
+                    </p>
+                    {guardBreakdown.length === 0 ? (
+                        <p className="gr-empty-chart">No blocked requests yet</p>
+                    ) : (
+                        <ul className="gr-bar-list gr-bar-list--clickable">
+                            {guardBreakdown.map(({ id, count, share }) => {
+                                const meta = guardMeta(id);
                                 return (
-                                    <button
-                                        key={guard}
-                                        type="button"
-                                        className={`gr-block-card gr-block-card--${meta.tone}`}
-                                        onClick={() => { setFilterGuard(guard); setFilterBlocked("true"); setPage(0); setView("table"); }}
-                                    >
-                                        <span className="gr-block-card-icon">{meta.icon}</span>
-                                        <span className="gr-block-card-title">{meta.title}</span>
-                                        <span className="gr-block-card-count">{count} blocked</span>
-                                    </button>
+                                    <li key={id}>
+                                        <button
+                                            type="button"
+                                            className={`gr-guardbar ${filterGuard === id ? "gr-guardbar--active" : ""}`}
+                                            onClick={() => {
+                                                setFilterGuard(id);
+                                                setFilterBlocked("true");
+                                                setPage(0);
+                                                setView("table");
+                                            }}
+                                        >
+                                            <span className="gr-bar-head">
+                                                <span className="gr-bar-label">{meta.title}</span>
+                                                <span className="gr-bar-value">
+                                                    {count} blocked · {share.toFixed(1)}%
+                                                </span>
+                                            </span>
+                                            <span className="gr-bar-track">
+                                                <span
+                                                    className="gr-bar-fill gr-bar-fill--fail"
+                                                    style={{ width: `${Math.max(share, 2)}%` }}
+                                                />
+                                            </span>
+                                        </button>
+                                    </li>
                                 );
                             })}
-                        </div>
+                        </ul>
                     )}
                 </div>
             )}
@@ -265,28 +310,53 @@ export default function GuardrailsTracesPage() {
             {view === "charts" ? (
                 <div className="gr-charts-container">
                     {stats && stats.total_requests > 0 ? (
-                        <div className="gr-charts-grid">
+                        <>
                             <div className="gr-chart-card">
-                                <h3>Blocked vs Passed</h3>
-                                <PieChart
-                                    centerLabel="requests"
-                                    data={[
-                                        { label: "Blocked", value: stats.blocked_requests, color: "#ef4444" },
-                                        { label: "Passed", value: stats.passed_requests, color: "#22c55e" },
+                                <h3>Blocked vs passed</h3>
+                                <p className="gr-chart-sub">
+                                    {stats.total_requests} requests, {stats.blocked_requests} blocked
+                                    and {stats.passed_requests} passed.
+                                </p>
+                                <ProportionBar
+                                    segments={[
+                                        { label: "Blocked", value: stats.blocked_requests, tone: "blocked" },
+                                        { label: "Passed", value: stats.passed_requests, tone: "passed" },
                                     ]}
                                 />
                             </div>
                             <div className="gr-chart-card">
-                                <h3>Blocks by Guard</h3>
-                                {guardPie.length > 0 ? (
-                                    <PieChart data={guardPie} />
-                                ) : (
+                                <h3>Blocks by guard</h3>
+                                {guardBreakdown.length === 0 ? (
                                     <p className="gr-empty-chart">No blocked requests yet</p>
+                                ) : (
+                                    <ul className="gr-bar-list">
+                                        {guardBreakdown.map(({ id, count, share }) => (
+                                            <li key={id} className="gr-bar-row">
+                                                <div className="gr-bar-head">
+                                                    <span className="gr-bar-label">{guardTitle(id)}</span>
+                                                    <span className="gr-bar-value">
+                                                        {count} · {share.toFixed(1)}%
+                                                    </span>
+                                                </div>
+                                                <div className="gr-bar-track">
+                                                    <span
+                                                        className="gr-bar-fill gr-bar-fill--fail"
+                                                        style={{ width: `${Math.max(share, 2)}%` }}
+                                                    />
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
                                 )}
                             </div>
-                        </div>
+                        </>
                     ) : (
-                        <div className="gr-empty"><p>No data to display charts</p></div>
+                        <div className="gr-empty">
+                            <p>No data to display charts</p>
+                            <p className="gr-param-help">
+                                Charts appear once a chat turn runs with a guardrails config attached.
+                            </p>
+                        </div>
                     )}
                 </div>
             ) : (
@@ -360,11 +430,21 @@ export default function GuardrailsTracesPage() {
                                             return (
                                                 <tr
                                                     key={t.id}
+                                                    tabIndex={0}
+                                                    role="button"
+                                                    aria-label={`Trace from ${formatDay(t.created_at)} ${formatClock(t.created_at)}: ${t.blocked ? "blocked" : "passed"}`}
                                                     className={`gr-row-clickable ${t.blocked ? "gr-row-blocked" : ""} ${selectedTrace?.id === t.id ? "gr-row-selected" : ""}`}
                                                     onClick={() => setSelectedTrace(t)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter" || e.key === " ") {
+                                                            e.preventDefault();
+                                                            setSelectedTrace(t);
+                                                        }
+                                                    }}
                                                 >
                                                     <td className="gr-cell-time">
-                                                        {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
+                                                        <span className="gr-time-main">{formatClock(t.created_at)}</span>
+                                                        <span className="gr-time-day">{formatDay(t.created_at)}</span>
                                                     </td>
                                                     <td>{t.config_name || "—"}</td>
                                                     <td className="gr-cell-query" title={t.query}>
@@ -382,8 +462,10 @@ export default function GuardrailsTracesPage() {
                                                     </td>
                                                     <td>
                                                         {t.blocked_by_guard ? (
-                                                            <span className={`gr-guard-chip gr-guard-chip--${(GUARD_META[t.blocked_by_guard]?.tone) || "ban"}`}>
-                                                                {GUARD_META[t.blocked_by_guard]?.icon || "🛡️"}{" "}
+                                                            /* A dot plus the guard name. The name carries the
+                                                               meaning, so colour is never the only signal. */
+                                                            <span className={`gr-guard-chip gr-guard-chip--${guardMeta(t.blocked_by_guard).tone}`}>
+                                                                <span className="gr-guard-dot" aria-hidden="true" />
                                                                 {guardTitle(t.blocked_by_guard)}
                                                             </span>
                                                         ) : "—"}
@@ -429,7 +511,7 @@ export default function GuardrailsTracesPage() {
                                 <h3>Trace detail</h3>
                                 <p className="gr-drawer-sub">
                                     {selectedTrace.created_at
-                                        ? new Date(selectedTrace.created_at).toLocaleString()
+                                        ? `${formatDay(selectedTrace.created_at)} · ${formatClock(selectedTrace.created_at)}`
                                         : "Unknown time"}
                                     {" · "}
                                     {selectedTrace.config_name || "No config"}
@@ -437,7 +519,7 @@ export default function GuardrailsTracesPage() {
                             </div>
                             <button
                                 type="button"
-                                className="btn btn-sm"
+                                className="gr-drawer-close"
                                 onClick={() => setSelectedTrace(null)}
                                 aria-label="Close detail"
                             >✕</button>
@@ -495,72 +577,6 @@ export default function GuardrailsTracesPage() {
                     </aside>
                 </div>
             )}
-        </div>
-    );
-}
-
-// ── Inline SVG donut chart ──────────────────────────────────────────
-
-interface PieSlice {
-    label: string;
-    value: number;
-    color: string;
-}
-
-function PieChart({ data, centerLabel = "blocked" }: { data: PieSlice[]; centerLabel?: string }) {
-    const slices = data.filter((d) => d.value > 0);
-    const total = slices.reduce((s, d) => s + d.value, 0);
-    if (total === 0) return <p className="gr-empty-chart">No data</p>;
-
-    const size = 200;
-    const cx = size / 2;
-    const cy = size / 2;
-    const r = 68;
-    const stroke = 28;
-    const circ = 2 * Math.PI * r;
-    let offset = 0;
-
-    const rings = slices.map((slice) => {
-        const dash = (slice.value / total) * circ;
-        const el = (
-            <circle
-                key={slice.label}
-                cx={cx}
-                cy={cy}
-                r={r}
-                fill="none"
-                stroke={slice.color}
-                strokeWidth={stroke}
-                strokeDasharray={`${dash} ${circ - dash}`}
-                strokeDashoffset={-offset}
-                transform={`rotate(-90 ${cx} ${cy})`}
-                strokeLinecap="butt"
-            />
-        );
-        offset += dash;
-        return el;
-    });
-
-    return (
-        <div className="gr-pie-container">
-            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-                <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--border-muted)" strokeWidth={stroke} />
-                {rings}
-                <text x={cx} y={cy - 6} textAnchor="middle" className="gr-pie-center-value">
-                    {total}
-                </text>
-                <text x={cx} y={cy + 14} textAnchor="middle" className="gr-pie-center-label">
-                    {centerLabel}
-                </text>
-            </svg>
-            <div className="gr-pie-legend">
-                {slices.map((s) => (
-                    <div key={s.label} className="gr-legend-item">
-                        <span className="gr-legend-dot" style={{ background: s.color }} />
-                        <span>{s.label}: {s.value} ({Math.round(s.value / total * 100)}%)</span>
-                    </div>
-                ))}
-            </div>
         </div>
     );
 }

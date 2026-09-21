@@ -671,85 +671,113 @@ export default function GuardrailsConfigPage() {
                         placeholder="Brief description..."
                     />
 
-                    <label className="gr-label">Validators</label>
-                    {groupedGuards.length === 0 && (
-                        <p className="gr-param-help">
-                            The service reported no validators. Use Retry above, or check the
-                            guardrails service.
-                        </p>
-                    )}
-                    {groupedGuards.map(([category, items]) => (
-                        <div key={category} className="gr-guard-group">
-                            <div className="gr-guard-group-title">
-                                <span>{category}</span>
-                                <span className="gr-guard-group-count">{items.length}</span>
-                            </div>
-                            <div className="gr-guard-options">
-                                {items.map((g) => {
-                                    const selected = formGuards.includes(g.id);
-                                    const disabled = g.available === false;
-                                    const values = formParams[g.id] ?? {};
-                                    return (
-                                        <div
-                                            key={g.id}
-                                            className={`gr-guard-block ${selected ? "selected" : ""} ${disabled ? "gr-guard-block--unavailable" : ""}`}
-                                        >
-                                            <label className={`gr-guard-chip ${selected ? "selected" : ""}`}>
+                    {/* The picker and the settings are separate. Showing every validator's
+                        parameters at once buried the form under sixteen open panels. */}
+                    <div className="gr-form-split">
+                        <div className="gr-form-picker">
+                            <p className="gr-section-label">
+                                Validators
+                                <span className="gr-section-count">{groupedGuards.reduce((n, [, items]) => n + items.length, 0)}</span>
+                            </p>
+                            {groupedGuards.length === 0 && (
+                                <p className="gr-param-help">
+                                    The service reported no validators. Use Retry above, or check the
+                                    guardrails service.
+                                </p>
+                            )}
+                            {groupedGuards.map(([category, items]) => (
+                                <div key={category} className="gr-picker-group">
+                                    <p className="gr-picker-group-title">
+                                        {category}
+                                        <span className="gr-picker-group-count">{items.length}</span>
+                                    </p>
+                                    {items.map((g) => {
+                                        const selected = formGuards.includes(g.id);
+                                        const disabled = g.available === false;
+                                        return (
+                                            <label
+                                                key={g.id}
+                                                className={`gr-picker-chip ${selected ? "selected" : ""} ${disabled ? "gr-picker-chip--unavailable" : ""}`}
+                                                title={disabled ? (g.unavailable_reason || "Not installed in the service.") : g.description}
+                                            >
                                                 <input
                                                     type="checkbox"
                                                     checked={selected}
                                                     disabled={disabled}
                                                     onChange={() => toggleGuard(g.id)}
                                                 />
-                                                <span className="gr-chip-main">
-                                                    <span className="gr-chip-head">
-                                                        <span className="gr-chip-label">{g.label}</span>
-                                                        <span className="gr-tag gr-tag--kind">{g.kind || "local"}</span>
-                                                        <span className="gr-tag gr-tag--phase">{g.phase || "both"}</span>
-                                                    </span>
-                                                    <span className="gr-chip-desc">{g.description}</span>
-                                                    {disabled && (
-                                                        <span className="gr-chip-unavailable">
-                                                            {g.unavailable_reason || "This validator is not installed in the service."}
-                                                        </span>
-                                                    )}
-                                                </span>
+                                                <span className="gr-picker-name">{g.label}</span>
+                                                <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.kind || "local"}</span>
                                             </label>
-                                            {selected && (
-                                                <div className="gr-guard-fields">
-                                                    {(g.params ?? []).map((param) => (
-                                                        <ParamField
-                                                            key={param.name}
-                                                            guard={g}
-                                                            param={param}
-                                                            value={values[param.name]}
-                                                            onChange={(next) => setParamValue(g.id, param.name, next)}
-                                                        />
-                                                    ))}
-                                                    <div className="gr-param">
-                                                        <label className="gr-param-label" htmlFor={`gr-onfail-${g.id}`}>
-                                                            Action when the text fails
-                                                        </label>
-                                                        <select
-                                                            id={`gr-onfail-${g.id}`}
-                                                            className="gr-select gr-select--block"
-                                                            value={onFailValue(g.id)}
-                                                            onChange={(e) => setParamValue(g.id, "on_fail", e.target.value)}
-                                                        >
-                                                            {onFailOptions.map((o) => (
-                                                                <option key={o.id} value={o.id}>{o.label}</option>
-                                                            ))}
-                                                        </select>
-                                                        <p className="gr-param-help">{onFailHelp(g.id)}</p>
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ))}
                         </div>
-                    ))}
+
+                        <div className="gr-form-settings">
+                            <p className="gr-section-label">
+                                Settings
+                                <span className="gr-section-count">{selectedGuards.length}</span>
+                            </p>
+
+                            {selectedGuards.length === 0 ? (
+                                <div className="gr-settings-empty">
+                                    <p>No validators selected.</p>
+                                    <p className="gr-param-help">
+                                        Pick one on the left. Its options appear here.
+                                    </p>
+                                </div>
+                            ) : (
+                                selectedGuards.map((g) => (
+                                    <div key={g.id} className="gr-setting-card">
+                                        <div className="gr-setting-head">
+                                            <div>
+                                                <span className="gr-setting-name">{g.label}</span>
+                                                <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.phase || "both"}</span>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                className="gr-setting-remove"
+                                                onClick={() => toggleGuard(g.id)}
+                                                aria-label={`Remove ${g.label}`}
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                        <p className="gr-setting-desc">{g.description}</p>
+
+                                        {(g.params ?? []).map((param) => (
+                                            <ParamField
+                                                key={param.name}
+                                                guard={g}
+                                                param={param}
+                                                value={(formParams[g.id] ?? {})[param.name]}
+                                                onChange={(next) => setParamValue(g.id, param.name, next)}
+                                            />
+                                        ))}
+
+                                        <div className="gr-param">
+                                            <label className="gr-param-label" htmlFor={`gr-onfail-${g.id}`}>
+                                                Action when the text fails
+                                            </label>
+                                            <select
+                                                id={`gr-onfail-${g.id}`}
+                                                className="gr-select gr-select--block"
+                                                value={onFailValue(g.id)}
+                                                onChange={(e) => setParamValue(g.id, "on_fail", e.target.value)}
+                                            >
+                                                {onFailOptions.map((o) => (
+                                                    <option key={o.id} value={o.id}>{o.label}</option>
+                                                ))}
+                                            </select>
+                                            <p className="gr-param-help">{onFailHelp(g.id)}</p>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
 
                     <label className="gr-label">Mode</label>
                     <div className="gr-mode-radios">
