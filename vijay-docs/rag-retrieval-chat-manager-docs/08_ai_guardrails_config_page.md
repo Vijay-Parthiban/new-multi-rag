@@ -150,17 +150,28 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 |  ⛨ Guard Configuration                                        [ + New Config ]   |
 +----------------------------------------------------------------------------------+
 |  Create / Edit Config form (shown after + New Config or Edit):                   |
-|  Name [__________________]  Description (optional) [__________________]          |
-|  Guards, grouped by category (Content Safety, Privacy, Scope, Security, Format,   |
-|  Database). Each row shows label, kind tag, phase tag and description:            |
-|    [x] Ban List              [local] [both]                                       |
-|          Keywords *: (chip picker, free text)                                     |
-|          Fuzzy distance: [ 0 ]                                                    |
-|          On fail: [ Block the request v ]                                         |
-|    [x] PII Detection         [model] [both]                                       |
-|          PII types *: (chip picker over the 18 options)                           |
-|          On fail: [ Block the request v ]                                         |
-|    [ ] Toxic Language        [llm] [both]                                         |
+|  Name [__________________]   Description (optional) [__________________]         |
+|  The picker and the settings are two panes. Only a selected validator gets a      |
+|  settings panel, so the form stays one screen high.                               |
+|  +--------------------------+  +----------------------------------------------+  |
+|  | Validators           16  |  | Settings                          2          |  |
+|  |                          |  |                                              |  |
+|  | Content Safety       3   |  | Ban List                [both]     Remove    |  |
+|  |  [x] Ban List    [local] |  |  desc: Reject text that contains any of these |  |
+|  |  [ ] Toxic Lang    [llm] |  |  Keywords *        (chip picker, free text)   |  |
+|  |  [ ] Mentions D  [local] |  |  Fuzzy distance    [ 0 ]                      |  |
+|  | Privacy              1   |  |  Action when the text fails [ Block req. v ]  |  |
+|  |  [x] PII Detect  [model] |  |                                              |  |
+|  | Scope                1   |  | PII Detection           [both]     Remove    |  |
+|  |  [ ] Restrict To   [llm] |  |  PII types *   (chip picker, 18 options)      |  |
+|  | Security             2   |  |  Action when the text fails [ Block req. v ]  |  |
+|  |  [ ] Prompt Inj    [llm] |  |                                              |  |
+|  |  [ ] Secrets P   [local] |  |                                              |  |
+|  | Format               8   |  |                                              |  |
+|  |  ...                     |  |                                              |  |
+|  | Database             1   |  |                                              |  |
+|  |  [ ] Exclude SQL [local] |  |                                              |  |
+|  +--------------------------+  +----------------------------------------------+  |
 |  Mode:   ( ) Input Only   ( ) Output Only   (o) Both                              |
 |                                          [ Cancel ]  [ Create / Update ]         |
 +----------------------------------------------------------------------------------+
@@ -176,16 +187,20 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 +----------------------------------------------------------------------------------+
 ```
 
-- The page loads `listAvailableGuards()`, `listGuardrailsConfigs()` and `listGuardOnFailOptions()` in parallel with `Promise.allSettled` (`GuardrailsConfigPage.tsx:443-452`). There is no `active_only` filter in the UI. A catalog failure shows a "Could not load the validator catalog." panel with a Retry button (`GuardrailsConfigPage.tsx:642-650`).
-- Validators are grouped by `category` in the order the catalog returns them (`GuardrailsConfigPage.tsx:613-620,681-686`).
-- Each guard row shows the `kind` and `phase` tags (`GuardrailsConfigPage.tsx:707-708`).
-- One `ParamField` component renders every parameter. It switches on `param.type` and supports `string`, `text`, `integer`, `number`, `boolean`, `string_list` and `select` (`GuardrailsConfigPage.tsx:317-424`). No code in the form checks a validator id.
-- A `string_list` parameter with no `options` renders a free-text chip picker. A `string_list` parameter with `options` renders a chip picker over those options (`GuardrailsConfigPage.tsx:362-388`). That is how the keywords and the PII types are entered.
-- One `on_fail` select sits under every selected guard, filled from `GET /guardrails/on-fail-options` (`GuardrailsConfigPage.tsx:734-742`). Three options are in the list, so the control is a select, not a slider.
-- Client-side save rules: a name is required, at least one guard must be selected, and every `required` parameter must have a value (`GuardrailsConfigPage.tsx:258-262,546-559`). The Create/Update button stays disabled otherwise (`GuardrailsConfigPage.tsx:780-783`). A missing required parameter shows `Give "<label>" a value (<guard label>).` (`GuardrailsConfigPage.tsx:548-556`).
-- Selecting a guard seeds its parameters from the catalog defaults and `on_fail: "noop"`. Deselecting removes the entry, so `buildSettings()` never sends stale values (`GuardrailsConfigPage.tsx:251-256,270-287,490-497`).
-- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx:602-608,846-848`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx:518-525`), `Delete` confirms then `DELETE /configs/{id}` (`GuardrailsConfigPage.tsx:592-600,850`).
-- A card shows a parameter row only when the value differs from the catalog default. A guard with all defaults shows "Default settings", and a guard id that is not in the catalog shows "Not in the catalog" (`GuardrailsConfigPage.tsx:288-308,826-841`).
+- The page loads `listAvailableGuards()`, `listGuardrailsConfigs()` and `listGuardOnFailOptions()` in parallel with `Promise.allSettled` (`GuardrailsConfigPage.tsx:443-477`). There is no `active_only` filter in the UI. A catalog failure shows a "Could not load the validator catalog." panel with a Retry button (`GuardrailsConfigPage.tsx:642-653`).
+- The form is **progressive disclosure**. It splits into a validator picker on the left (`gr-form-split` / `gr-form-picker`, `GuardrailsConfigPage.tsx:676-717`) and a settings pane on the right (`gr-form-settings`, `GuardrailsConfigPage.tsx:718-780`). Only a **selected** validator gets a settings panel, so a config with two guards shows two panels, not sixteen. The section headers carry live counts: total validators (`:680-681`) and selected validators (`:720-721`).
+- Validators are grouped by `category` in the order the catalog returns them (`GuardrailsConfigPage.tsx:611-621,684-716`). Each category header carries its own count (`:686-689`).
+- A picker row is a **checkbox chip**: label, a `kind` tag (`local`, `model` or `llm`) and the validator description in the `title` tooltip (`GuardrailsConfigPage.tsx:695-715`). A validator the service reports as unavailable renders with `gr-picker-chip--unavailable`, is disabled, and its tooltip carries `unavailable_reason` (`:697-711`). The picker shows no `phase` tag — the phase appears in the settings panel that the validator opens.
+- The settings pane lists one `gr-setting-card` per selected validator (`GuardrailsConfigPage.tsx:733-779`). The card head carries the label, the `phase` tag and a `Remove` button (`:735-750`), which is the same toggle as deselecting the chip.
+- With nothing selected the pane shows an empty state that points at the picker ("Pick one on the left. Its options appear here.") rather than rendering a blank column (`GuardrailsConfigPage.tsx:725-731`).
+- One `ParamField` component renders every parameter. It switches on `param.type` and supports `string`, `text`, `integer`, `number`, `boolean`, `string_list` and `select` (`GuardrailsConfigPage.tsx:318-424`). No code in the form checks a validator id.
+- A `string_list` parameter with no `options` renders a free-text chip picker. A `string_list` parameter with `options` renders a chip picker over those options (`ItemPicker`, `GuardrailsConfigPage.tsx:34-213`; used at `:751-757`). That is how the keywords and the PII types are entered.
+- One `on_fail` select sits in every settings panel, labelled "Action when the text fails", filled from `GET /guardrails/on-fail-options` (`GuardrailsConfigPage.tsx:760-775`). Three options are in the list, so the control is a select, not a slider. A `FALLBACK_ON_FAIL` list keeps the form usable when that endpoint is down (`:218-237`).
+- Client-side save rules: a name is required, at least one guard must be selected, and every `required` parameter must have a value (`GuardrailsConfigPage.tsx:258-264,533-551`). The Create/Update button stays disabled otherwise (`GuardrailsConfigPage.tsx:804-813`). A missing required parameter shows `Give "<label>" a value (<guard label>).` (`GuardrailsConfigPage.tsx:548-550`).
+- Selecting a guard seeds its parameters from the catalog defaults and `on_fail: "noop"` (`seedParams`, `GuardrailsConfigPage.tsx:252-256`). Deselecting removes the entry, so `buildSettings()` never sends stale values (`GuardrailsConfigPage.tsx:270-287,492-506`).
+- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx:602-609,873-881`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx:516-532`), `Delete` confirms then `DELETE /configs/{id}` (`GuardrailsConfigPage.tsx:592-600,882`).
+- A card shows a parameter row only when the value differs from the catalog default. A guard with all defaults shows "Default settings", and a guard id that is not in the catalog shows "Not in the catalog" (`GuardrailsConfigPage.tsx:288-316,854-871`).
+- The config grid uses **bounded** tracks, `repeat(auto-fill, minmax(340px, 460px))` with `justify-content: start` (`index.css` `.gr-config-grid`). Unbounded `1fr` tracks stretched a short summary into a sparse full-width card; plain `auto-fill` reserved empty tracks and left half the row blank when only one or two configs exist.
 - There is no "Save Policy", no default-policy selector and no threshold sliders.
 
 ---

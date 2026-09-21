@@ -71,21 +71,26 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 
 ```
 +----------------------------------------------------------------------------------+
-|  Guardrails Offline Evaluation                    [ Load bundled golden dataset ] |
+|  Guardrails Offline Evaluation         [ Re-load bundled dataset ] [ Refresh ]   |
+|  (both secondary. The page has exactly one primary action.)                      |
 +----------------------------------------------------------------------------------+
 |  (when no dataset exists)                                                        |
 |  No golden dataset yet                                                           |
 |    "This repository ships a golden set at golden/guardrails-dataset.json. It has  |
 |     12 items over 4 categories: clean, ban_list, pii and toxic."                 |
-|    [ Load bundled golden dataset ]                                               |
+|    [ Load bundled golden dataset ]   (btn-primary)                               |
+|    "You can also upload your own JSON file in the panel below."                  |
 +----------------------------------------------------------------------------------+
 |  Golden dataset                       |  Chat guardrails config                  |
 |  Upload JSON [file] (accept .json)    |  Saved config from database [select v]   |
-|  [x] Replace if name already exists   |  id=3695cb61… · mode=both · guards=…     |
-|  Dataset [select: name (N items)]     |      · settings for N validator(s)       |
+|  [x] Replace if name already exists   |  Runs as  [both] [Banned keyword]        |
+|  Dataset [select: name (N items)]     |              [Personal information]      |
 |  [ Delete dataset ]                   |  [ Start guardrails evaluation ]         |
 +----------------------------------------------------------------------------------+
-|  Runs (N total)   Created | Status | Config | Accuracy |  [ Open ]               |
+|  Runs  "2 runs"     Created | Status | Config | Accuracy        |  [ Open ]      |
+|                     2h ago  |completed| Golden | 100.0%          |                |
+|                             |         | Check  | 0 missed · 0    |                |
+|                             |         |        | false           |                |
 +----------------------------------------------------------------------------------+
 |  Scores:  12 items · 12 evaluated · 0 skipped                                    |
 |    Accuracy   [====================] 100%    Precision [===========] 100%         |
@@ -99,22 +104,28 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 +----------------------------------------------------------------------------------+
 ```
 
-- **"Load bundled golden dataset"** calls `POST /guardrails-evaluate/datasets/seed` through a local wrapper (`GuardrailsEvaluationPage.tsx:18-45,168-180`). The button appears in the page header and again in the empty state when no dataset exists (`GuardrailsEvaluationPage.tsx:288-295,310-325`). After the seed it reloads the dataset list and selects the new dataset.
-- Upload calls `uploadGuardrailsGoldenDataset(file, replaceOnUpload)`; the "Replace if name already exists" checkbox is **checked by default** (`GuardrailsEvaluationPage.tsx:108,182-194,336-352`).
-- The dataset panel lists dataset names with item counts, offers `Delete dataset`, and holds the file input (`GuardrailsEvaluationPage.tsx:332-382`).
-- The config dropdown is filled from `listGuardrailsConfigs(false)` — the same `guardrails_configs` rows Chat applies — and shows the id prefix, mode, guard ids and the number of validators with settings (`GuardrailsEvaluationPage.tsx:67-80,387-428`).
-- `Start guardrails evaluation` requires both a dataset and a config, calls `POST /runs` then `GET /runs/{id}` and `GET /runs/{id}/items` (`GuardrailsEvaluationPage.tsx:214-234,418-427`).
-- Runs table: Created (relative time), Status, Config (`config_snapshot.name`, falling back to the first 8 chars of `config_id`), Accuracy (`percent()`, one decimal) and an `Open` action that reloads the run and its items (`GuardrailsEvaluationPage.tsx:47-50,236-249,433-467`).
-- **Score bars**: five `ScoreBar` rows read `accuracy`, `precision`, `recall`, `f1` and `guard_match_rate` from `aggregate_metrics` (`GuardrailsEvaluationPage.tsx:81-94,491-504`). Each bar is a percentage, and a missing key renders as an empty bar with `—` (`percent()`, `GuardrailsEvaluationPage.tsx:47-50`).
-- **Confusion tiles**: TP / TN / FP / FN tiles read `true_positives`, `true_negatives`, `false_positives` and `false_negatives`; FP and FN carry the "bad" tone (`GuardrailsEvaluationPage.tsx:270-275,505-518`).
-- The Scores header line shows `items_total`, `items_evaluated` and `items_skipped` (`GuardrailsEvaluationPage.tsx:493-496`).
-- When **every** item failed, the page hides the zeroed score bars and shows the item error instead, so a total failure is not read as a score of zero (`GuardrailsEvaluationPage.tsx:264-268`).
-- **By category** renders `aggregate_metrics.categories` as `Category | Items | Correct | Accuracy` when the key exists (`GuardrailsEvaluationPage.tsx:521-543`). Category names are prettified for display only (`formatCategory`, `GuardrailsEvaluationPage.tsx:52-58`).
-- The item table has a **Category filter** built from the categories in the loaded rows (`GuardrailsEvaluationPage.tsx:109,253-262,553-561`).
-- Item results columns: Text (truncated at 120 chars, full text in the cell `title`), Phase, Category, Expected (`block:<guard>` / `allow`), Actual, Result (the verdict chip) and Note (`GuardrailsEvaluationPage.tsx:570-625`).
+- **One primary action.** `Start guardrails evaluation` is the only `btn-primary` on the page. The header carries two **secondary** controls, `Re-load bundled dataset` and `Refresh` (`GuardrailsEvaluationPage.tsx:288-302`), and the seed button is `btn-primary` only inside the empty state (`:322-330`). The header copy is "Re-load bundled dataset" rather than "Load bundled golden dataset" because it appears only when a dataset already exists. Three competing primaries — a header seed, an empty-state seed and a Refresh — made the page's purpose unclear.
+- **"Load bundled golden dataset"** calls `POST /guardrails-evaluate/datasets/seed` through a local wrapper (`seedGuardrailsGoldenDataset`, `GuardrailsEvaluationPage.tsx:19-46`; handler `:169-181`). After the seed it reloads the dataset list and selects the new dataset.
+- Upload calls `uploadGuardrailsGoldenDataset(file, replaceOnUpload)`; the "Replace if name already exists" checkbox is **checked by default** (`GuardrailsEvaluationPage.tsx:108,183-196,336-352`).
+- The dataset panel lists dataset names with item counts, offers `Delete dataset`, and holds the file input (`GuardrailsEvaluationPage.tsx:333-383`).
+- The config dropdown is filled from `listGuardrailsConfigs(false)` — the same `guardrails_configs` rows Chat applies (`GuardrailsEvaluationPage.tsx:125-131,392-412`).
+- **Selected config summary.** The choice renders as tags, not as a debug string: `Runs as` plus a mode tag plus one tone-coloured chip per validator through `guardTitle()` (`GuardrailsEvaluationPage.tsx:417-433`). The previous line printed `id=3695cb61… · mode=both · guards=ban_list, detect_pii`, which is debug output on a user-facing page.
+- `Start guardrails evaluation` requires both a dataset and a config, calls `POST /runs` then `GET /runs/{id}` and `GET /runs/{id}/items` (`GuardrailsEvaluationPage.tsx:216-236,435-444`).
+- The **Runs** panel header counts the runs as `1 run` or `N runs` (`runsCount`, `GuardrailsEvaluationPage.tsx:104,445-448`). It read `0 total` before.
+- Runs table: Created (relative time), Status, Config (`config_snapshot.name`, falling back to the first 8 chars of `config_id`), Accuracy and an `Open` action that reloads the run and its items (`GuardrailsEvaluationPage.tsx:238-250,451-497`).
+- The **Accuracy cell** shows the percentage and, beneath it, the two counts that explain it: `<n> missed · <n> false`, from `false_negatives` and `false_positives` (`GuardrailsEvaluationPage.tsx:479-486`). A run can now be judged without opening it.
+- The empty Runs row states the next step and the cost: "Pick a config above and select Start guardrails evaluation. Each run takes about twenty seconds, because three rows call the LLM judge." (`GuardrailsEvaluationPage.tsx:463-472`).
+- The two-column layout uses `.gr-eval-grid` (`GuardrailsEvaluationPage.tsx:334`, `index.css` `.gr-eval-grid`). It collapses to one column on a narrow viewport instead of holding a fixed `1fr 1fr`.
+- **Score bars**: five `ScoreBar` rows read `accuracy`, `precision`, `recall`, `f1` and `guard_match_rate` from `aggregate_metrics` (`GuardrailsEvaluationPage.tsx:82-96,523-528`). Each bar is a percentage, and a missing key renders as an empty bar with `—` (`percent()`, `GuardrailsEvaluationPage.tsx:48-51`).
+- **Confusion tiles**: TP / TN / FP / FN tiles read `true_positives`, `true_negatives`, `false_positives` and `false_negatives`; FP and FN carry the "bad" tone (`GuardrailsEvaluationPage.tsx:530-541`).
+- The Scores header line shows `items_total`, `items_evaluated` and `items_skipped` (`GuardrailsEvaluationPage.tsx:517-521`).
+- When **every** item failed, the page hides the zeroed score bars and shows the item error instead, so a total failure is not read as a score of zero (`hideScores`, `GuardrailsEvaluationPage.tsx:267,504-514`).
+- **By category** renders `aggregate_metrics.categories` as `Category | Items | Correct | Accuracy` when the key exists (`GuardrailsEvaluationPage.tsx:544-573`). Category names are prettified for display only (`formatCategory`, `GuardrailsEvaluationPage.tsx:53-56`).
+- The item table has a **Category filter** built from the categories in the loaded rows (`GuardrailsEvaluationPage.tsx:110,254-263,579-586`).
+- Item results columns: Text (truncated at 120 chars, full text in the cell `title`), Phase, Category, Expected (`block:<guard>` / `allow`), Actual, Result (the verdict chip) and Note (`GuardrailsEvaluationPage.tsx:613-640`).
 
 ### Verdict chips
-`verdictOf()` maps each row to one verdict, and `VERDICT_LABEL` gives the chip text (`GuardrailsEvaluationPage.tsx:60-79`). The chip and the row both take a `gr-verdict--<verdict>` class, and the Note column explains the verdict in words (`GuardrailsEvaluationPage.tsx:592,609-621`).
+`verdictOf()` maps each row to one verdict, and `VERDICT_LABEL` gives the chip text (`GuardrailsEvaluationPage.tsx:63-80`). The chip and the row both take a `gr-verdict--<verdict>` class, and the Note column explains the verdict in words (`GuardrailsEvaluationPage.tsx:632-640`).
 
 | Verdict | Chip | Meaning |
 |---|---|---|
@@ -125,7 +136,7 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 | `failed` | Error | The check raised. The error text is shown |
 | `skipped` | Skipped | The config mode excluded the row. The skip reason is shown |
 
-The false-negative and false-positive rows are the rows that need a config change, and they are marked in three places: the row and chip colour, the Note text, and the FP / FN count in the tiles (`GuardrailsEvaluationPage.tsx:71-79,270-275,613-618`).
+The false-negative and false-positive rows are the rows that need a config change, and they are marked in three places: the row and chip colour, the Note text, and the FP / FN count in the tiles (`GuardrailsEvaluationPage.tsx:73-80,530-541,632-640`).
 
 ---
 
@@ -219,3 +230,5 @@ The page never produced a real score before these four backend fixes. Each one i
 - The run route passes `settings.guardrails_url` and `settings.guardrails_timeout_s` to the runner (`routes/guardrails_evaluate.py:309-311`). Both are real fields of `rag_shared.config.Settings` (`rag_shared/config.py:33-36`).
 - The TypeScript type for `guard_results` in `guardrailsEvalApi.ts:83` still declares the old `passed` key. The runtime object carries `validation_passed`, `error` and `detail`, and the page does not read that type field.
 - The metric keys are produced by the backend now. The client type for `aggregate_metrics` lists the same names, each optional (`guardrailsEvalApi.ts:48-62`).
+- The page uses the shared `guardMeta()` / `guardTitle()` helper from `frontend/src/utils/guardLabels.ts` for validator names, the same one the Guard Traces page uses. A validator the map does not know renders as a readable slug rather than a raw id.
+- The seed call is a local `seedGuardrailsGoldenDataset()` wrapper in the page, because `guardrailsEvalApi.ts` does not expose the seed route (`GuardrailsEvaluationPage.tsx:19-46`).
