@@ -118,7 +118,9 @@ class ConfigListResponse(BaseModel):
 
 class TraceResponse(BaseModel):
     id: uuid.UUID
-    config_id: uuid.UUID
+    # A trace written without a guardrails config has no config id. The column is
+    # nullable, so the response must allow None.
+    config_id: uuid.UUID | None = None
     config_name: str | None = None
     chat_message_id: uuid.UUID | None = None
     query: str
@@ -335,12 +337,16 @@ def list_traces(
             limit=limit, offset=offset,
         )
         # Eagerly load config names
-        config_cache: dict[uuid.UUID, str] = {}
+        config_cache: dict[uuid.UUID | None, str] = {}
         items = []
         for t in traces:
             if t.config_id not in config_cache:
-                cfg = repo.get_config(t.config_id)
-                config_cache[t.config_id] = cfg.name if cfg else "Deleted"
+                if t.config_id is None:
+                    # The turn ran with no guardrails config, so no config was deleted.
+                    config_cache[None] = "No config"
+                else:
+                    cfg = repo.get_config(t.config_id)
+                    config_cache[t.config_id] = cfg.name if cfg else "Deleted"
             items.append(_trace_to_response(t, config_cache[t.config_id]))
 
     return TraceListResponse(total=total, limit=limit, offset=offset, items=items)

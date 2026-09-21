@@ -59,7 +59,7 @@ Install these first. The versions are the ones the platform runs on today.
 | Tool | Version used | Check | Notes |
 |---|---|---|---|
 | Docker Desktop | any current release | `docker --version` | Runs the eight infrastructure containers |
-| Python | 3.11 or newer | `python --version` | Both backends and every backend library |
+| Python | 3.12 or 3.13 | `python --version` | Both backends and every backend library. Prefer 3.12 or 3.13, not 3.14: `scikit-network`, a dependency of the RAGAS evaluation library, publishes no wheel for 3.14 and then needs the Microsoft C++ build tools. |
 | `uv` | current | `uv --version` | Both backends use `uv` for dependencies and scripts |
 | Node.js | 20 or newer | `node --version` | Both frontends |
 | `npm` | ships with Node | `npm --version` | Installs frontend dependencies |
@@ -556,6 +556,10 @@ npx vite build
 | Guardrails never block | `GUARDRAILS_URL` is wrong, or the guard name does not match | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/guards` |
 | A guard returns 404 `Unknown guard` | The config stores `ban_list`, the service names its guard `ban-list` | The client maps the underscore to a hyphen. A 404 means the config holds a name the service does not have. |
 | `metrics_status` stays `pending` | The RQ worker is not running, or it died on `os.fork()` | Start it, and add `--worker-class rq.worker.SimpleWorker` on Windows |
+| `metrics_status` becomes `failed`, and the message says `No module named 'ragas.metrics.collections'` | The lockfile pins `ragas` 0.3.1, but the evaluation code targets the 0.4 API (`ragas.metrics.collections`, the `ascore(**fields)` call shape, `llm_factory(client=…)`) | Either rebuild the venv on Python 3.12 or 3.13 and raise `ragas` to `>=0.4` in `libs/eval-core/pyproject.toml`, or move the four metric call sites to the 0.3 API. Section 2 explains why 3.14 cannot install 0.4 |
+| A metrics job fails with `llm_factory() got an unexpected keyword argument 'client'` | Same version mismatch as the row above, at the next call | See the row above |
+| A metrics job fails with `unknown async library, or not in async context` | `ragas` 0.3.1 drives its own event loop and does not accept the driver used by `compute_chat_pipeline_metrics` | See the `ragas.metrics.collections` row |
+| Every retrieval page logs a CORS error, and `/guardrails/traces` answers 500 | A trace row has no `config_id` (the chat turn ran without a guardrails config), and the response model declared that field as required | Fixed: `TraceResponse.config_id` is optional and the name reads `No config`. A 500 escapes the CORS middleware, which is why the browser reports CORS rather than the real error |
 | Every embedding fails with `Invalid model name` | `EMBEDDING_MODEL` names a model the proxy does not serve | Use `nvidia-embed-textonly`, or any model from `GET /v1/models` |
 | `/v1/models` answers `401` | The LiteLLM key is missing | Add `-H 'Authorization: Bearer <OPENAI_API_KEY>'` |
 | A Qdrant call answers `401` | The API key header is missing | Add `-H 'api-key: qdrant'` |

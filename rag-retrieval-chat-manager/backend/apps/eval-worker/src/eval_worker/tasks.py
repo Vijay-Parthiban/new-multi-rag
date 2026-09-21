@@ -62,7 +62,6 @@ def compute_chat_metrics(message_id: str) -> None:
                 answer=message.content,
                 retrieved_chunks=db_trace.retrieved_chunks or [],
                 reranked_chunks=db_trace.reranked_chunks or [],
-                sc_iterations=parsed_latency.get("sc_iterations", [])
             )
             scores = flatten_chat_metrics(staged)
             chat_repo.update_metrics(msg_uuid, scores=scores, status="completed")
