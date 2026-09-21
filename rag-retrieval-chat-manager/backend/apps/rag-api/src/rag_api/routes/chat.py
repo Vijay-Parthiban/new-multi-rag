@@ -121,7 +121,7 @@ GUARD_BLOCK_COPY = {
         "input": "This message was blocked because it contains a banned word or phrase.",
         "output": "The generated answer was blocked because it contains a banned word or phrase.",
     },
-    "pii_check": {
+    "detect_pii": {
         "title": "Personal information",
         "input": "This message was blocked because it appears to contain personal identifiable information.",
         "output": "The generated answer was blocked because it appears to contain personal identifiable information.",

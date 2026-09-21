@@ -32,7 +32,7 @@ Repository layout:
      |                      |                       |                 |
      v                      v                       v                 v
  Qdrant :6333        LiteLLM proxy :4000      guardrails-service   Redis :6379/0
- scrape_embeddings   embeddings / rerank /    POST /parse/{guard}  RQ queue "eval"
+ scrape_embeddings   embeddings / rerank /    POST /validate       RQ queue "eval"
  dense + sparse      chat / vision models     (compose maps 18000)
  named vectors, RRF                                              |
      ^                      ^                                    v
@@ -161,7 +161,7 @@ same retrieve → rerank → generate sequence, and `Generator.generate_stream()
 
 ## 6. Guardrails Integration Point
 
-Guardrails are **not** implemented in-process: `routes/chat.py` `_run_guardrails()` (`routes/chat.py:295`) reads a `guardrails_configs` row through `GuardrailsRepository`, then calls `run_guardrails_check(text, cfg.guards, …, timeout_s, settings)` from `rag_shared/guardrails_client.py:11`, which POSTs to `{guardrails_url}/parse/{guard}` per guard and treats a failed `validation_passed` as blocked.
+Guardrails are **not** implemented in-process: `routes/chat.py` `_run_guardrails()` (`routes/chat.py:295`) reads a `guardrails_configs` row through `GuardrailsRepository`, then calls `run_guardrails_check(text, cfg.guards, …, timeout_s, settings)` from `rag_shared/guardrails_client.py:11`, which POSTs the whole validator list to `{guardrails_url}/validate` in one call and treats a failed `validation_passed` as blocked.
 
 - Input phase runs before `pipeline.chat()` (`routes/chat.py:380`); output phase runs after (`routes/chat.py:432`); config `mode` (`input` / `output`) selects which phase executes.
 - A blocked turn returns canned copy from `GUARD_BLOCK_COPY` (ban list, PII, toxic language) with span attributes `guardrails.{phase}.blocked` / `blocked_by`, and a `guardrails_traces` row is recorded.
@@ -220,7 +220,8 @@ Two points to know before you touch this layer:
 | GET | `/prompts/{prompt_id}` | `routes/prompts.py:204` |
 | PUT | `/prompts/{prompt_id}` | `routes/prompts.py:221` |
 | POST | `/prompts/{prompt_id}/reset` | `routes/prompts.py:229` |
-| GET | `/guardrails/guards` | `routes/guardrails.py:209` |
+| GET | `/guardrails/guards` (proxies the service catalog) | `routes/guardrails.py:231` |
+| GET | `/guardrails/on-fail-options` | `routes/guardrails.py:257` |
 | POST | `/guardrails/configs` | `routes/guardrails.py:215` |
 | GET | `/guardrails/configs`, `/guardrails/configs/{id}` | `routes/guardrails.py:244,257` |
 | PUT / DELETE | `/guardrails/configs/{id}` | `routes/guardrails.py:271,306` |

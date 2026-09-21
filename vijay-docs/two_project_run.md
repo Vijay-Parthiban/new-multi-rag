@@ -117,6 +117,19 @@ docker compose up -d --no-recreate guardrails-service
 `--no-recreate` matters. Without it compose rebuilds the shared PostgreSQL, Redis and Qdrant containers
 that the running stack already uses.
 
+The guardrails image needs network access the first time it is built. It installs 13 real Guardrails
+Hub validators from public PyPI and downloads the `en_core_web_sm` spaCy model from GitHub releases.
+The build takes about 13 minutes from cold; later builds reuse the pip layer and take seconds. Rebuild
+it whenever `guardrails-service/pyproject.toml`, `config.py` or `server.py` changes:
+
+```bash
+docker compose build guardrails-service && docker compose up -d guardrails-service
+```
+
+The service imports 13 validator modules at start, so give it about 15 seconds before the first
+request. The three LLM-backed validators also need LiteLLM on port 4000; the compose entry sets
+`extra_hosts: host.docker.internal:host-gateway` so the container can reach it.
+
 OpenSearch takes the longest to become healthy. Check all of them:
 
 ```bash
@@ -504,7 +517,7 @@ Run these after the platform is up. Each one proves a layer.
 | Qdrant 6335 | `curl -s -H 'api-key: qdrant' http://localhost:6335/collections` | A JSON list of `kp_*` collections. Without the header the answer is `401` |
 | Qdrant 6333 | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | The scraper's collections, or empty. Without the header the answer is `401` |
 | OpenSearch | `curl -s "http://localhost:9200/_cat/indices?h=index"` | The `kp_*` indexes |
-| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":200,"message":"Ok"}`. The service has no `/health` route; `/health-check` is the one |
+| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 16 installed validators |
 | LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/models` | The served models, 18 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
 | Ingestion API | `curl -s http://localhost:8007/api/pipelines` | A JSON array |
 | Retrieval API | `curl -s http://localhost:8001/prompt-templates` | `{"count": N, "items": [...]}` |
@@ -531,6 +544,17 @@ things, then deletes every fixture:
 cd rag-retrieval-chat-manager/backend
 uv run python scripts/e2e_assistant_pipelines.py    # 30 checks
 ```
+
+**Guardrails suite** (same directory). It creates a guardrails config, seeds
+`golden/guardrails-dataset.json`, runs the evaluation over it, and deletes its config:
+
+```bash
+uv run pytest tests/unit/test_guardrails_runner.py -q  # 15 tests
+uv run python scripts/e2e_guardrails.py                # 34 checks
+```
+
+The guardrails service must be rebuilt and running first. It needs about 20 seconds per run, because
+three of the twelve rows call the LLM judge.
 
 It needs one Knowledge Product with the Qdrant, OpenSearch and PostgreSQL destinations all enabled. It
 picks the product with the most enabled retrieval destinations and stops with a clear message if none has
@@ -559,8 +583,9 @@ npx vite build
 | 422 `CHAT_MODEL_REQUIRED` | No `chat_model` on the pipeline | Set it in the `Pipelines` page or through `PATCH /api/pipelines/{id}` |
 | The `Hybrid` option is missing from the strategy list | Only one of the Qdrant and OpenSearch destinations is enabled | Enable both on the product |
 | The relational strategy fails with a permission error | The reader connected as `crawler`, which cannot see the `kp_*` schemas | Set `INGESTION_DATABASE_URL` to the `ingestion` role |
-| Guardrails never block | `GUARDRAILS_URL` is wrong, or the guard name does not match | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/guards` |
-| A guard returns 404 `Unknown guard` | The config stores `ban_list`, the service names its guard `ban-list` | The client maps the underscore to a hyphen. A 404 means the config holds a name the service does not have. |
+| Guardrails never block | `GUARDRAILS_URL` is wrong, or the config selects no validator that can block | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/health-check` |
+| An LLM-backed guard reports `timed out` or `Judge returned no JSON` | Those guards call LiteLLM on the host and need about a second each | Check `LITELLM_BASE_URL`, `LLM_API_KEY` and `GUARDRAIL_LLM_MODEL` in `.env.guardrails`. `Gpt-oss-20b` needs `GUARDRAIL_LLM_MAX_TOKENS=512`: with a smaller budget the reasoning model returns an empty body |
+| A guard is reported as `is not installed` | The service image is older than `guardrails-service/pyproject.toml` | Rebuild it with `docker compose build guardrails-service`, then `up -d` |
 | `metrics_status` stays `pending` | The RQ worker is not running, or it died on `os.fork()` | Start it, and add `--worker-class rq.worker.SimpleWorker` on Windows |
 | Every metrics job fails, and the reason mentions `ragas.metrics.collections` or `llm_factory(client=…)` | The venv was built on a Python newer than 3.13, so `uv` fell back to `ragas` 0.3.x. The evaluation code needs the 0.4 API | Rebuild with `uv sync --all-packages --python 3.12`. Section 4.4 explains it |
 | A metrics job fails with `unknown async library, or not in async context` | Same cause as the row above: `ragas` 0.3.x drives its own event loop and rejects the driver in `compute_chat_pipeline_metrics` | See the row above |

@@ -25,7 +25,7 @@ The **`new-multi-rag`** platform is an enterprise-grade, distributed Retrieval-A
    - Hybrid dense/sparse retrieval: one Qdrant query with dense `prefetch` plus sparse `Qdrant/bm25` prefetch (IDF modifier) fused with Reciprocal Rank Fusion (`libs/vector-core/src/vector_core/search.py:17-33`, `shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:225-242`). Defaults: `default_retrieval_mode=hybrid`, `retrieve_limit=20` (`libs/shared/src/rag_shared/config.py:29-30`).
    - Reranking through the LiteLLM `POST /v1/rerank` endpoint (`libs/reranker-core/src/reranker_core/litellm_reranker.py`), default model `nvidia-rerank`, `rerank_top_k=5` (`config.py:32-34`); `NoopReranker` when disabled.
    - Context-grounded generation over LiteLLM with streaming SSE, vision multimodal inputs and dynamic prompt templating. Defaults: `chat_model=llama-3.3-70b-versatile`, `vision_model=groq-vision`, `fusion_model=llama-3.3-70b-versatile` (`config.py:36-38`).
-   - Safety guardrails delegate to the standalone `guardrails-service` (Guardrails AI) over HTTP with guards `ban-list`, `pii-check` (DetectPII / Presidio entities) and `toxic-language` (`guardrails-service/server.py:29-38`, `guardrails-service/config.py:130-139`); the shared HTTP client defaults to `http://localhost:8002` (`libs/shared/src/rag_shared/guardrails_client.py:13`) while the ingestion compose file publishes the service on host port `18000` (`rag-ingestion-manager/docker-compose.yaml:313-314`). Chat requests optionally bind a stored guardrails config (`frontend/src/pages/ChatPage.tsx:382`).
+   - Safety guardrails delegate to the standalone `guardrails-service` (Guardrails AI) over HTTP. The service holds the validator catalog: 16 validators, 13 of them real Hub packages installed from public PyPI as `guardrails-ai-<name>`, and three LLM judges registered as `local/toxic_language`, `local/restrict_to_topic` and `local/prompt_injection` that call the LiteLLM proxy (`guardrails-service/config.py:167`, `guardrails-service/server.py:50`). It exposes `GET /catalog`, `POST /validate`, `POST /validate-config` and `GET /health-check` (`guardrails-service/server.py:45-69`). The retrieval API proxies the catalog for the Guard Config page and validates a saved config through `POST /validate-config` before it stores it (`rag_api/routes/guardrails.py:231`). The shared HTTP client defaults to `http://localhost:18000` (`libs/shared/src/rag_shared/guardrails_client.py:65`), and the ingestion compose file publishes the service on host port `18000` (`rag-ingestion-manager/docker-compose.yaml:306-317`). Chat requests optionally bind a stored guardrails config.
    - Continuous observability through the OpenTelemetry collector in `otel/` (Langfuse, Arize AX, Grafana Cloud exporters), and Ragas evaluation both online (per chat message) and offline (golden datasets), with the RQ `eval` queue on Redis (`config.py:16-18`).
 
 ---
@@ -64,7 +64,7 @@ The **`new-multi-rag`** platform is an enterprise-grade, distributed Retrieval-A
 [ User / Chat Client ] -> rag-retrieval-chat-manager :8001
         |
         v
-[ Guardrails Check ] (guardrails-service -> POST /parse/{guard_name})
+[ Guardrails Check ] (guardrails-service -> POST /validate)
         |  [Blocked -> returned as blocked result; trace rows stored in Postgres]
         v  [Passed -> Proceed]
 [ Hybrid Retrieval Engine ] (RAGPipeline.retrieve -> Retriever -> vector_core.search)
@@ -94,7 +94,7 @@ The **`new-multi-rag`** platform is an enterprise-grade, distributed Retrieval-A
 | **RAG Ingestion Frontend** | `5173` | Vite/React dashboard, file browser, sources manager, 4-destination visualizer modals (`frontend/vite.config.ts:8`; dev proxy `/api` → `http://127.0.0.1:8007`, `:11`) |
 | **RAG Retrieval Backend** | `8001` | FastAPI chat, hybrid retrieval, reranking, generation, guardrails, eval APIs (`libs/shared/src/rag_shared/config.py:50`, `backend/docker-compose.yaml:19`) |
 | **RAG Retrieval Frontend** | `5174` | Vite/React chat interface, pipeline manager, prompt studio, trace viewer (`frontend/vite.config.ts:8`) |
-| **Guardrails Service** | `18000` (host) → `8000` (container) | Guardrails AI server exposing `POST /parse/{guard_name}` for `ban-list`, `pii-check`, `toxic-language` (`docker-compose.yaml:313-314`, `guardrails-service/Dockerfile:59`) |
+| **Guardrails Service** | `18000` (host) → `8000` (container) | Guardrails AI service exposing `GET /catalog` for the 16 installed validators, plus `POST /validate` and `POST /validate-config` (`guardrails-service/server.py`, `docker-compose.yaml:306-317`) |
 | **Web-Scrapper API** | `8000` | Crawl/scrape service from `web-scrapper-workspace`; shares Postgres, Redis and Qdrant (`docker-compose.yaml:142`) |
 | **LiteLLM proxy** | `4000` | External (host-run) OpenAI-compatible proxy for embeddings, rerank, chat and vision (`settings.py:21`, `rag_shared/config.py:24`) |
 | **MinIO Object Storage** | `9000` / `9001` | Raw document binaries, one bucket per source named `source-<name>-<id[:8]>` (`docker-compose.yaml:76-77`, `routes/sources.py:259`) & console |

@@ -4,8 +4,25 @@ version = "0.1.0"
 description = "Guardrails AI validation service for RAG pipeline"
 requires-python = ">=3.12"
 dependencies = [
-    "guardrails-ai>=0.5.0",
-    "guardrails-api",
+    "guardrails-ai>=0.11.0",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
     "nltk>=3.8",
-    "uvicorn[standard]"
+
+    # Real Hub validators, published on public PyPI as guardrails-ai-<name>.
+    # The `guardrails hub install` CLI and its private registry are deprecated.
+    "guardrails-ai-ban-list",
+    "guardrails-ai-detect-pii",
+    "guardrails-ai-secrets-present",
+    "guardrails-ai-valid-length",
+    "guardrails-ai-regex-match",
+    "guardrails-ai-valid-json",
+    "guardrails-ai-one-line",
+    "guardrails-ai-ends-with",
+    "guardrails-ai-reading-time",
+    "guardrails-ai-exclude-sql-predicates",
+    "guardrails-ai-mentions-drugs",
+    "guardrails-ai-lowercase",
+    "guardrails-ai-uppercase",
 ]

@@ -1,9 +1,13 @@
-import { useEffect, useState, useCallback, useMemo, useRef, type KeyboardEvent } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import {
     GuardrailsConfig,
+    GuardrailsSettings,
     GuardOption,
+    GuardParam,
     GuardItemOption,
+    OnFailOption,
     listAvailableGuards,
+    listGuardOnFailOptions,
     listGuardrailsConfigs,
     createGuardrailsConfig,
     updateGuardrailsConfig,
@@ -207,17 +211,230 @@ function ItemPicker({
     );
 }
 
+/** One guard's parameter values, keyed by parameter name. `on_fail` sits next to them. */
+type ParamValues = Record<string, unknown>;
+
+/** Contract fallback. The form must not stop when /guardrails/on-fail-options is down. */
+const FALLBACK_ON_FAIL: OnFailOption[] = [
+    {
+        id: "noop",
+        label: "Block the request",
+        help: "Record the failure and stop the chat turn. Recommended.",
+        fixes_text: false,
+    },
+    {
+        id: "exception",
+        label: "Block and raise an error",
+        help: "Same effect, but the validator raises instead of returning.",
+        fixes_text: false,
+    },
+    {
+        id: "fix",
+        label: "Repair the text and continue",
+        help: "The validator rewrites the text, for example to mask a secret, and the chat turn continues. Only some validators can do this.",
+        fixes_text: true,
+    },
+];
+
+function isEmptyValue(value: unknown): boolean {
+    if (value === undefined || value === null || value === "") return true;
+    return Array.isArray(value) && value.length === 0;
+}
+
+function valueLabel(param: GuardParam, value: unknown): string {
+    if (param.type === "select") {
+        return param.options?.find((o) => o.id === value)?.label ?? String(value);
+    }
+    return String(value);
+}
+
+/** Values a guard starts with: the catalog defaults plus the default failure action. */
+function seedParams(guard: GuardOption): ParamValues {
+    const values: ParamValues = { on_fail: "noop" };
+    for (const param of guard.params ?? []) values[param.name] = param.default;
+    return values;
+}
+
+function firstMissingRequired(guard: GuardOption, values: ParamValues): GuardParam | null {
+    for (const param of guard.params ?? []) {
+        if (param.required && isEmptyValue(values[param.name])) return param;
+    }
+    return null;
+}
+
+/**
+ * Payload builder. Only the selected guards reach `selected`, so a guard that the user
+ * deselected contributes no key here. Empty values are dropped as well, and the service
+ * then applies its own default for that parameter.
+ */
+function buildSettings(
+    selected: GuardOption[],
+    values: Record<string, ParamValues>,
+): GuardrailsSettings {
+    const settings: GuardrailsSettings = {};
+    for (const guard of selected) {
+        const entry = values[guard.id];
+        if (!entry) continue;
+        const clean: ParamValues = { on_fail: entry.on_fail ?? "noop" };
+        for (const param of guard.params ?? []) {
+            const value = entry[param.name];
+            if (!isEmptyValue(value)) clean[param.name] = value;
+        }
+        settings[guard.id] = clean;
+    }
+    return settings;
+}
+
+/** Compact "Label: value" line for a saved value. Returns null for a default or empty value. */
+function paramSummary(param: GuardParam, value: unknown): string | null {
+    if (isEmptyValue(value) || value === param.default) return null;
+    if (Array.isArray(value)) {
+        return `${param.label}: ${value.map((v) => valueLabel(param, v)).join(", ")}`;
+    }
+    if (typeof value === "boolean") return `${param.label}: ${value ? "on" : "off"}`;
+    return `${param.label}: ${valueLabel(param, value)}`;
+}
+
+function guardSettingRows(guard: GuardOption | undefined, settings: ParamValues | undefined): string[] {
+    if (!guard || !settings) return [];
+    const rows: string[] = [];
+    for (const param of guard.params ?? []) {
+        const summary = paramSummary(param, settings[param.name]);
+        if (summary) rows.push(summary);
+    }
+    const onFail = typeof settings.on_fail === "string" ? settings.on_fail : "noop";
+    if (onFail !== "noop") rows.push(`On fail: ${onFail}`);
+    return rows;
+}
+
+interface ParamFieldProps {
+    guard: GuardOption;
+    param: GuardParam;
+    value: unknown;
+    onChange: (next: unknown) => void;
+}
+
+/** One control per declared parameter type. The catalog decides, not the validator id. */
+function ParamField({ guard, param, value, onChange }: ParamFieldProps) {
+    const id = `gr-param-${guard.id}-${param.name}`;
+    const options = param.options ?? [];
+    let control: ReactNode;
+
+    switch (param.type) {
+        case "boolean":
+            control = (
+                <label className="gr-toggle" htmlFor={id}>
+                    <input
+                        id={id}
+                        type="checkbox"
+                        checked={value === true}
+                        onChange={(e) => onChange(e.target.checked)}
+                    />
+                    <span>{value === true ? "On" : "Off"}</span>
+                </label>
+            );
+            break;
+        case "integer":
+        case "number":
+            control = (
+                <input
+                    id={id}
+                    className="gr-input"
+                    type="number"
+                    inputMode="numeric"
+                    value={typeof value === "number" ? String(value) : ""}
+                    min={param.min ?? undefined}
+                    max={param.max ?? undefined}
+                    step={param.type === "integer" ? 1 : "any"}
+                    onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+                />
+            );
+            break;
+        case "text":
+            control = (
+                <textarea
+                    id={id}
+                    className="gr-input gr-textarea"
+                    rows={3}
+                    value={typeof value === "string" ? value : ""}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+            );
+            break;
+        case "string_list":
+            // The chip control already renders its own label.
+            control = (
+                <ItemPicker
+                    label={param.label}
+                    selected={Array.isArray(value) ? value.map((v) => String(v)) : []}
+                    options={options}
+                    freeText={options.length === 0}
+                    allowCustom={guard.allow_custom ?? options.length === 0}
+                    placeholder={
+                        options.length === 0
+                            ? "Type a value and press Enter…"
+                            : "Type to match an option…"
+                    }
+                    onChange={onChange}
+                />
+            );
+            break;
+        case "select":
+            control = (
+                <select
+                    id={id}
+                    className="gr-select gr-select--block"
+                    value={typeof value === "string" ? value : ""}
+                    onChange={(e) => onChange(e.target.value)}
+                >
+                    <option value="">Default</option>
+                    {options.map((o) => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                    ))}
+                </select>
+            );
+            break;
+        case "string":
+        default:
+            // Single-line text, plus anything the catalog adds later.
+            control = (
+                <input
+                    id={id}
+                    className="gr-input"
+                    type="text"
+                    value={typeof value === "string" ? value : ""}
+                    onChange={(e) => onChange(e.target.value)}
+                />
+            );
+    }
+
+    return (
+        <div className="gr-param">
+            {param.type !== "string_list" && (
+                <label className="gr-param-label" htmlFor={id}>
+                    {param.label}
+                    {param.required && <span className="gr-req" title="Required">*</span>}
+                </label>
+            )}
+            {control}
+            {param.help && <p className="gr-param-help">{param.help}</p>}
+        </div>
+    );
+}
+
 export default function GuardrailsConfigPage() {
     const [configs, setConfigs] = useState<GuardrailsConfig[]>([]);
     const [guards, setGuards] = useState<GuardOption[]>([]);
+    const [onFailOptions, setOnFailOptions] = useState<OnFailOption[]>(FALLBACK_ON_FAIL);
     const [loading, setLoading] = useState(true);
+    const [catalogError, setCatalogError] = useState<string | null>(null);
+    const [configsError, setConfigsError] = useState<string | null>(null);
     const [showForm, setShowForm] = useState(false);
 
     const [formName, setFormName] = useState("");
     const [formDescription, setFormDescription] = useState("");
     const [formGuards, setFormGuards] = useState<string[]>([]);
-    const [formBannedWords, setFormBannedWords] = useState<string[]>([]);
-    const [formPiiEntities, setFormPiiEntities] = useState<string[]>([]);
+    const [formParams, setFormParams] = useState<Record<string, ParamValues>>({});
     const [formMode, setFormMode] = useState("both");
     const [editingId, setEditingId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
@@ -225,18 +442,36 @@ export default function GuardrailsConfigPage() {
 
     const load = useCallback(async () => {
         setLoading(true);
-        try {
-            const [guardsRes, configsRes] = await Promise.all([
-                listAvailableGuards(),
-                listGuardrailsConfigs(),
-            ]);
-            setGuards(guardsRes);
-            setConfigs(configsRes.items);
-        } catch (e) {
-            console.error("Failed to load guardrails", e);
-        } finally {
-            setLoading(false);
+        setCatalogError(null);
+        setConfigsError(null);
+        const [guardsResult, configsResult, onFailResult] = await Promise.allSettled([
+            listAvailableGuards(),
+            listGuardrailsConfigs(),
+            listGuardOnFailOptions(),
+        ]);
+        if (guardsResult.status === "fulfilled") {
+            setGuards(guardsResult.value);
+        } else {
+            setGuards([]);
+            setCatalogError(
+                guardsResult.reason instanceof Error
+                    ? guardsResult.reason.message
+                    : "Could not load the validator catalog.",
+            );
         }
+        if (configsResult.status === "fulfilled") {
+            setConfigs(configsResult.value.items);
+        } else {
+            setConfigsError(
+                configsResult.reason instanceof Error
+                    ? configsResult.reason.message
+                    : "Could not load the saved configurations.",
+            );
+        }
+        if (onFailResult.status === "fulfilled" && onFailResult.value.length > 0) {
+            setOnFailOptions(onFailResult.value);
+        }
+        setLoading(false);
     }, []);
 
     useEffect(() => { load(); }, [load]);
@@ -245,55 +480,87 @@ export default function GuardrailsConfigPage() {
         setFormName("");
         setFormDescription("");
         setFormGuards([]);
-        setFormBannedWords([]);
-        setFormPiiEntities([]);
+        setFormParams({});
         setFormMode("both");
         setEditingId(null);
         setShowForm(false);
         setFormError(null);
     };
 
+    // Selecting a guard seeds its parameters from the catalog defaults. Deselecting
+    // removes the guard's entry, so buildSettings() never sends the stale values.
     const toggleGuard = (id: string) => {
         setFormGuards((prev) =>
             prev.includes(id) ? prev.filter((g) => g !== id) : [...prev, id]
         );
+        setFormParams((prev) => {
+            if (id in prev) {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+            }
+            const guard = guards.find((g) => g.id === id);
+            return guard ? { ...prev, [id]: seedParams(guard) } : prev;
+        });
+        setFormError(null);
+    };
+
+    const setParamValue = (guardId: string, paramName: string, value: unknown) => {
+        setFormParams((prev) => ({
+            ...prev,
+            [guardId]: { ...(prev[guardId] ?? {}), [paramName]: value },
+        }));
         setFormError(null);
     };
 
     const openEdit = (c: GuardrailsConfig) => {
+        const saved = c.settings ?? {};
+        const seeded: Record<string, ParamValues> = {};
+        for (const id of c.guards) {
+            const guard = guards.find((g) => g.id === id);
+            seeded[id] = { ...(guard ? seedParams(guard) : { on_fail: "noop" }), ...(saved[id] ?? {}) };
+        }
         setFormName(c.name);
         setFormDescription(c.description || "");
         setFormGuards([...c.guards]);
-        setFormBannedWords([...(c.settings?.banned_words || [])].map((w) => w.toLowerCase()));
-        setFormPiiEntities([...(c.settings?.pii_entities || [])]);
+        setFormParams(seeded);
         setFormMode(c.mode);
         setEditingId(c.id);
         setShowForm(true);
         setFormError(null);
     };
 
-    const canSave = useMemo(() => {
-        if (!formName.trim() || formGuards.length === 0) return false;
-        if (formGuards.includes("ban_list") && formBannedWords.length === 0) return false;
-        if (formGuards.includes("pii_check") && formPiiEntities.length === 0) return false;
-        return true;
-    }, [formName, formGuards, formBannedWords, formPiiEntities]);
+    const selectedGuards = useMemo(
+        () => guards.filter((g) => formGuards.includes(g.id)),
+        [guards, formGuards],
+    );
+
+    const missingParam = useMemo(() => {
+        for (const guard of selectedGuards) {
+            const param = firstMissingRequired(guard, formParams[guard.id] ?? {});
+            if (param) return { guard, param };
+        }
+        return null;
+    }, [selectedGuards, formParams]);
+
+    const canSave = formName.trim().length > 0 && selectedGuards.length > 0 && !missingParam;
+
+    const requiredMessage = missingParam
+        ? `Give "${missingParam.param.label}" a value (${missingParam.guard.label}).`
+        : null;
 
     const handleSave = async () => {
-        if (!canSave) {
-            if (formGuards.includes("ban_list") && formBannedWords.length === 0) {
-                setFormError("Add at least one keyword for Ban List.");
-            } else if (formGuards.includes("pii_check") && formPiiEntities.length === 0) {
-                setFormError("Select at least one PII type for PII Detection.");
-            }
+        if (missingParam) {
+            setFormError(requiredMessage);
+            return;
+        }
+        if (!formName.trim() || selectedGuards.length === 0) {
+            setFormError("Give the config a name and select at least one validator.");
             return;
         }
         setSaving(true);
         setFormError(null);
-        const settings = {
-            banned_words: formGuards.includes("ban_list") ? formBannedWords : [],
-            pii_entities: formGuards.includes("pii_check") ? formPiiEntities : [],
-        };
+        const settings = buildSettings(selectedGuards, formParams);
         try {
             if (editingId) {
                 await updateGuardrailsConfig(editingId, {
@@ -341,10 +608,24 @@ export default function GuardrailsConfigPage() {
         }
     };
 
-    const guardMeta = (id: string) => guards.find((g) => g.id === id);
-    const guardLabel = (id: string) => guardMeta(id)?.label || id;
-    const piiLabel = (id: string) =>
-        guards.find((g) => g.id === "pii_check")?.options?.find((o) => o.id === id)?.label || id;
+    const groupedGuards = useMemo(() => {
+        const groups = new Map<string, GuardOption[]>();
+        for (const guard of guards) {
+            const key = guard.category || "Other";
+            const list = groups.get(key);
+            if (list) list.push(guard);
+            else groups.set(key, [guard]);
+        }
+        return [...groups.entries()];
+    }, [guards]);
+
+    const onFailValue = (guardId: string) => {
+        const value = formParams[guardId]?.on_fail;
+        return typeof value === "string" && value ? value : "noop";
+    };
+
+    const onFailHelp = (guardId: string) =>
+        onFailOptions.find((o) => o.id === onFailValue(guardId))?.help ?? "";
 
     return (
         <div className="page-container guardrails-page">
@@ -357,6 +638,18 @@ export default function GuardrailsConfigPage() {
                     + New Config
                 </button>
             </div>
+
+            {catalogError && (
+                <div className="gr-catalog-error">
+                    <div>
+                        <p className="gr-catalog-error-title">Could not load the validator catalog.</p>
+                        <p className="gr-catalog-error-detail">{catalogError}</p>
+                    </div>
+                    <button type="button" className="btn btn-sm" onClick={() => void load()}>
+                        Retry
+                    </button>
+                </div>
+            )}
 
             {showForm && (
                 <div className="gr-card gr-form-card">
@@ -378,44 +671,85 @@ export default function GuardrailsConfigPage() {
                         placeholder="Brief description..."
                     />
 
-                    <label className="gr-label">Guards</label>
-                    <div className="gr-guard-options">
-                        {guards.map((g) => {
-                            const selected = formGuards.includes(g.id);
-                            return (
-                                <div key={g.id} className={`gr-guard-block ${selected ? "selected" : ""}`}>
-                                    <label className={`gr-guard-chip ${selected ? "selected" : ""}`}>
-                                        <input
-                                            type="checkbox"
-                                            checked={selected}
-                                            onChange={() => toggleGuard(g.id)}
-                                        />
-                                        <span className="gr-chip-label">{g.label}</span>
-                                        <span className="gr-chip-desc">{g.description}</span>
-                                    </label>
-                                    {selected && g.id === "ban_list" && (
-                                        <ItemPicker
-                                            label={g.items_label || "Keywords"}
-                                            selected={formBannedWords}
-                                            options={[]}
-                                            freeText
-                                            placeholder="Type a keyword and press Enter…"
-                                            onChange={setFormBannedWords}
-                                        />
-                                    )}
-                                    {selected && g.id === "pii_check" && (
-                                        <ItemPicker
-                                            label={g.items_label || "PII types"}
-                                            selected={formPiiEntities}
-                                            options={g.options || []}
-                                            placeholder="Type to match a PII type…"
-                                            onChange={setFormPiiEntities}
-                                        />
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
+                    <label className="gr-label">Validators</label>
+                    {groupedGuards.length === 0 && (
+                        <p className="gr-param-help">
+                            The service reported no validators. Use Retry above, or check the
+                            guardrails service.
+                        </p>
+                    )}
+                    {groupedGuards.map(([category, items]) => (
+                        <div key={category} className="gr-guard-group">
+                            <div className="gr-guard-group-title">
+                                <span>{category}</span>
+                                <span className="gr-guard-group-count">{items.length}</span>
+                            </div>
+                            <div className="gr-guard-options">
+                                {items.map((g) => {
+                                    const selected = formGuards.includes(g.id);
+                                    const disabled = g.available === false;
+                                    const values = formParams[g.id] ?? {};
+                                    return (
+                                        <div
+                                            key={g.id}
+                                            className={`gr-guard-block ${selected ? "selected" : ""} ${disabled ? "gr-guard-block--unavailable" : ""}`}
+                                        >
+                                            <label className={`gr-guard-chip ${selected ? "selected" : ""}`}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selected}
+                                                    disabled={disabled}
+                                                    onChange={() => toggleGuard(g.id)}
+                                                />
+                                                <span className="gr-chip-main">
+                                                    <span className="gr-chip-head">
+                                                        <span className="gr-chip-label">{g.label}</span>
+                                                        <span className="gr-tag gr-tag--kind">{g.kind || "local"}</span>
+                                                        <span className="gr-tag gr-tag--phase">{g.phase || "both"}</span>
+                                                    </span>
+                                                    <span className="gr-chip-desc">{g.description}</span>
+                                                    {disabled && (
+                                                        <span className="gr-chip-unavailable">
+                                                            {g.unavailable_reason || "This validator is not installed in the service."}
+                                                        </span>
+                                                    )}
+                                                </span>
+                                            </label>
+                                            {selected && (
+                                                <div className="gr-guard-fields">
+                                                    {(g.params ?? []).map((param) => (
+                                                        <ParamField
+                                                            key={param.name}
+                                                            guard={g}
+                                                            param={param}
+                                                            value={values[param.name]}
+                                                            onChange={(next) => setParamValue(g.id, param.name, next)}
+                                                        />
+                                                    ))}
+                                                    <div className="gr-param">
+                                                        <label className="gr-param-label" htmlFor={`gr-onfail-${g.id}`}>
+                                                            Action when the text fails
+                                                        </label>
+                                                        <select
+                                                            id={`gr-onfail-${g.id}`}
+                                                            className="gr-select gr-select--block"
+                                                            value={onFailValue(g.id)}
+                                                            onChange={(e) => setParamValue(g.id, "on_fail", e.target.value)}
+                                                        >
+                                                            {onFailOptions.map((o) => (
+                                                                <option key={o.id} value={o.id}>{o.label}</option>
+                                                            ))}
+                                                        </select>
+                                                        <p className="gr-param-help">{onFailHelp(g.id)}</p>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ))}
 
                     <label className="gr-label">Mode</label>
                     <div className="gr-mode-radios">
@@ -433,7 +767,11 @@ export default function GuardrailsConfigPage() {
                         ))}
                     </div>
 
-                    {formError && <p className="gr-form-error">{formError}</p>}
+                    {(formError || requiredMessage) && (
+                        <p className="gr-form-error" role="alert">
+                            {formError || requiredMessage}
+                        </p>
+                    )}
 
                     <div className="gr-form-actions">
                         <button className="btn btn-secondary" onClick={resetForm}>Cancel</button>
@@ -445,6 +783,15 @@ export default function GuardrailsConfigPage() {
                             {saving ? "Saving..." : editingId ? "Update" : "Create"}
                         </button>
                     </div>
+                </div>
+            )}
+
+            {configsError && (
+                <div className="gr-catalog-error" style={{ marginBottom: "1rem" }}>
+                    <p>{configsError}</p>
+                    <button type="button" className="btn btn-sm" onClick={() => void load()}>
+                        Retry
+                    </button>
                 </div>
             )}
 
@@ -470,34 +817,31 @@ export default function GuardrailsConfigPage() {
                                 <span className="gr-detail-label">Mode:</span>
                                 <span className="gr-mode-badge">{c.mode}</span>
                             </div>
-                            <div className="gr-config-detail">
-                                <span className="gr-detail-label">Guards:</span>
-                                <div className="gr-guard-tags">
-                                    {c.guards.map((g) => (
-                                        <span key={g} className="gr-guard-tag">{guardLabel(g)}</span>
-                                    ))}
-                                </div>
+                            <div className="gr-config-guards">
+                                {c.guards.map((guardId) => {
+                                    const guard = guards.find((g) => g.id === guardId);
+                                    const rows = guardSettingRows(guard, c.settings?.[guardId]);
+                                    return (
+                                        <div key={guardId} className="gr-config-guard">
+                                            <div className="gr-guard-tags">
+                                                <span className="gr-guard-tag">{guard?.label || guardId}</span>
+                                                {rows.length === 0 && (
+                                                    <span className="gr-config-guard-hint">
+                                                        {guard ? "Default settings" : "Not in the catalog"}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {rows.length > 0 && (
+                                                <div className="gr-config-values">
+                                                    {rows.map((row) => (
+                                                        <span key={row} className="gr-item-tag">{row}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
-                            {c.guards.includes("ban_list") && (c.settings?.banned_words?.length ?? 0) > 0 && (
-                                <div className="gr-config-detail">
-                                    <span className="gr-detail-label">Keywords:</span>
-                                    <div className="gr-guard-tags">
-                                        {c.settings?.banned_words?.map((w) => (
-                                            <span key={w} className="gr-item-tag">{w}</span>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                            {c.guards.includes("pii_check") && (c.settings?.pii_entities?.length ?? 0) > 0 && (
-                                <div className="gr-config-detail">
-                                    <span className="gr-detail-label">PII:</span>
-                                    <div className="gr-guard-tags">
-                                        {c.settings?.pii_entities?.map((e) => (
-                                            <span key={e} className="gr-item-tag">{piiLabel(e)}</span>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
                             <div className="gr-config-actions">
                                 <button className="btn btn-sm" onClick={() => handleToggleActive(c)}>
                                     {c.is_active ? "Disable" : "Enable"}

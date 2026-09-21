@@ -31,7 +31,12 @@ class Settings(BaseSettings):
     ingestion_database_url: str = "postgresql://ingestion:ingestion@localhost:5432/ingestion"
 
     guardrails_url: str = "http://localhost:18000"
-    guardrails_timeout_s: float = 5.0
+    # The LLM-backed validators need about a second each, so the round trip needs more than
+    # a couple of seconds.
+    guardrails_timeout_s: float = 15.0
+    # Bundled guardrails golden dataset, resolved against the process working directory.
+    # The service also looks in ../golden and ../../golden before it gives up.
+    guardrails_golden_dataset_path: str = "../../golden/guardrails-dataset.json"
 
     litellm_base_url: str = "http://host.docker.internal:4000"
     openai_api_key: str = "sk-bot"

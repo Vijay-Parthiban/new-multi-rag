@@ -3,7 +3,7 @@
  * Kept separate from api.ts / RAG evaluate helpers for review.
  */
 
-import { RAG_API_KEY, RAG_API_URL } from "./api";
+import { GuardResult, RAG_API_KEY, RAG_API_URL } from "./api";
 
 async function grEvalFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const baseHeaders: HeadersInit = RAG_API_KEY ? { "X-API-Key": RAG_API_KEY } : {};
@@ -81,7 +81,7 @@ export interface GuardrailsEvalRunItemRow {
   actual_guard: string | null;
   correct_block: boolean | null;
   correct_guard: boolean | null;
-  guard_results: Record<string, { passed?: boolean; error?: string | null }>;
+  guard_results: Record<string, GuardResult>;
   error_message: string | null;
 }
 

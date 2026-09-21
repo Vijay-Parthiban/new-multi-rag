@@ -4,90 +4,80 @@ API routes for guardrails configuration CRUD and analytics.
 
 from __future__ import annotations
 
-import uuid
 import logging
+import time
+import uuid
+from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from rag_db.repositories.guardrails_repository import GuardrailsRepository
 from rag_db.services.database import get_session_factory
 from rag_shared.config import Settings, get_settings
+# The legacy guard-id and settings mapping lives in the shared client, so the chat path and
+# the config API upgrade old rows the same way.
+from rag_shared.guardrails_client import LEGACY_GUARD_IDS, upgrade_settings as _upgrade_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/guardrails", tags=["guardrails"])
 
-# Presidio entity types supported by DetectPII (pii + spi maps).
-# https://microsoft.github.io/presidio/supported_entities/
-PII_ENTITY_OPTIONS = [
-    {"id": "EMAIL_ADDRESS", "label": "Email Address"},
-    {"id": "PHONE_NUMBER", "label": "Phone Number"},
-    {"id": "CREDIT_CARD", "label": "Credit Card"},
-    {"id": "US_SSN", "label": "US SSN"},
-    {"id": "IP_ADDRESS", "label": "IP Address"},
-    {"id": "PERSON", "label": "Person Name"},
-    {"id": "LOCATION", "label": "Location"},
-    {"id": "DATE_TIME", "label": "Date / Time"},
-    {"id": "URL", "label": "URL"},
-    {"id": "DOMAIN_NAME", "label": "Domain Name"},
-    {"id": "US_PASSPORT", "label": "US Passport"},
-    {"id": "US_DRIVER_LICENSE", "label": "US Driver License"},
-    {"id": "US_BANK_NUMBER", "label": "US Bank Number"},
-    {"id": "US_ITIN", "label": "US ITIN"},
-    {"id": "IBAN_CODE", "label": "IBAN Code"},
-    {"id": "CRYPTO", "label": "Crypto Wallet"},
-    {"id": "MEDICAL_LICENSE", "label": "Medical License"},
-    {"id": "NRP", "label": "Nationality / Religion / Political group"},
-]
+# The validator catalog lives in the guardrails service, so there is exactly one definition
+# of which validators exist and which parameters they take. Cache it briefly: the Guard
+# Config page reads it on every load, and the service is a separate process.
+_CATALOG_TTL_S = 60.0
+_catalog_cache: dict[str, Any] = {"value": None, "at": 0.0}
 
-# Available guard choices shown in the UI
-AVAILABLE_GUARDS = [
-    {
-        "id": "ban_list",
-        "label": "Ban List",
-        "description": "Block specific keywords (case-insensitive)",
-        "items_key": "banned_words",
-        "items_label": "Keywords",
-        "allow_custom": True,
-        "options": [],
-    },
-    {
-        "id": "pii_check",
-        "label": "PII Detection",
-        "description": "Detect personal identifiable information",
-        "items_key": "pii_entities",
-        "items_label": "PII types",
-        "allow_custom": False,
-        "options": PII_ENTITY_OPTIONS,
-    },
-    {
-        "id": "toxic_language",
-        "label": "Toxic Language",
-        "description": "Flag toxic or harmful language",
-        "items_key": None,
-        "items_label": None,
-        "allow_custom": False,
-        "options": [],
-    },
-]
 
-_VALID_GUARD_IDS = {g["id"] for g in AVAILABLE_GUARDS}
-_VALID_PII_IDS = {o["id"] for o in PII_ENTITY_OPTIONS}
+def _fetch_catalog(settings: Settings) -> dict[str, Any]:
+    """Return the service catalog, cached for a short time. Raises 503 when unavailable."""
+    now = time.monotonic()
+    cached = _catalog_cache["value"]
+    if cached is not None and now - _catalog_cache["at"] < _CATALOG_TTL_S:
+        return cached
+
+    url = f"{settings.guardrails_url.rstrip('/')}/catalog"
+    try:
+        with httpx.Client(timeout=settings.guardrails_timeout_s) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            catalog = resp.json()
+    except Exception as exc:
+        logger.error("Could not read the guardrails catalog from %s: %s", url, exc)
+        if cached is not None:
+            # Serve a stale catalog rather than break the page on a service restart.
+            return cached
+        raise HTTPException(
+            status_code=503,
+            detail=f"Guardrails service is unavailable at {settings.guardrails_url}",
+        ) from exc
+
+    _catalog_cache["value"] = catalog
+    _catalog_cache["at"] = now
+    return catalog
+
+
+def _catalog_guards(settings: Settings) -> list[dict[str, Any]]:
+    return list(_fetch_catalog(settings).get("validators") or [])
+
+
+def _catalog_on_fail(settings: Settings) -> list[dict[str, Any]]:
+    return list(_fetch_catalog(settings).get("on_fail_options") or [])
+
+
+def _guard_specs(settings: Settings) -> dict[str, dict[str, Any]]:
+    return {g["id"]: g for g in _catalog_guards(settings)}
 
 
 # ── Request / Response schemas ───────────────────────────────────────
 
-class GuardSettings(BaseModel):
-    banned_words: list[str] = []
-    pii_entities: list[str] = []
-
-
 class ConfigCreateRequest(BaseModel):
     name: str
     description: str | None = None
-    guards: list[str]  # subset of ["ban_list", "pii_check", "toxic_language"]
+    guards: list[str]  # ids from the guardrails service catalog
     mode: str = "both"  # "input" | "output" | "both"
-    settings: GuardSettings = Field(default_factory=GuardSettings)
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -96,7 +86,7 @@ class ConfigUpdateRequest(BaseModel):
     guards: list[str] | None = None
     mode: str | None = None
     is_active: bool | None = None
-    settings: GuardSettings | None = None
+    settings: dict[str, Any] | None = None
 
 
 class ConfigResponse(BaseModel):
@@ -104,7 +94,7 @@ class ConfigResponse(BaseModel):
     name: str
     description: str | None = None
     guards: list[str]
-    settings: GuardSettings = Field(default_factory=GuardSettings)
+    settings: dict[str, Any] = Field(default_factory=dict)
     mode: str
     is_active: bool
     created_at: str | None = None
@@ -152,66 +142,121 @@ class GuardItemOption(BaseModel):
     label: str
 
 
+class GuardParamSpec(BaseModel):
+    name: str
+    type: str
+    label: str
+    help: str = ""
+    required: bool = False
+    default: Any = None
+    options: list[GuardItemOption] | None = None
+    min: float | None = None
+    max: float | None = None
+
+
 class GuardOption(BaseModel):
     id: str
     label: str
     description: str
+    category: str | None = None
+    phase: str | None = None
+    kind: str | None = None
+    available: bool = True
+    unavailable_reason: str | None = None
+    params: list[GuardParamSpec] = []
+    # Legacy fields, kept so an older client keeps working.
     items_key: str | None = None
     items_label: str | None = None
     allow_custom: bool = False
     options: list[GuardItemOption] = []
 
 
+class OnFailOption(BaseModel):
+    id: str
+    label: str
+    help: str
+    fixes_text: bool = False
+
+
 # ── Config CRUD endpoints ────────────────────────────────────────────
 
-def _normalize_settings(raw: GuardSettings | dict | None, guards: list[str]) -> dict:
-    """Validate and strip list settings for guards that are not selected."""
-    if raw is None:
-        data = GuardSettings()
-    elif isinstance(raw, GuardSettings):
-        data = raw
-    else:
-        data = GuardSettings.model_validate(raw)
 
-    banned = [w.strip().lower() for w in data.banned_words if isinstance(w, str) and w.strip()]
-    # De-dupe case-insensitively while preserving order
-    seen: set[str] = set()
-    banned_unique: list[str] = []
-    for w in banned:
-        if w not in seen:
-            seen.add(w)
-            banned_unique.append(w)
+def _normalize_settings(raw: Any, guards: list[str], settings: Settings) -> dict[str, dict[str, Any]]:
+    """Upgrade, strip to the selected guards, and check every parameter with the service."""
+    nested = _upgrade_settings(raw, guards)
 
-    pii: list[str] = []
-    seen_pii: set[str] = set()
-    for ent in data.pii_entities:
-        if ent not in _VALID_PII_IDS:
-            raise HTTPException(status_code=422, detail=f"Unknown PII entity: {ent}")
-        if ent not in seen_pii:
-            seen_pii.add(ent)
-            pii.append(ent)
+    # Only selected guards keep an entry, and every entry carries an explicit on_fail.
+    cleaned: dict[str, dict[str, Any]] = {}
+    for guard in guards:
+        entry = nested.get(guard) or {}
+        on_fail = str(entry.get("on_fail") or "noop")
+        params = {k: v for k, v in entry.items() if k != "on_fail"}
+        cleaned[guard] = {**params, "on_fail": on_fail}
 
-    if "ban_list" in guards and not banned_unique:
-        raise HTTPException(
-            status_code=422,
-            detail="Ban List is enabled — add at least one keyword",
-        )
-    if "pii_check" in guards and not pii:
-        raise HTTPException(
-            status_code=422,
-            detail="PII Detection is enabled — select at least one PII type",
-        )
+    _assert_validators_ok(cleaned, settings)
+    return cleaned
 
-    return {
-        "banned_words": banned_unique if "ban_list" in guards else [],
-        "pii_entities": pii if "pii_check" in guards else [],
+
+def _assert_validators_ok(normalized: dict[str, dict[str, Any]], settings: Settings) -> None:
+    """Ask the service to check the parameters. Raises 422 with its message."""
+    payload = {
+        "validators": [
+            {
+                "id": guard,
+                "params": {k: v for k, v in entry.items() if k != "on_fail"},
+                "on_fail": entry.get("on_fail", "noop"),
+            }
+            for guard, entry in normalized.items()
+        ]
     }
+    url = f"{settings.guardrails_url.rstrip('/')}/validate-config"
+    try:
+        with httpx.Client(timeout=settings.guardrails_timeout_s) as client:
+            resp = client.post(url, json=payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Guardrails service is unavailable at {settings.guardrails_url}",
+        ) from exc
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=422, detail=f"Guardrails service rejected the config: {resp.text[:300]}")
+
+    errors = (resp.json() or {}).get("errors") or []
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
 
 
 @router.get("/guards", response_model=list[GuardOption])
-def list_available_guards() -> list[GuardOption]:
-    """Return the list of available guard types for building configs."""
-    return [GuardOption(**g) for g in AVAILABLE_GUARDS]
+def list_available_guards(settings: Settings = Depends(get_settings)) -> list[GuardOption]:
+    """The validator catalog, read from the guardrails service.
+
+    Each entry carries its parameter schema, so the Guard Config form is generated from the
+    service rather than from a list kept here.
+    """
+    guards = []
+    for spec in _catalog_guards(settings):
+        # `options` used to live at the top level. Keep a copy for a client that reads it there.
+        params = spec.get("params") or []
+        primary = next((p for p in params if p.get("type") == "string_list"), None)
+        guards.append(
+            GuardOption(
+                **{
+                    **spec,
+                    "items_key": primary["name"] if primary else None,
+                    "items_label": primary["label"] if primary else None,
+                    "allow_custom": not (primary or {}).get("options"),
+                    "options": (primary or {}).get("options") or [],
+                }
+            )
+        )
+    return guards
+
+
+@router.get("/on-fail-options", response_model=list[OnFailOption])
+def list_on_fail_options(settings: Settings = Depends(get_settings)) -> list[OnFailOption]:
+    """The actions a validator can take when the text fails."""
+    return [OnFailOption(**o) for o in _catalog_on_fail(settings)]
 
 
 @router.post("/configs", response_model=ConfigResponse, status_code=201)
@@ -221,20 +266,23 @@ def create_config(
 ) -> ConfigResponse:
     if body.mode not in ("input", "output", "both"):
         raise HTTPException(status_code=422, detail="mode must be 'input', 'output', or 'both'")
-    for g in body.guards:
-        if g not in _VALID_GUARD_IDS:
-            raise HTTPException(status_code=422, detail=f"Unknown guard: {g}")
     if not body.guards:
         raise HTTPException(status_code=422, detail="Select at least one guard")
 
-    normalized = _normalize_settings(body.settings, body.guards)
+    guards = [LEGACY_GUARD_IDS.get(g, g) for g in body.guards]
+    known = _guard_specs(settings)
+    for g in guards:
+        if g not in known:
+            raise HTTPException(status_code=422, detail=f"Unknown guard: {g}")
+
+    normalized = _normalize_settings(body.settings, guards, settings)
 
     session_factory = get_session_factory(settings)
     with session_factory() as db:
         repo = GuardrailsRepository(db)
         config = repo.create_config(
             name=body.name,
-            guards=body.guards,
+            guards=guards,
             mode=body.mode,
             description=body.description,
             settings=normalized,
@@ -280,11 +328,13 @@ def update_config(
     if "mode" in updates and updates["mode"] not in ("input", "output", "both"):
         raise HTTPException(status_code=422, detail="mode must be 'input', 'output', or 'both'")
     if "guards" in updates:
-        for g in updates["guards"]:
-            if g not in _VALID_GUARD_IDS:
-                raise HTTPException(status_code=422, detail=f"Unknown guard: {g}")
         if not updates["guards"]:
             raise HTTPException(status_code=422, detail="Select at least one guard")
+        updates["guards"] = [LEGACY_GUARD_IDS.get(g, g) for g in updates["guards"]]
+        known = _guard_specs(settings)
+        for g in updates["guards"]:
+            if g not in known:
+                raise HTTPException(status_code=422, detail=f"Unknown guard: {g}")
 
     session_factory = get_session_factory(settings)
     with session_factory() as db:
@@ -293,10 +343,13 @@ def update_config(
         if not existing:
             raise HTTPException(status_code=404, detail="Config not found")
 
-        next_guards = updates.get("guards", existing.guards)
+        next_guards = updates.get("guards") or [
+            LEGACY_GUARD_IDS.get(g, g) for g in (existing.guards or [])
+        ]
         if "settings" in updates or "guards" in updates:
             raw_settings = updates.get("settings", existing.settings or {})
-            updates["settings"] = _normalize_settings(raw_settings, next_guards)
+            updates["settings"] = _normalize_settings(raw_settings, next_guards, settings)
+            updates["guards"] = next_guards
 
         config = repo.update_config(config_id, **updates)
         if not config:
@@ -366,16 +419,15 @@ def get_stats(
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _config_to_response(config) -> ConfigResponse:
-    raw = config.settings or {}
+    # Rows written before the catalog existed hold the old flat settings and the old
+    # `pii_check` id. Upgrade on read so the UI only ever sees the current shape.
+    guards = [LEGACY_GUARD_IDS.get(g, g) for g in (config.guards or [])]
     return ConfigResponse(
         id=config.id,
         name=config.name,
         description=config.description,
-        guards=config.guards,
-        settings=GuardSettings(
-            banned_words=list(raw.get("banned_words") or []),
-            pii_entities=list(raw.get("pii_entities") or []),
-        ),
+        guards=guards,
+        settings=_upgrade_settings(config.settings, guards),
         mode=config.mode,
         is_active=config.is_active,
         created_at=config.created_at.isoformat() if config.created_at else None,

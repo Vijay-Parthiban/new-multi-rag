@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "../components/PageHeader";
-import { listGuardrailsConfigs, type GuardrailsConfig } from "../api";
+import { RAG_API_KEY, RAG_API_URL, listGuardrailsConfigs, type GuardrailsConfig } from "../api";
 import {
   createGuardrailsEvalRun,
   deleteGuardrailsGoldenDataset,
@@ -15,9 +15,38 @@ import {
 } from "../guardrailsEvalApi";
 import { formatRelativeTime } from "../utils/format";
 
-function formatMetric(value: unknown): string {
+/**
+ * POST /guardrails-evaluate/datasets/seed imports the golden/guardrails-dataset.json that
+ * ships with the repository. The wrapper file does not expose it, so it lives here.
+ */
+async function seedGuardrailsGoldenDataset(): Promise<{ dataset_id: string; replaced: boolean }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (RAG_API_KEY) headers["X-API-Key"] = RAG_API_KEY;
+  const res = await fetch(`${RAG_API_URL}/guardrails-evaluate/datasets/seed`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ replace: true }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let detail = text;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && "detail" in parsed) {
+        const value = (parsed as { detail?: unknown }).detail;
+        if (typeof value === "string") detail = value;
+      }
+    } catch {
+      // The body is not JSON. The raw text is the best message we have.
+    }
+    throw new Error(detail || `Could not load the bundled dataset (HTTP ${res.status}).`);
+  }
+  return (await res.json()) as { dataset_id: string; replaced: boolean };
+}
+
+function percent(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
-  return value.toFixed(3);
+  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function formatCategory(name: string): string {
@@ -28,13 +57,40 @@ function formatCategory(name: string): string {
     .join(" ");
 }
 
-function BoolPill({ value, ok }: { value: string; ok?: boolean | null }) {
-  const color =
-    ok === true ? "var(--success, #10b981)" : ok === false ? "var(--danger, #ef4444)" : "var(--muted)";
+type ItemVerdict = "ok" | "false-negative" | "false-positive" | "guard-miss" | "failed" | "skipped";
+
+const VERDICT_LABEL: Record<ItemVerdict, string> = {
+  ok: "Correct",
+  "false-negative": "Missed block",
+  "false-positive": "False alarm",
+  "guard-miss": "Wrong guard",
+  failed: "Error",
+  skipped: "Skipped",
+};
+
+/** False negatives and false positives are the rows that need a config change. */
+function verdictOf(row: GuardrailsEvalRunItemRow): ItemVerdict {
+  if (row.skipped || row.status === "skipped") return "skipped";
+  if (row.status === "failed") return "failed";
+  if (row.expected_blocked && !row.actual_blocked) return "false-negative";
+  if (!row.expected_blocked && row.actual_blocked) return "false-positive";
+  if (row.correct_guard === false) return "guard-miss";
+  return "ok";
+}
+
+function ScoreBar({ label, value }: { label: string; value: number | null | undefined }) {
+  const ratio = typeof value === "number" && !Number.isNaN(value) ? value : null;
+  const width = ratio === null ? 0 : Math.max(0, Math.min(100, Math.round(ratio * 100)));
   return (
-    <span className="mono" style={{ color, fontWeight: 600 }}>
-      {value}
-    </span>
+    <div className="gr-score">
+      <div className="gr-score-head">
+        <span className="gr-score-label">{label}</span>
+        <span className="gr-score-value">{percent(ratio)}</span>
+      </div>
+      <div className="gr-bar-track" role="img" aria-label={`${label}: ${percent(ratio)}`}>
+        <span className="gr-bar-fill" style={{ width: `${width}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -50,6 +106,7 @@ export default function GuardrailsEvaluationPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [replaceOnUpload, setReplaceOnUpload] = useState(true);
+  const [categoryFilter, setCategoryFilter] = useState("");
 
   const selectedConfig = useMemo(
     () => configs.find((c) => c.id === selectedConfigId) || null,
@@ -108,6 +165,20 @@ export default function GuardrailsEvaluationPage() {
     });
   }, [selectedDatasetId, loadRuns]);
 
+  async function onSeedDataset() {
+    setBusy(true);
+    setError(null);
+    try {
+      const seeded = await seedGuardrailsGoldenDataset();
+      await loadDatasets();
+      setSelectedDatasetId(seeded.dataset_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load the bundled dataset");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onUpload(file: File | null) {
     if (!file) return;
     setBusy(true);
@@ -154,6 +225,7 @@ export default function GuardrailsEvaluationPage() {
       setSelectedRun(run);
       const items = await listGuardrailsEvalRunItems(created.run_id);
       setRunItems(items.items);
+      setCategoryFilter("");
       await loadRuns(selectedDatasetId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start evaluation");
@@ -165,6 +237,7 @@ export default function GuardrailsEvaluationPage() {
   async function onSelectRun(run: GuardrailsEvalRunResponse) {
     setSelectedRun(run);
     setRunItems([]);
+    setCategoryFilter("");
     try {
       const items = await listGuardrailsEvalRunItems(run.run_id);
       setRunItems(items.items);
@@ -177,25 +250,80 @@ export default function GuardrailsEvaluationPage() {
 
   const agg = selectedRun?.aggregate_metrics || null;
 
+  const categories = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of runItems) if (row.category) names.add(row.category);
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [runItems]);
+
+  const visibleItems = useMemo(
+    () => (categoryFilter ? runItems.filter((row) => row.category === categoryFilter) : runItems),
+    [runItems, categoryFilter],
+  );
+
+  // Every item failed, so the zeros are not a score. Say what went wrong instead.
+  const allItemsFailed = runItems.length > 0 && runItems.every((row) => row.status === "failed");
+  const hideScores = Boolean(selectedRun && agg?.accuracy === 0 && allItemsFailed);
+  const failureMessage =
+    runItems.find((row) => row.error_message)?.error_message || selectedRun?.error_message || null;
+
+  const confusion = [
+    { key: "TP", label: "True positives", value: agg?.true_positives, tone: "good" },
+    { key: "TN", label: "True negatives", value: agg?.true_negatives, tone: "good" },
+    { key: "FP", label: "False positives", value: agg?.false_positives, tone: "bad" },
+    { key: "FN", label: "False negatives", value: agg?.false_negatives, tone: "bad" },
+  ];
+
   return (
     <div className="page">
       <PageHeader
         title="Guardrails Offline Evaluation"
-        description="Upload a golden dataset, pick one of the Guard Configs already saved in the database (the same ones Chat applies), and score block accuracy against that config."
+        description="Load a golden dataset, pick one of the Guard Configs already saved in the database (the same ones Chat applies), and score block accuracy against that config."
         breadcrumbs={[
           { label: "Overview", to: "/" },
           { label: "Guardrails Evaluation" },
         ]}
         actions={
-          <button type="button" className="btn btn-secondary" onClick={() => void refresh()} disabled={busy}>
-            Refresh
-          </button>
+          <div className="gr-eval-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void onSeedDataset()}
+              disabled={busy}
+            >
+              {busy ? "Working…" : "Load bundled golden dataset"}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => void refresh()} disabled={busy}>
+              Refresh
+            </button>
+          </div>
         }
       />
 
       {error && (
         <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
           {error}
+        </div>
+      )}
+
+      {!busy && datasets.length === 0 && (
+        <div className="gr-eval-empty">
+          <h3>No golden dataset yet</h3>
+          <p>
+            This repository ships a golden set at <code>golden/guardrails-dataset.json</code>. It has
+            12 items over 4 categories: clean, ban_list, pii and toxic. Load it into the database,
+            then run a config against it.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void onSeedDataset()}
+          >
+            Load bundled golden dataset
+          </button>
+          <p className="gr-eval-empty-hint">
+            You can also upload your own JSON file in the panel below.
+          </p>
         </div>
       )}
 
@@ -284,13 +412,8 @@ export default function GuardrailsEvaluationPage() {
             {selectedConfig && (
               <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
                 id={selectedConfig.id.slice(0, 8)}… · mode={selectedConfig.mode} · guards=
-                {(selectedConfig.guards || []).join(", ") || "—"}
-                {selectedConfig.settings?.banned_words?.length
-                  ? ` · ban=${selectedConfig.settings.banned_words.length} words`
-                  : ""}
-                {selectedConfig.settings?.pii_entities?.length
-                  ? ` · pii=${selectedConfig.settings.pii_entities.length} types`
-                  : ""}
+                {(selectedConfig.guards || []).join(", ") || "—"} · settings for{" "}
+                {Object.keys(selectedConfig.settings ?? {}).length} validator(s)
               </p>
             )}
 
@@ -337,7 +460,7 @@ export default function GuardrailsEvaluationPage() {
                     <td className="mono">{formatRelativeTime(r.created_at || "")}</td>
                     <td>{r.status}</td>
                     <td>{r.config_snapshot?.name || r.config_id.slice(0, 8)}</td>
-                    <td className="mono">{formatMetric(r.aggregate_metrics?.accuracy)}</td>
+                    <td className="mono">{percent(r.aggregate_metrics?.accuracy)}</td>
                     <td>
                       <button type="button" className="btn btn-sm btn-ghost" onClick={() => void onSelectRun(r)}>
                         Open
@@ -353,24 +476,45 @@ export default function GuardrailsEvaluationPage() {
 
       {selectedRun && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem", marginBottom: "1rem" }}>
-            {[
-              ["Accuracy", agg?.accuracy],
-              ["Precision", agg?.precision],
-              ["Recall", agg?.recall],
-              ["F1", agg?.f1],
-              ["Guard match", agg?.guard_match_rate],
-              ["Evaluated", agg?.items_evaluated],
-              ["Skipped", agg?.items_skipped],
-            ].map(([label, value]) => (
-              <div key={String(label)} className="panel" style={{ padding: "0.85rem 1rem" }}>
-                <div className="muted" style={{ fontSize: "0.75rem" }}>{label}</div>
-                <div className="mono" style={{ fontSize: "1.15rem", fontWeight: 600 }}>
-                  {typeof value === "number" ? (label === "Evaluated" || label === "Skipped" ? value : formatMetric(value)) : "—"}
-                </div>
+          {hideScores ? (
+            <div className="alert alert-error gr-run-warning">
+              <div>
+                <strong>Every item in this run failed. The scores below are not a real result.</strong>
+                <p>
+                  {failureMessage ||
+                    "The service returned no error message. Check that the guardrails service is running and that the config uses validators that are installed."}
+                </p>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div className="panel gr-score-panel">
+              <div className="panel-header">
+                <h3 className="panel-title">Scores</h3>
+                <span className="muted" style={{ fontSize: "0.75rem" }}>
+                  {agg?.items_total ?? runItems.length} items · {agg?.items_evaluated ?? "—"} evaluated ·{" "}
+                  {agg?.items_skipped ?? "—"} skipped
+                </span>
+              </div>
+              <div className="gr-score-grid">
+                <ScoreBar label="Accuracy" value={agg?.accuracy} />
+                <ScoreBar label="Precision" value={agg?.precision} />
+                <ScoreBar label="Recall" value={agg?.recall} />
+                <ScoreBar label="F1" value={agg?.f1} />
+                <ScoreBar label="Guard match" value={agg?.guard_match_rate} />
+              </div>
+              <div className="gr-confusion-grid">
+                {confusion.map((tile) => (
+                  <div key={tile.key} className={`gr-confusion-tile gr-confusion-tile--${tile.tone}`}>
+                    <span className="gr-confusion-key">{tile.key}</span>
+                    <span className="gr-confusion-value">
+                      {typeof tile.value === "number" ? tile.value : "—"}
+                    </span>
+                    <span className="gr-confusion-label">{tile.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {agg?.categories && Object.keys(agg.categories).length > 0 && (
             <div className="panel" style={{ marginBottom: "1rem" }}>
@@ -393,7 +537,7 @@ export default function GuardrailsEvaluationPage() {
                         <td>{formatCategory(name)}</td>
                         <td className="mono">{c.item_count}</td>
                         <td className="mono">{c.correct}</td>
-                        <td className="mono">{formatMetric(c.accuracy)}</td>
+                        <td className="mono">{percent(c.accuracy)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -405,9 +549,21 @@ export default function GuardrailsEvaluationPage() {
           <div className="panel">
             <div className="panel-header">
               <h3 className="panel-title">Item results</h3>
-              <span className="muted" style={{ fontSize: "0.75rem" }}>
-                {runItems.length} rows · config={selectedRun.config_snapshot?.name || "—"}
-              </span>
+              <div className="gr-item-filters">
+                <label className="field gr-inline-field">
+                  <span className="field-label">Category</span>
+                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                    <option value="">All categories</option>
+                    {categories.map((name) => (
+                      <option key={name} value={name}>{formatCategory(name)}</option>
+                    ))}
+                  </select>
+                </label>
+                <span className="muted" style={{ fontSize: "0.75rem" }}>
+                  {visibleItems.length} of {runItems.length} rows · config=
+                  {selectedRun.config_snapshot?.name || "—"}
+                </span>
+              </div>
             </div>
             <div className="repo-table-wrap">
               <table className="repo-table">
@@ -418,59 +574,54 @@ export default function GuardrailsEvaluationPage() {
                     <th>Category</th>
                     <th>Expected</th>
                     <th>Actual</th>
-                    <th>Block OK</th>
-                    <th>Guard OK</th>
-                    <th>Status</th>
+                    <th>Result</th>
+                    <th>Note</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {runItems.length === 0 ? (
+                  {visibleItems.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="muted">
-                        Select a run to inspect item-level results.
+                      <td colSpan={7} className="muted">
+                        No item rows for this run. Run an evaluation to fill the table.
                       </td>
                     </tr>
                   ) : (
-                    runItems.map((row) => (
-                      <tr key={row.run_item_id}>
-                        <td style={{ maxWidth: 360 }} title={row.text}>
-                          {row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text}
-                        </td>
-                        <td>{row.phase}</td>
-                        <td>{row.category ? formatCategory(row.category) : "—"}</td>
-                        <td className="mono">
-                          {row.expected_blocked ? `block:${row.expected_guard || "?"}` : "allow"}
-                        </td>
-                        <td className="mono">
-                          {row.skipped
-                            ? "skipped"
-                            : row.actual_blocked
-                              ? `block:${row.actual_guard || "?"}`
-                              : "allow"}
-                        </td>
-                        <td>
-                          <BoolPill
-                            value={row.correct_block == null ? "—" : row.correct_block ? "yes" : "no"}
-                            ok={row.correct_block}
-                          />
-                        </td>
-                        <td>
-                          <BoolPill
-                            value={row.correct_guard == null ? "—" : row.correct_guard ? "yes" : "no"}
-                            ok={row.correct_guard}
-                          />
-                        </td>
-                        <td>
-                          {row.skipped ? (
-                            <span className="muted" title={row.skip_reason || undefined}>
-                              skipped
+                    visibleItems.map((row) => {
+                      const verdict = verdictOf(row);
+                      return (
+                        <tr key={row.run_item_id} className={`gr-item-row--${verdict}`}>
+                          <td style={{ maxWidth: 360 }} title={row.text}>
+                            {row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text}
+                          </td>
+                          <td>{row.phase}</td>
+                          <td>{row.category ? formatCategory(row.category) : "—"}</td>
+                          <td className="mono">
+                            {row.expected_blocked ? `block:${row.expected_guard || "?"}` : "allow"}
+                          </td>
+                          <td className="mono">
+                            {row.skipped
+                              ? "skipped"
+                              : row.actual_blocked
+                                ? `block:${row.actual_guard || "?"}`
+                                : "allow"}
+                          </td>
+                          <td>
+                            <span className={`gr-verdict gr-verdict--${verdict}`}>
+                              {VERDICT_LABEL[verdict]}
                             </span>
-                          ) : (
-                            row.status
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                          <td className="gr-item-note">
+                            {verdict === "skipped" && (row.skip_reason || "Excluded by the config mode")}
+                            {verdict === "failed" && (row.error_message || "The check raised an error")}
+                            {verdict === "false-negative" && "Expected a block, the text passed"}
+                            {verdict === "false-positive" && "No block expected, the text was blocked"}
+                            {verdict === "guard-miss" &&
+                              `Blocked by ${row.actual_guard || "another guard"}, expected ${row.expected_guard || "another guard"}`}
+                            {verdict === "ok" && "—"}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

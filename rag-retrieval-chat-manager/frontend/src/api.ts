@@ -1208,20 +1208,52 @@ export interface GuardItemOption {
   label: string;
 }
 
+/** One tunable knob on a validator, as declared by the guardrails service catalog. */
+export interface GuardParam {
+  name: string;
+  /** string | text | integer | number | boolean | string_list | select */
+  type: string;
+  label: string;
+  help: string;
+  required: boolean;
+  default: unknown;
+  /** Present only when type is "select". */
+  options?: GuardItemOption[] | null;
+  min?: number | null;
+  max?: number | null;
+}
+
 export interface GuardOption {
   id: string;
   label: string;
   description: string;
+  category?: string;
+  /** input | output | both */
+  phase?: string;
+  /** local | model | llm */
+  kind?: string;
+  available?: boolean;
+  unavailable_reason?: string | null;
+  params?: GuardParam[];
+  /** Legacy fields kept for backward compatibility. Prefer `params`. */
   items_key?: string | null;
   items_label?: string | null;
   allow_custom?: boolean;
   options?: GuardItemOption[];
 }
 
-export interface GuardrailsSettings {
-  banned_words: string[];
-  pii_entities: string[];
+export interface OnFailOption {
+  id: string;
+  label: string;
+  help: string;
+  fixes_text: boolean;
 }
+
+/**
+ * Per-validator settings. One key per selected validator id. `on_fail` sits next to the
+ * parameters. The backend always returns this nested shape, even for old flat rows.
+ */
+export type GuardrailsSettings = Record<string, Record<string, unknown>>;
 
 export interface GuardrailsConfig {
   id: string;
@@ -1235,9 +1267,16 @@ export interface GuardrailsConfig {
   updated_at: string | null;
 }
 
+export interface GuardResult {
+  validation_passed: boolean;
+  error: string | null;
+  detail: string | null;
+}
+
 export interface GuardrailsTrace {
   id: string;
-  config_id: string;
+  /** Null when the trace was recorded without a guardrails config. */
+  config_id: string | null;
   config_name: string | null;
   chat_message_id: string | null;
   query: string;
@@ -1245,7 +1284,7 @@ export interface GuardrailsTrace {
   blocked: boolean;
   blocked_by_guard: string | null;
   blocked_on: string | null;
-  guard_results: Record<string, { passed: boolean; error: string | null }>;
+  guard_results: Record<string, GuardResult>;
   created_at: string | null;
 }
 
@@ -1259,6 +1298,11 @@ export interface GuardrailsStats {
 
 export async function listAvailableGuards(): Promise<GuardOption[]> {
   return ragFetch<GuardOption[]>("/guardrails/guards");
+}
+
+/** Failure actions, fetched from the service so the labels stay with the implementation. */
+export async function listGuardOnFailOptions(): Promise<OnFailOption[]> {
+  return ragFetch<OnFailOption[]>("/guardrails/on-fail-options");
 }
 
 export async function createGuardrailsConfig(body: {

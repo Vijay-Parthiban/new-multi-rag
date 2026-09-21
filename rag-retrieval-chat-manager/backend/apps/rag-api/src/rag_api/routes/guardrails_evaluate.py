@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
 from eval_core.guardrails_dataset_schema import (
     GuardrailsGoldenDatasetPayload,
@@ -15,6 +16,7 @@ from eval_core.guardrails_dataset_schema import (
 )
 from eval_core.guardrails_runner import (
     GuardrailsEvalItem,
+    GuardrailsEvalOutcome,
     aggregate_guardrails_metrics,
     evaluate_guardrails_item,
 )
@@ -159,6 +161,59 @@ def create_guardrails_dataset(
     return _import_dataset(body, settings=settings, replace=replace)
 
 
+class SeedDatasetRequest(BaseModel):
+    """Optional overrides for the bundled dataset import."""
+
+    path: str | None = None
+    replace: bool = True
+
+
+def _candidate_paths(configured: str, override: str | None) -> list[Path]:
+    """Where the bundled dataset may live, most specific first.
+
+    The service runs from a few different working directories depending on how it was
+    started, so try the configured path and then the usual repository-relative ones.
+    """
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    candidates.append(Path(configured))
+    candidates.extend(
+        Path(base) / "golden" / "guardrails-dataset.json"
+        for base in (".", "..", "../..", "../../..")
+    )
+    return candidates
+
+
+@router.post("/datasets/seed", response_model=CreateDatasetResponse)
+def seed_guardrails_dataset(
+    body: SeedDatasetRequest | None = None,
+    settings: Settings = Depends(get_settings),
+) -> CreateDatasetResponse:
+    """Import the guardrails golden dataset that ships with the repository.
+
+    This is the button the Guard Evaluation page offers when no dataset exists yet.
+    """
+    body = body or SeedDatasetRequest()
+    candidates = _candidate_paths(settings.guardrails_golden_dataset_path, body.path)
+
+    source = next((p for p in candidates if p.is_file()), None)
+    if source is None:
+        tried = ", ".join(str(p) for p in candidates)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Bundled guardrails dataset not found. Looked in: {tried}",
+        )
+
+    try:
+        payload = parse_guardrails_golden_json(source.read_bytes())
+    except (ValueError, ValidationError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid dataset at {source}: {exc}") from exc
+
+    logger.info("Seeding guardrails dataset from %s", source)
+    return _import_dataset(payload, settings=settings, replace=body.replace)
+
+
 @router.get("/datasets", response_model=DatasetListResponse)
 def list_guardrails_datasets(
     settings: Settings = Depends(get_settings),
@@ -173,10 +228,11 @@ def list_guardrails_datasets(
                 dataset_id=ds.id,
                 name=ds.name,
                 description=ds.description,
-                item_count=count,
+                # list_datasets returns dataset rows, not (row, count) pairs.
+                item_count=len(ds.items or []),
                 created_at=_iso(ds.created_at),
             )
-            for ds, count in rows
+            for ds in rows
         ]
         return DatasetListResponse(limit=limit, count=len(items), items=items)
 
@@ -281,10 +337,23 @@ def create_guardrails_eval_run(
                         expected_guard=ds_item.expected_guard,
                         actual_blocked=False,
                         actual_guard=None,
-                        correct_block=None,
+                        correct_block=False,
                         correct_guard=None,
                         guard_results={},
                         error_message=str(exc),
+                    )
+                    # Count the failure. Dropping it would make the scores look better than
+                    # they are.
+                    results.append(
+                        GuardrailsEvalOutcome(
+                            category=ds_item.category,
+                            expected_blocked=ds_item.expected_blocked,
+                            expected_guard=ds_item.expected_guard,
+                            actual_blocked=False,
+                            actual_guard=None,
+                            correct_block=False,
+                            error_message=str(exc),
+                        )
                     )
 
             metrics = aggregate_guardrails_metrics(results)

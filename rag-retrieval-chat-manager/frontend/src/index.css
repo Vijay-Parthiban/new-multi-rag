@@ -5055,3 +5055,659 @@ select.input option {
 .fanout-log-kind--tick_done {
   color: var(--accent, #58a6ff);
 }
+
+/* ═══════════════════════════════════
+   Guardrails Pages — Catalog Form,
+   Traces Detail and Evaluation
+   ═══════════════════════════════════ */
+
+/* ── Guard Config: catalog load error ── */
+
+.gr-catalog-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--danger-subtle);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-sm);
+}
+
+.gr-catalog-error p {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.gr-catalog-error-title {
+  font-weight: 600;
+  color: #f87171;
+}
+
+.gr-catalog-error-detail {
+  color: var(--text-secondary);
+  margin-top: 0.15rem !important;
+}
+
+/* ── Guard Config: grouped validator cards ── */
+
+.gr-guard-group {
+  margin-bottom: 1rem;
+}
+
+.gr-guard-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.gr-guard-group-count {
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-muted);
+  font-size: 0.625rem;
+}
+
+.gr-chip-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.gr-chip-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.gr-tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.gr-tag--kind {
+  border-color: rgba(88, 166, 255, 0.35);
+  color: var(--accent-emphasis);
+}
+
+.gr-tag--phase {
+  border-color: rgba(139, 92, 246, 0.35);
+  color: #c4b5fd;
+}
+
+.gr-guard-block--unavailable {
+  opacity: 0.55;
+}
+
+.gr-guard-block--unavailable .gr-guard-chip:hover {
+  border-color: var(--border-default);
+  background: transparent;
+}
+
+.gr-chip-unavailable {
+  font-size: 0.6875rem;
+  color: var(--warn-text);
+}
+
+/* ── Guard Config: per-parameter fields ── */
+
+.gr-guard-fields {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.875rem 0.75rem 0.25rem;
+  border-top: 1px dashed var(--border-default);
+}
+
+.gr-param {
+  display: block;
+}
+
+.gr-param-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gr-req {
+  margin-left: 0.25rem;
+  color: #f87171;
+}
+
+.gr-param-help {
+  margin: 0.3rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.gr-textarea {
+  resize: vertical;
+  min-height: 4.5rem;
+  font-family: inherit;
+}
+
+.gr-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.gr-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.gr-select--block {
+  width: 100%;
+}
+
+.gr-guard-fields .gr-item-picker {
+  padding: 0;
+  border-top: none;
+}
+
+/* ── Guard Config: config card settings summary ── */
+
+.gr-config-guards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.gr-config-guard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.gr-config-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.gr-config-guard-hint {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+/* ── Guard Traces: failure breakdown ── */
+
+.gr-breakdown-card {
+  margin-bottom: 1rem;
+}
+
+.gr-chart-sub {
+  margin: -0.5rem 0 0.75rem;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+.gr-bar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.gr-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.gr-bar-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.gr-bar-value {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.gr-bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.gr-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--gradient-accent);
+  transition: width 200ms ease-out;
+}
+
+.gr-bar-fill--fail {
+  background: linear-gradient(135deg, #ef4444 0%, #f59e0b 100%);
+}
+
+/* ── Guard Traces: filters and table ── */
+
+.gr-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.gr-row-clickable {
+  cursor: pointer;
+}
+
+.gr-row-selected {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.gr-fail-chip {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.gr-table-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+/* ── Guard Traces: row detail drawer ── */
+
+@keyframes grDrawerIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.gr-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.gr-drawer {
+  width: min(560px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  padding: 1.25rem;
+  background: var(--bg-canvas);
+  border-left: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  animation: grDrawerIn 200ms ease-out;
+}
+
+.gr-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.gr-drawer-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.gr-drawer-sub {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-drawer-meta {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-drawer-section {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 1.25rem 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.gr-drawer-count {
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-muted);
+  font-size: 0.625rem;
+}
+
+.gr-drawer-muted {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.gr-detail-text {
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.gr-detail-guard {
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-default);
+}
+
+.gr-detail-guard--fail {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.gr-detail-guard--pass {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.gr-detail-guard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.gr-detail-guard-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.gr-detail-guard-text {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gr-detail-guard-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: #f87171;
+}
+
+/* ── Guard Evaluation ── */
+
+.gr-eval-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.gr-eval-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 2.5rem 1.5rem;
+  margin-bottom: 1rem;
+  text-align: center;
+  background: var(--bg-default);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.gr-eval-empty h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.gr-eval-empty p {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.gr-eval-empty code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.gr-eval-empty-hint {
+  font-size: 0.6875rem !important;
+}
+
+.gr-score-panel {
+  margin-bottom: 1rem;
+}
+
+.gr-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem 1.25rem;
+  padding: 1rem;
+}
+
+.gr-score-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+.gr-score-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.gr-score-value {
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+.gr-confusion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.75rem;
+  padding: 0 1rem 1rem;
+}
+
+.gr-confusion-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.gr-confusion-tile--bad {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.gr-confusion-tile--good {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.gr-confusion-key {
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.gr-confusion-value {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.gr-confusion-label {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+.gr-run-warning p {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
+.gr-item-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.gr-inline-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.gr-inline-field .field-label {
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* ── Guard Evaluation: item verdicts ── */
+
+.gr-verdict {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.gr-verdict--false-negative,
+.gr-verdict--false-positive {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.gr-verdict--guard-miss {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.gr-verdict--failed {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.gr-verdict--ok {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.gr-item-row--skipped {
+  opacity: 0.5;
+}
+
+.gr-item-row--false-negative,
+.gr-item-row--false-positive {
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.gr-item-note {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+}
+
+/* ── Guardrails: light mode overrides ── */
+
+[data-theme="light"] .gr-drawer {
+  background: #ffffff;
+}
+
+[data-theme="light"] .gr-detail-text {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+[data-theme="light"] .gr-verdict--ok {
+  color: #15803d;
+}
+
+[data-theme="light"] .gr-verdict--false-negative,
+[data-theme="light"] .gr-verdict--false-positive,
+[data-theme="light"] .gr-verdict--failed {
+  color: #b91c1c;
+}
+

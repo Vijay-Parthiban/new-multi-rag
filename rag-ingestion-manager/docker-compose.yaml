@@ -306,14 +306,15 @@ services:
   guardrails-service:
     build:
       context: ../guardrails-service
-      secrets:
-        - guardrails_env
     container_name: guardrails
     restart: unless-stopped
     ports:
       - 18000:8000
     env_file:
       - .env.guardrails
+    # The LLM-backed validators reach the LiteLLM proxy on the host.
+    extra_hosts:
+      - host.docker.internal:host-gateway
   neo4j:
     image: neo4j:5.15.0
     ports:
@@ -356,6 +357,3 @@ volumes:
   nifi_data: null
   neo4j_data: null
   opensearch_data: null
-secrets:
-  guardrails_env:
-    file: .env.guardrails

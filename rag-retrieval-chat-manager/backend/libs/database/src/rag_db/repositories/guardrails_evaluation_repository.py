@@ -23,12 +23,16 @@ class GuardrailsEvaluationRepository:
         name: str,
         description: str | None = None,
         items: list[dict[str, Any]] | None = None,
+        replace: bool = True,
     ) -> GuardrailsGoldenDataset:
-        # If dataset with same name exists, delete it first to replace
+        # A dataset name is unique. `replace` decides whether an existing dataset with the
+        # same name is overwritten or reported as a conflict.
         existing = self._session.scalars(
             select(GuardrailsGoldenDataset).where(GuardrailsGoldenDataset.name == name)
         ).first()
         if existing:
+            if not replace:
+                raise ValueError(f"A dataset named '{name}' already exists")
             self._session.delete(existing)
             self._session.flush()
 
@@ -157,3 +161,16 @@ class GuardrailsEvaluationRepository:
         stmt = stmt.order_by(GuardrailsEvalRun.created_at.desc()).offset(skip).limit(limit)
         runs = list(self._session.scalars(stmt).all())
         return runs, total
+
+    def list_run_items(self, run_id: uuid.UUID) -> list[GuardrailsEvalRunItem]:
+        """Every scored row of one run.
+
+        All rows of a run are inserted in a single transaction, so `created_at` is the same
+        for each. Ordering by id as well keeps the order stable between calls.
+        """
+        stmt = (
+            select(GuardrailsEvalRunItem)
+            .where(GuardrailsEvalRunItem.run_id == run_id)
+            .order_by(GuardrailsEvalRunItem.created_at.asc(), GuardrailsEvalRunItem.id.asc())
+        )
+        return list(self._session.scalars(stmt).all())

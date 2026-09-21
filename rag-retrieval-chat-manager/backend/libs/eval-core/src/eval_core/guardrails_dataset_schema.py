@@ -6,10 +6,13 @@ from pydantic import BaseModel, Field
 
 
 class GuardrailsGoldenItem(BaseModel):
-    id: str | None = None
-    input_text: str
+    """One labelled row. The field names match the stored columns and the bundled dataset."""
+
+    text: str
+    phase: str = "input"
     expected_blocked: bool = False
     expected_guard: str | None = None
+    category: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
