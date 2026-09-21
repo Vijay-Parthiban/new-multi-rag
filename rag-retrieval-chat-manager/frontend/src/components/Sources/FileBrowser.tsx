@@ -552,7 +552,7 @@ export default function FileBrowser({
                         <div className="row-actions" style={{ display: "flex", gap: "0.5rem" }}>
                           {sourceId && file.key && (
                             <a
-                              href={`http://localhost:8007/api/sources/${sourceId}/files?key=${encodeURIComponent(file.key)}`}
+                              href={`http://127.0.0.1:8007/api/sources/${sourceId}/files?key=${encodeURIComponent(file.key)}`}
                               target="_blank"
                               rel="noreferrer"
                               className="btn btn-sm btn-secondary"

@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
 import { IconChat, IconDatabase, IconEvaluation, IconGuardrails, IconPipeline, IconPrompts } from "../components/Icons";
-import { listKnowledgeProducts } from "../api";
+import { getChatStats, listKnowledgeProducts, listPipelines } from "../api";
 
 const QUICK_LINKS = [
   {
@@ -51,14 +51,33 @@ const QUICK_LINKS = [
 
 export default function HomePage() {
   const [productsCount, setProductsCount] = useState<number>(0);
+  const [pipelinesCount, setPipelinesCount] = useState<number>(0);
+  const [avgRetrievalMs, setAvgRetrievalMs] = useState<number | null>(null);
+  const [faithfulness, setFaithfulness] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    try {
-      const products = await listKnowledgeProducts().catch(() => []);
-      setProductsCount(products.length);
-    } catch {
-      /* overview fallback */
-    }
+    const [products, pipelines, stats] = await Promise.all([
+      listKnowledgeProducts().catch(() => []),
+      listPipelines().catch(() => []),
+      getChatStats(50).catch(() => null),
+    ]);
+    setProductsCount(products.length);
+    setPipelinesCount(pipelines.length);
+
+    // Both tiles read the same recent turns. A turn that has not been scored yet
+    // carries nulls, so average only the values that exist.
+    const items = stats?.items ?? [];
+    const retrievalMs = items
+      .map((i) => i.latency_ms?.retrieve)
+      .filter((v): v is number => typeof v === "number");
+    setAvgRetrievalMs(
+      retrievalMs.length ? retrievalMs.reduce((a, b) => a + b, 0) / retrievalMs.length : null
+    );
+
+    const scores = items
+      .map((i) => i.faithfulness)
+      .filter((v): v is number => typeof v === "number");
+    setFaithfulness(scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null);
   }, []);
 
   useEffect(() => {
@@ -75,15 +94,19 @@ export default function HomePage() {
       {/* Highlights Dashboard Banner */}
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>4</div>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>{pipelinesCount}</div>
           <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Active RAG Pipelines</div>
         </div>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: "#10b981" }}>42 ms</div>
-          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Avg Hybrid Retrieval Latency</div>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "#10b981" }}>
+            {avgRetrievalMs == null ? "—" : `${Math.round(avgRetrievalMs)} ms`}
+          </div>
+          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Avg Retrieval Latency</div>
         </div>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: "#8b5cf6" }}>96.8%</div>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "#8b5cf6" }}>
+            {faithfulness == null ? "—" : `${(faithfulness * 100).toFixed(1)}%`}
+          </div>
           <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Ragas Faithfulness Score</div>
         </div>
         <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>

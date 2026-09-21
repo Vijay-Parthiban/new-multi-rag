@@ -278,7 +278,7 @@ npm install
 node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173
 ```
 
-Open <http://localhost:5173>.
+Open <http://127.0.0.1:5173>. Use `127.0.0.1`, not `localhost`, for the reason in section 8.
 
 On Windows `npx vite` can fail to spawn. Calling the entry script through `node`, as above, avoids that.
 `npm run dev` also works on Linux and macOS.
@@ -287,12 +287,17 @@ On Windows `npx vite` can fail to spawn. Calling the entry script through `node`
 
 ```bash
 cd rag-retrieval-chat-manager/backend
-uv sync --all-packages
+uv sync --all-packages --python 3.12
 ```
 
 Again, `--all-packages` is required. The project is a workspace of eight packages: `rag-api`,
 `rag-core`, `vector-core`, `retrieval-core`, `generation-core`, `reranker-core`, `eval-core`, and the
 `shared`, `database` and `shared-contracts` libraries.
+
+`--python 3.12` is required too. Without it `uv` picks the newest interpreter on the machine, and on
+3.14 the sync fails: `scikit-network`, which `ragas` needs, publishes wheels only up to 3.13 and then
+falls back to a source build that needs the Microsoft C++ build tools. The lockfile pins `ragas` 0.4.3,
+and that version needs `ragas.metrics.collections`, which does not exist in the 0.3 line.
 
 Its `backend/.env` holds **Docker service hostnames** such as `postgres`, `redis` and `qdrant`. Those do
 not resolve from the host. Two ways to run it:
@@ -375,7 +380,7 @@ npm install
 node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5174
 ```
 
-Open <http://localhost:5174>.
+Open <http://127.0.0.1:5174>. Use `127.0.0.1`, not `localhost`, for the reason in section 8.
 
 The Vite config sets no dev proxy, so the browser calls `8001` and `8007` directly. `src/api.ts` supplies
 those defaults, and no frontend `.env` is needed. To point the UI at other hosts, set `VITE_API_URL`,
@@ -425,6 +430,7 @@ export LITELLM_BASE_URL="http://localhost:4000"
 export EMBEDDING_MODEL="nvidia-embed-textonly"
 export OTEL_TRACING_ENABLED=false
 
+cd rag-retrieval-chat-manager/backend && uv sync --all-packages --python 3.12
 cd rag-retrieval-chat-manager/backend && uv run rag-db-migrate
 cd rag-retrieval-chat-manager/backend && uv run uvicorn rag_api.main:app --host 0.0.0.0 --port 8001
 cd rag-retrieval-chat-manager/backend && uv run rq worker eval --url redis://localhost:6379/0 --worker-class rq.worker.SimpleWorker
@@ -556,9 +562,8 @@ npx vite build
 | Guardrails never block | `GUARDRAILS_URL` is wrong, or the guard name does not match | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/guards` |
 | A guard returns 404 `Unknown guard` | The config stores `ban_list`, the service names its guard `ban-list` | The client maps the underscore to a hyphen. A 404 means the config holds a name the service does not have. |
 | `metrics_status` stays `pending` | The RQ worker is not running, or it died on `os.fork()` | Start it, and add `--worker-class rq.worker.SimpleWorker` on Windows |
-| `metrics_status` becomes `failed`, and the message says `No module named 'ragas.metrics.collections'` | The lockfile pins `ragas` 0.3.1, but the evaluation code targets the 0.4 API (`ragas.metrics.collections`, the `ascore(**fields)` call shape, `llm_factory(client=…)`) | Either rebuild the venv on Python 3.12 or 3.13 and raise `ragas` to `>=0.4` in `libs/eval-core/pyproject.toml`, or move the four metric call sites to the 0.3 API. Section 2 explains why 3.14 cannot install 0.4 |
-| A metrics job fails with `llm_factory() got an unexpected keyword argument 'client'` | Same version mismatch as the row above, at the next call | See the row above |
-| A metrics job fails with `unknown async library, or not in async context` | `ragas` 0.3.1 drives its own event loop and does not accept the driver used by `compute_chat_pipeline_metrics` | See the `ragas.metrics.collections` row |
+| Every metrics job fails, and the reason mentions `ragas.metrics.collections` or `llm_factory(client=…)` | The venv was built on a Python newer than 3.13, so `uv` fell back to `ragas` 0.3.x. The evaluation code needs the 0.4 API | Rebuild with `uv sync --all-packages --python 3.12`. Section 4.4 explains it |
+| A metrics job fails with `unknown async library, or not in async context` | Same cause as the row above: `ragas` 0.3.x drives its own event loop and rejects the driver in `compute_chat_pipeline_metrics` | See the row above |
 | Every retrieval page logs a CORS error, and `/guardrails/traces` answers 500 | A trace row has no `config_id` (the chat turn ran without a guardrails config), and the response model declared that field as required | Fixed: `TraceResponse.config_id` is optional and the name reads `No config`. A 500 escapes the CORS middleware, which is why the browser reports CORS rather than the real error |
 | Every embedding fails with `Invalid model name` | `EMBEDDING_MODEL` names a model the proxy does not serve | Use `nvidia-embed-textonly`, or any model from `GET /v1/models` |
 | `/v1/models` answers `401` | The LiteLLM key is missing | Add `-H 'Authorization: Bearer <OPENAI_API_KEY>'` |
@@ -567,6 +572,8 @@ npx vite build
 | The ingestion migration fails on `ALTER TYPE` | It ran against SQLite | Migration `011` skips the enum change on SQLite. If you see this, the database is PostgreSQL and the type is missing. |
 | A port is already in use | Another stack holds it | `docker ps`, then stop the container or change the host port |
 | `npx vite` does nothing on Windows | Spawn problem in `npx` | Call `node node_modules/vite/bin/vite.js` |
+| Every page sits on its loading state for a few seconds, and one API call takes about 2 seconds | In the browser, `localhost` resolves to `::1` before `127.0.0.1`, and uvicorn bound to `0.0.0.0` answers IPv4 only, so the first connection attempt times out. `127.0.0.1:8007/api/sources` answers in 20 ms while `localhost:8007/api/sources` takes 2 s, on every call | Open both UIs on `127.0.0.1`, not `localhost`. The retrieval frontend already defaults to `127.0.0.1` in `src/api.ts`. To serve IPv6 as well, start uvicorn on `--host ::` instead of `--host 0.0.0.0` |
+| A page shows an empty list and no error, and the request log shows no failure | Vite answers an unknown path with `index.html` and status `200`, so a missing API route looks like an empty result rather than an error | Check the Network tab for a `200` whose body is HTML. Confirm the proxy target in `vite.config.ts` |
 
 ---
 

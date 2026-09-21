@@ -4,6 +4,7 @@ import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import {
   PipelineRunWithPipeline,
+  SCRAPER_URL,
   ScraperCrawlJob,
   ScraperScrapeJob,
   listAllPipelineRuns,
@@ -264,7 +265,7 @@ export default function TrackingPage() {
 
           {errorCrawls && (
             <div className="alert alert-warn" style={{ margin: "0.75rem" }}>
-              Scraper API: {errorCrawls}. Make sure the scraper service is running at {import.meta.env.VITE_SCRAPER_URL ?? "http://localhost:8000"}.
+              Scraper API: {errorCrawls}. Make sure the scraper service is running at {SCRAPER_URL}.
             </div>
           )}
 

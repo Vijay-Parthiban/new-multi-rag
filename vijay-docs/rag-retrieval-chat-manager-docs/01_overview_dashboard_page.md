@@ -20,8 +20,8 @@ The page is presentation-only apart from a single count: it fetches the number o
 |   "Manage RAG pipelines, synthesize answers, monitor retrieval latency, and evaluate model performance."    |
 +-------------------------------------------------------------------------------------------------------------+
 | Stat cards (HomePage.tsx:76-93):                                                                            |
-|   [ 4 ]              [ 42 ms ]              [ 96.8% ]              [ {productsCount} ]                       |
-|   Active RAG         Avg Hybrid Retrieval   Ragas Faithfulness     Linked Knowledge Products                |
+|   [ {pipelinesCount} ] [ {avgRetrievalMs} ]  [ {faithfulness} ]   [ {productsCount} ]                       |
+|   Active RAG         Avg Retrieval          Ragas Faithfulness     Linked Knowledge Products                |
 |   Pipelines          Latency                Score                                                            |
 +-------------------------------------------------------------------------------------------------------------+
 | Quick-launch cards (HomePage.tsx:7-50, rendered HomePage.tsx:95-103):                                       |
@@ -38,12 +38,20 @@ The page is presentation-only apart from a single count: it fetches the number o
 
 ### Stat cards (`HomePage.tsx:76-93`)
 
+All four read live data. `load()` (`HomePage.tsx:58-81`) fetches the three sources in parallel, and each
+read is wrapped in `.catch()` so one failing service leaves its own card at `—` instead of blanking the
+page.
+
 | Card label | Value | Source |
 |---|---|---|
-| Active RAG Pipelines | `4` (hard-coded literal) | `HomePage.tsx:78` |
-| Avg Hybrid Retrieval Latency | `42 ms` (hard-coded literal) | `HomePage.tsx:82` |
-| Ragas Faithfulness Score | `96.8%` (hard-coded literal) | `HomePage.tsx:86` |
-| Linked Knowledge Products | `{productsCount}` state, 0 until the fetch resolves | `HomePage.tsx:53,90` |
+| Active RAG Pipelines | `{pipelinesCount}` | `listPipelines()` → `GET :8007/api/pipelines`, the number of rows |
+| Avg Retrieval Latency | `{avgRetrievalMs}` as `N ms`, or `—` | The mean of `latency_ms.retrieve` over the turns `getChatStats(50)` returns. A turn with no timing is skipped |
+| Ragas Faithfulness Score | `{faithfulness}` as `N.N%`, or `—` | The mean of the non-null `faithfulness` scores in the same response |
+| Linked Knowledge Products | `{productsCount}` | `listKnowledgeProducts()` → `GET :8001/api/knowledge-products` |
+
+The latency and faithfulness cards describe **the most recent 50 chat turns**, not all history, and they
+show `—` until a turn has been scored. A turn is scored asynchronously by the RQ evaluation worker, so a
+fresh platform shows `—` for both cards until the first metrics job completes.
 
 ### Quick-launch cards (`HomePage.tsx:7-50`)
 

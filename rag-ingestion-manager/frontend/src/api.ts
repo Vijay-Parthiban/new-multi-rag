@@ -1,6 +1,9 @@
 export const API_URL = import.meta.env.VITE_API_URL ?? "";
-export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://localhost:8000";
-export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://localhost:8001";
+// Use 127.0.0.1, not localhost. On Windows "localhost" resolves to ::1 first and the
+// backend binds IPv4 only, so each call first waits about 2 seconds for a connection
+// that never answers. See vijay-docs/two_project_run.md section 8.
+export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://127.0.0.1:8000";
+export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://127.0.0.1:8001";
 export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
 export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;

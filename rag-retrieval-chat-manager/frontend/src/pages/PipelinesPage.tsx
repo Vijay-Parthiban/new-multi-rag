@@ -33,8 +33,8 @@ import {
   updatePipeline,
 } from "../api";
 
-/** The ingestion manager owns the Knowledge Store UI. */
-const INGESTION_KNOWLEDGE_STORE_URL = "http://localhost:5173/knowledge-store";
+/** The ingestion manager owns the Knowledge Store UI. Same reason as src/api.ts for 127.0.0.1. */
+const INGESTION_KNOWLEDGE_STORE_URL = "http://127.0.0.1:5173/knowledge-store";
 /** The ingestion row rejects an empty embedding model, so this is the floor. */
 const DEFAULT_EMBEDDING_MODEL = "nvidia-embed-textonly";
 
