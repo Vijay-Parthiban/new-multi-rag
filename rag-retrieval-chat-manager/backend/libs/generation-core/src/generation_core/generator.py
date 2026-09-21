@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 
 from openai import OpenAI
 from rag_shared.chunk_utils import image_data_uri, split_chunks
@@ -33,8 +34,9 @@ class Generator:
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        system_prompt: str | None = None,
     ) -> str:
-        messages = build_rag_prompt(query, chunks)
+        messages = build_rag_prompt(query, chunks, system_prompt=system_prompt)
         response = self._client.chat.completions.create(
             model=model or self._settings.chat_model,
             messages=messages,
@@ -83,6 +85,56 @@ class Generator:
         )
         return response.choices[0].message.content or ""
 
+    def generate_stream(
+        self,
+        query: str,
+        chunks: list[RerankedChunk],
+        *,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        system_prompt: str | None = None,
+    ) -> Iterator[str]:
+        """Yield the answer text in deltas.
+
+        An image result cannot be streamed: it needs the vision pass and the
+        fusion pass, and neither reports progress. When image chunks are
+        present this falls back to one blocking call and yields the whole
+        answer as a single delta, so the caller sees one token event.
+        """
+        text_chunks, image_chunks = split_chunks(chunks)
+
+        if image_chunks:
+            result = self.generate(
+                query,
+                chunks,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+            )
+            if result.answer:
+                yield result.answer
+            return
+
+        if not text_chunks:
+            return
+
+        messages = build_rag_prompt(query, text_chunks, system_prompt=system_prompt)
+        stream = self._client.chat.completions.create(
+            model=model or self._settings.chat_model,
+            messages=messages,
+            max_tokens=max_tokens or self._settings.chat_max_tokens,
+            temperature=temperature if temperature is not None else self._settings.chat_temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+
     def generate(
         self,
         query: str,
@@ -93,6 +145,7 @@ class Generator:
         fusion_model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        system_prompt: str | None = None,
     ) -> GenerationResult:
         text_chunks, image_chunks = split_chunks(chunks)
         latency: dict[str, int] = {}
@@ -108,6 +161,7 @@ class Generator:
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                system_prompt=system_prompt,
             )
             latency["generate_text"] = int((time.perf_counter() - t0) * 1000)
 

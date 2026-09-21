@@ -47,6 +47,13 @@ class RagStrategy(str, enum.Enum):
     HYBRID = "hybrid"
     MULTIMODAL = "multimodal"
     METADATA = "metadata"
+    # Assistant strategies. They name the store an assistant reads rather than
+    # the index shape an ingestion pipeline writes. HYBRID above doubles as the
+    # assistant meaning (Qdrant dense fused with OpenSearch BM25) because no
+    # fanout collection carries sparse vectors, so the legacy meaning is unused.
+    VECTOR = "vector"
+    LEXICAL = "lexical"
+    RELATIONAL = "relational"
 
 
 class IndexModality(str, enum.Enum):
@@ -323,7 +330,7 @@ class Pipeline(Base):
     directory_names: Mapped[list] = mapped_column(JSONB, default=list)
     chunk_size: Mapped[int] = mapped_column(Integer, default=1000)
     chunk_overlap: Mapped[int] = mapped_column(Integer, default=120)
-    qdrant_collection: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    qdrant_collection: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     web_scraper_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     scraper_seed_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     scraper_max_depth: Mapped[int] = mapped_column(Integer, default=2)
@@ -332,6 +339,16 @@ class Pipeline(Base):
     knowledge_product_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("knowledge_products.id", ondelete="SET NULL"), nullable=True
     )
+    # ── Assistant fields ────────────────────────────────────────────────
+    # An assistant pipeline reads a Knowledge Product's stores, so it owns no
+    # collection of its own (see qdrant_collection, now nullable) and gets an
+    # external slug that the chat endpoints address it by.
+    slug: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    # The prompt template and the guardrails config live in the retrieval
+    # manager's database, so these carry no foreign key.
+    prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    guardrails_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    chat_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

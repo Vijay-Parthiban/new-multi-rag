@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Annotated, Literal
 
@@ -8,6 +9,10 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.api.routes.knowledge_products import (
+    product_chunk_strategy,
+    product_text_embedding_model,
+)
 from src.file_manager.core.errors import ConflictError, NotFoundError, ValidationError
 from src.ingestion_service.utils.validation import validate_description, validate_qdrant_collection
 from src.shared.config.settings import get_settings
@@ -19,24 +24,67 @@ router = APIRouter(prefix="/api/pipelines", tags=["pipelines"])
 
 SCRAPER_MODES = ("httpx", "playwright", "auto")
 
+# ── Assistant pipelines ──────────────────────────────────────────────────────
+# A pipeline whose strategy names a store an assistant reads is an assistant.
+# It owns no documents: it reads the Knowledge Product's stores, and the
+# retrieval manager addresses it by slug.
+STRATEGY_DESTINATION = {
+    "vector": "vector_qdrant",
+    "lexical": "lexical_opensearch",
+    "relational": "relational_pgvector",
+}
+# Ordered as the create form shows them. "hybrid" needs two stores, so it is
+# handled separately from the single-store strategies above.
+ASSISTANT_STRATEGIES = ("vector", "lexical", "relational", "hybrid")
+HYBRID_DESTINATIONS = ("vector_qdrant", "lexical_opensearch")
+RETRIEVAL_DESTINATION_TYPES = tuple(STRATEGY_DESTINATION.values())
+
+_STRATEGY_LITERAL = Literal[
+    "naive", "sparse", "hybrid", "multimodal", "metadata", "vector", "lexical", "relational"
+]
+
+
+def slugify_pipeline_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64].strip("-")
+    return slug or "assistant"
+
+
+def is_assistant_strategy(strategy: str) -> bool:
+    return strategy in ASSISTANT_STRATEGIES
+
+
+def enabled_retrieval_destinations(product: KnowledgeProduct) -> set[str]:
+    """The product's enabled destination types that an assistant can read."""
+    return {
+        d.destination_type
+        for d in (product.destinations or [])
+        if d.enabled and d.destination_type in RETRIEVAL_DESTINATION_TYPES
+    }
+
 
 class PipelineCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(min_length=8, max_length=512)
-    rag_strategy: Literal["naive", "sparse", "hybrid", "multimodal", "metadata"]
+    rag_strategy: _STRATEGY_LITERAL
     embedding_model: str = Field(min_length=1, max_length=128)
     sparse_embedding_model: str | None = Field(default=None, max_length=128)
     modality: Literal["text", "image"] | None = None
     directory_names: list[str] = Field(default_factory=list)
     chunk_size: int = Field(default=1000, ge=100, le=8000)
     chunk_overlap: int = Field(default=120, ge=0, le=2000)
-    qdrant_collection: str = Field(min_length=3, max_length=128)
+    qdrant_collection: str | None = Field(default=None, max_length=128)
     web_scraper_enabled: bool = False
     scraper_seed_url: str | None = None
     scraper_max_depth: int = Field(default=2, ge=0)
     scraper_max_pages: int = Field(default=50, ge=1)
     scraper_mode: Literal["httpx", "playwright", "auto"] = "httpx"
     knowledge_product_id: str | None = None
+    # Assistant fields. The slug is derived from the name when omitted.
+    slug: str | None = Field(default=None, max_length=64)
+    chat_model: str | None = Field(default=None, max_length=128)
+    prompt_template_id: uuid.UUID | None = None
+    guardrails_config_id: uuid.UUID | None = None
+
     @field_validator("directory_names")
     @classmethod
     def normalize_dirs(cls, v: list[str]) -> list[str]:
@@ -44,8 +92,8 @@ class PipelineCreateRequest(BaseModel):
 
     @field_validator("qdrant_collection")
     @classmethod
-    def check_collection(cls, v: str) -> str:
-        return validate_qdrant_collection(v)
+    def check_collection(cls, v: str | None) -> str | None:
+        return validate_qdrant_collection(v) if v else None
 
     @field_validator("description")
     @classmethod
@@ -59,6 +107,16 @@ class PipelinePatchRequest(BaseModel):
     scraper_seed_url: str | None = None
     scraper_max_depth: int | None = None
     scraper_max_pages: int | None = None
+    # Assistant fields. Every component stays editable after creation.
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    slug: str | None = Field(default=None, max_length=64)
+    rag_strategy: _STRATEGY_LITERAL | None = None
+    chat_model: str | None = Field(default=None, max_length=128)
+    prompt_template_id: uuid.UUID | None = None
+    guardrails_config_id: uuid.UUID | None = None
+    knowledge_product_id: uuid.UUID | None = None
+    embedding_model: str | None = Field(default=None, max_length=128)
 
     @field_validator("directory_names")
     @classmethod
@@ -69,10 +127,12 @@ class PipelinePatchRequest(BaseModel):
 
 
 def _pipeline_to_dict(p: Pipeline) -> dict:
+    product = p.knowledge_product
     return {
         "id": str(p.id),
         "knowledge_product_id": str(p.knowledge_product_id) if p.knowledge_product_id else None,
         "name": p.name,
+        "slug": p.slug,
         "description": p.description,
         "rag_strategy": p.rag_strategy.value,
         "embedding_model": p.embedding_model,
@@ -87,6 +147,33 @@ def _pipeline_to_dict(p: Pipeline) -> dict:
         "scraper_max_depth": p.scraper_max_depth,
         "scraper_max_pages": p.scraper_max_pages,
         "scraper_mode": p.scraper_mode,
+        "chat_model": p.chat_model,
+        "prompt_template_id": str(p.prompt_template_id) if p.prompt_template_id else None,
+        "guardrails_config_id": (
+            str(p.guardrails_config_id) if p.guardrails_config_id else None
+        ),
+        "is_assistant": is_assistant_strategy(p.rag_strategy.value),
+        # The retrieval manager resolves this pipeline's stores from here, so one
+        # call answers both "how do I reach this assistant" and "what does it read".
+        "knowledge_product": (
+            {
+                "id": str(product.id),
+                "name": product.name,
+                "status": product.status,
+                "chunk_strategy": product_chunk_strategy(product),
+                "text_embedding_model": product_text_embedding_model(product),
+                "destinations": [
+                    {
+                        "destination_type": d.destination_type,
+                        "enabled": d.enabled,
+                        "config": d.config or {},
+                    }
+                    for d in sorted(product.destinations or [], key=lambda d: d.destination_type)
+                ],
+            }
+            if product
+            else None
+        ),
         "created_at": p.created_at.isoformat(),
         "updated_at": p.updated_at.isoformat(),
     }
@@ -110,7 +197,45 @@ def _run_to_dict(r: PipelineRun) -> dict:
     }
 
 
-def _validate_create(body: PipelineCreateRequest) -> None:
+def _validate_assistant_options(
+    strategy: str, chat_model: str | None, product: KnowledgeProduct
+) -> None:
+    """Check the stores an assistant strategy needs are enabled on the product."""
+    if not chat_model:
+        raise ValidationError("CHAT_MODEL_REQUIRED", "Select a chat model for the assistant.")
+    available = enabled_retrieval_destinations(product)
+    if not available:
+        raise ValidationError(
+            "NO_RETRIEVAL_DESTINATION",
+            "This Knowledge Product has no enabled retrieval destination. "
+            "Enable Qdrant, OpenSearch or PostgreSQL in the Ingestion Manager.",
+            {"knowledge_product_id": str(product.id)},
+        )
+    if strategy == "hybrid":
+        missing = [d for d in HYBRID_DESTINATIONS if d not in available]
+    else:
+        needed = STRATEGY_DESTINATION[strategy]
+        missing = [] if needed in available else [needed]
+    if missing:
+        raise ValidationError(
+            "RAG_STRATEGY_UNAVAILABLE",
+            f"The '{strategy}' strategy needs an enabled {', '.join(missing)} destination.",
+            {"missing_destinations": missing, "available": sorted(available)},
+        )
+
+
+def _validate_create(
+    body: PipelineCreateRequest, product: KnowledgeProduct | None = None
+) -> None:
+    if is_assistant_strategy(body.rag_strategy):
+        if product is None:
+            raise ValidationError(
+                "KNOWLEDGE_PRODUCT_NOT_FOUND",
+                "Select a Knowledge Product for the assistant.",
+            )
+        _validate_assistant_options(body.rag_strategy, body.chat_model, product)
+        return
+
     if body.rag_strategy in {"multimodal", "metadata"} and not body.modality:
         raise ValidationError(
             "MODALITY_REQUIRED",
@@ -121,6 +246,8 @@ def _validate_create(body: PipelineCreateRequest) -> None:
             "SPARSE_MODEL_REQUIRED",
             "Sparse and hybrid strategies require sparse_embedding_model.",
         )
+    if not body.qdrant_collection:
+        raise ValidationError("COLLECTION_REQUIRED", "Provide a Qdrant collection name.")
     if not body.directory_names and not body.web_scraper_enabled:
         raise ValidationError(
             "NO_SOURCES",
@@ -128,6 +255,35 @@ def _validate_create(body: PipelineCreateRequest) -> None:
         )
     if body.web_scraper_enabled and not body.scraper_seed_url:
         raise ValidationError("SCRAPER_URL_REQUIRED", "Web scraper requires a seed URL.")
+
+
+async def _load_knowledge_product(
+    db: AsyncSession, product_id: str | uuid.UUID | None
+) -> KnowledgeProduct | None:
+    if not product_id:
+        return None
+    try:
+        key = product_id if isinstance(product_id, uuid.UUID) else uuid.UUID(str(product_id))
+    except ValueError:
+        raise ValidationError("KNOWLEDGE_PRODUCT_NOT_FOUND", "Knowledge Product id is not valid.")
+    return await db.get(KnowledgeProduct, key)
+
+
+async def _unique_slug(db: AsyncSession, base: str, exclude_id: uuid.UUID | None = None) -> str:
+    """The slug addresses the assistant in a URL, so it has to be unique."""
+    slug = slugify_pipeline_name(base)
+    if not slug:
+        slug = "assistant"
+    candidate = slug
+    n = 2
+    while True:
+        stmt = select(Pipeline).where(Pipeline.slug == candidate)
+        if exclude_id is not None:
+            stmt = stmt.where(Pipeline.id != exclude_id)
+        if not (await db.execute(stmt)).scalar_one_or_none():
+            return candidate
+        candidate = f"{slug}-{n}"
+        n += 1
 
 
 @router.get("/options", status_code=200)
@@ -208,7 +364,11 @@ async def list_pipelines(db: Annotated[AsyncSession, Depends(get_db)]):
 
 @router.post("", status_code=201)
 async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSession, Depends(get_db)]):
-    _validate_create(body)
+    assistant = is_assistant_strategy(body.rag_strategy)
+    product = await _load_knowledge_product(db, body.knowledge_product_id)
+    if assistant and body.knowledge_product_id and product is None:
+        raise ValidationError("KNOWLEDGE_PRODUCT_NOT_FOUND", "Knowledge Product not found.")
+    _validate_create(body, product)
 
     for field, value in [("name", body.name), ("description", body.description)]:
         col = Pipeline.name if field == "name" else Pipeline.description
@@ -219,17 +379,22 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
                 f"A pipeline with this {field} already exists.",
             )
 
-    existing_col = await db.execute(
-        select(Pipeline).where(Pipeline.qdrant_collection == body.qdrant_collection)
-    )
-    if existing_col.scalar_one_or_none():
-        raise ConflictError(
-            "COLLECTION_EXISTS",
-            "This Qdrant collection name is already used by another pipeline.",
+    if body.qdrant_collection:
+        existing_col = await db.execute(
+            select(Pipeline).where(Pipeline.qdrant_collection == body.qdrant_collection)
         )
+        if existing_col.scalar_one_or_none():
+            raise ConflictError(
+                "COLLECTION_EXISTS",
+                "This Qdrant collection name is already used by another pipeline.",
+            )
 
     kp_id: uuid.UUID | None = None
-    if body.knowledge_product_id:
+    slug: str | None = None
+    if assistant:
+        kp_id = product.id
+        slug = await _unique_slug(db, body.slug or body.name)
+    elif body.knowledge_product_id:
         kp_id = uuid.UUID(body.knowledge_product_id)
     else:
         kp_res = await db.execute(select(KnowledgeProduct).order_by(KnowledgeProduct.created_at.asc()).limit(1))
@@ -254,6 +419,10 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
         scraper_max_depth=body.scraper_max_depth,
         scraper_max_pages=body.scraper_max_pages,
         scraper_mode=body.scraper_mode,
+        slug=slug,
+        chat_model=body.chat_model,
+        prompt_template_id=body.prompt_template_id,
+        guardrails_config_id=body.guardrails_config_id,
     )
     db.add(pipeline)
     await db.commit()
@@ -297,6 +466,24 @@ async def get_pipeline_run(run_id: uuid.UUID, db: Annotated[AsyncSession, Depend
     return data
 
 
+@router.get("/by-slug/{slug}", status_code=200)
+async def get_pipeline_by_slug(slug: str, db: Annotated[AsyncSession, Depends(get_db)]):
+    """Resolve a pipeline by its external slug.
+
+    Declared before ``/{pipeline_id}`` on purpose: FastAPI matches routes in
+    declaration order, so a later declaration makes "by-slug" parse as a UUID.
+    """
+    result = await db.execute(select(Pipeline).where(Pipeline.slug == slug))
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        raise NotFoundError(
+            "PIPELINE_NOT_FOUND",
+            "No pipeline has this slug.",
+            {"slug": slug},
+        )
+    return _pipeline_to_dict(pipeline)
+
+
 @router.get("/{pipeline_id}", status_code=200)
 async def get_pipeline(pipeline_id: uuid.UUID, db: Annotated[AsyncSession, Depends(get_db)]):
     pipeline = await db.get(Pipeline, pipeline_id)
@@ -313,6 +500,15 @@ async def update_pipeline(
     if not pipeline:
         raise NotFoundError("PIPELINE_NOT_FOUND", "Pipeline not found.")
 
+    # ``exclude_unset`` separates "the client did not send this key" from "the
+    # client sent null". The two optional attachments use it: sending null
+    # clears the attachment, which is how the form removes one.
+    sent = body.model_dump(exclude_unset=True)
+    if "prompt_template_id" in sent:
+        pipeline.prompt_template_id = sent["prompt_template_id"]
+    if "guardrails_config_id" in sent:
+        pipeline.guardrails_config_id = sent["guardrails_config_id"]
+
     if body.directory_names is not None:
         pipeline.directory_names = body.directory_names
     if body.web_scraper_enabled is not None:
@@ -323,6 +519,45 @@ async def update_pipeline(
         pipeline.scraper_max_depth = body.scraper_max_depth
     if body.scraper_max_pages is not None:
         pipeline.scraper_max_pages = body.scraper_max_pages
+
+    if body.name is not None:
+        clash = await db.execute(
+            select(Pipeline).where(Pipeline.name == body.name, Pipeline.id != pipeline_id)
+        )
+        if clash.scalar_one_or_none():
+            raise ConflictError("PIPELINE_EXISTS", "A pipeline with this name already exists.")
+        pipeline.name = body.name
+    if body.description is not None:
+        pipeline.description = validate_description(body.description)
+    if body.slug is not None:
+        pipeline.slug = await _unique_slug(db, body.slug, exclude_id=pipeline_id)
+
+    # A different strategy or product can drop the stores the assistant reads,
+    # so those two re-run the create-time checks.
+    next_strategy = body.rag_strategy or pipeline.rag_strategy.value
+    if is_assistant_strategy(next_strategy) and (
+        body.rag_strategy is not None or body.knowledge_product_id is not None
+    ):
+        product = await _load_knowledge_product(
+            db, body.knowledge_product_id or pipeline.knowledge_product_id
+        )
+        if product is None:
+            raise ValidationError(
+                "KNOWLEDGE_PRODUCT_NOT_FOUND", "Select a Knowledge Product for the assistant."
+            )
+        _validate_assistant_options(
+            next_strategy, body.chat_model or pipeline.chat_model, product
+        )
+        pipeline.knowledge_product_id = product.id
+
+    if body.rag_strategy is not None:
+        pipeline.rag_strategy = RagStrategy(body.rag_strategy)
+    if pipeline.slug is None and is_assistant_strategy(pipeline.rag_strategy.value):
+        pipeline.slug = await _unique_slug(db, pipeline.name, exclude_id=pipeline_id)
+    if body.chat_model is not None:
+        pipeline.chat_model = body.chat_model
+    if body.embedding_model is not None:
+        pipeline.embedding_model = body.embedding_model
 
     await db.commit()
     await db.refresh(pipeline)

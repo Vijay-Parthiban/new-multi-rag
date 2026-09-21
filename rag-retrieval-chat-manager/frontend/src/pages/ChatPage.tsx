@@ -97,11 +97,6 @@ export default function ChatPage() {
     const [rerankEnabled, setRerankEnabled] = useState<boolean>(true);
     const [topK, setTopK] = useState<number>(5);
 
-    const [routerEnabled, setRouterEnabled] = useState<boolean>(true);
-    const [routerMode, setRouterMode] = useState<string>("llm");
-    const [ragMode, setRagMode] = useState<string>("normal");
-    const [scMaxLoops, setScMaxLoops] = useState<number>(3);
-
     const [guardrailsConfigs, setGuardrailsConfigs] = useState<GuardrailsConfig[]>([]);
     const [selectedGuardrailsConfig, setSelectedGuardrailsConfig] = useState<GuardrailsConfig | null>(null);
 
@@ -375,14 +370,14 @@ export default function ChatPage() {
                 retrieve_limit: retrieveLimit,
                 rerank_enabled: rerankEnabled,
                 top_k: topK,
-                router_enabled: routerEnabled,
-                router_mode: routerEnabled ? routerMode : undefined,
-                rag_mode: routerEnabled ? "normal" : ragMode, // Overridden by backend if routed to crag
-                self_corrective_max_loops: scMaxLoops,
                 guardrails_config_id: selectedGuardrailsConfig?.id || undefined,
             };
 
-            if (selectedPipeline) {
+            // An assistant resolves its own collection, embedding model and
+            // strategy from the Knowledge Product it reads, so the request
+            // carries none of them. A legacy pipeline still runs the old path.
+            const assistantSlug = selectedPipeline?.slug ?? null;
+            if (selectedPipeline && !assistantSlug) {
                 payload.collection = selectedPipeline.qdrant_collection;
                 payload.embedding_model = selectedPipeline.embedding_model;
                 if (selectedPipeline.sparse_embedding_model) {
@@ -407,7 +402,10 @@ export default function ChatPage() {
                 blocked_on?: string;
             } | null = null;
 
-            for await (const event of streamChat(payload)) {
+            for await (const event of streamChat(
+                payload,
+                assistantSlug ? { path: `/api/assistants/${assistantSlug}/chat/stream` } : {},
+            )) {
                 if (event.type === "status") {
                     setAgentStatus(event.message || null);
                 } else if (event.type === "token") {
@@ -497,13 +495,11 @@ export default function ChatPage() {
                 retrieve_limit: retrieveLimit,
                 rerank_enabled: rerankEnabled,
                 top_k: topK,
-                router_enabled: routerEnabled,
-                router_mode: routerEnabled ? routerMode : undefined,
-                rag_mode: routerEnabled ? "normal" : ragMode,
-                self_corrective_max_loops: scMaxLoops,
             };
 
-            if (selectedPipeline) {
+            // A legacy pipeline passes its own store; an assistant resolves it
+            // from the Knowledge Product, so the config carries none of it.
+            if (selectedPipeline && !selectedPipeline.slug) {
                 config.collection = selectedPipeline.qdrant_collection;
                 config.embedding_model = selectedPipeline.embedding_model;
                 if (selectedPipeline.sparse_embedding_model) {
@@ -583,9 +579,18 @@ export default function ChatPage() {
                         {selectedPipeline && (
                             <div className="chat-pipeline-info">
                                 <div><span className="muted">Strategy:</span> <span className="mono">{selectedPipeline.rag_strategy}</span></div>
-                                <div><span className="muted">Embedding:</span> <span className="mono" style={{ wordBreak: "break-all" }}>{selectedPipeline.embedding_model}</span></div>
-                                {selectedPipeline.sparse_embedding_model && (
-                                    <div><span className="muted">Sparse:</span> <span className="mono">{selectedPipeline.sparse_embedding_model}</span></div>
+                                {selectedPipeline.knowledge_product && (
+                                    <div>
+                                        <span className="muted">Knowledge Product:</span>{" "}
+                                        <span className="mono">{selectedPipeline.knowledge_product.name}</span>
+                                        <span className="muted"> · {selectedPipeline.knowledge_product.chunk_strategy}</span>
+                                    </div>
+                                )}
+                                {selectedPipeline.chat_model && (
+                                    <div><span className="muted">Model:</span> <span className="mono" style={{ wordBreak: "break-all" }}>{selectedPipeline.chat_model}</span></div>
+                                )}
+                                {selectedPipeline.slug && (
+                                    <div><span className="muted">Endpoint:</span> <span className="mono" style={{ wordBreak: "break-all" }}>{selectedPipeline.slug}</span></div>
                                 )}
                             </div>
                         )}
@@ -743,65 +748,6 @@ export default function ChatPage() {
                             </>
                         )}
 
-                        <div className="chat-toolbar-divider" />
-                        <div className="chat-toolbar-group">
-                            <label>Strategy</label>
-                            <select
-                                value={routerEnabled ? "auto" : "manual"}
-                                onChange={(e) => setRouterEnabled(e.target.value === "auto")}
-                            >
-                                <option value="auto">Intelligent (Auto)</option>
-                                <option value="manual">Manual Selection</option>
-                            </select>
-                        </div>
-
-                        {routerEnabled && (
-                            <>
-                                <div className="chat-toolbar-divider" />
-                                <div className="chat-toolbar-group">
-                                    <label title="How Auto decides greeting vs simple RAG vs CRAG">Classifier</label>
-                                    <select
-                                        value={routerMode}
-                                        onChange={(e) => setRouterMode(e.target.value)}
-                                    >
-                                        <option value="llm">LLM (small model)</option>
-                                        <option value="heuristic">Heuristic rules</option>
-                                    </select>
-                                </div>
-                            </>
-                        )}
-
-                        {!routerEnabled && (
-                            <>
-                                <div className="chat-toolbar-divider" />
-                                <div className="chat-toolbar-group">
-                                    <label>RAG Mode</label>
-                                    <select value={ragMode} onChange={(e) => setRagMode(e.target.value)}>
-                                        <option value="normal">Normal</option>
-                                        <option value="self_corrective">Self-Corrective</option>
-                                    </select>
-                                </div>
-                            </>
-                        )}
-
-                        {((routerEnabled) || (!routerEnabled && ragMode === "self_corrective")) && (
-                            <>
-                                <div className="chat-toolbar-divider" />
-                                <div className="chat-toolbar-group">
-                                    <label>Max Loops</label>
-                                    <input
-                                        type="number"
-                                        min={1}
-                                        max={5}
-                                        value={scMaxLoops}
-                                        onChange={(e) => setScMaxLoops(Math.min(5, Math.max(1, parseInt(e.target.value) || 1)))}
-                                        style={{ width: "44px" }}
-                                        title={routerEnabled ? "Used when Auto routes to CRAG" : "Self-Corrective max loops"}
-                                    />
-                                </div>
-                            </>
-                        )}
-
                         {/* Session indicator */}
                         <div className="chat-toolbar-session">
                             <div className={`session-dot ${activeSessionId ? "connected" : "new"}`} />
@@ -818,8 +764,8 @@ export default function ChatPage() {
                                 <IconChat className="empty-icon" size={36} />
                                 <h3>RAG Playground</h3>
                                 <p>
-                                    Ask questions about your ingested documents. With Intelligent (Auto), a classifier
-                                    picks greeting, simple RAG, or CRAG per query.
+                                    Ask questions about your ingested documents. Select an assistant in the sidebar
+                                    to read its Knowledge Product, or a legacy pipeline to read the scrape collection.
                                 </p>
                             </div>
                         ) : (
@@ -842,11 +788,9 @@ export default function ChatPage() {
                                             {/* Route badge */}
                                             {!isUser && m.trace?.route && (() => {
                                                 const routeLabels: Record<string, { icon: string; label: string; color: string }> = {
-                                                    greeting: { icon: "💬", label: "Greeting", color: "var(--info-subtle, rgba(59,130,246,.15))" },
+                                                    // Only "normal" and "blocked" are reachable: the query
+                                                    // router and self-corrective RAG were never implemented.
                                                     normal: { icon: "🔍", label: "Normal RAG", color: "var(--success-subtle, rgba(34,197,94,.15))" },
-                                                    simple_rag_auto: { icon: "🔍", label: "Simple RAG (Auto)", color: "var(--success-subtle, rgba(34,197,94,.15))" },
-                                                    self_corrective: { icon: "🔄", label: "Self-Corrective", color: "var(--accent-subtle, rgba(139,92,246,.15))" },
-                                                    self_corrective_auto: { icon: "⚡", label: "CRAG (Auto)", color: "var(--warn-subtle, rgba(245,158,11,.15))" },
                                                     blocked: { icon: "🛡️", label: "Blocked", color: "var(--danger-subtle)" },
                                                 };
                                                 const r = routeLabels[m.trace.route] || { icon: "🔍", label: m.trace.route, color: "var(--surface-2)" };
@@ -954,21 +898,6 @@ export default function ChatPage() {
                                                                 <span className="chat-metric-badge" style={{ background: "var(--bg-inset)", color: "var(--text-secondary)" }}>
                                                                     Ctx Prec: {(mMetrics.context_precision * 100).toFixed(0)}%
                                                                 </span>
-                                                            )}
-                                                            {Array.isArray(mMetrics.metrics?.generation?.sc_iterations) &&
-                                                                mMetrics.metrics!.generation!.sc_iterations.length > 0 && (
-                                                                <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginLeft: "4px" }}>
-                                                                    {mMetrics.metrics!.generation!.sc_iterations.map((iter: any, i: number) => {
-                                                                        const faith = iter?.generation?.faithfulness ?? iter?.faithfulness;
-                                                                        const n = mMetrics.metrics!.generation!.sc_iterations.length;
-                                                                        return (
-                                                                            <span key={i} style={{ marginRight: "6px" }}>
-                                                                                {i + 1}: {typeof faith === "number" ? `${(faith * 100).toFixed(0)}%` : "N/A"}
-                                                                                {i < n - 1 ? " →" : ""}
-                                                                            </span>
-                                                                        );
-                                                                    })}
-                                                                </div>
                                                             )}
                                                         </>
                                                     )}

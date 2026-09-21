@@ -1,0 +1,374 @@
+"""Assistant endpoints.
+
+An assistant is a pipeline on the ingestion side. This module resolves it by
+slug, finds the stores of the Knowledge Product it reads, and delegates to the
+existing chat handlers, so guardrails, retrieval, rerank, generation,
+persistence and metrics stay in one place.
+
+Two surfaces, both derived from the same slug:
+
+* ``POST /api/assistants/{slug}/chat`` and ``/chat/stream`` — the native shape.
+* ``POST /v1/assistants/{slug}/chat/completions`` — the OpenAI shape, so an
+  OpenAI SDK client pointed at ``{base}/v1/assistants/{slug}`` works with no
+  adapter code.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from rag_core.assistant import (
+    STRATEGY_LABELS,
+    StrategyUnavailable,
+    resolve_strategy,
+    stores_for_product,
+    strategies_for_product,
+)
+from rag_db.repositories.prompt_repository import PromptRepository
+from rag_db.services.database import get_session_factory
+from rag_shared.config import Settings
+from rag_shared.types import SearchMode
+
+from rag_api.routes.chat import ChatRequest, ChatResponse, chat, chat_stream
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["assistants"])
+
+_INGESTION_TIMEOUT_S = 10.0
+_STREAM_MEDIA_TYPE = "text/event-stream"
+
+
+class AssistantChatRequest(BaseModel):
+    """A question for one assistant pipeline."""
+
+    query: str = Field(..., description="The user question.")
+    session_id: uuid.UUID | None = Field(default=None, description="Continue an existing session.")
+    guardrails_config_id: uuid.UUID | None = Field(
+        default=None, description="Overrides the pipeline's guardrails config for this request."
+    )
+    retrieval_mode: SearchMode | None = None
+    retrieve_limit: int | None = Field(default=None, ge=1, le=50)
+    rerank_enabled: bool | None = None
+    rerank_model: str | None = None
+    top_k: int | None = Field(default=None, ge=1, le=50)
+
+
+class OpenAIMessage(BaseModel):
+    role: str
+    content: str | list[dict[str, Any]] | None = None
+
+
+class OpenAIChatRequest(BaseModel):
+    """The subset of the OpenAI chat-completions body this endpoint honours."""
+
+    model: str | None = None
+    messages: list[OpenAIMessage] = Field(default_factory=list)
+    stream: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
+    user: str | None = None
+
+
+def _headers(settings: Settings) -> dict[str, str]:
+    return {"X-API-Key": settings.api_key} if settings.api_key else {}
+
+
+def _last_user_message(messages: list[OpenAIMessage]) -> str:
+    for message in reversed(messages):
+        if message.role != "user":
+            continue
+        content = message.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            # OpenAI allows a list of parts; only the text parts carry a question.
+            text = " ".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+            if text:
+                return text
+    return ""
+
+
+async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
+    """Fetch the pipeline by slug and resolve the stores its strategy reads."""
+    settings: Settings = request.app.state.settings
+    base = settings.ingestion_service_url.rstrip("/")
+    url = f"{base}/api/pipelines/by-slug/{slug}"
+    try:
+        async with httpx.AsyncClient(timeout=_INGESTION_TIMEOUT_S) as client:
+            response = await client.get(url, headers=_headers(settings))
+    except httpx.RequestError as exc:
+        logger.error("assistant resolve failed slug=%s error=%s", slug, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "INGESTION_SERVICE_UNAVAILABLE",
+                "message": f"Cannot reach the ingestion service: {exc}",
+            },
+        )
+
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ASSISTANT_NOT_FOUND", "message": f"No assistant has the slug '{slug}'."},
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"code": "INGESTION_SERVICE_ERROR", "message": response.text[:500]},
+        )
+
+    pipeline = response.json()
+    if not pipeline.get("is_assistant"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "NOT_AN_ASSISTANT",
+                "message": (
+                    f"Pipeline '{slug}' is an ingestion pipeline. An assistant reads a "
+                    "Knowledge Product, so its strategy must be vector, lexical, relational or hybrid."
+                ),
+            },
+        )
+
+    destinations = (pipeline.get("knowledge_product") or {}).get("destinations") or []
+    stores = stores_for_product(destinations)
+    try:
+        resolve_strategy(pipeline["rag_strategy"], stores)
+    except StrategyUnavailable as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RAG_STRATEGY_UNAVAILABLE",
+                "message": str(exc),
+                "missing_destinations": exc.missing,
+            },
+        )
+
+    pipeline["_stores"] = stores
+    pipeline["_strategies"] = strategies_for_product(destinations)
+    return pipeline
+
+
+def _system_prompt_for(settings: Settings, pipeline: dict[str, Any]) -> str | None:
+    template_id = pipeline.get("prompt_template_id")
+    if not template_id:
+        return None
+    session_factory = get_session_factory(settings)
+    with session_factory() as db:
+        template = PromptRepository(db).get(uuid.UUID(str(template_id)))
+    if not template:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "PROMPT_TEMPLATE_NOT_FOUND",
+                "message": f"Prompt template {template_id} no longer exists.",
+            },
+        )
+    return template.content
+
+
+async def _build_chat_request(
+    request: Request, slug: str, body: AssistantChatRequest
+) -> ChatRequest:
+    """Turn an assistant request into the flat request the chat handler takes."""
+    settings: Settings = request.app.state.settings
+    pipeline = await _resolve_assistant(request, slug)
+    stores = pipeline["_stores"]
+    product = pipeline.get("knowledge_product") or {}
+
+    # The dense store is the only vector search the fanout collections support.
+    retrieval_mode = body.retrieval_mode or SearchMode.DENSE
+    if stores.qdrant_collection is None and retrieval_mode is SearchMode.HYBRID:
+        retrieval_mode = SearchMode.DENSE
+
+    return ChatRequest(
+        query=body.query,
+        session_id=body.session_id,
+        retrieval_mode=retrieval_mode,
+        retrieve_limit=body.retrieve_limit or settings.retrieve_limit,
+        rerank_enabled=body.rerank_enabled if body.rerank_enabled is not None else settings.reranker_enabled,
+        rerank_model=body.rerank_model,
+        top_k=body.top_k or settings.rerank_top_k,
+        generation_model=pipeline.get("chat_model") or settings.chat_model,
+        collection=stores.qdrant_collection,
+        embedding_model=product.get("text_embedding_model") or settings.embedding_model,
+        system_prompt=_system_prompt_for(settings, pipeline),
+        strategy=pipeline["rag_strategy"],
+        stores=stores,
+        # A request-level guardrails config wins, so the Chat page can try a
+        # different one without editing the pipeline.
+        guardrails_config_id=body.guardrails_config_id or _as_uuid(pipeline.get("guardrails_config_id")),
+    )
+
+
+def _as_uuid(value: Any) -> uuid.UUID | None:
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        return None
+
+
+@router.get("/api/assistants/{slug}")
+async def get_assistant(slug: str, request: Request) -> dict[str, Any]:
+    """The resolved configuration, for an integrator to read. No secrets."""
+    settings: Settings = request.app.state.settings
+    pipeline = await _resolve_assistant(request, slug)
+    stores = pipeline["_stores"]
+    product = pipeline.get("knowledge_product") or {}
+    return {
+        "slug": pipeline["slug"],
+        "name": pipeline["name"],
+        "description": pipeline["description"],
+        "chat_model": pipeline.get("chat_model") or settings.chat_model,
+        "strategy": pipeline["rag_strategy"],
+        "strategies_available": [
+            {"id": s, "label": STRATEGY_LABELS[s][0], "description": STRATEGY_LABELS[s][1]}
+            for s in pipeline["_strategies"]
+        ],
+        "knowledge_product": {
+            "id": product.get("id"),
+            "name": product.get("name"),
+            "status": product.get("status"),
+            "chunk_strategy": product.get("chunk_strategy"),
+            "text_embedding_model": product.get("text_embedding_model"),
+        },
+        "stores": stores.model_dump(),
+        "prompt_template_id": pipeline.get("prompt_template_id"),
+        "guardrails_config_id": pipeline.get("guardrails_config_id"),
+        "endpoints": {
+            "chat": f"/api/assistants/{pipeline['slug']}/chat",
+            "chat_stream": f"/api/assistants/{pipeline['slug']}/chat/stream",
+            "openai_base_url": f"/v1/assistants/{pipeline['slug']}",
+        },
+    }
+
+
+@router.post("/api/assistants/{slug}/chat", response_model=ChatResponse)
+async def assistant_chat(
+    slug: str, body: AssistantChatRequest, request: Request
+) -> ChatResponse:
+    built = await _build_chat_request(request, slug, body)
+    # The chat handler is synchronous: retrieval and generation take seconds, so
+    # keep them off the event loop.
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, chat, request, built)
+
+
+@router.post("/api/assistants/{slug}/chat/stream")
+async def assistant_chat_stream(slug: str, body: AssistantChatRequest, request: Request):
+    built = await _build_chat_request(request, slug, body)
+    return await chat_stream(request, built)
+
+
+def _openai_chunk(slug: str, chunk_id: str, created: int, *, content: str | None = None, finish: str | None = None) -> str:
+    payload: dict[str, Any] = {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": slug,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+    }
+    if content is not None:
+        payload["choices"][0]["delta"] = {"content": content}
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _openai_stream(slug: str, inner: StreamingResponse):
+    """Translate the native SSE frames into OpenAI chat-completion chunks."""
+
+    async def generate():
+        chunk_id = f"chatcmpl-{uuid.uuid4()}"
+        created = int(time.time())
+        answer_parts: list[str] = []
+        async for frame in inner.body_iterator:
+            text = frame.decode("utf-8", "replace") if isinstance(frame, bytes) else str(frame)
+            for line in text.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    payload = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                kind = payload.get("type")
+                if kind == "token" and payload.get("content"):
+                    answer_parts.append(payload["content"])
+                    yield _openai_chunk(slug, chunk_id, created, content=payload["content"])
+                elif kind in {"done", "blocked"}:
+                    # A blocked turn never streamed tokens, so its answer arrives
+                    # whole and is emitted as one chunk.
+                    content = payload.get("content")
+                    if content and not answer_parts:
+                        yield _openai_chunk(slug, chunk_id, created, content=content)
+                    elif kind == "done" and not answer_parts:
+                        answer = (payload.get("metadata") or {}).get("answer")
+                        if answer:
+                            yield _openai_chunk(slug, chunk_id, created, content=answer)
+                elif kind == "error":
+                    yield f'data: {json.dumps({"error": {"message": payload.get("content") or "stream failed", "type": "server_error"}})}\n\n'
+                    yield "data: [DONE]\n\n"
+                    return
+        yield _openai_chunk(slug, chunk_id, created, finish="stop")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type=_STREAM_MEDIA_TYPE,
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/v1/assistants/{slug}/chat/completions")
+async def assistant_openai_completions(slug: str, body: OpenAIChatRequest, request: Request):
+    """The OpenAI chat-completions shape, so an SDK client needs no adapter."""
+    query = _last_user_message(body.messages)
+    if not query:
+        return {
+            "error": {
+                "message": "No user message with text content was found.",
+                "type": "invalid_request_error",
+                "code": "MISSING_USER_MESSAGE",
+            }
+        }
+
+    built = await _build_chat_request(request, slug, AssistantChatRequest(query=query))
+
+    if body.stream:
+        inner = await chat_stream(request, built)
+        return _openai_stream(slug, inner)
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, chat, request, built)
+    return {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": slug,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": result.answer},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from rag_shared.types import RerankedChunk, RetrievedChunk, SearchMode
+from rag_shared.types import KpStores, RerankedChunk, RetrievedChunk, SearchMode
 
 
 class PipelineConfig(BaseModel):
@@ -17,6 +17,11 @@ class PipelineConfig(BaseModel):
     collection: str | None = None
     embedding_model: str | None = None
     sparse_embedding_model: str | None = None
+    system_prompt: str | None = None
+    # Set by an assistant pipeline. A request that leaves them unset runs the
+    # legacy scrape-collection path.
+    strategy: str | None = None
+    stores: KpStores | None = None
 
 
 class PipelineRequest(BaseModel):
@@ -36,6 +41,15 @@ class PipelineRequest(BaseModel):
     collection: str | None = Field(default=None, description="Optional collection override.")
     embedding_model: str | None = Field(default=None, description="Optional dense embedding model override.")
     sparse_embedding_model: str | None = Field(default=None, description="Optional sparse embedding model override.")
+    system_prompt: str | None = Field(
+        default=None, description="Optional system message that replaces the built-in RAG prompt."
+    )
+    strategy: str | None = Field(
+        default=None, description="Optional knowledge-product strategy: vector, lexical, relational, hybrid."
+    )
+    stores: KpStores | None = Field(
+        default=None, description="Optional knowledge-product store names the strategy reads."
+    )
 
     def to_config(self) -> PipelineConfig:
         return PipelineConfig(
@@ -50,6 +64,9 @@ class PipelineRequest(BaseModel):
             collection=self.collection,
             embedding_model=self.embedding_model,
             sparse_embedding_model=self.sparse_embedding_model,
+            system_prompt=self.system_prompt,
+            strategy=self.strategy,
+            stores=self.stores,
         )
 
 
@@ -57,6 +74,15 @@ class RerankResult(BaseModel):
     retrieved_chunks: list[RetrievedChunk]
     reranked_chunks: list[RerankedChunk]
     latency_ms: dict[str, int] = Field(default_factory=dict)
+
+
+class StreamEvent(BaseModel):
+    """One server-sent event from a streaming chat turn."""
+
+    type: str  # "status" | "token" | "done" | "error"
+    message: str | None = None
+    content: str | None = None
+    metadata: dict | None = None
 
 
 class ChatResult(BaseModel):

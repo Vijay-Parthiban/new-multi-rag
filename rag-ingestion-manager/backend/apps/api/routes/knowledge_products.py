@@ -75,6 +75,24 @@ def _profile_chunk_strategy(profile: IngestionProfile) -> str:
     )
 
 
+def product_chunk_strategy(product: KnowledgeProduct) -> str:
+    """The chunk strategy the fanout used for this product."""
+    if product.ingestion_profile:
+        return _profile_chunk_strategy(product.ingestion_profile)
+    return DEFAULT_CHUNK_STRATEGY
+
+
+def product_text_embedding_model(product: KnowledgeProduct) -> str:
+    """The dense model the fanout embedded this product's chunks with.
+
+    A caller that queries the product's vector store has to embed the question
+    with the same model, so this resolves the fallback too.
+    """
+    if product.ingestion_profile:
+        return product.ingestion_profile.text_embedding_model or DEFAULT_TEXT_EMBEDDING_MODEL
+    return DEFAULT_TEXT_EMBEDDING_MODEL
+
+
 def _destination_types() -> list[dict[str, Any]]:
     return build_destination_types(settings)
 
@@ -242,11 +260,7 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
         ),
         # A product with no profile reports the fallback the fanout uses, so the
         # UI never has to guess.
-        "chunk_strategy": (
-            _profile_chunk_strategy(product.ingestion_profile)
-            if product.ingestion_profile
-            else DEFAULT_CHUNK_STRATEGY
-        ),
+        "chunk_strategy": product_chunk_strategy(product),
         # A product with no profile reports the fallback the fanout uses, so the
         # UI never has to guess.
         "modality_mode": (
@@ -254,9 +268,7 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
             if product.ingestion_profile
             else DEFAULT_MODALITY_MODE
         ),
-        "text_embedding_model": (
-            product.ingestion_profile.text_embedding_model if product.ingestion_profile else None
-        ),
+        "text_embedding_model": product_text_embedding_model(product),
         "caption_model": (
             product.ingestion_profile.caption_model if product.ingestion_profile else None
         ),

@@ -20,11 +20,23 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://qdrant:6333"
     qdrant_api_key: str = "qdrant"
     qdrant_collection: str = "scrape_embeddings"
+    # The ingestion fanout writes knowledge-product collections to its own Qdrant.
+    qdrant_kp_url: str = ""
+
+    opensearch_url: str = "http://localhost:9200"
+    opensearch_username: str = ""
+    opensearch_password: str = ""
+
+    ingestion_service_url: str = "http://localhost:8007"
+    ingestion_database_url: str = "postgresql://ingestion:ingestion@localhost:5432/ingestion"
+
+    guardrails_url: str = "http://localhost:18000"
+    guardrails_timeout_s: float = 5.0
 
     litellm_base_url: str = "http://host.docker.internal:4000"
     openai_api_key: str = "sk-bot"
     # LiteLLM embedding models — must match web-scrapper-workspace ingest settings
-    embedding_model: str = "nvidia-embed-passage"
+    embedding_model: str = "nvidia-embed-textonly"
     sparse_embedding_model: str = "Qdrant/bm25"
     default_retrieval_mode: SearchMode = SearchMode.HYBRID
     retrieve_limit: int = 20

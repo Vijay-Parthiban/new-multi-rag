@@ -99,7 +99,7 @@ class MessageTraceInfo(BaseModel):
     retrieval_mode: str | None = None
     rerank_enabled: bool | None = None
     generation_model: str | None = None
-    route: str | None = None  # "normal", "self_corrective", "self_corrective_auto", "greeting", "blocked"
+    route: str | None = None  # "normal" or "blocked"
 
 
 class ChatMessageItem(BaseModel):
@@ -499,11 +499,9 @@ async def chat_stream(request: Request, body: ChatRequest):
     import asyncio
     import json
     import queue
-    import time
 
     from fastapi.responses import StreamingResponse
     from opentelemetry import context as otel_context
-    from rag_core.query_router import QueryRoute, RouteResult, classify_query
     from rag_shared.tracing import rag_pipeline_span, set_span_attr
 
     settings = request.app.state.settings
@@ -561,73 +559,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                     )
                     return
 
-            # Honor per-request UI toggle; do NOT use global settings.router_enabled alone
-            router_on = bool(getattr(body, "router_enabled", False))
-            router_mode = getattr(body, "router_mode", None)
-            if router_on:
-                route_res = classify_query(
-                    body.query,
-                    settings,
-                    router_enabled=True,
-                    router_mode=router_mode,
-                )
-            else:
-                # Manual mode: never greet; follow rag_mode only
-                route_res = RouteResult(route=QueryRoute.SIMPLE_RAG)
-
-            if route_res.route == QueryRoute.GREETING:
-                with rag_pipeline_span(
-                    "rag.chat.stream",
-                    session_id=str(body.session_id) if body.session_id else None,
-                    query=body.query,
-                    observation_type="generation",
-                    model=generation_model,
-                    metadata={"route": "greeting"},
-                ) as span:
-                    _emit(f'data: {json.dumps({"type": "status", "message": "Processing message"})}\n\n')
-                    answer = route_res.greeting_response or "Hello!"
-                    for char in answer:
-                        _emit(f'data: {json.dumps({"type": "token", "content": char})}\n\n')
-                        time.sleep(0.01)
-
-                    set_span_attr(span, "langfuse.trace.output", answer)
-                    set_span_attr(span, "langfuse.observation.output", answer)
-                    set_span_attr(span, "output.value", answer)
-                    set_span_attr(span, "rag.chunks_used", 0)
-
-                    sid, msg_id, _, _ = _persist_chat_turn(
-                        settings=settings,
-                        queue=job_queue,
-                        session_id=body.session_id,
-                        source_type=source_type,
-                        source_id=source_id,
-                        query=body.query,
-                        answer=answer,
-                        retrieval_mode=config.retrieval_mode.value,
-                        retrieve_limit=config.retrieve_limit,
-                        rerank_enabled=config.rerank_enabled,
-                        rerank_model=body.rerank_model or settings.reranker_model,
-                        generation_model=generation_model,
-                        save_trace=False,
-                        enqueue_metrics=False,
-                    )
-                    set_span_attr(span, "langfuse.session.id", str(sid))
-                    set_span_attr(span, "langfuse.observation.metadata.message_id", str(msg_id))
-
-                _emit(
-                    f'data: {json.dumps({"type": "done", "metadata": {"sources": [], "route": "greeting", "session_id": str(sid), "message_id": str(msg_id)}})}\n\n'
-                )
-                _emit(
-                    f'data: {json.dumps({"type": "session", "session_id": str(sid), "message_id": str(msg_id), "route": "greeting"})}\n\n'
-                )
-                return
-
-            if router_on:
-                use_crag = route_res.route == QueryRoute.CRAG
-                effective_route = "self_corrective_auto" if use_crag else "simple_rag_auto"
-            else:
-                use_crag = config.rag_mode == "self_corrective"
-                effective_route = "self_corrective" if use_crag else "normal"
+            effective_route = "normal"
 
             # Span must wrap retrieve/rerank/generate so httpx child spans nest correctly
             # (same shape as /chat). Creating it after the stream left Langfuse with empty traces.
@@ -645,14 +577,9 @@ async def chat_stream(request: Request, body: ChatRequest):
                     "route": effective_route,
                 },
             ) as span:
-                if use_crag:
-                    gen = pipeline.stream_chat_self_corrective(
-                        body.query, config=config, source_type=source_type, source_id=source_id
-                    )
-                else:
-                    gen = pipeline.stream_chat(
-                        body.query, config=config, source_type=source_type, source_id=source_id
-                    )
+                gen = pipeline.stream_chat(
+                    body.query, config=config, source_type=source_type, source_id=source_id
+                )
 
                 final_metadata: dict = {}
                 for event in gen:

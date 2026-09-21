@@ -1,216 +1,307 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-21
 
 ## 1. Executive Summary & Page Purpose
-The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects pipeline records. Each record owns its Qdrant collection, dense embedding engine, optional sparse engine, chunking parameters, folder / MinIO-source scope, optional web scraper configuration, and an optional Knowledge Product link (the selector is labelled `Knowledge Product`).
+
+The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects
+assistant records. The **page** keeps the name **Pipelines**. The **record** is a pipeline. The record is an
+**assistant** when its `rag_strategy` is `vector`, `lexical`, `relational` or `hybrid`.
+
+An assistant holds five parts:
+
+| Part | Required | What it does |
+|---|---|---|
+| One Knowledge Product | yes | The assistant reads the stores of that product. |
+| One RAG strategy | yes | The strategy picks the store the assistant searches. |
+| One chat model | yes | The model writes the answer. |
+| One prompt template | no | The template becomes the assistant's system message. |
+| One guardrails config | no | The config checks the question and the answer. |
 
 Key facts:
 
-- The page talks **only to the ingestion manager**, not the retrieval API: `API_URL = VITE_API_URL ?? "http://localhost:8007"` and requests carry `X-API-Key` only when `VITE_API_KEY` is set (`frontend/src/api.ts:3,16-18,52`).
-- Select options are fetched at runtime from `GET /api/pipelines/options` — they are **not** hard-coded in the page (`PipelinesPage.tsx:15,68,302-346`).
-- Every input field on this page is an **ingestion** knob. Reranker model, generator model, retrieve limit, top-k and hybrid fusion are **not** configurable here; they are backend settings (see §2) plus per-query overrides in the chat toolbar (doc 03).
-- The pipeline `description` is unique and is what chat users select a pipeline by, not the UUID (`PipelinesPage.tsx:286-299`).
+- The page writes through the ingestion manager: `API_URL = VITE_API_URL ?? "http://localhost:8007"`
+  (`frontend/src/api.ts:3`).
+- The endpoints the page hands out belong to the retrieval manager:
+  `RAG_API_URL = VITE_RAG_API_URL ?? "http://localhost:8001"` (`frontend/src/api.ts:5`).
+- An assistant owns no document and no collection. It reads the Knowledge Product's stores, so the page
+  carries no source picker, no folder picker, no chunking control and no scraper control (§4).
+- The `description` is the record's stored summary. The form hint for the field reads
+  `Shown as the assistant's name in chat.` The Chat page's pipeline selector lists `{name} ({rag_strategy})`,
+  so the name is what a chat user reads there.
+- On load the page reads five lists in parallel: `listPipelines`, `listKnowledgeProducts`,
+  `listPromptTemplates`, `listGuardrailsConfigs` and `getLiteLLMModels("chat")`. One failed call does not
+  blank the page. The first failure shows in an `.alert-error` above the form.
 
-`GET /api/pipelines/options` returns (`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:133-152`):
-
-| Key | Values |
-|---|---|
-| `rag_strategies` | `naive` (Standard), `sparse` (Keyword), `hybrid` (Advanced Hybrid), `multimodal` (Visual & Text), `metadata` (Advanced Metadata) |
-| `modalities` | `text` (Text), `image` (Visual) |
-| `suggested_embedding_models` | ingestion `Settings.unique_embedding_models` (`src/shared/config/settings.py:59-77`) |
-| `suggested_sparse_models` | `[Settings.sparse_embedding_model]` |
-| `scraper_modes` | `httpx`, `playwright`, `auto` (`routes/pipelines.py:20`) |
-| `collection_naming_hint` | free-text placeholder for the collection field |
+The page has one header action, `Refresh assistants`. The **Knowledge Product** select offers only products
+with at least one enabled retrieval destination. The saved list shows every pipeline.
 
 ---
 
-## 2. Pipeline Topology & Stage Configuration (retrieval side)
+## 2. The Seven Form Fields
 
-The records created on this page are consumed by the retrieval service through `RAGPipeline` (`rag-retrieval-chat-manager/backend/libs/rag-core/src/rag_core/pipeline.py:14-145`). The real stage topology is:
+One renderer, `PipelineFields` (`PipelinesPage.tsx:106`), serves both the create card and the edit modal.
 
-```
-+-------------------------------------------------------------------------------------------+
-|  1. Query -> RAGPipeline.retrieve()                                                       |
-|     mode = retrieval_mode (default hybrid), limit = retrieve_limit (default 20)           |
-+---------------------------------------+---------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------------------+
-|  2. Retrieval (Retriever.retrieve -> vector_core.search_scrape_chunks)                    |
-|     - Dense: LiteLLM embeddings, input_type="query" (default model nvidia-embed-passage)  |
-|       written to Qdrant named vector "dense", COSINE                                      |
-|     - Sparse: FastEmbed SparseTextEmbedding (default Qdrant/bm25) -> Qdrant named vector  |
-|       "sparse" (IDF modifier)                                                             |
-|     - Hybrid: Qdrant query_points with two prefetch legs (limit * 2 each) fused by        |
-|       FusionQuery(Fusion.RRF) — no alpha / weighted score blend anywhere in the code      |
-|     - Filters: source_type all|web_scrape|file_ingest, optional source_id                 |
-+---------------------------------------+---------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------------------+
-|  3. Rerank (build_reranker)                                                               |
-|     - rerank_enabled = false -> NoopReranker: keeps retrieval order, truncates to top_k,  |
-|       rerank_score = retrieval_score                                                      |
-|     - rerank_enabled = true  -> LiteLLMReranker: POST {litellm_base_url}/v1/rerank,       |
-|       default model nvidia-rerank; `top_n` is sent only for non-NVIDIA/Nemotron models;   |
-|       image chunks are sent as {"text","image"} passages when the model is a VL reranker  |
-|     - Result: top_k chunks reordered by rerank_score (default top_k = 5)                  |
-+---------------------------------------+---------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------------------+
-|  4. Generation (Generator.generate)                                                       |
-|     - split_chunks(): text chunks -> chat model, image chunks -> vision model             |
-|     - both present -> a third call to the fusion model merges the two partial answers     |
-+---------------------------------------+---------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------------------+
-|  5. Guardrails + tracing — NOT inside the pipeline: routes/chat.py runs the guardrail     |
-|     check on the query before and on the answer after the pipeline call                   |
-+-------------------------------------------------------------------------------------------+
-```
-
-Verified defaults:
-
-| Parameter | Default | Source |
+| Field | Required | What it selects |
 |---|---|---|
-| `retrieval_mode` | `hybrid` | `rag_core/schemas.py:9,28` |
-| `retrieve_limit` | `20` (request-validated 1–50) | `rag_core/schemas.py:10,29` |
-| `rerank_enabled` | `true` | `rag_core/schemas.py:11,30` |
-| `top_k` | `5` (request-validated 1–50) | `rag_core/schemas.py:13,31` |
-| dense embedding model | `nvidia-embed-passage` | `rag_shared/config.py:27` |
-| sparse embedding model | `Qdrant/bm25` | `rag_shared/config.py:28` |
-| reranker model | `nvidia-rerank` (`DEFAULT_RERANKER_MODEL`) | `rag_shared/config.py:33`, `reranker_core/litellm_reranker.py:15` |
-| chat model | `llama-3.3-70b-versatile` | `rag_shared/config.py:36` |
-| vision model | `groq-vision` | `rag_shared/config.py:37` |
-| fusion model | `llama-3.3-70b-versatile` | `rag_shared/config.py:38` |
-| chunk size / overlap | `1000` / `120` (bounds 100–8000 / 0–2000) | `routes/pipelines.py:31-32`, `PipelinesPage.tsx:55-56,432-455` |
+| `Internal name` | yes, 2 characters or more | The record name. The API derives the `slug` from it. |
+| `Description` | yes, 8 characters or more | The pipeline description. The form hint reads `Shown as the assistant's name in chat.` |
+| `Knowledge Product` | yes | The product whose stores the assistant reads. |
+| `RAG Strategy` | yes | One strategy from the product's enabled destinations. |
+| `Prompt Template` | no | `None (default RAG prompt)`, or one saved template. |
+| `Guardrails Config` | no | `None`, or one saved config. An inactive config reads `{name} (inactive)`. |
+| `Chat Model` | yes | The generator model, from `getLiteLLMModels("chat")` against port `8007`. |
 
-Fusion detail: hybrid search issues `qmodels.Prefetch` for the dense and the sparse named vector with `limit=max(limit * 2, limit)` and fuses them with `qmodels.FusionQuery(fusion=qmodels.Fusion.RRF)` (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:226-241`). If Qdrant rejects the sparse leg (400 mentioning `sparse`), hybrid falls back to dense-only search and logs a warning (`qdrant_store.py:245-258`). There is **no** alpha/weighted combination, no minimum relevance-score threshold, and no OpenSearch/SPLADE component in this service.
+Field notes:
 
----
+- **Knowledge Product.** The option list holds only products with at least one enabled retrieval destination
+  (`vector_qdrant`, `lexical_opensearch` or `relational_pgvector`). Each option reads
+  `{name} — {n} destinations`. Below the select the page renders one chip per enabled destination, with the
+  store name from `destinationStoreLabel` (`frontend/src/api.ts:356`). While the list loads, the form is
+  disabled and the hint reads `Loading knowledge products…`.
+- **RAG Strategy.** The page rebuilds this select from the selected product's destinations
+  (`frontend/src/api.ts:343-354`). Each option reads `{label} — {description}` from `RAG_STRATEGY_LABELS`
+  (`frontend/src/api.ts:317-322`). A new product resets the strategy to the first available option, because
+  the old strategy may need a store the new product does not have. When the product serves no strategy, the
+  select is disabled and the hint reads
+  `This product has no enabled retrieval destination. Enable one in the Ingestion Manager.`
+- **Chat Model.** The list comes from
+  `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`.
+- **Prompt Template.** The template is the system message. It is not a text pass-through: the retrieved
+  passages and the question keep their own user-message shape.
+- **Guardrails Config.** The config id travels with the pipeline. The Chat page can override it for one
+  request without editing the pipeline.
 
-## 3. UI Layout & Visual Components
-
-```
-+-------------------------------------------------------------------------------------------------+
-|  Pipelines                                                                                      |
-|  Each pipeline has its own Qdrant collection, embedding models, and a unique description for    |
-|  chat selection.                                                                                |
-|  [ Trigger Sync* ] [ Refresh stats* ] [ Refresh pipelines ] [ View tracking ]                   |
-|  (* only shown while a pipeline is selected)                                                    |
-+-------------------------------------------------------------------------------------------------+
-|  +--------------------------------------+  +--------------------------------------------------+ |
-|  | New pipeline                         |  | Saved pipelines                                  | |
-|  |  Internal name                       |  |  <description>                                   | |
-|  |  Description (unique - used in chat) |  |  <name> · <rag_strategy>                         | |
-|  |  Search Strategy                     |  |  <qdrant_collection>                             | |
-|  |  Knowledge Product (if any exist)   |  |  <embedding_model>[ + <sparse_model>]            | |
-|  |  Primary Text Engine                 |  |  [ Run ] [ Delete ]                              | |
-|  |  Keyword Search Engine (sparse only) |  |                                                  | |
-|  |  Content Type (multimodal/metadata)  |  |  Pipeline Details & Stats (selected pipeline)    | |
-|  |  Folders to index []                 |  |   Indexed Files / Scraped Pages                  | |
-|  |  MinIO Sources to link []            |  |   Config: Search Strategy / Processing Engines / | |
-|  |  Document processing size / Overlap  |  |           Collection / Processing Size           | |
-|  |  Qdrant collection                   |  |  Recent Activity: Status, Files, Pages, Points,  | |
-|  |  [ ] Enable web scraper              |  |           Scraper (crawl job id prefix)          | |
-|  |      Seed URL / Max depth / Max pages|  |                                                  | |
-|  |      Scraper embedding source / Mode |  |                                                  | |
-|  |  [ Save pipeline ]                   |  |                                                  | |
-|  +--------------------------------------+  +--------------------------------------------------+ |
-+-------------------------------------------------------------------------------------------------+
-```
-
-Behaviour notes:
-
-- There is **no** `+ New Pipeline` button: the creation form is always rendered next to the list (`PipelinesPage.tsx:271-561`). Header actions are `Trigger Sync`, `Refresh stats`, `Refresh pipelines` and a `View tracking` link (`PipelinesPage.tsx:227-258`).
-- Which fields are shown depends on the strategy: `Keyword Search Engine` for `sparse | hybrid | metadata`, `Content Type` for `multimodal | metadata` (`PipelinesPage.tsx:29-30,207-208`; rendered at `349-381`).
-- Save is enabled only when: name non-empty, description ≥ 8 chars, embedding model chosen, collection ≥ 3 chars, sparse model chosen when required, and at least one folder **or** linked MinIO source **or** the web scraper is enabled (`PipelinesPage.tsx:209-215`).
-- The form omits `sparse_embedding_model` (null) and `modality` (null) when the strategy does not need them; the web scraper's "Scraper embedding source" radio (`markdown`/`image`) supplies `modality` when the scraper is on and the strategy has no modality field (`PipelinesPage.tsx:133-152,516-542`).
-- After a successful create, the page links every checked MinIO source to the new pipeline via `POST /api/sources/{sourceId}/pipeline/{pipelineId}` (`PipelinesPage.tsx:169-176`, `api.ts:1199-1209`).
-- Selecting a pipeline loads its runs and stats and then re-polls both every **15000 ms**, only while `location.pathname === "/pipelines"` (`PipelinesPage.tsx:103,112-116`).
-- Per-pipeline buttons are only `Run` and `Delete` (`PipelinesPage.tsx:584-620`). `test run`, `edit config` and `view analytics` actions do not exist in the page.
-- `Recent Activity` renders `status`, `files_processed/files_total`, `pages_indexed`, `points_upserted`, and the first 8 characters of `scraper_crawl_job_id`; the newest run's `error_message` is shown as an error alert (`PipelinesPage.tsx:692-736`).
+The page rejects an incomplete create in the browser. `Create assistant` stays disabled until the name has 2
+characters, the description has 8 characters, and the product, the strategy and the chat model are all set.
+Field errors appear under the field in `.field-hint`. API errors appear in an `.alert-error` as
+`{code}: {message}`.
 
 ---
 
-## 4. Backend APIs & Contracts
+## 3. RAG Strategy
 
-### 4.1 Ingestion manager endpoints used by the page
-
-Base URL `API_URL` (default `http://localhost:8007`); router prefix `/api/pipelines` (`routes/pipelines.py:18`).
-
-| Method | Endpoint | Description | Request / Response |
+| Strategy id | Label in the form | Store it reads | Destination it needs enabled |
 |---|---|---|---|
-| `GET` | `/api/pipelines/options` | Strategy, modality, engine, scraper-mode lists | `{}` → options object (§1) |
-| `GET` | `/api/pipelines` | Lists all pipelines, newest first | `list[PipelineRecord]` |
-| `POST` | `/api/pipelines` | Creates a pipeline (201) | `PipelineCreateRequest` → `PipelineRecord` |
-| `GET` | `/api/pipelines/{id}` | Single pipeline | `PipelineRecord` |
-| `PATCH` | `/api/pipelines/{id}` | Updates directory list / scraper fields only | `PipelinePatchRequest` → `PipelineRecord` |
-| `DELETE` | `/api/pipelines/{id}` | Deletes the pipeline (204) | – |
-| `GET` | `/api/pipelines/{id}/stats` | `{indexed_files_count, scraped_pages_count}` | `PipelineStats` |
-| `GET` | `/api/pipelines/{id}/runs` | Runs for one pipeline, newest first | `list[PipelineRunRecord]` |
-| `POST` | `/api/pipelines/{id}/run` | Enqueues an ingestion run (202); 409 if a run is already pending/processing | → `PipelineRunRecord` |
-| `POST` | `/api/pipelines/{id}/sync` | Pipeline directory file-sync (202), unrelated to Knowledge Products; requires `directory_names`, 409 if a run is active | → `{"status": "queued", "pipeline_id": "..."}` |
-| `GET` | `/api/directories` | Folder checklist source | `list[DirectorySummary]` |
-| `GET` | `/api/sources` | MinIO source checklist | `list[SourceRecord]` |
-| `GET` | `/api/knowledge-products` | Knowledge Product selector | `list[KnowledgeProduct]` |
+| `vector` | `Vector search` | Qdrant dense vectors | `vector_qdrant` |
+| `lexical` | `Keyword search` | OpenSearch BM25 | `lexical_opensearch` |
+| `relational` | `SQL search` | PostgreSQL pgvector | `relational_pgvector` |
+| `hybrid` | `Hybrid` | Qdrant dense vectors and OpenSearch BM25, fused by reciprocal rank fusion (k = 60) | `vector_qdrant` **and** `lexical_opensearch` |
 
-The page calls `listKnowledgeProducts`, `createPipeline`, `deletePipeline`, `startPipelineRun`, `listPipelineRuns`, `getPipelineStats`, `triggerPipelineSync`. `PATCH /api/pipelines/{id}` (`updatePipeline`) exists in the client but is not used by this page.
+Three rules decide the option list:
 
-`PipelineRecord` keys: `id`, `knowledge_product_id`, `name`, `description`, `rag_strategy`, `embedding_model`, `sparse_embedding_model`, `modality`, `directory_names`, `chunk_size`, `chunk_overlap`, `qdrant_collection`, `web_scraper_enabled`, `scraper_seed_url`, `scraper_max_depth`, `scraper_max_pages`, `scraper_mode`, `created_at`, `updated_at` (built by `_pipeline_to_dict` in `routes/pipelines.py`).
-`PipelineRunRecord` keys: `id`, `pipeline_id`, `status`, `files_total`, `files_processed`, `pages_indexed`, `points_upserted`, `scraper_crawl_job_id`, `scraper_scrape_job_id`, `error_message`, `started_at`, `completed_at`, `created_at` (`routes/pipelines.py:95-110`).
+1. `Hybrid` appears only when both the Qdrant and the OpenSearch destination are enabled. It reads both
+   rankings, so one destination is not enough.
+2. `cache_redisvl` serves no strategy. That store caches answers. It does not hold a searchable copy of the
+   chunks.
+3. The store names come from the Knowledge Product's destination config: `collection_name` for
+   `vector_qdrant`, `index_name` for `lexical_opensearch`, and `schema_name` plus `table_name` for
+   `relational_pgvector`. The fanout derives them as `kp_<product-slug>_<id8>`.
 
-Server-side creation rules (`routes/pipelines.py:113-131`):
+On the retrieval side the four strategies live in
+`rag-retrieval-chat-manager/backend/libs/rag-core/src/rag_core/assistant.py`, and the dispatch lives in
+`rag-retrieval-chat-manager/backend/libs/retrieval-core/src/retrieval_core/kp_retriever.py`.
 
-- `rag_strategy` ∈ `naive | sparse | hybrid | multimodal | metadata`; `modality` required for `multimodal | metadata`.
-- `sparse_embedding_model` required for `sparse | hybrid`.
-- At least one `directory_names` entry or `web_scraper_enabled = true`, otherwise `NO_SOURCES`.
-- `scraper_seed_url` required when the web scraper is enabled.
-- If `knowledge_product_id` is omitted, `POST /api/pipelines` attaches the oldest Knowledge Product; `GET /api/pipelines` backfills the same link on any unlinked record.
+---
 
-Note the asymmetry with the UI gate: the page also accepts "only MinIO sources selected" as a valid submission (`PipelinesPage.tsx:215`), but the API still rejects that request with `NO_SOURCES` because it checks folders and the scraper only.
+## 4. What the Page Removed
 
-### 4.2 Sample creation payload (`POST /api/pipelines`)
+The page no longer creates an ingestion job. An assistant reads the product's stores, so it owns no documents
+of its own. Every control below left the form, with the code behind it:
 
-```json
-{
-  "name": "legal-docs-v1",
-  "description": "Legal contract hybrid RAG for M&A due diligence",
-  "rag_strategy": "hybrid",
-  "embedding_model": "nvidia-embed-passage",
-  "sparse_embedding_model": "Qdrant/bm25",
-  "modality": null,
-  "directory_names": ["contracts"],
-  "chunk_size": 1000,
-  "chunk_overlap": 120,
-  "qdrant_collection": "legal-docs-hybrid-v1",
-  "web_scraper_enabled": false,
-  "scraper_seed_url": null,
-  "scraper_max_depth": 2,
-  "scraper_max_pages": 50,
-  "scraper_mode": "httpx",
-  "knowledge_product_id": "3695cb61-e728-4bf1-91f8-cf249d593c6b"
-}
+| Removed control | Was for |
+|---|---|
+| MinIO source picker | Linking source buckets to the pipeline. The `linkSourceToPipeline` loop in `handleSubmit` went with it. |
+| Folders to index | The `GET /api/directories` checklist. |
+| `Primary Text Engine` | The dense embedding model. The Knowledge Product's `text_embedding_model` decides it now. |
+| `Keyword Search Engine` | The sparse embedding model. The fanout writes Qdrant dense-only, so a product store has no sparse vectors. |
+| `Content Type` | The modality. The Knowledge Product's modality mode decides it now. |
+| `Document processing size` and `Overlap` | Chunk size and chunk overlap. The Ingestion Profile carries both. |
+| `Qdrant collection` | The pipeline's own collection. The assistant reads the product's collection. |
+| `Enable web scraper` and its sub-fields | `Seed URL`, `Max depth`, `Max pages`, the scraper embedding source and the scraper mode. |
+| `Run`, `Recent Activity`, `Pipeline Details & Stats` | Pipeline runs and MinIO sync counters. An assistant runs no ingestion job. |
+| `Trigger Sync`, `Refresh stats` | The matching header actions. Only `Refresh assistants` remains. |
+
+The legacy ingestion table and its routes stay in the backend, because the Tracking page and the web scraper
+still read pipeline runs. The Pipelines page is simply no longer the place where they are created.
+
+---
+
+## 5. After a Successful Create — the `Assistant ready` Panel
+
+`POST /api/pipelines` returns the new record. When the record carries a `slug`, the page renders an
+**Assistant ready** panel above the two-column layout, with a close glyph in the panel header.
+
+The panel holds:
+
+| Element | Content |
+|---|---|
+| Sentence | `<name> is live. Point an OpenAI client at the base URL, and the SDK appends /chat/completions.` |
+| OpenAI base URL | `assistantBaseUrl(slug)` in monospace |
+| Native chat URL | `assistantChatUrl(slug)`, labelled `Native chat:` |
+| Copy button | `CopyEndpointButton`, `aria-label="Copy assistant endpoint"` |
+| `Open in Chat` | A `<Link to="/chat">` |
+| `Close` | Clears the panel |
+
+The copy button writes the base URL to the clipboard, swaps `IconCopy` for `IconCheckCircle`, and changes its
+label to `Copied` for 2000 ms.
+
+The same `CopyEndpointButton` appears in the saved list, on the endpoint row of every pipeline that has a
+slug.
+
+---
+
+## 6. The Saved List and the `Assistant summary` Panel
+
+### 6.1 Saved assistants
+
+Each row of `Saved assistants` shows, from top to bottom:
+
+1. The `description`, in bold.
+2. `{name} · {strategy label}` from `RAG_STRATEGY_LABELS`, with a raw id fallback.
+3. `Knowledge Product: {name}`, when the record carries a product.
+4. The `chat_model` in monospace, or `No chat model`.
+5. Two chips: the prompt template name, or `No prompt`; the guardrails config name, or `No guardrails`.
+6. The endpoint, `assistantBaseUrl(slug)` in monospace, or `No endpoint` for a record with a null slug.
+7. The actions `Edit` and `Delete`, plus the copy button when a slug exists.
+
+A row click selects the pipeline for the summary panel. `Delete` asks with `window.confirm` before it sends
+`DELETE /api/pipelines/{id}`.
+
+A null slug means a legacy ingestion pipeline. The page shows `No endpoint` and no copy button.
+
+### 6.2 `Assistant summary`
+
+The selected pipeline gets an **Assistant summary** panel in the same column. It shows:
+
+| Line | Content |
+|---|---|
+| Product | The product name and its `StatusBadge`, or `This pipeline has no Knowledge Product.` |
+| `Stores read` | One line per enabled retrieval destination: `{destination_type}: {store}` plus `.{table_name}` when the config carries one. |
+| `Strategy` | The strategy label. |
+| `Chat model` | The `chat_model`, or `—`. |
+| `Prompt template` | The template name, or `No prompt`. |
+| `Guardrails` | The config name, or `No guardrails`. |
+| `Created`, `Updated` | The two timestamps in local time. |
+
+When the selected record has no enabled retrieval destination, the stores block reads
+`No enabled retrieval destination.`
+
+### 6.3 Stat cards
+
+Three cards sit above the layout:
+
+| Card | Value | Subtext |
+|---|---|---|
+| `Total Pipelines` | The pipeline count | `Every assistant with its own endpoint` |
+| `With Guardrails` | The count of records with a `guardrails_config_id` | `Answers pass a guardrails config first` |
+| `With Prompt Templates` | The count of records with a `prompt_template_id` | `The template is the system message` |
+
+### 6.4 Empty states
+
+- No product qualifies: `.panel-empty` reads
+  `No Knowledge Product has an enabled retrieval destination yet.` and links to the ingestion Knowledge Store
+  page at `http://localhost:5173/knowledge-store`.
+- No pipelines saved: `No pipelines configured yet.`
+
+---
+
+## 7. The Edit Modal
+
+One modal serves edit. `Edit` opens it with the record's values. The title is `Edit pipeline`.
+
+| Part | Value |
+|---|---|
+| Overlay | `position: fixed; inset: 0; zIndex: 1000; background: rgba(0,0,0,0.75); backdropFilter: blur(12px)` |
+| Panel | `background: #111622`, `border: 1px solid rgba(88,166,253,0.3)`, `borderRadius: 16`, `maxHeight: 90vh`, `overflowY: auto`, width `min(720px, 100%)` |
+| Accessibility | `role="dialog"`, `aria-modal="true"`, `aria-labelledby="pipeline-modal-title"` |
+| Close on `Escape` | A `keydown` listener on `window`, registered in a `useEffect` while the modal is open |
+| Close on a click outside | An `onClick` on the overlay, with `stopPropagation` on the panel |
+| Focus on open | A `useEffect` moves focus to the first field, the `Internal name` input |
+| Footer | `Cancel` and `Save`. The submit reads `Saving…` while the request runs. |
+
+The modal renders the same seven fields through `PipelineFields`. `Save` sends `PATCH /api/pipelines/{id}` with
+the full set, then refreshes the list.
+
+`PATCH` accepts `name`, `description`, `slug`, `rag_strategy`, `chat_model`, `prompt_template_id`,
+`guardrails_config_id`, `knowledge_product_id` and `embedding_model`
+(`frontend/src/api.ts:300-315`). Every component of an existing assistant stays editable.
+
+---
+
+## 8. The Endpoints the Page Hands Out
+
+| What it is | Value | Builder |
+|---|---|---|
+| OpenAI base URL | `http://localhost:8001/v1/assistants/{slug}` | `assistantBaseUrl` (`frontend/src/api.ts:1183`) |
+| Native chat URL | `http://localhost:8001/api/assistants/{slug}/chat` | `assistantChatUrl` (`frontend/src/api.ts:1188`) |
+
+The host comes from `RAG_API_URL`. The port is `8001`, not `8007`. Port `8007` already owns
+`/api/pipelines/{uuid}` with a different payload shape, so the assistant surface lives beside the chat
+service.
+
+An OpenAI SDK client points `base_url` at the base URL. The SDK appends `/chat/completions`, which is the
+route `POST /v1/assistants/{slug}/chat/completions`
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:336`).
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8001/v1/assistants/resume-screener",
+    api_key="unused",  # the service needs a key only when API_KEY is set
+)
+
+answer = client.chat.completions.create(
+    model="assistant",
+    messages=[{"role": "user", "content": "Which candidates know Qdrant?"}],
+)
+print(answer.choices[0].message.content)
 ```
 
-### 4.3 Retrieval-stage endpoints the configured pipeline maps onto
+The route reads the last `role=user` message as the question and ignores earlier turns. It is single-turn.
+Multi-turn memory there needs a `session_id` extension field, not `messages` parsing. The native chat route
+keeps sessions.
 
-Served by the retrieval API (`rag-api`), all behind `Depends(verify_api_key)` (`rag_api/main.py:62`); the frontend client uses `RAG_API_URL = VITE_RAG_API_URL ?? "http://localhost:8001"` (`api.ts:5`).
+---
 
-| Method | Endpoint | Description | Request / Response |
-|---|---|---|---|
-| `GET` | `/search` | Retrieval only, query in the query string | `query_text` (required), `limit` (default 5, 1–50), `mode` (default `hybrid`), `source_type` (default `all`), `source_id` → `list[SearchResultResponse]` |
-| `POST` | `/scrapes/query` | Retrieval only, JSON body | `{text_query, limit = 5, mode = "hybrid", source_type = "all", source_id}` → `list[RAGChunkItem]` |
-| `POST` | `/retrieve` | Deprecated alias of `/scrapes/query` | `{text_query \| query, limit, mode \| retrieval_mode, source_type, source_id}` → `list[RAGChunkItem]` |
-| `POST` | `/rerank` | Retrieve + rerank | `PipelineRequest` → `{retrieved_chunks, reranked_chunks, latency_ms}` |
-| `POST` | `/generate` | Retrieve + rerank + generate | `PipelineRequest` → `{answer, sources[{source_locator, chunk_index, rerank_score}], latency_ms}` |
-| `POST` | `/chat` | Full RAG turn with persistence | `ChatRequest` → `ChatResponse` (doc 03) |
+## 9. Error Codes the Page Can Show
 
-Chunk keys returned by `/search`, `/scrapes/query` and `/retrieve`: `id`, `score`, `type` (`text` | `image`), `content`, `source_type`, `source_id`, `source_locator`, `chunk_index`, `source_url`, `title`, `scrape_job_id` (`routes/search.py:41-53`).
+The page renders `{code}: {message}` for an `ApiError` (`describeError`, `PipelinesPage.tsx:71`).
 
-`PipelineRequest` keys (shared by `/rerank`, `/generate`, `/chat`, `/chat/stream`) (`rag_core/schemas.py:22-38`): `query` (required), `source_type`, `source_id`, `retrieval_mode` (`hybrid` | `dense` | `sparse`, default `hybrid`), `retrieve_limit` (default `20`, 1–50), `rerank_enabled` (default `true`), `rerank_model` (LiteLLM rerank alias, default `nvidia-rerank`), `top_k` (default `5`, 1–50), `generation_model`, `vision_model`, `fusion_model`, `collection`, `embedding_model`, `sparse_embedding_model`.
+| Code | HTTP | Cause |
+|---|---|---|
+| `PIPELINE_EXISTS` | 409 | The name or the description already belongs to another pipeline. |
+| `CHAT_MODEL_REQUIRED` | 422 | The request carries no chat model. |
+| `NO_RETRIEVAL_DESTINATION` | 422 | The Knowledge Product has no enabled retrieval destination. |
+| `RAG_STRATEGY_UNAVAILABLE` | 422 | The strategy needs a destination that is disabled or absent. |
+| `KNOWLEDGE_PRODUCT_NOT_FOUND` | 422 | The Knowledge Product is missing, or its id is invalid. |
 
-`latency_ms` keys returned by `/rerank`: `retrieve`, `rerank`, `total`. By `/generate` and `/chat`: plus `generate_text` / `generate_vision` / `generate_fusion` when those stages ran, `generate_total`, and `generate` (`pipeline.py:66-72,102-119`, `generator.py:112-143`).
+The validation codes come from `_validate_create` and `_validate_assistant_options` in
+`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:204-236`. The status codes come from the shared
+error classes: `ValidationError` → 422, `ConflictError` → 409, `NotFoundError` → 404
+(`rag-ingestion-manager/backend/src/file_manager/core/errors.py:16-28`).
+
+Other API errors appear in the same shape. `PIPELINE_NOT_FOUND` (404) can arrive from a stale delete, and
+the header alert shows it.
+
+---
+
+## 10. Notes and Limits
+
+- **An existing pipeline stays editable.** The modal patches every assistant field, so a user can change the
+  product, the strategy, the chat model, the template or the guardrails config later.
+- **Clearing a select detaches it.** The edit submit sends `null` for an empty `Prompt Template` or
+  `Guardrails Config` (the code comments say `null, not undefined: the backend reads a present null as
+  "detach"`). Omitting the key leaves the stored value. On the create form a cleared select also sends
+  `null`.
+- **The slug follows the name.** The API derives it from the name. A slug that already exists gets a numeric
+  suffix, so two assistants can share a name stem. The page never asks for the slug.
+- **A pipeline with a null slug is a legacy ingestion pipeline.** The Chat page keeps the old scrape path for
+  it. The assistant endpoints do not serve it: they answer `422 NOT_AN_ASSISTANT`.
+- **`Settings.chat_model` is still `llama-3.3-70b-versatile`,** which the proxy does not serve. An assistant
+  always carries an explicit `chat_model`, so the new form cannot reach that default. A hand-made legacy
+  `/chat` request with no `generation_model` gets a 400.
+- **The page reads the prompt templates and the guardrails configs from the retrieval manager.** The
+  `prompt_template_id` and the `guardrails_config_id` on the pipeline carry no foreign key, because those rows
+  live in the retrieval manager's database.

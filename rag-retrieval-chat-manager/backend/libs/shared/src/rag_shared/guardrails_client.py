@@ -21,7 +21,10 @@ def run_guardrails_check(
     with httpx.Client(timeout=timeout_s) as client:
         for guard in guards:
             try:
-                url = f"{base_url}/parse/{guard}"
+                # The config stores ids with underscores (ban_list); the service
+                # names its guards with hyphens (ban-list). Without this mapping
+                # every check 404s and the client reads that as "passed".
+                url = f"{base_url}/parse/{guard.replace('_', '-')}"
                 resp = client.post(url, json={"llm_output": text, "metadata": settings or {}})
                 if resp.status_code == 200:
                     results[guard] = resp.json()

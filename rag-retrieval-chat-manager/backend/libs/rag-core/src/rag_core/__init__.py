@@ -1,5 +1,5 @@
 from rag_core.pipeline import RAGPipeline
-from rag_core.schemas import ChatResult, PipelineConfig, PipelineRequest, RerankResult
+from rag_core.schemas import ChatResult, PipelineConfig, PipelineRequest, RerankResult, StreamEvent
 
 __all__ = [
     "RAGPipeline",
@@ -7,4 +7,5 @@ __all__ = [
     "PipelineRequest",
     "RerankResult",
     "ChatResult",
+    "StreamEvent",
 ]

@@ -14,6 +14,7 @@ from rq import Queue
 from retrieval_core import Retriever
 from generation_core import Generator
 from rag_api.routes import (
+    assistants,
     chat,
     evaluate,
     generate,
@@ -22,6 +23,7 @@ from rag_api.routes import (
     health,
     knowledge,
     prompts,
+    prompt_templates,
     rerank,
     retrieve,
     search,
@@ -74,8 +76,10 @@ def create_app() -> FastAPI:
     app.include_router(rerank.router)
     app.include_router(generate.router)
     app.include_router(chat.router)
+    app.include_router(assistants.router)
     app.include_router(evaluate.router)
     app.include_router(prompts.router)
+    app.include_router(prompt_templates.router)
     app.include_router(guardrails.router)
     app.include_router(guardrails_evaluate.router)
     app.include_router(knowledge.router)

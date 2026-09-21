@@ -18,9 +18,16 @@ __all__ = [
 class QdrantStore:
     """Read-only Qdrant access for dense + sparse named vector search."""
 
-    def __init__(self, settings: Settings, collection: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        collection: str | None = None,
+        url: str | None = None,
+    ) -> None:
+        # The knowledge-product collections live on the ingestion stack's Qdrant,
+        # a different server from the scraper's, so the URL is overridable.
         self._store = QdrantVectorStore(
-            url=settings.qdrant_url,
+            url=url or settings.qdrant_url,
             collection=collection or settings.qdrant_collection,
             api_key=settings.qdrant_api_key,
         )

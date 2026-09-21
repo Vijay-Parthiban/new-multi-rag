@@ -25,6 +25,7 @@ def search_scrape_chunks(
     collection: str | None = None,
     embedding_model: str | None = None,
     sparse_embedding_model: str | None = None,
+    qdrant_url: str | None = None,
 ) -> list[dict[str, object]]:
     """Run dense, sparse, or hybrid (RRF) retrieval against the scrape collection."""
     dense_vector = None
@@ -44,7 +45,7 @@ def search_scrape_chunks(
 
     query_filter = build_source_filter(source_type=source_type, source_id=source_id)
 
-    qdrant = QdrantStore(settings, collection=collection)
+    qdrant = QdrantStore(settings, collection=collection, url=qdrant_url)
     response = qdrant.search(
         dense_vector=dense_vector,
         sparse_vector=sparse_vector,

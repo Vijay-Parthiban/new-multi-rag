@@ -1,372 +1,326 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import PageHeader from "../components/PageHeader";
+import { IconEdit, IconPlus, IconTrash } from "../components/Icons";
 import {
-  PromptDetail,
-  PromptSummary,
-  getPrompt,
-  listPrompts,
-  resetAllPrompts,
-  resetPrompt,
-  updatePrompt,
-  updatePromptsBulk,
+  ApiError,
+  PromptTemplate,
+  createPromptTemplate,
+  deletePromptTemplate,
+  listPromptTemplates,
+  updatePromptTemplate,
 } from "../api";
 
-type DraftMap = Record<string, string>;
+const PREVIEW_CHARS = 160;
+
+const EMPTY_FORM = { name: "", description: "", content: "" };
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) return `${err.code}: ${err.message}`;
+  return err instanceof Error ? err.message : String(err);
+}
 
 export default function PromptsPage() {
-  const location = useLocation();
-  const isVisible = location.pathname === "/prompts";
-
-  const [items, setItems] = useState<PromptSummary[]>([]);
-  const [overridesDir, setOverridesDir] = useState("");
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [busyAll, setBusyAll] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<PromptDetail | null>(null);
-  const [draft, setDraft] = useState("");
-  const [showPackaged, setShowPackaged] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
 
-  /** Multi-edit drafts keyed by prompt id (for Save all dirty). */
-  const [bulkDrafts, setBulkDrafts] = useState<DraftMap>({});
-
-  const loadList = useCallback(async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await listPrompts();
-      setItems(res.items);
-      setOverridesDir(res.overrides_dir);
+      const res = await listPromptTemplates();
+      setTemplates(res.items ?? []);
       setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load prompts");
+    } catch (err) {
+      setError(describeError(err));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!isVisible) return;
-    setLoading(true);
-    void loadList();
-  }, [isVisible, loadList]);
+    load();
+  }, [load]);
 
-  const overriddenCount = useMemo(
-    () => items.filter((i) => i.is_overridden).length,
-    [items],
-  );
-
-  const dirtyBulkIds = useMemo(() => Object.keys(bulkDrafts), [bulkDrafts]);
-
-  const openEditor = async (id: string) => {
-    setBusyId(id);
-    setMessage(null);
-    setError(null);
-    try {
-      const d = await getPrompt(id);
-      setDetail(d);
-      setDraft(bulkDrafts[id] ?? d.active_content);
-      setEditingId(id);
-      setShowPackaged(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load prompt");
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const closeEditor = () => {
+  const closeModal = useCallback(() => {
+    setIsOpen(false);
     setEditingId(null);
-    setDetail(null);
-    setDraft("");
-    setShowPackaged(false);
-  };
+    setFormError(null);
+  }, []);
 
-  const handleSave = async () => {
-    if (!editingId || !draft.trim()) return;
-    setBusyId(editingId);
-    setMessage(null);
-    try {
-      const updated = await updatePrompt(editingId, draft);
-      setDetail(updated);
-      setDraft(updated.active_content);
-      setBulkDrafts((prev) => {
-        const next = { ...prev };
-        delete next[editingId];
-        return next;
-      });
-      setMessage(`Saved override for ${updated.filename}. Runtime will use this until reset.`);
-      await loadList();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save prompt");
-    } finally {
-      setBusyId(null);
-    }
-  };
+  // Escape closes the modal, matching the close button.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeModal();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, closeModal]);
 
-  const handleResetOne = async (id: string) => {
-    setBusyId(id);
-    setMessage(null);
-    try {
-      const updated = await resetPrompt(id);
-      setBulkDrafts((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      if (editingId === id) {
-        setDetail(updated);
-        setDraft(updated.active_content);
-      }
-      setMessage(`Reset ${updated.filename} to the packaged prompt.`);
-      await loadList();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to reset prompt");
-    } finally {
-      setBusyId(null);
-    }
-  };
+  function openCreate() {
+    setEditingId(null);
+    setForm(EMPTY_FORM);
+    setFormError(null);
+    setIsOpen(true);
+  }
 
-  const handleResetAll = async () => {
-    if (!window.confirm("Reset all prompt overrides and restore packaged system prompts?")) {
+  function openEdit(template: PromptTemplate) {
+    setEditingId(template.id);
+    setForm({
+      name: template.name,
+      description: template.description ?? "",
+      content: template.content,
+    });
+    setFormError(null);
+    setIsOpen(true);
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    const name = form.name.trim();
+    const content = form.content.trim();
+    if (!name) {
+      setFormError("Name is required.");
       return;
     }
-    setBusyAll(true);
-    setMessage(null);
+    if (!content) {
+      setFormError("Content is required.");
+      return;
+    }
+    setSaving(true);
+    setFormError(null);
     try {
-      await resetAllPrompts();
-      setBulkDrafts({});
+      const body = { name, description: form.description.trim() || null, content };
       if (editingId) {
-        const d = await getPrompt(editingId);
-        setDetail(d);
-        setDraft(d.active_content);
+        await updatePromptTemplate(editingId, body);
+      } else {
+        await createPromptTemplate(body);
       }
-      setMessage("All prompt overrides cleared. Using packaged system prompts.");
-      await loadList();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to reset prompts");
+      closeModal();
+      await load();
+    } catch (err) {
+      setFormError(describeError(err));
     } finally {
-      setBusyAll(false);
+      setSaving(false);
     }
-  };
+  }
 
-  const handleSaveAllDirty = async () => {
-    const entries = Object.entries(bulkDrafts).filter(([, c]) => c.trim().length > 0);
-    if (entries.length === 0) return;
-    setBusyAll(true);
-    setMessage(null);
+  async function handleDelete(template: PromptTemplate) {
+    if (!window.confirm(`Delete the prompt template "${template.name}"?`)) return;
     try {
-      await updatePromptsBulk(entries.map(([id, content]) => ({ id, content })));
-      setBulkDrafts({});
-      if (editingId) {
-        const d = await getPrompt(editingId);
-        setDetail(d);
-        setDraft(d.active_content);
-      }
-      setMessage(`Saved ${entries.length} prompt override(s).`);
-      await loadList();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save prompts");
-    } finally {
-      setBusyAll(false);
+      await deletePromptTemplate(template.id);
+      await load();
+    } catch (err) {
+      setError(describeError(err));
     }
-  };
-
-  const onDraftChange = (value: string) => {
-    setDraft(value);
-    if (editingId) {
-      setBulkDrafts((prev) => ({ ...prev, [editingId]: value }));
-    }
-  };
+  }
 
   return (
     <div className="page">
       <PageHeader
-        title="Prompt Templates"
-        description="View packaged system prompts and apply temporary overrides. Overrides are stored in a temp directory and preferred at runtime until you reset."
-        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Prompts" }]}
+        title="Prompts"
+        description="A prompt template becomes an assistant's system message. The retrieved passages and the user question are sent separately."
         actions={
-          <div className="page-actions-row">
-            {dirtyBulkIds.length > 0 && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={busyAll}
-                onClick={() => void handleSaveAllDirty()}
-              >
-                Save all edits ({dirtyBulkIds.length})
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busyAll || overriddenCount === 0}
-              onClick={() => void handleResetAll()}
-            >
-              Reset all
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={loading || busyAll}
-              onClick={() => {
-                setLoading(true);
-                void loadList();
-              }}
-            >
-              Refresh
-            </button>
-          </div>
+          <button type="button" className="btn btn-primary" onClick={openCreate}>
+            <IconPlus /> Create prompt template
+          </button>
         }
       />
 
-      {overridesDir && (
-        <p className="muted prompts-meta">
-          Overrides dir: <code>{overridesDir}</code>
-          {overriddenCount > 0 ? ` · ${overriddenCount} custom` : " · using packaged defaults"}
-        </p>
-      )}
-
       {error && <div className="alert alert-error">{error}</div>}
-      {message && <div className="alert alert-success">{message}</div>}
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: "1rem",
+          marginBottom: "1.5rem",
+        }}
+      >
+        <div className="panel" style={{ padding: "1.25rem", textAlign: "center" }}>
+          <div style={{ fontSize: "2rem", fontWeight: 700, color: "var(--accent-primary)" }}>
+            {loading ? "—" : templates.length}
+          </div>
+          <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>
+            Prompt Templates
+          </div>
+        </div>
+      </section>
 
       {loading ? (
-        <p className="muted">Loading prompts…</p>
+        <div className="panel-empty">Loading prompt templates…</div>
+      ) : templates.length === 0 ? (
+        <div className="panel-empty">
+          No prompt templates yet. Create one to give a pipeline its own behaviour.
+        </div>
       ) : (
-        <div className="prompts-layout">
-          <div className="prompts-list">
-            {items.map((item) => {
-              const selected = editingId === item.id;
-              const dirty = item.id in bulkDrafts;
-              return (
-                <article
-                  key={item.id}
-                  className={`panel prompts-card${selected ? " prompts-card--active" : ""}`}
-                >
-                  <div className="prompts-card-head">
-                    <div>
-                      <h2 className="panel-title">{item.label}</h2>
-                      <p className="muted prompts-card-desc">{item.description}</p>
-                      <p className="prompts-card-file">
-                        <code>{item.filename}</code>
-                        <span className="muted"> · {item.package}</span>
-                      </p>
+        <section style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {templates.map((template) => (
+            <div className="panel" key={template.id} style={{ padding: "1.25rem" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "1rem",
+                }}
+              >
+                <div>
+                  <strong>{template.name}</strong>
+                  {template.description && (
+                    <div style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                      {template.description}
                     </div>
-                    <div className="prompts-card-badges">
-                      {item.is_overridden ? (
-                        <span className="prompt-badge prompt-badge--custom">Custom</span>
-                      ) : (
-                        <span className="prompt-badge">Packaged</span>
-                      )}
-                      {dirty && <span className="prompt-badge prompt-badge--dirty">Unsaved</span>}
-                    </div>
-                  </div>
-                  <p className="prompts-preview muted">{item.preview}</p>
-                  <div className="prompts-card-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-primary"
-                      disabled={busyId === item.id}
-                      onClick={() => void openEditor(item.id)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      disabled={!item.is_overridden || busyId === item.id}
-                      onClick={() => void handleResetOne(item.id)}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-
-          <aside className={`panel prompts-editor${editingId ? "" : " prompts-editor--empty"}`}>
-            {!detail || !editingId ? (
-              <p className="panel-empty muted">Select a prompt and click Edit to view or change it.</p>
-            ) : (
-              <>
-                <div className="prompts-editor-head">
-                  <div>
-                    <h2 className="panel-title">{detail.label}</h2>
-                    <p className="muted">
-                      <code>{detail.filename}</code>
-                      {detail.is_overridden ? " · active override" : " · packaged default"}
-                    </p>
-                  </div>
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={closeEditor}>
-                    Close
-                  </button>
+                  )}
                 </div>
-
-                <div className="prompts-editor-toolbar">
-                  <label className="prompts-toggle">
-                    <input
-                      type="checkbox"
-                      checked={showPackaged}
-                      onChange={(e) => setShowPackaged(e.target.checked)}
-                    />
-                    Show packaged original
-                  </label>
-                </div>
-
-                {showPackaged && (
-                  <div className="prompts-packaged">
-                    <p className="panel-toolbar-label">Packaged (read-only)</p>
-                    <pre className="prompts-pre">{detail.packaged_content}</pre>
-                  </div>
-                )}
-
-                <label className="panel-toolbar-label" htmlFor="prompt-draft">
-                  Active prompt (saved to temp override on Save)
-                </label>
-                <textarea
-                  id="prompt-draft"
-                  className="input prompts-textarea"
-                  value={draft}
-                  onChange={(e) => onDraftChange(e.target.value)}
-                  rows={18}
-                  spellCheck={false}
-                />
-
-                <div className="prompts-editor-actions">
+                <div style={{ display: "flex", gap: "0.5rem" }}>
                   <button
                     type="button"
-                    className="btn btn-primary"
-                    disabled={busyId === editingId || !draft.trim()}
-                    onClick={() => void handleSave()}
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => openEdit(template)}
+                    aria-label={`Edit ${template.name}`}
                   >
-                    Save override
+                    <IconEdit /> Edit
                   </button>
                   <button
                     type="button"
-                    className="btn btn-secondary"
-                    disabled={!detail.is_overridden || busyId === editingId}
-                    onClick={() => void handleResetOne(editingId)}
+                    className="btn btn-danger btn-sm"
+                    onClick={() => handleDelete(template)}
+                    aria-label={`Delete ${template.name}`}
                   >
-                    Reset to packaged
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    disabled={busyId === editingId}
-                    onClick={() => {
-                      setDraft(detail.packaged_content);
-                      setBulkDrafts((prev) => ({ ...prev, [editingId]: detail.packaged_content }));
-                    }}
-                  >
-                    Copy packaged into editor
+                    <IconTrash /> Delete
                   </button>
                 </div>
-              </>
-            )}
-          </aside>
+              </div>
+              <pre
+                style={{
+                  marginTop: "0.75rem",
+                  padding: "0.75rem",
+                  background: "rgba(0,0,0,0.3)",
+                  borderRadius: 8,
+                  fontFamily: "monospace",
+                  fontSize: "0.8rem",
+                  whiteSpace: "pre-wrap",
+                  overflowX: "auto",
+                }}
+              >
+                {template.content.length > PREVIEW_CHARS
+                  ? `${template.content.slice(0, PREVIEW_CHARS)}…`
+                  : template.content}
+              </pre>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {isOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="prompt-template-modal-title"
+          onClick={closeModal}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0,0,0,0.75)",
+            backdropFilter: "blur(12px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+          }}
+        >
+          <form
+            onSubmit={handleSubmit}
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              background: "#111622",
+              border: "1px solid rgba(88,166,253,0.3)",
+              borderRadius: 16,
+              padding: "24px",
+              width: "min(720px, 100%)",
+              maxHeight: "90vh",
+              overflowY: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: "0.5rem",
+              }}
+            >
+              <h2 id="prompt-template-modal-title" style={{ margin: 0, fontSize: "1.1rem" }}>
+                {editingId ? "Edit prompt template" : "Create prompt template"}
+              </h2>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={closeModal}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <label className="field-label" htmlFor="prompt-template-name">
+              Name
+            </label>
+            <input
+              id="prompt-template-name"
+              className="input"
+              value={form.name}
+              maxLength={128}
+              autoFocus
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+            />
+
+            <label className="field-label" htmlFor="prompt-template-description">
+              Description (optional)
+            </label>
+            <input
+              id="prompt-template-description"
+              className="input"
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+            />
+
+            <label className="field-label" htmlFor="prompt-template-content">
+              Content
+            </label>
+            <textarea
+              id="prompt-template-content"
+              className="input"
+              style={{ fontFamily: "monospace", minHeight: 220 }}
+              value={form.content}
+              onChange={(event) => setForm({ ...form, content: event.target.value })}
+            />
+            <p className="field-hint">
+              This text becomes the assistant's system message. The retrieved passages and the user
+              question are sent separately.
+            </p>
+
+            {formError && <div className="alert alert-error">{formError}</div>}
+
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}
+            >
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

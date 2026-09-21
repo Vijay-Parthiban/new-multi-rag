@@ -1,157 +1,225 @@
-# 04 — Prompts Page (Prompt Templates Registry)
+# 04 — Prompts Page (Prompt Templates)
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-21
 
 ## 1. Executive Summary & Page Purpose
-The Prompts page (`frontend/src/pages/PromptsPage.tsx`, sidebar label "Prompts", link `/prompts`) lists the prompt templates registered by the retrieval & chat backend (`backend/apps/rag-api/src/rag_api/routes/prompts.py`) and applies or clears temporary text overrides for them.
 
-What the implementation actually is:
-- A **registry with overrides**, not an authoring/versioning system. There is no create, delete, version-history or test-generation endpoint; the previously documented `POST /prompts`, `DELETE /prompts/{id}` and `POST /prompts/test` do not exist.
-- Packaged content is never modified. An edit is written to a file in the OS temp directory and is preferred by `load_prompt` until reset.
-- The router is mounted without an `/api` prefix (`app.include_router(prompts.router)`, `apps/rag-api/src/rag_api/main.py:78`; `APIRouter(prefix="/prompts")`, `routes/prompts.py:29`). Effective paths are `/prompts`, `/prompts/{prompt_id}` and `/prompts/reset`, and the frontend client calls exactly those (`frontend/src/api.ts:893-929`).
-- All routes require the shared API key dependency (`verify_api_key`, `apps/rag-api/src/rag_api/main.py:62`).
+The Prompts page (`frontend/src/pages/PromptsPage.tsx`, sidebar label "Prompts", route `/prompts`)
+manages **prompt templates**. A prompt template is the system message an assistant pipeline attaches.
 
----
+The template becomes the system message of the generated answer. The retrieved passages and the user
+question are sent separately, in their own user message. There are **no `{context}` or `{question}`
+placeholders** to fill in. The old packaged catalog carried such placeholders and no code substituted
+them (Section 5).
 
-## 2. Registered Prompt Catalog (`GET /prompts`)
-The catalog is the static `PROMPT_CATALOG` list (`routes/prompts.py:42-85`). Six prompts are exposed:
+Generation reads the template here:
 
-| ID | Filename | Package | Label | Description |
-|---|---|---|---|---|
-| `rag_system` | `rag_system.txt` | `generation_core` | RAG System | Main system prompt for text RAG answer generation. |
-| `fusion_system` | `fusion_system.txt` | `generation_core` | Fusion System | Merges text and vision partial answers into a final reply. |
-| `relevance_judge_system` | `relevance_judge_system.txt` | `generation_core` | Relevance Judge | Self-corrective loop: judges whether an answer is acceptable. |
-| `query_rewrite_system` | `query_rewrite_system.txt` | `generation_core` | Query Rewrite | Self-corrective loop: rewrites the search query after a miss. |
-| `vision_user` | `vision_user.txt` | `generation_core` | Vision User Template | User-message template for vision / image-based generation. |
-| `llm_router_system` | `llm_router_system.txt` | `rag_core` | LLM Router | Classifies queries into greeting / simple RAG / CRAG routes. |
+| Item | Path |
+|---|---|
+| Message builder | `backend/libs/generation-core/src/generation_core/prompt_builder.py` |
+| Signature | `build_rag_prompt(query, chunks, *, system_prompt=None)` |
+| Fallback | `system_prompt or RAG_SYSTEM_PROMPT` |
+| Constant | `RAG_SYSTEM_PROMPT`, same file |
 
-### Packaged vs. resolved content
-None of the six entries has a packaged `*.txt` file on disk. `load_packaged_prompt` looks in `<package>/prompts/<filename>` (`libs/generation-core/src/generation_core/prompts.py:24-32`, `libs/rag-core/src/rag_core/prompts.py:21-29`), but neither `generation_core/prompts/` nor `rag_core/prompts/` exists in the tree. Falling back to the module-level `DEFAULT_PROMPTS` also misses, because those maps contain different keys:
-
-- `generation_core.DEFAULT_PROMPTS`: `rag_synthesis`, `system_prompt` (`generation_core/prompts.py:11-17`)
-- `rag_core.DEFAULT_PROMPTS`: `rag_retrieval_query`, `rag_context_rerank` (`rag_core/prompts.py:11-14`)
-
-Consequences:
-- The four default keys above are **fallback text only** — they are not part of `PROMPT_CATALOG`, never exposed by `GET /prompts`, and reachable only through `load_prompt("<key>")`, which no code calls (Section 5).
-- For the five `generation_core` catalog entries the resolved content is the placeholder `"Prompt template '{name}' context:\n{context}\nQuestion:\n{question}"`.
-- For `llm_router_system` (`rag_core`) the resolved content is `"RAG prompt template '{name}' query:\n{query}"` (`rag_core/prompts.py:29`).
-- So, until an override is written, `preview` / `packaged_content` / `active_content` for every catalog entry are placeholders, not real system prompts.
-
-### Identifier resolution
-`_get_meta` accepts a prompt **id**, a **filename** (`rag_system.txt`) or a filename **stem** (`rag_system`); anything else returns HTTP 404 `Unknown prompt: <value>` (`routes/prompts.py:108-114`).
+The page is full CRUD over a real table in the `rag` database. No create, update or delete goes to a
+file. Every route sits behind the shared `verify_api_key` dependency, which is a no-op unless `API_KEY`
+is set.
 
 ---
 
-## 3. Backend APIs & Contracts
+## 2. The Prompt Template Store
 
-| Method | Endpoint | Description | Request / Response |
-|---|---|---|---|
-| `GET` | `/prompts` | Lists all catalog entries with active content preview | `PromptListResponse` |
-| `PUT` | `/prompts` | Bulk override: writes one override file per item | `BulkUpdateRequest` -> `PromptListResponse` |
-| `POST` | `/prompts/reset` | Clears every override for the known catalog | `ResetResponse` |
-| `GET` | `/prompts/{prompt_id}` | Packaged content, active content and override flag | `PromptDetail` |
-| `PUT` | `/prompts/{prompt_id}` | Writes an override for one prompt | `UpdatePromptRequest` -> `PromptDetail` |
-| `POST` | `/prompts/{prompt_id}/reset` | Deletes the override for one prompt | `PromptDetail` |
+### `prompt_templates` (`PromptTemplate`)
 
-Models (`routes/prompts.py:117-161`):
-- `PromptSummary`: `id`, `filename`, `package`, `label`, `description`, `is_overridden`, `preview`.
-- `PromptListResponse`: `overrides_dir`, `count`, `items[]`.
-- `PromptDetail`: `id`, `filename`, `package`, `label`, `description`, `is_overridden`, `packaged_content`, `active_content`, `overrides_dir`.
-- `UpdatePromptRequest`: `{ "content": str }`, `min_length=1` (empty body -> 422).
-- `BulkUpdateRequest`: `{ "items": [{ "id": str, "content": str }] }`, list `min_length=1`.
-- `ResetResponse`: `reset` (list of filenames), `overrides_dir`.
-
-`preview` is the active content truncated to 160 characters (`active[:157] + "..."` when longer; `routes/prompts.py:168`). `packaged_content` comes from `load_packaged_prompt` and `active_content` from `load_prompt` (`routes/prompts.py:91-100`).
-
-Sample `GET /prompts/{prompt_id}` payload (shape only — content fields are placeholders as described above unless an override exists):
-```json
-{
-  "id": "rag_system",
-  "filename": "rag_system.txt",
-  "package": "generation_core",
-  "label": "RAG System",
-  "description": "Main system prompt for text RAG answer generation.",
-  "is_overridden": false,
-  "packaged_content": "Prompt template 'rag_system.txt' context:\n{context}\nQuestion:\n{question}",
-  "active_content": "Prompt template 'rag_system.txt' context:\n{context}\nQuestion:\n{question}",
-  "overrides_dir": "<tempdir>/rag_prompt_overrides"
-}
-```
-
----
-
-## 4. Override Storage, Caching & Invalidation
-Storage (`libs/shared/src/rag_shared/prompt_overrides.py`):
-- Root directory: `Path(tempfile.gettempdir()) / "rag_prompt_overrides"`, created on demand (`prompt_overrides.py:7-10`).
-- File name: `<package>__<name>.txt`; `\` and `/` in either part are replaced with `_`, and `.txt` is appended if missing (`prompt_overrides.py:13-18`). Examples: `generation_core__rag_system.txt`, `rag_core__llm_router_system.txt`.
-- Helpers: `has_override(package, name)`, `read_override(package, name)`, `write_override(package, name, content)`, `clear_override(package, name)`, `clear_all_overrides()` (`prompt_overrides.py:21-56`).
-
-Read path in the libraries (`generation_core/prompts.py:35-43`, `rag_core/prompts.py:32-40`): override file first, then a process-local `_CACHE` dict, then packaged content (which caches the result).
-
-Cache invalidation: every mutating route calls `_invalidate_caches()` -> `clear_prompt_cache()` on both libraries (`routes/prompts.py:103-105`). Because the override file is checked before the cache, invalidation matters mainly for re-reading packaged content after a reset. The caches are per-process module globals, so a service restart is not required but a second worker process could hold its own cache.
-
-Reset semantics:
-- Per prompt — `POST /prompts/{prompt_id}/reset` deletes only `<package>__<filename>.txt` and returns the refreshed `PromptDetail` (`routes/prompts.py:229-234`).
-- Global — `POST /prompts/reset` clears every `*.txt` under the overrides root and returns the list of known filenames plus `overrides_dir` (`routes/prompts.py:196-201`; `prompt_overrides.py:45-56`).
-
----
-
-## 5. Where Each Prompt Is Used
-The registry is **display-only today**. `load_prompt` / `load_packaged_prompt` are imported only by `routes/prompts.py:15-20` and called only from `_packaged` / `_active`; no module in `retrieval_core`, `rag_core`, `generation_core` or the API pipeline imports or calls them. Therefore writing an override changes what `GET /prompts` reports and nothing else.
-
-The runtime generation path uses hard-coded text:
-- `RAG_SYSTEM_PROMPT` and `FUSION_SYSTEM_PROMPT` constants, and the message builders `build_rag_prompt` / `build_fusion_prompt` (`libs/generation-core/src/generation_core/prompt_builder.py:10-33`, `:36-51`, `:54-73`).
-- `NO_SOURCES_ANSWER` is a constant used by both the text and vision generators (`prompt_builder.py:6-8`).
-- Vision generation embeds its instruction and question inline in the request (`generation_core/vision_generator.py:29-45`).
-- The catalog's `relevance_judge_system`, `query_rewrite_system` and `llm_router_system` have no runtime consumer either: no self-corrective judge/rewrite prompts and no LLM-router prompt are loaded from `load_prompt` anywhere in the backend.
-
-No template variables are substituted anywhere. The strings contain literal `{context}`, `{question}` / `{query}` placeholders, but no code path calls `.format()`/`Template` on a loaded prompt. The previously documented `{history}` and `{current_date}` variables do not exist in the codebase, and `generation_core/prompt_builder.py` performs no variable injection (it builds `messages` with f-strings).
-
----
-
-## 6. Resolved Implementation Caveat (2026-09-20)
-Every handler in Section 3 previously raised `TypeError`: the route called the override helpers with a filename alone, while the helpers take `(package_name, name)`. Fixed on 2026-09-20; all six call sites now pass `meta.package` as well. The table records what was wrong and the signature each call must satisfy.
-
-| Handler | Was | Helper signature |
+| Column | Type | Notes |
 |---|---|---|
-| `list_prompts` | `has_override(meta.filename)` (`routes/prompts.py:176`) | `has_override(package_name, name)` (`prompt_overrides.py:21`) |
-| `get_prompt` | `has_override(meta.filename)` (`routes/prompts.py:214`) | same |
-| `update_prompt` | `write_override(meta.filename, body.content)` (`routes/prompts.py:224`) | `write_override(package_name, name, content)` (`prompt_overrides.py:32`) |
-| `update_prompts_bulk` | `write_override(meta.filename, item.content)` (`routes/prompts.py:191`) | same |
-| `reset_prompt` | `clear_override(meta.filename)` (`routes/prompts.py:232`) | `clear_override(package_name, name)` (`prompt_overrides.py:37`) |
-| `reset_all_prompts` | `clear_all_overrides(known_ids=known)` (`routes/prompts.py:199`) | `clear_all_overrides()` — takes no arguments (`prompt_overrides.py:45`) |
+| `id` | UUID | primary key, default `uuid.uuid4` |
+| `name` | text(128) | unique and indexed; a duplicate answers `409` |
+| `description` | text, nullable | shown under the name on the card |
+| `content` | text, not null | the system message |
+| `created_at` | timestamp | `server_default=func.now()` |
+| `updated_at` | timestamp | `onupdate=func.now()` |
 
-Observed before the fix: `list_prompts` -> `TypeError: has_override() missing 1 required positional argument: 'name'`; `reset_all_prompts` -> `TypeError: clear_all_overrides() got an unexpected keyword argument 'known_ids'`. `GET /prompts` returned 500, so the page showed only its error state.
+| Item | Path |
+|---|---|
+| Model | `backend/libs/database/src/rag_db/models/prompt.py` |
+| Repository | `backend/libs/database/src/rag_db/repositories/prompt_repository.py` |
+| Migration | `backend/libs/database/alembic/versions/003_prompt_templates.py` |
+| Revision | `003`, `down_revision = "002"` |
+| Routes | `backend/apps/rag-api/src/rag_api/routes/prompt_templates.py` |
 
-After the fix `GET /prompts` returns 200 with all six catalog entries and the overrides directory. `reset_all_prompts` reports the catalog filenames and `clear_all_overrides()` clears every `*.txt` under the temp overrides directory, which only this route writes.
+Migration `003` creates the table from `Base.metadata` and seeds **one row** so a fresh install has a
+working default:
 
-One caveat remains: an override is keyed by `(package, name)` while `reset_all_prompts` clears the directory wholesale rather than filtering by the catalog, so it also removes an override whose catalog entry was deleted.
+| Field | Value |
+|---|---|
+| `name` | `Default RAG` |
+| `description` | `The prompt the code shipped with.` |
+| `content` | the text of `RAG_SYSTEM_PROMPT` |
+
+The insert is guarded with `WHERE NOT EXISTS (SELECT 1 FROM prompt_templates)`, so a re-run adds
+nothing. The migration imports `RAG_SYSTEM_PROMPT` rather than copying the text, so the two cannot
+drift.
 
 ---
 
-## 7. Page UI Behaviour
-Layout and interactions as implemented in `frontend/src/pages/PromptsPage.tsx`. The backend calls work as of 2026-09-20 (see Section 6), so the populated state below is observable end to end:
+## 3. Backend Endpoints
+
+Prefix `/prompt-templates`, mounted without an `/api` prefix
+(`app.include_router(prompt_templates.router)`, `backend/apps/rag-api/src/rag_api/main.py`). Base URL
+`http://localhost:8001`. Send `X-API-Key` when `API_KEY` is set.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| `GET` | `/prompt-templates` | — | `{"count": int, "items": [PromptTemplate]}` |
+| `POST` | `/prompt-templates` | `PromptTemplateCreate` | `PromptTemplate`, `201` |
+| `GET` | `/prompt-templates/{id}` | — | `PromptTemplate` |
+| `PUT` | `/prompt-templates/{id}` | `PromptTemplateUpdate` | `PromptTemplate` |
+| `DELETE` | `/prompt-templates/{id}` | — | `204`, empty body |
+
+`PromptTemplate` response fields: `id`, `name`, `description`, `content`, `created_at`, `updated_at`.
+
+| Model | Fields |
+|---|---|
+| `PromptTemplateCreate` | `name` 1–128 chars, required; `description` optional; `content` non-empty, required |
+| `PromptTemplateUpdate` | the same three fields, all optional |
+
+`PUT` sends `model_dump(exclude_unset=True)`, so an omitted key keeps its stored value. A rename to a
+name another template owns answers `409`.
+
+Error codes:
+
+| Status | Code | Cause |
+|---|---|---|
+| `409` | `PROMPT_TEMPLATE_NAME_TAKEN` | A template with this name already exists. |
+| `404` | `PROMPT_TEMPLATE_NOT_FOUND` | No template has this id. |
+
+```bash
+curl -X POST http://localhost:8001/prompt-templates \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "One Word", "description": "Answers in one word.", "content": "Answer in exactly one word."}'
+```
+
+`GET /prompt-templates` orders the rows by name (`PromptRepository.list`).
+
+---
+
+## 4. Page UI Behaviour
 
 ```
-+------------------------------------------------------------------------------------------------+
-|  Prompt Templates                                                            [ Save all edits ]|
-|  View packaged system prompts and apply temporary overrides.  [ Reset all ]  [ Refresh ]        |
-+------------------------------------------------------------------------------------------------+
-|  Overrides dir: <tempdir>\rag_prompt_overrides · using packaged defaults / · N custom            |
-+------------------------------------------------------------------------------------------------+
-|  Cards (one per catalog entry)                      |  Editor panel (only after "Edit")        |
-|  <Label>                            [Custom|Packaged]|  <Label> · <filename> · packaged default |
-|  <description>                        [Unsaved]      |  [x] Show packaged original              |
-|  <filename> · <package>                              |  Packaged (read-only) <pre>              |
-|  <first 160 chars of active content>                 |  Active prompt  <textarea rows=18>       |
-|  [ Edit ]  [ Reset ]                                 |  [ Save override ] [ Reset to packaged ] |
-|                                                      |  [ Copy packaged into editor ]           |
-+------------------------------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------+
+|  Prompts                                            [ Create prompt template ]     |
+|  A prompt template becomes an assistant's system message. The retrieved passages   |
+|  and the user question are sent separately.                                        |
++-----------------------------------------------------------------------------------+
+|  [ N Prompt Templates ]                                                            |
++-----------------------------------------------------------------------------------+
+|  <name>                                                                 [Edit][Delete]|
+|  <description>                                                                     |
+|  <pre>: first 160 characters of the content, then an ellipsis when longer          |
++-----------------------------------------------------------------------------------+
 ```
 
-- Loaded only while the path is `/prompts` (visibility guard `isVisible`, `PromptsPage.tsx:19`, `:48-52`); `listPrompts()` populates items plus `overrides_dir` (`:39-41`).
-- Card badges: `Custom` when `is_overridden`, otherwise `Packaged`; an `Unsaved` badge appears for entries with a pending draft (`:258-262`).
-- Editor: `getPrompt(id)` loads the detail, the textarea starts from the pending bulk draft or `active_content` (`:68-71`); "Show packaged original" reveals `packaged_content` read-only (`:315`); "Save override" calls `updatePrompt` (`:92`); "Reset to packaged" calls `resetPrompt` (`:113`).
-- Header actions: "Save all edits (n)" appears once at least one draft exists and calls `updatePromptsBulk` with the dirty entries (`:161`, `:199`); "Reset all" asks for `window.confirm` then calls `resetAllPrompts` (`:133`, `:139`); "Refresh" re-runs `listPrompts`.
-- The overrides directory line shows the count of customised entries, or "using packaged defaults" when none are custom (`:227-228`).
-- `frontend/src/api.ts:875-891` mirrors the response shapes; there is no `POST`/`DELETE` client function for prompts.
+- The page loads `listPromptTemplates()` once on mount and after every create, edit and delete.
+- One stat card shows the template count, or `—` while the list loads.
+- `Create prompt template` and `Edit` open the **same modal**. The title reads
+  `Create prompt template` or `Edit prompt template`.
+- `Delete` asks for confirmation with `window.confirm("Delete the prompt template \"<name>\"?")`.
+
+### The modal
+
+Three fields, in this order:
+
+| Field | Control | Rules |
+|---|---|---|
+| `Name` | text input, `maxLength=128`, autofocus | required |
+| `Description (optional)` | text input | none |
+| `Content` | textarea, monospace, `minHeight: 220` | required |
+
+The hint under `Content` reads:
+
+> This text becomes the assistant's system message. The retrieved passages and the user question are
+> sent separately.
+
+The footer holds `Cancel` and `Save`. The submit reads `Saving…` while the request runs. Client checks
+show `Name is required.` and `Content is required.`. A server error renders as
+`{code}: {message}` in an `.alert alert-error` inside the modal.
+
+The modal carries `role="dialog"`, `aria-modal="true"` and
+`aria-labelledby="prompt-template-modal-title"`. It closes on `Escape`, on a click outside the panel
+and on `Cancel`. The name input takes focus on open.
+
+### Loading, empty and error states
+
+| State | Rendering |
+|---|---|
+| Loading | `.panel-empty` with `Loading prompt templates…` |
+| No template | `.panel-empty` with `No prompt templates yet. Create one to give a pipeline its own behaviour.` |
+| Load error | `.alert alert-error` above the list, as `{code}: {message}` |
+
+---
+
+## 5. The Old Packaged Catalog
+
+The page previously edited the **packaged prompt catalog**, not templates. That catalog is still in the
+tree and the page no longer touches it.
+
+| Item | Path |
+|---|---|
+| Catalog routes | `backend/apps/rag-api/src/rag_api/routes/prompts.py` |
+| Prefix | `/prompts` |
+| Catalog | `PROMPT_CATALOG`, six fixed entries |
+| Override storage | `backend/libs/shared/src/rag_shared/prompt_overrides.py` |
+| Override directory | `Path(tempfile.gettempdir()) / "rag_prompt_overrides"` |
+
+The `/prompts` routes still exist and still answer. An edit wrote an override file to the OS temporary
+directory. **Nothing read those overrides.** `load_prompt` was imported only by the routes module, so an
+override changed what `GET /prompts` reported and nothing else. The real system message stayed
+hardcoded. The `{context}` and `{question}` strings in the catalog were literals, and no code called
+`.format()` or `Template` on them.
+
+That is why prompt templates exist: one table generation actually reads. No frontend code calls
+`/prompts` now.
+
+---
+
+## 6. Worked Example — A One-Word Template
+
+The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path. It passes.
+
+1. Create the template.
+   ```bash
+   curl -X POST http://localhost:8001/prompt-templates \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "One Word", "description": "Answers in one word.", "content": "Answer in exactly one word."}'
+   ```
+   The response carries the `id`.
+2. Attach it to a pipeline on the ingestion service.
+   ```bash
+   curl -X PATCH http://localhost:8007/api/pipelines/<pipeline-id> \
+     -H 'Content-Type: application/json' \
+     -d '{"prompt_template_id": "<template-id>"}'
+   ```
+3. Ask a question through the assistant.
+   ```bash
+   curl -X POST http://localhost:8001/api/assistants/<slug>/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"query": "What award did Rohan receive at Amazon?"}'
+   ```
+4. Read the answer. With the one-word template in force the answer holds no more than 12 words. The
+   check asserts exactly that.
+
+---
+
+## 7. Verification (2026-09-21)
+
+| Check | Result |
+|---|---|
+| `backend/scripts/e2e_assistant_pipelines.py` | 30 checks, all pass |
+| Template CRUD in that script | create, list, duplicate-name `409`, and a template in force |
+| `npx tsc --noEmit` | no error |
+| `npx vite build` | succeeds |
+| Browser, 14 retrieval routes | zero console errors |
+
+The script creates its fixtures with a per-run tag and deletes them in a `finally` block, so a re-run
+starts clean.

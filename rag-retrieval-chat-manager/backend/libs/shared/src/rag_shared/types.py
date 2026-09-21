@@ -35,6 +35,40 @@ class ChunkPayload(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class KpStores(BaseModel):
+    """The knowledge-product store names one assistant strategy reads.
+
+    Lives here rather than in rag-core so both rag-core and retrieval-core can
+    name it without an import cycle.
+    """
+
+    qdrant_collection: str | None = None
+    opensearch_index: str | None = None
+    pg_schema: str | None = None
+    pg_table: str | None = None
+
+
+class KpStrategy(StrEnum):
+    """The RAG strategy an assistant pipeline runs.
+
+    Each value names the store to read, not the index shape to write, which is
+    why these are separate from the ingestion-side ``RagStrategy``.
+    """
+
+    VECTOR = "vector"
+    LEXICAL = "lexical"
+    RELATIONAL = "relational"
+    HYBRID = "hybrid"
+
+
+class KpDestination(StrEnum):
+    """The ingestion destinations an assistant can read chunks from."""
+
+    VECTOR = "vector_qdrant"
+    LEXICAL = "lexical_opensearch"
+    RELATIONAL = "relational_pgvector"
+
+
 class RetrievedChunk(BaseModel):
     id: str
     content: str

@@ -27,7 +27,12 @@ FUSION_SYSTEM_PROMPT = (
 )
 
 
-def build_rag_prompt(query: str, chunks: list[RerankedChunk]) -> list[dict[str, str]]:
+def build_rag_prompt(
+    query: str,
+    chunks: list[RerankedChunk],
+    *,
+    system_prompt: str | None = None,
+) -> list[dict[str, str]]:
     if chunks:
         context_parts = []
         for i, chunk in enumerate(chunks, start=1):
@@ -39,7 +44,7 @@ def build_rag_prompt(query: str, chunks: list[RerankedChunk]) -> list[dict[str, 
 
     user = f"Context:\n{context}\n\nQuestion: {query}"
     return [
-        {"role": "system", "content": RAG_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or RAG_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 

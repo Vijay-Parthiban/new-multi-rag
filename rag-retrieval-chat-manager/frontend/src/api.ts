@@ -36,9 +36,21 @@ export class ApiError extends Error {
 
 async function parseError(res: Response): Promise<never> {
   try {
-    const body = (await res.json()) as ApiErrorBody;
-    if (body.error) {
-      throw new ApiError(res.status, body);
+    const body = await res.json();
+    if (body?.error) {
+      throw new ApiError(res.status, body as ApiErrorBody);
+    }
+    // FastAPI render: {"detail": "text"} or {"detail": {"code": ..., "message": ...}}
+    const detail = body?.detail;
+    if (typeof detail === "string") {
+      throw new ApiError(res.status, {
+        error: { code: `HTTP_${res.status}`, message: detail },
+      });
+    }
+    if (detail && typeof detail === "object" && detail.message) {
+      throw new ApiError(res.status, {
+        error: { code: detail.code ?? `HTTP_${res.status}`, message: detail.message },
+      });
     }
   } catch (e) {
     if (e instanceof ApiError) throw e;
@@ -197,6 +209,23 @@ export interface PipelineCatalogEntry {
   id: string;
 }
 
+/** One of the knowledge product's ingestion destinations, flattened by the API. */
+export interface PipelineDestinationSummary {
+  destination_type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+/** The knowledge product a pipeline reads. Null for a legacy ingestion pipeline. */
+export interface PipelineKnowledgeProduct {
+  id: string;
+  name: string;
+  status: string;
+  chunk_strategy: string;
+  text_embedding_model: string;
+  destinations: PipelineDestinationSummary[];
+}
+
 export interface PipelineRecord {
   id: string;
   knowledge_product_id?: string | null;
@@ -209,12 +238,20 @@ export interface PipelineRecord {
   directory_names: string[];
   chunk_size: number;
   chunk_overlap: number;
-  qdrant_collection: string;
+  qdrant_collection: string | null;
   web_scraper_enabled: boolean;
   scraper_seed_url: string | null;
   scraper_max_depth: number;
   scraper_max_pages: number;
   scraper_mode: string;
+  /** External name the chat endpoints address this pipeline by. */
+  slug: string | null;
+  chat_model: string | null;
+  prompt_template_id: string | null;
+  guardrails_config_id: string | null;
+  /** True when the strategy names a knowledge-product store. */
+  is_assistant: boolean;
+  knowledge_product: PipelineKnowledgeProduct | null;
   created_at: string;
   updated_at: string;
 }
@@ -243,16 +280,20 @@ export interface CreatePipelineRequest {
   embedding_model: string;
   sparse_embedding_model?: string | null;
   modality?: string | null;
-  directory_names: string[];
+  directory_names?: string[];
   chunk_size?: number;
   chunk_overlap?: number;
-  qdrant_collection: string;
+  qdrant_collection?: string | null;
   web_scraper_enabled?: boolean;
   scraper_seed_url?: string | null;
   scraper_max_depth?: number;
   scraper_max_pages?: number;
   scraper_mode?: string;
   knowledge_product_id?: string;
+  slug?: string | null;
+  chat_model?: string | null;
+  prompt_template_id?: string | null;
+  guardrails_config_id?: string | null;
 }
 
 export interface PipelinePatchRequest {
@@ -261,6 +302,65 @@ export interface PipelinePatchRequest {
   scraper_seed_url?: string;
   scraper_max_depth?: number;
   scraper_max_pages?: number;
+  name?: string;
+  description?: string;
+  slug?: string;
+  rag_strategy?: string;
+  chat_model?: string;
+  prompt_template_id?: string | null;
+  guardrails_config_id?: string | null;
+  knowledge_product_id?: string;
+  embedding_model?: string;
+}
+
+/** The strategies an assistant may run, in the order the form shows them. */
+export const RAG_STRATEGY_LABELS: Record<string, { label: string; description: string }> = {
+  vector: { label: "Vector search", description: "Qdrant dense vectors" },
+  lexical: { label: "Keyword search", description: "OpenSearch BM25" },
+  relational: { label: "SQL search", description: "PostgreSQL pgvector" },
+  hybrid: { label: "Hybrid", description: "Vector and keyword, fused with reciprocal rank fusion" },
+};
+
+const RETRIEVAL_DESTINATIONS = ["vector_qdrant", "lexical_opensearch", "relational_pgvector"];
+
+/** The enabled destination types an assistant can read. */
+export function enabledRetrievalDestinations(
+  destinations: PipelineDestinationSummary[] | undefined,
+): Set<string> {
+  return new Set(
+    (destinations ?? [])
+      .filter((d) => d.enabled && RETRIEVAL_DESTINATIONS.includes(d.destination_type))
+      .map((d) => d.destination_type),
+  );
+}
+
+/**
+ * The strategies a product's enabled destinations can serve. Hybrid fuses the
+ * vector and the keyword ranking, so it needs both. A product with only
+ * cache_redisvl enabled serves nothing: that store caches answers, it does not
+ * hold a searchable copy of the chunks.
+ */
+export function strategiesForDestinations(
+  destinations: PipelineDestinationSummary[] | undefined,
+): string[] {
+  const enabled = enabledRetrievalDestinations(destinations);
+  const strategies: string[] = [];
+  if (enabled.has("vector_qdrant")) strategies.push("vector");
+  if (enabled.has("lexical_opensearch")) strategies.push("lexical");
+  if (enabled.has("relational_pgvector")) strategies.push("relational");
+  if (enabled.has("vector_qdrant") && enabled.has("lexical_opensearch")) strategies.push("hybrid");
+  return strategies;
+}
+
+/** A destination's store name, as the chat endpoint reports it. */
+export function destinationStoreLabel(destination: PipelineDestinationSummary): string | null {
+  const config = destination.config ?? {};
+  const name =
+    (config.collection_name as string) ??
+    (config.index_name as string) ??
+    (config.schema_name as string) ??
+    (config.index_prefix as string);
+  return name ? String(name) : null;
 }
 
 export interface PipelineStats {
@@ -604,10 +704,7 @@ async function ragFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const res = await fetch(`${RAG_API_URL}${path}`, { ...init, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`RAG API error ${res.status}: ${text || res.statusText}`);
-  }
+  if (!res.ok) await parseError(res);
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
@@ -800,16 +897,18 @@ export interface ChatStreamEvent {
   };
 }
 
-export async function* streamChat(payload: any): AsyncGenerator<ChatStreamEvent> {
-  const res = await fetch(`${RAG_API_URL}/chat/stream`, {
+export async function* streamChat(
+  payload: any,
+  opts: { path?: string } = {},
+): AsyncGenerator<ChatStreamEvent> {
+  const res = await fetch(`${RAG_API_URL}${opts.path ?? "/chat/stream"}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(RAG_API_KEY) },
     body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`RAG API error ${res.status}: ${text || res.statusText}`);
+    await parseError(res);
   }
 
   const reader = res.body!.getReader();
@@ -997,6 +1096,106 @@ export async function resetAllPrompts(): Promise<{ reset: string[]; overrides_di
   return ragFetch<{ reset: string[]; overrides_dir: string }>("/prompts/reset", {
     method: "POST",
   });
+}
+
+// --- Prompt templates -------------------------------------------------------
+// A prompt template is the system message a pipeline attaches. Distinct from
+// the packaged prompt catalog above, which this app no longer edits.
+
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  content: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PromptTemplateInput {
+  name: string;
+  description?: string | null;
+  content: string;
+}
+
+export async function listPromptTemplates(): Promise<{ count: number; items: PromptTemplate[] }> {
+  return ragFetch<{ count: number; items: PromptTemplate[] }>("/prompt-templates");
+}
+
+export async function createPromptTemplate(body: PromptTemplateInput): Promise<PromptTemplate> {
+  return ragFetch<PromptTemplate>("/prompt-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getPromptTemplate(templateId: string): Promise<PromptTemplate> {
+  return ragFetch<PromptTemplate>(`/prompt-templates/${templateId}`);
+}
+
+export async function updatePromptTemplate(
+  templateId: string,
+  body: Partial<PromptTemplateInput>,
+): Promise<PromptTemplate> {
+  return ragFetch<PromptTemplate>(`/prompt-templates/${templateId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deletePromptTemplate(templateId: string): Promise<void> {
+  return ragFetch<void>(`/prompt-templates/${templateId}`, { method: "DELETE" });
+}
+
+// --- Assistant endpoints ----------------------------------------------------
+
+export interface AssistantConfig {
+  slug: string;
+  name: string;
+  description: string;
+  chat_model: string;
+  strategy: string;
+  strategies_available: { id: string; label: string; description: string }[];
+  knowledge_product: {
+    id: string | null;
+    name: string | null;
+    status: string | null;
+    chunk_strategy: string | null;
+    text_embedding_model: string | null;
+  };
+  stores: {
+    qdrant_collection: string | null;
+    opensearch_index: string | null;
+    pg_schema: string | null;
+    pg_table: string | null;
+  };
+  prompt_template_id: string | null;
+  guardrails_config_id: string | null;
+  endpoints: { chat: string; chat_stream: string; openai_base_url: string };
+}
+
+export async function getAssistant(slug: string): Promise<AssistantConfig> {
+  return ragFetch<AssistantConfig>(`/api/assistants/${slug}`);
+}
+
+/** The absolute base URL an OpenAI SDK client points its base_url at. */
+export function assistantBaseUrl(slug: string): string {
+  return `${RAG_API_URL}/v1/assistants/${slug}`;
+}
+
+/** The absolute native chat URL for an assistant. */
+export function assistantChatUrl(slug: string): string {
+  return `${RAG_API_URL}/api/assistants/${slug}/chat`;
+}
+
+export async function getLiteLLMModels(modelKind: string): Promise<{ id: string; label: string }[]> {
+  const res = await apiFetch<{ models: ({ id: string; label?: string } | string)[] }>(
+    `/api/knowledge-products/config/litellm-models?model_kind=${encodeURIComponent(modelKind)}`,
+  );
+  return (res.models ?? []).map((m) =>
+    typeof m === "string" ? { id: m, label: m } : { id: m.id, label: m.label ?? m.id },
+  );
 }
 
 // --- Guardrails API ---

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 
 from generation_core import Generator
+from generation_core.prompt_builder import NO_SOURCES_ANSWER
 from rag_shared.config import Settings
 from reranker_core import Reranker, build_reranker
 from retrieval_core import Retriever
 
-from rag_core.schemas import ChatResult, PipelineConfig, PipelineRequest, RerankResult
+from rag_core.schemas import (
+    ChatResult,
+    PipelineConfig,
+    PipelineRequest,
+    RerankResult,
+    StreamEvent,
+)
 
 
 class RAGPipeline:
@@ -42,6 +50,8 @@ class RAGPipeline:
             collection=cfg.collection,
             embedding_model=cfg.embedding_model,
             sparse_embedding_model=cfg.sparse_embedding_model,
+            strategy=cfg.strategy,
+            stores=cfg.stores,
         )
 
     def rerank(
@@ -113,6 +123,7 @@ class RAGPipeline:
             model=cfg.generation_model,
             vision_model=cfg.vision_model,
             fusion_model=cfg.fusion_model,
+            system_prompt=cfg.system_prompt,
         )
         latency.update(generation.latency_ms)
         latency["generate"] = generation.latency_ms.get("generate_total", 0)
@@ -127,6 +138,75 @@ class RAGPipeline:
             vision_answer=generation.vision_answer,
             text_chunk_count=generation.text_chunk_count,
             image_chunk_count=generation.image_chunk_count,
+        )
+
+    def stream_chat(
+        self,
+        query: str,
+        *,
+        config: PipelineConfig | None = None,
+        source_type: str | None = None,
+        source_id: str | None = None,
+    ) -> Iterator[StreamEvent]:
+        """Yield status, token and done events for one chat turn.
+
+        Same retrieve → rerank → generate sequence as ``chat``; the caller
+        turns the events into server-sent event frames.
+        """
+        cfg = config or PipelineConfig()
+        latency: dict[str, int] = {}
+        total_start = time.perf_counter()
+
+        yield StreamEvent(type="status", message="Retrieving context")
+
+        t0 = time.perf_counter()
+        retrieved = self.retrieve(
+            query,
+            config=cfg,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        latency["retrieve"] = int((time.perf_counter() - t0) * 1000)
+
+        reranker = self.with_reranker(cfg.rerank_enabled, cfg.rerank_model)
+        t0 = time.perf_counter()
+        reranked = reranker.rerank(query, retrieved, cfg.top_k)
+        latency["rerank"] = int((time.perf_counter() - t0) * 1000)
+
+        yield StreamEvent(type="status", message="Generating answer")
+
+        t0 = time.perf_counter()
+        parts: list[str] = []
+        for delta in self._generator.generate_stream(
+            query,
+            reranked,
+            model=cfg.generation_model,
+            system_prompt=cfg.system_prompt,
+        ):
+            parts.append(delta)
+            yield StreamEvent(type="token", content=delta)
+        answer = "".join(parts)
+
+        latency["generate"] = int((time.perf_counter() - t0) * 1000)
+        latency["total"] = int((time.perf_counter() - total_start) * 1000)
+
+        yield StreamEvent(
+            type="done",
+            metadata={
+                "answer": answer or NO_SOURCES_ANSWER,
+                "sources": [
+                    {
+                        "source_locator": chunk.source_locator,
+                        "chunk_index": chunk.chunk_index,
+                        "rerank_score": chunk.rerank_score,
+                    }
+                    for chunk in reranked
+                ],
+                "retrieved_chunks": [chunk.model_dump() for chunk in retrieved],
+                "reranked_chunks": [chunk.model_dump() for chunk in reranked],
+                "latency_ms": latency,
+                "route": "normal",
+            },
         )
 
     def generate(

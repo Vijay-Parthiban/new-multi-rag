@@ -13,6 +13,7 @@ from rag_db.models.guardrails import (
     GuardrailsEvalRun,
     GuardrailsEvalRunItem,
 )
+from rag_db.models.prompt import PromptTemplate
 
 __all__ = [
     "ChatSession",
@@ -29,4 +30,5 @@ __all__ = [
     "GuardrailsGoldenDatasetItem",
     "GuardrailsEvalRun",
     "GuardrailsEvalRunItem",
+    "PromptTemplate",
 ]
