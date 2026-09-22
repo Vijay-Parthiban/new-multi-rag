@@ -96,7 +96,7 @@ Traces are stored as rows, not as an OpenTelemetry span tree.
 
 ## 5. OpenTelemetry Export Configuration
 
-Traces are emitted by the backend process and shipped over OTLP/HTTP to the collector; the collector fans out to Langfuse, Arize AX and Grafana Cloud. Configuration is env-driven in `libs/shared/src/rag_shared/tracing.py:77-137`:
+Traces are emitted by the backend process and shipped over OTLP/HTTP to the collector; the collector fans out to **Phoenix and Langfuse**. The application picks no backend: it exports once and the collector copies the span to each. Configuration is env-driven in `libs/shared/src/rag_shared/tracing.py:77-137`:
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -109,7 +109,8 @@ Traces are emitted by the backend process and shipped over OTLP/HTTP to the coll
 | `OTEL_RESOURCE_ATTRIBUTES` | unset | comma-separated resource attributes; when empty, `deployment.environment` and `service.namespace` defaults are applied |
 | `OTEL_DEPLOYMENT_ENVIRONMENT` | `"production"` | resource attribute default |
 | `OTEL_SERVICE_NAMESPACE` | `"rag-platform"` | resource attribute default |
-| `ARIZE_MODEL_ID`, `ARIZE_PROJECT_NAME` | service name / unset | Arize requires `model_id` or `arize.project.name` on the resource; both are injected (`tracing.py:39-48`) |
+
+Backend credentials for a backend are **not** read here. They live in `otel/.env`, which the collector reads. See Section 6.
 
 - Exporter: `OTLPSpanExporter` from `opentelemetry.exporter.otlp.proto.http.trace_exporter`, batched via `BatchSpanProcessor` (`tracing.py:106-116`).
 - Outbound HTTP is auto-instrumented with `HTTPXClientInstrumentor().instrument()` when the package is installed, so LiteLLM/Qdrant calls appear as child spans only when a parent span is active (`tracing.py:126-127`).
@@ -120,11 +121,19 @@ Traces are emitted by the backend process and shipped over OTLP/HTTP to the coll
 
 | Span name | Where | Notes |
 |---|---|---|
-| `rag.chat` | `rag_api/routes/chat.py:367` | wraps retrieve → rerank → generate for `POST /chat` |
-| `rag.chat.stream` | `chat.py:579` (greeting shortcut), `chat.py:636` (main stream path) | wraps the SSE generation path |
-| `rag.pipeline` | `tracing.py:234` via `emit_rag_pipeline_trace` | synthetic post-hoc span emitted by the eval worker after metrics |
+| `rag.chat` | `rag_api/routes/chat.py:425` | wraps retrieve → rerank → generate for `POST /chat` and for the assistant routes that delegate to it |
+| `rag.chat.stream` | `chat.py:602` region (greeting shortcut and the main stream path) | wraps the SSE generation path |
+| `rag.pipeline.metrics` | `tracing.py:382` via `emit_rag_pipeline_trace` | emitted by the eval worker after metrics. It is **parented under the turn's own span**, so one question stays one trace |
 
-Attributes set on these spans (`tracing.py:164-204, 236-262`): Langfuse-recognized keys `langfuse.observation.type`, `langfuse.session.id`, `langfuse.observation.metadata.message_id`, `langfuse.trace.input` / `langfuse.observation.input` / `input.value`, `langfuse.trace.output` / `langfuse.observation.output` / `output.value`, `langfuse.observation.model.name`, `gen_ai.request.model`, `langfuse.observation.metadata.<key>`; plus `rag.query_length`, `rag.output_length`, `rag.chunks_used`, `rag.retrieval_mode`, `rag.rerank_enabled`, `rag.generation_model`, `latency.<key>` and `eval.<metric>`. There are no application spans for individual retrieval, rerank, prompt-assembly, guardrail or token-streaming stages.
+### Session traces
+
+A pipeline whose product has the Redis destination enabled files each turn into a **second** trace holding every Q/A of the session. The trace id is derived from the session UUID, so it is stable across processes without shared state (`session_trace_ids`, `tracing.py:91`). A turn that joins a session trace also carries `rag.session_trace: true`. A pipeline without Redis gets one trace per turn. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
+
+### Test and production turns
+
+Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header (`TRACE_MODE_HEADER`, `tracing.py:81`). Only the exact value `test`, ignoring case and surrounding space, sets a test turn; **a request without the header is production**, which is the safe default. The mode is written to the span as `deployment.environment` and `rag.trace_mode`, and to the `chat_pipeline_traces.trace_mode` column that the Real Time Monitoring page tags each log with.
+
+Attributes set on these spans (`tracing.py:218-258, 393-413`): Langfuse-recognized keys `langfuse.observation.type`, `langfuse.session.id`, `langfuse.observation.metadata.message_id`, `langfuse.trace.input` / `langfuse.observation.input` / `input.value`, `langfuse.trace.output` / `langfuse.observation.output` / `output.value`, `langfuse.observation.model.name`, `gen_ai.request.model`, `langfuse.observation.metadata.<key>`; the OpenInference keys Phoenix reads, `openinference.span.kind` (`CHAIN`) and `input.value` / `output.value`; plus `deployment.environment`, `rag.trace_mode`, `rag.session_trace`, `session.id`, `rag.message_id`, `rag.query_length`, `rag.output_length`, `rag.chunks_used`, `rag.retrieval_mode`, `rag.rerank_enabled`, `rag.generation_model`, `latency.<key>` and `eval.<metric>`. There are no application spans for individual retrieval, rerank, prompt-assembly, guardrail or token-streaming stages. Outbound HTTP calls to LiteLLM, Qdrant and OpenSearch do nest under the turn automatically, through the httpx instrumentation.
 
 ---
 
@@ -133,9 +142,10 @@ Attributes set on these spans (`tracing.py:164-204, 236-262`): Langfuse-recogniz
 `otel/otel-collector-config.yaml`:
 
 - **Receivers**: `otlp` on gRPC `0.0.0.0:4317` and HTTP `0.0.0.0:4318`.
-- **Processors**: `memory_limiter` (512 MiB limit, 128 MiB spike), `resource` (upserts `model_id`, `arize.project.name`, `deployment.environment`, `service.namespace`), `batch` (256 spans, 5 s timeout).
-- **Exporters**: `debug`, `otlp_http/langfuse` (OTLP/HTTP with `Authorization` and `x-langfuse-ingestion-version: "4"`), `otlp_grpc/arize` (OTLP/gRPC with `api_key` and `space_id`), `otlp_http/grafana` (OTLP/HTTP gateway).
-- **Pipelines**: `traces` → `debug`, Langfuse, Arize, Grafana; `metrics` and `logs` → `debug` and Grafana only (Langfuse/Arize accept traces only).
-- All exporter credentials come from environment variables; the template values live in `otel/.env` (`OTEL_LOG_LEVEL`, `OTEL_DEBUG_VERBOSITY`, `OTEL_DEPLOYMENT_ENVIRONMENT`, `OTEL_SERVICE_NAMESPACE`, `LANGFUSE_OTLP_ENDPOINT`, `LANGFUSE_AUTH_HEADER`, `ARIZE_OTLP_ENDPOINT` = `otlp.arize.com:443`, `ARIZE_API_KEY`, `ARIZE_SPACE_ID`, `ARIZE_MODEL_ID`, `ARIZE_PROJECT_NAME`, `GRAFANA_OTLP_ENDPOINT`, `GRAFANA_AUTH_HEADER`). `otel/.env.example` documents the same keys.
+- **Processors**: `memory_limiter` (512 MiB limit, 128 MiB spike), `resource` (upserts `deployment.environment` and `service.namespace`), `batch` (256 spans, 5 s timeout).
+- **Exporters**: `debug`, `otlp_http/langfuse` (OTLP/HTTP with `Authorization` and `x-langfuse-ingestion-version: "4"`), `otlp_http/phoenix` (OTLP/HTTP with `Authorization` and `x-project-name`).
+- **Pipelines**: `traces` → `debug`, Langfuse, Phoenix. `metrics` and `logs` go to `debug` only, because neither backend accepts them and a failing export would otherwise trip the collector.
+- All exporter credentials come from `otel/.env` (`OTEL_LOG_LEVEL`, `OTEL_DEBUG_VERBOSITY`, `OTEL_DEPLOYMENT_ENVIRONMENT`, `OTEL_SERVICE_NAMESPACE`, `LANGFUSE_OTLP_ENDPOINT`, `LANGFUSE_AUTH_HEADER`, `PHOENIX_OTLP_ENDPOINT`, `PHOENIX_API_KEY`, `PHOENIX_PROJECT_NAME`). `otel/.env.example` documents the same keys with placeholders, and `otel/.env` itself is gitignored.
+- Arize AX and Grafana Cloud are kept as **commented worked examples** in the file. Arize is a different product from Phoenix: gRPC, authenticated with `api_key` and `space_id` rather than a bearer token. Adding a platform is a collector change and nothing else.
 
-The collector exposes no query API back to the UI; the operator reads traces in Langfuse / Arize / Grafana, not in the Tracking page.
+The collector exposes no query API back to the UI; the operator reads traces in Phoenix or Langfuse, not in the Tracking page. The Real Time Monitoring page links out to both.

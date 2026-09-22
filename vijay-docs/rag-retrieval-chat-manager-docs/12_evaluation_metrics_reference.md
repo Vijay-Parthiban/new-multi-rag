@@ -210,9 +210,9 @@ Per-iteration metrics described in earlier revisions of this document are **not 
 * `eval_core` contains no `_iteration_metrics_async` and no code path that produces `sc_iterations`.
 * The self-corrective pipeline does not exist either: `RAGPipeline` implements only `retrieve`, `rerank`, `generate` and `chat`, and `rag_core.query_router` (imported by `POST /chat/stream`) is missing, so the streaming CRAG branch (`pipeline.stream_chat_self_corrective`) cannot run. Live-chat metrics are therefore produced only from the non-streaming `POST /chat` path.
 * The frontend reads `metrics.generation.sc_iterations` (ChatPage, EvaluationsPage, GoldenEvaluationsPage) and `latency_ms.sc_loops` (ChatPage), but nothing in the backend writes either key. `[INFERENCE]` Those panels therefore render empty.
-* `eval_worker/tasks.py` still calls `compute_chat_pipeline_metrics(..., sc_iterations=...)`, but `compute_chat_pipeline_metrics` / `compute_chat_pipeline_metrics_async` do not accept that keyword. `[INFERENCE]` The live metrics job therefore fails with a `TypeError` and records `status="failed"` with an error message on the message metrics row.
+* The live metrics job **no longer fails**, but it used to: `eval_worker/tasks.py` passed a seventh `sc_iterations` argument to `compute_chat_pipeline_metrics`, which accepts only `settings`, `question`, `answer`, `retrieved_chunks` and `reranked_chunks`. Every call raised `TypeError` and the row was recorded as `status="failed"` with no scores. The extra argument is gone (`tasks.py:74-80`) and the call now matches the signature (`chat_metrics.py:121-128`). The panel above still renders empty, but for the reason in the previous bullet, not because the job fails.
 * The golden runner applies neither `rag_mode` nor `self_corrective_max_loops` even though both are part of `EvalRunConfig`; `GoldenItemEvaluator.evaluate_item` runs retrieve → rerank → generate exactly once, and `PipelineConfig` does not define those fields at all (they are dropped when the worker builds the config).
-* The same worker/runner drift affects the offline path: `run_evaluation` calls `evaluator.evaluate_item(..., router_enabled=..., router_mode=...)` and then reads `result.latency_ms`, but `evaluate_item` accepts only `(item, config, k_values)` and `EvalItemResult` has no `latency_ms` field. `[INFERENCE]` Each golden item therefore raises and is stored with `status="failed"`.
+* **The offline (golden) path is broken at the first call in the loop.** `run_evaluation` calls `evaluator.evaluate_item(golden, config, k_values, router_enabled=…, router_mode=…)` (`tasks.py:189-192`), but `evaluate_item` accepts only `(item, config, k_values)` (`runner.py:49-54`), so the call raises `TypeError`. The lines after it would fail as well: `result.latency_ms` (`tasks.py:231`) is not a field of `EvalItemResult` (`runner.py:33-39`). Each item is caught and stored with `status="failed"`. Verified by reading both sides of the call; the earlier `[INFERENCE]` marker is removed.
 
 ---
 
@@ -222,10 +222,10 @@ Per-iteration metrics described in earlier revisions of this document are **not 
 |---|---|---|
 | Retrieval/rerank truncation `k` | `5` (hard-coded in both metric modules; `k_values` argument unused) | `retrieval_metrics.py`, `rerank_metrics.py` |
 | `eval_default_k` setting | `5` (not read by the metric functions) | `rag_shared/config.py` |
-| RRF / alpha fusion constant | none — the eval code reads no fusion parameter; the hybrid list is fused upstream by Qdrant `FusionQuery(fusion=Fusion.RRF)` over dense + sparse prefetches, which has no tunable constant | `shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:225-242` |
-| RAGAS judge model | `RAGAS_JUDGE_MODEL`, default `llama-3.3-70b-versatile` | `rag_shared/config.py`; `backend/.env.example` sets `Qwen3-32b` |
+| RRF constant | `k=60`, in the assistant `hybrid` path: `reciprocal_rank_fusion(..., k=60)` fuses the Qdrant dense list with the OpenSearch BM25 list | `libs/vector-core/src/vector_core/relational.py:140`, called from `libs/retrieval-core/src/retrieval_core/kp_retriever.py:67` |
+| RAGAS judge model | `RAGAS_JUDGE_MODEL`, default `llama-3.3-70b-versatile` | `rag_shared/config.py`; `backend/.env.example:68` sets `Gpt-oss-120b` |
 | RAGAS LLM endpoint | LiteLLM proxy: `LITELLM_PROXY` / `LITELLM_BASE_URL` / `settings.litellm_base_url`, normalized to `.../v1`; key from `LITELLM_API_KEY` / `OPENAI_API_KEY` / `settings.openai_api_key` | `ragas_client.py` |
-| RAGAS embeddings | `settings.embedding_model` (`nvidia-embed-passage`) via the same client — used by `AnswerRelevancy` and `AnswerCorrectness` | `ragas_client.py`, `rag_shared/config.py` |
+| RAGAS embeddings | `settings.embedding_model`, `nvidia-embed-textonly` in the shipped `.env` (2048 dimensions) — used by `AnswerRelevancy` and `AnswerCorrectness` | `ragas_client.py`, `rag_shared/config.py`, `backend/.env.example:40-42` |
 
 ```
 RAGAS_JUDGE_MODEL=Qwen3-32b                 # LLM judge for all RAGAS metrics (config default: llama-3.3-70b-versatile)

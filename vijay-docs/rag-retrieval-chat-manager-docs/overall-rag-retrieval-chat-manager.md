@@ -188,7 +188,13 @@ Two points to know before you touch this layer:
 
 ## 8. Tracing & Observability
 
-`init_tracing()` runs at process startup for both apps (`apps/rag-api/src/rag_api/main.py:44`, `apps/eval-worker/src/eval_worker/main.py:10`) and configures an OTLP HTTP exporter (`rag_shared/tracing.py`). Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` (`routes/chat.py:367`), `rag.chat.stream` for `POST /chat/stream` — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`) plus `latency.*` and `rag.chunks_used`. `emit_rag_pipeline_trace()` is used by the eval worker to emit synthetic traces for background metric runs, and `force_flush()` drains spans before worker exit.
+`init_tracing()` runs at process startup for both apps (`apps/rag-api/src/rag_api/main.py:44`, `apps/eval-worker/src/eval_worker/main.py:10`) and configures an OTLP HTTP exporter (`rag_shared/tracing.py`). The collector fans the traces out to Phoenix and Langfuse; the application names neither.
+
+Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` and for the assistant routes that delegate to it (`routes/chat.py:425`), `rag.chat.stream` for the streaming path (`chat.py:602` region) — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`), the OpenInference keys Phoenix reads (`openinference.span.kind`, `input.value`/`output.value`), plus `deployment.environment`, `rag.trace_mode`, `latency.*` and `rag.chunks_used`.
+
+Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header, and **a request without the header is production**. The Chat page sets it, so a turn sent from the UI while trying a pipeline is a test turn; an integrator's caller never sets it. The mode is stored on the trace row and the Real Time Monitoring page tags each log with it.
+
+A pipeline whose product has the Redis destination enabled also files each turn into a session trace whose id is derived from the session UUID, so every Q/A of a conversation sits in one trace. `emit_rag_pipeline_trace()` is used by the eval worker to emit the `rag.pipeline.metrics` span for background metric runs, **parented under the turn's own span** so one question produces one trace, and `force_flush()` drains spans before worker exit. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
 ## 9. HTTP Endpoint Inventory
 

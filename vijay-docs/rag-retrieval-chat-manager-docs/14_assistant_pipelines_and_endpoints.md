@@ -95,6 +95,12 @@ Only **enabled** destinations count. A product with a disabled Qdrant destinatio
 All routes live on port `8001` and take the shared API key dependency. Send `X-API-Key` when
 `API_KEY` is set. The native routes carry the `/api` prefix. The OpenAI-compatible route carries `/v1`.
 
+Every turn you send is tagged **`prod`**, because the backend reads the trace mode from an
+`X-RAG-Trace-Mode: test` header and **a request without that header is production**. Do not send the
+header from an integrating system: it exists so that a turn sent from the Chat page while somebody
+tries a pipeline is distinguishable from real traffic. See
+[16 — Observability and Tracing](./16_observability_tracing.md).
+
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/assistants/{slug}` | The resolved configuration. No secrets. |

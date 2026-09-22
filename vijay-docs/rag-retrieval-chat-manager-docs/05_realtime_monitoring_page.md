@@ -17,7 +17,7 @@ Scope corrections against the previous version of this document:
 
 ```
 +---------------------------------------------------------------------------------------------------------+
-|  Real Time Monitoring                                        [ Open Langfuse ]   [ Refresh ]              |
+|  Real Time Monitoring                                     [ Open Langfuse ] [ Open Phoenix ] [ Refresh ] |
 |  Monitor LLM response quality metrics across chats and pipeline configurations.                          |
 +---------------------------------------------------------------------------------------------------------+
 |  [ Latency View ] [ Metrics View ]                                        Limit  [ 10 | 20 | 50 | 100 ]  |
@@ -35,6 +35,7 @@ Scope corrections against the previous version of this document:
 
 Row content (`EvaluationsPage.tsx:279-373`):
 - Message ID (first 8 characters) and the trace query, clamped to two lines; `—` when the query is null.
+- A `test` or `prod` tag sits next to the message id, from `item.trace_mode` (`:307-319`). It is two-toned as well as two-worded — `trace-tag--test` and `trace-tag--prod` differ in border and text colour — so the modes are distinguishable at a glance and not by reading alone. A row written before migration `004` has a null mode and renders **no tag**, rather than a guess at one.
 - Time: `created_at` formatted relative (`formatRelativeTime`).
 - Latency View columns read `latency_ms` with fallbacks: `retrieve || retrieval`, `reranking || rerank`, `generate || generation`, `total`, rendered as `<n> ms`; missing keys render `—`.
 - Metrics View cells read the staged `metrics` object (or the latest CRAG iteration when present):
@@ -45,7 +46,7 @@ Row content (`EvaluationsPage.tsx:279-373`):
 - Config column: `retrieval_mode`, `rerank_enabled` (Yes/No) and `generation_model` when set.
 - Score formatting: percentages as `(v*100).toFixed(0)%`, other numbers as `toFixed(3)`, null/NaN as `—` (`:21-24`); `ScoreBar` is green at ≥0.85, blue at ≥0.65, red below (`:26-35`).
 - CRAG rows: when `metrics.generation.sc_iterations[]` is non-empty (Metrics View only), a `CRAG · N loop(s)` badge appears from `latency_ms.sc_loops` or the iteration count, and a row expander renders one sub-row per iteration (`loop`, `query`, the three metric groups). No backend producer of `sc_iterations`/`sc_loops` exists (Section 4.6), so this never triggers with the current pipeline.
-- Controls: view toggle "Latency View" (default) / "Metrics View", `Limit` selector 10/20/50/100 with default 20, header "Refresh" button, and an "Open Langfuse" link to `VITE_LANGFUSE_TRACES_URL` (default `https://cloud.langfuse.com`). Pagination is client-side at 10 rows per page.
+- Controls: view toggle "Latency View" (default) / "Metrics View", `Limit` selector 10/20/50/100 with default 20, header "Refresh" button, and **two** header links out to the backends: "Open Langfuse" to `VITE_LANGFUSE_TRACES_URL` (fallback `https://cloud.langfuse.com`) and "Open Phoenix" to `VITE_PHOENIX_URL` (fallback `https://app.phoenix.arize.com`). Both read the env var at build time, so a deep link can point straight at the traces instead of a landing page. Pagination is client-side at 10 rows per page.
 - States: error alert on failure, "Loading...", and "No stats available for the selected limit." when the response has no items.
 
 ---
@@ -109,7 +110,9 @@ When a chat turn completes, the API enqueues metrics only if `settings.ragas_ena
 `eval-worker` (`apps/eval-worker/src/eval_worker/main.py:15-18`) consumes that queue.
 
 ### 4.2 Computation (`apps/eval-worker/src/eval_worker/tasks.py:44-101`)
-`compute_chat_metrics(message_id)` loads the trace plus the assistant message, calls `eval_core.chat_metrics.compute_chat_pipeline_metrics(...)` with the stored `retrieved_chunks` / `reranked_chunks`, flattens the result, and calls `ChatRepository.update_metrics(..., status="completed")`. It then emits an OTel/Langfuse "synthetic" trace with the latency map, the scores and the chunks. Any exception is caught and stored as status `failed` with `error_message`.
+`compute_chat_metrics(message_id)` loads the trace plus the assistant message, calls `eval_core.chat_metrics.compute_chat_pipeline_metrics(settings, question=…, answer=…, retrieved_chunks=…, reranked_chunks=…)` with the stored `retrieved_chunks` / `reranked_chunks`, flattens the result with `flatten_chat_metrics`, and calls `ChatRepository.update_metrics(..., status="completed")`. It then emits a `rag.pipeline.metrics` span carrying the latency map, the scores and the chunks (`tasks.py:44-101`).
+
+That span is **parented under the turn's own span**, using the `otel_trace_id` and `otel_span_id` stored on the trace row, and it carries the turn's `trace_mode`. The scores therefore land inside the trace of the question they score, instead of producing a second trace for the same question. A trace row written before migration `004` has no ids, and the span opens its own trace instead. Any exception is caught and stored as status `failed` with `error_message`.
 
 ### 4.3 Metric definitions (`libs/eval-core/src/eval_core/chat_metrics.py`)
 - Guard: if `settings.ragas_enabled` is false, the function returns empty stages (`:52-53`).
@@ -131,13 +134,17 @@ The page expects `metrics.generation.sc_iterations[]` and `latency_ms.sc_loops` 
 ---
 
 ## 5. Known Implementation Caveats (verified in the current tree)
-`tasks.py:57-66` calls `compute_chat_pipeline_metrics(..., sc_iterations=parsed_latency.get("sc_iterations", []))`, but that function accepts only `settings`, `question`, `answer`, `retrieved_chunks`, `reranked_chunks` (`chat_metrics.py:121-128`; the async variant has the same parameter list, `:39-46`). The call raises `TypeError`, which the worker catches (`tasks.py:96-100`) and records as status `failed` with that error message.
 
-Consequence for the page: rows are still listed (the `chat_message_metrics` row is created as `pending` and the stats join matches it), but the Metrics View shows `failed` for every turn with no scores; the Latency View and Config column still show the trace values written at chat time. Fixing the mismatch requires either dropping the `sc_iterations` argument or extending `compute_chat_pipeline_metrics` to consume it.
+The `sc_iterations` mismatch recorded in earlier revisions of this document is **fixed**. `compute_chat_pipeline_metrics` accepted only `settings`, `question`, `answer`, `retrieved_chunks` and `reranked_chunks`, while the worker passed a seventh `sc_iterations` argument. Every call raised `TypeError`, the worker caught it, and every row landed on `failed` with no scores. The extra argument is gone and the call now matches the signature (`tasks.py:74-80`, `chat_metrics.py:121-128`), so Metrics View shows real scores.
+
+Two caveats remain, both narrower:
+
+- **The CRAG expander is still dead.** The page reads `metrics.generation.sc_iterations[]` and `latency_ms.sc_loops` (`EvaluationsPage.tsx:230-239`, `:296-301`), and nothing in the backend produces either key. Only the expander is affected; the ordinary score columns work.
+- **The token counts are always absent.** The worker reads `prompt_tokens` / `completion_tokens` out of `latency_ms` to put them on the emitted span (`tasks.py:85-86`), but no library writes those keys. They are silently dropped, not an error.
 
 ---
 
 ## 6. Refresh & Polling Behaviour
 - The page calls `GET /chat/stats` on mount (pages are mounted persistently, so this happens when the app loads), whenever `limit` changes (`EvaluationsPage.tsx:108-122`), and on the explicit **Refresh** button.
 - There is no `setInterval`/SSE/websocket in this page: values only change when the operator refreshes or changes the limit. (The separate Tracking page polls every 300 000 ms — `pages/TrackingPage.tsx:81-85`; the Chat page polls `/chat/messages/{id}/metrics` per message until status is `completed`/`failed`, max 40 attempts — `pages/ChatPage.tsx:283-287`.)
-- "Open Langfuse" links out to the configured Langfuse host; the trace data itself is emitted by the worker, not rendered here.
+- **Open Langfuse** and **Open Phoenix** link out to the configured backends; the trace data itself is emitted by the worker, not rendered here. Set `VITE_LANGFUSE_TRACES_URL` and `VITE_PHOENIX_URL` to a deep link to land on the traces rather than a landing page.

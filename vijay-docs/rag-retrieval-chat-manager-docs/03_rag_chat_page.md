@@ -108,8 +108,7 @@ The page sends only `query`, `session_id` and the toolbar overrides. It does **n
 `embedding_model` or `sparse_embedding_model`, because the assistant resolves them from its Knowledge Product.
 It also does not run the image-only dense override, because an assistant has no `modality` field.
 
-`streamChat` (`frontend/src/api.ts:900`) takes an optional `{ path }` argument. The default path stays
-`/chat/stream`.
+`streamChat` (`frontend/src/api.ts:916`) takes an optional `opts` object: `{ path?, traceMode? }`. The default path stays `/chat/stream`.
 
 ### 3.2 A legacy ingestion pipeline (the slug is null)
 
@@ -160,6 +159,12 @@ Server-side defaults come from `PipelineConfig`: `retrieval_mode=hybrid`, `retri
 
 The toolbar also shows the session indicator: a dot, plus the first 12 characters of the session id or
 `New Session`.
+
+### 3.5 The trace mode header
+
+Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:411`, `TRACE_MODE_HEADER` in `api.ts:912`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
+
+This matters because the page and an external caller hit **the same route**. The header is the only thing that separates them in the backends, and it is what tags the row `test` on the Real Time Monitoring page. A caller that knows nothing about the header cannot label real traffic as a test. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
 ---
 
