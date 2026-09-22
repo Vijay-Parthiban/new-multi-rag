@@ -25,6 +25,8 @@ import {
   RAG_STRATEGY_LABELS,
   assistantBaseUrl,
   assistantChatUrl,
+  assistantSessionUrl,
+  sessionMemoryFor,
   createPipeline,
   deletePipeline,
   destinationStoreLabel,
@@ -516,6 +518,7 @@ export default function PipelinesPage() {
   const viewingStoreDestinations = (viewing?.knowledge_product?.destinations ?? []).filter((d) =>
     enabledRetrievalDestinations([d]).has(d.destination_type),
   );
+  const viewingMemory = sessionMemoryFor(viewing?.knowledge_product?.destinations);
 
   const canCreate =
     draft.name.trim().length >= 2 &&
@@ -750,6 +753,9 @@ export default function PipelinesPage() {
                 <span className="pipeline-chip">
                   {guardrails.find((g) => g.id === p.guardrails_config_id)?.name ?? "No guardrails"}
                 </span>
+                {sessionMemoryFor(p.knowledge_product?.destinations).enabled && (
+                  <span className="pipeline-chip pipeline-chip--memory">Memory</span>
+                )}
               </div>
 
               <div className="pipeline-card-endpoint">
@@ -890,6 +896,44 @@ export default function PipelinesPage() {
             ) : (
               <p className="muted">
                 No endpoint. This is a legacy ingestion pipeline, which the assistant routes do not serve.
+              </p>
+            )}
+          </section>
+
+          <section className="view-section">
+            <h3 className="view-section-title">Session memory</h3>
+            {viewingMemory.enabled ? (
+              <>
+                <p className="view-note">
+                  This assistant remembers what you send under one <code>session_id</code>. Send the
+                  same id on the next turn and it sees the earlier exchange, including a follow-up
+                  that only makes sense in context. The memory clears when you call the end endpoint,
+                  or after{" "}
+                  {viewingMemory.ttlSeconds
+                    ? `${Math.round(viewingMemory.ttlSeconds / 3600)} hours`
+                    : "its TTL"}{" "}
+                  without a turn.
+                </p>
+                {viewing.slug && (
+                  <>
+                    <EndpointRow
+                      label="Read a session"
+                      url={assistantSessionUrl(viewing.slug)}
+                      hint="GET, replace {session_id}. Reports the turns this assistant remembers."
+                    />
+                    <EndpointRow
+                      label="End a session"
+                      url={assistantSessionUrl(viewing.slug)}
+                      hint="DELETE, replace {session_id}. Clears the memory. Safe to retry."
+                    />
+                  </>
+                )}
+              </>
+            ) : (
+              <p className="muted">
+                Session memory is off. This Knowledge Product has no enabled Redis destination, so
+                each turn is answered on its own. Enable the Redis destination in the Ingestion
+                Manager to give the assistant a conversation.
               </p>
             )}
           </section>

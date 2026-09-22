@@ -32,7 +32,15 @@ def build_rag_prompt(
     chunks: list[RerankedChunk],
     *,
     system_prompt: str | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
+    """Build the RAG messages.
+
+    ``history`` holds earlier turns of the same session as ``{"role", "content"}``
+    pairs. They sit between the system message and the context message, so the
+    grounding rules still apply to the question and the citations still point at
+    the passages in the final user message.
+    """
     if chunks:
         context_parts = []
         for i, chunk in enumerate(chunks, start=1):
@@ -43,8 +51,44 @@ def build_rag_prompt(
         context = "(No sources were retrieved for this question.)"
 
     user = f"Context:\n{context}\n\nQuestion: {query}"
-    return [
+    messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt or RAG_SYSTEM_PROMPT},
+    ]
+    if history:
+        messages.extend({"role": turn["role"], "content": turn["content"]} for turn in history)
+    messages.append({"role": "user", "content": user})
+    return messages
+
+
+QUERY_REWRITE_SYSTEM_PROMPT = (
+    "You rewrite a follow-up question into a standalone question that can be "
+    "searched on its own.\n\n"
+    "Rules:\n"
+    "- Resolve pronouns and references from the conversation, for example replace "
+    "\"his\" with the person the conversation is about.\n"
+    "- Keep the user's meaning and the user's language. Do not answer the question.\n"
+    "- If the follow-up already stands on its own, return it unchanged.\n"
+    "- Reply with the question only, on one line. No preamble, no quotes."
+)
+
+
+def build_query_rewrite_prompt(
+    question: str,
+    history: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    lines = []
+    for turn in history:
+        speaker = "User" if turn.get("role") == "user" else "Assistant"
+        lines.append(f"{speaker}: {turn.get('content', '')}")
+    transcript = "\n".join(lines) if lines else "(No earlier turns.)"
+
+    user = (
+        f"Conversation:\n{transcript}\n\n"
+        f"Follow-up question: {question}\n\n"
+        f"Standalone question:"
+    )
+    return [
+        {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 

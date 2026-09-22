@@ -186,6 +186,7 @@ Each card shows, from top to bottom:
 2. The `description`.
 3. Two labelled rows: `Knowledge Product` and `Chat model`.
 4. Two chips: the prompt template name or `No prompt`; the guardrails config name or `No guardrails`.
+   A third `Memory` chip appears when the product's Redis destination is enabled.
 5. An `Endpoint` block holding `assistantBaseUrl(slug)` in monospace. A null slug reads
    `No endpoint. This is a legacy ingestion pipeline.`
 6. The actions `View` and `Delete`.
@@ -207,6 +208,16 @@ Clicking a card opens a read-only dialog titled with the pipeline name. It has t
 
 A record with a null slug reads
 `No endpoint. This is a legacy ingestion pipeline, which the assistant routes do not serve.`
+
+**Session memory.** The gate is the product's Redis destination, computed by `sessionMemoryFor()` in
+`frontend/src/api.ts`, which mirrors `session_memory_for_product()` on the backend.
+
+| Product state | What the dialog shows |
+|---|---|
+| Redis enabled | One sentence explaining the `session_id`, the TTL in hours, and two `EndpointRow`s: `Read a session` (GET) and `End a session` (DELETE), both built by `assistantSessionUrl(slug)` with a literal `{session_id}` placeholder |
+| Redis disabled | `Session memory is off.` plus the reason and where to enable it |
+
+See [15 — Assistant Session Memory](./15_assistant_session_memory.md) for the endpoints themselves.
 
 **Configuration.** A `.view-grid` of `Knowledge Product` (with its `StatusBadge`), `RAG strategy`,
 `Chat model`, `Prompt template`, `Guardrails config`, `Created` and `Updated`.

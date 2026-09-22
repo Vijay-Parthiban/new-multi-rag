@@ -92,7 +92,7 @@ Only **enabled** destinations count. A product with a disabled Qdrant destinatio
 
 ## 3. Endpoint Reference
 
-All four routes live on port `8001` and take the shared API key dependency. Send `X-API-Key` when
+All routes live on port `8001` and take the shared API key dependency. Send `X-API-Key` when
 `API_KEY` is set. The native routes carry the `/api` prefix. The OpenAI-compatible route carries `/v1`.
 
 | Method | Path | Purpose |
@@ -101,6 +101,11 @@ All four routes live on port `8001` and take the shared API key dependency. Send
 | `POST` | `/api/assistants/{slug}/chat` | Native chat, one JSON answer. |
 | `POST` | `/api/assistants/{slug}/chat/stream` | Native chat, server-sent events. |
 | `POST` | `/v1/assistants/{slug}/chat/completions` | The OpenAI chat-completions shape. |
+| `GET` | `/api/assistants/{slug}/sessions/{session_id}` | What the assistant remembers for one session. |
+| `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | End the session and clear its memory. |
+
+The last two exist only when the product's Redis destination is enabled. See
+[15 — Assistant Session Memory](./15_assistant_session_memory.md).
 
 ### 3.1 `GET /api/assistants/{slug}`
 
@@ -116,7 +121,8 @@ Response fields:
 | `knowledge_product` | `{id, name, status, chunk_strategy, text_embedding_model}` |
 | `stores` | `{qdrant_collection, opensearch_index, pg_schema, pg_table}` |
 | `prompt_template_id`, `guardrails_config_id` | the attached ids, or null |
-| `endpoints` | `{chat, chat_stream, openai_base_url}`, relative paths |
+| `session_memory` | `{enabled, ttl_seconds, reason}`. `enabled` is the product's Redis destination; `reason` explains `false` |
+| `endpoints` | `{chat, chat_stream, openai_base_url, session_get, session_end}`, relative paths |
 
 ```bash
 curl -X GET http://localhost:8001/api/assistants/resume-assistant

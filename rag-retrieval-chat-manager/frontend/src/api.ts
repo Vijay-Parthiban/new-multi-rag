@@ -1192,6 +1192,33 @@ export function assistantChatUrl(slug: string): string {
   return `${RAG_API_URL}/api/assistants/${slug}/chat`;
 }
 
+/**
+ * The absolute URL for one session of an assistant. A GET reads what the session
+ * remembers, a DELETE ends it. `{session_id}` is the literal template a caller
+ * replaces, so the UI can show the shape before any session exists.
+ */
+export function assistantSessionUrl(slug: string, sessionId = "{session_id}"): string {
+  return `${RAG_API_URL}/api/assistants/${slug}/sessions/${sessionId}`;
+}
+
+/**
+ * Session memory needs the product's Redis destination, which is the same gate the
+ * backend applies. cache_redisvl is not a retrieval destination: it serves no RAG
+ * strategy, it only provides the namespace and the TTL for the conversation.
+ */
+export function sessionMemoryFor(
+  destinations: PipelineDestinationSummary[] | undefined,
+): { enabled: boolean; ttlSeconds: number | null } {
+  const redis = (destinations ?? []).find(
+    (d) => d.enabled && d.destination_type === "cache_redisvl",
+  );
+  const ttl = redis?.config?.ttl_seconds;
+  return {
+    enabled: Boolean(redis),
+    ttlSeconds: typeof ttl === "number" ? ttl : null,
+  };
+}
+
 export async function getLiteLLMModels(modelKind: string): Promise<{ id: string; label: string }[]> {
   const res = await apiFetch<{ models: ({ id: string; label?: string } | string)[] }>(
     `/api/knowledge-products/config/litellm-models?model_kind=${encodeURIComponent(modelKind)}`,

@@ -13,6 +13,8 @@ from typing import Any
 
 from rag_shared.types import KpDestination, KpStores, KpStrategy
 
+from rag_core.session_memory import DEFAULT_TTL_S
+
 STRATEGY_VECTOR = KpStrategy.VECTOR
 STRATEGY_LEXICAL = KpStrategy.LEXICAL
 STRATEGY_RELATIONAL = KpStrategy.RELATIONAL
@@ -46,6 +48,12 @@ RETRIEVAL_DESTINATIONS: tuple[str, ...] = (
 )
 
 
+# cache_redisvl is not a retrieval destination: it serves no strategy and holds no
+# searchable copy of the chunks. It is read here for its namespace and its TTL, which
+# is exactly what session memory needs.
+SESSION_MEMORY_DESTINATION = "cache_redisvl"
+
+
 class StrategyUnavailable(ValueError):
     """A chosen strategy needs a destination the product does not serve."""
 
@@ -71,6 +79,24 @@ def _config_for(destinations: list[dict[str, Any]], destination_type: str) -> di
             config = d.get("config")
             return config if isinstance(config, dict) else {}
     return {}
+
+
+def session_memory_for_product(destinations: list[dict[str, Any]]) -> tuple[str, int] | None:
+    """The Redis key prefix and TTL for session memory, or None when Redis is off.
+
+    This is the whole gate for the feature. A product whose Redis destination is
+    enabled gives every assistant of that product a session memory; a product
+    without one keeps its assistants stateless.
+
+    The prefix is the destination's own namespace, so one product's sessions can
+    never collide with another's, and the TTL is the one the destination already
+    carries.
+    """
+    config = _config_for(destinations, SESSION_MEMORY_DESTINATION)
+    prefix = config.get("index_prefix")
+    if not prefix:
+        return None
+    return str(prefix), int(config.get("ttl_seconds") or DEFAULT_TTL_S)
 
 
 def strategies_for_product(destinations: list[dict[str, Any]]) -> list[str]:

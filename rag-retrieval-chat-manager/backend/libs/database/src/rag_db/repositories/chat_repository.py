@@ -16,11 +16,13 @@ class ChatRepository:
     def create_session(
         self,
         *,
+        session_id: uuid.UUID | None = None,
         source_type: str | None = None,
         source_id: str | None = None,
         metadata: dict | None = None,
     ) -> ChatSession:
         session = ChatSession(
+            id=session_id or uuid.uuid4(),
             source_type=source_type,
             source_id=source_id,
             metadata_=strip_null_bytes(metadata or {}),

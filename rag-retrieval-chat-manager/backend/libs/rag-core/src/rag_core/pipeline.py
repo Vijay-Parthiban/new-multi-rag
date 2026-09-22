@@ -18,6 +18,16 @@ from rag_core.schemas import (
 )
 
 
+def _history_payload(cfg: PipelineConfig) -> list[dict[str, str]] | None:
+    """Flatten the configured turns into the plain pairs the prompt builder takes.
+
+    generation-core does not depend on rag-core, so the shared shape is a dict.
+    """
+    if not cfg.history:
+        return None
+    return [{"role": turn.role, "content": turn.content} for turn in cfg.history]
+
+
 class RAGPipeline:
     def __init__(
         self,
@@ -90,6 +100,18 @@ class RAGPipeline:
     def from_request(self, body: PipelineRequest) -> tuple[PipelineConfig, str | None, str | None]:
         return body.to_config(), body.source_type, body.source_id
 
+    def _effective_query(self, query: str, cfg: PipelineConfig) -> str:
+        """Resolve a follow-up into a standalone question when the session has history.
+
+        The rewritten question drives retrieval, rerank and the prompt, so all
+        three agree on what was asked. An assistant with no history returns the
+        question unchanged and pays nothing.
+        """
+        history = _history_payload(cfg)
+        if not history:
+            return query
+        return self._generator.rewrite_query(query, history, model=cfg.generation_model)
+
     def chat(
         self,
         query: str,
@@ -101,6 +123,10 @@ class RAGPipeline:
         cfg = config or PipelineConfig()
         latency: dict[str, int] = {}
         total_start = time.perf_counter()
+
+        original_query = query
+        query = self._effective_query(query, cfg)
+        effective_query = query if query != original_query else None
 
         t0 = time.perf_counter()
         retrieved = self.retrieve(
@@ -124,6 +150,7 @@ class RAGPipeline:
             vision_model=cfg.vision_model,
             fusion_model=cfg.fusion_model,
             system_prompt=cfg.system_prompt,
+            history=_history_payload(cfg),
         )
         latency.update(generation.latency_ms)
         latency["generate"] = generation.latency_ms.get("generate_total", 0)
@@ -138,6 +165,7 @@ class RAGPipeline:
             vision_answer=generation.vision_answer,
             text_chunk_count=generation.text_chunk_count,
             image_chunk_count=generation.image_chunk_count,
+            effective_query=effective_query,
         )
 
     def stream_chat(
@@ -156,6 +184,11 @@ class RAGPipeline:
         cfg = config or PipelineConfig()
         latency: dict[str, int] = {}
         total_start = time.perf_counter()
+
+        if cfg.history:
+            yield StreamEvent(type="status", message="Resolving the question against the session")
+        stream_original_query = query
+        query = self._effective_query(query, cfg)
 
         yield StreamEvent(type="status", message="Retrieving context")
 
@@ -182,6 +215,7 @@ class RAGPipeline:
             reranked,
             model=cfg.generation_model,
             system_prompt=cfg.system_prompt,
+            history=_history_payload(cfg),
         ):
             parts.append(delta)
             yield StreamEvent(type="token", content=delta)
@@ -206,6 +240,7 @@ class RAGPipeline:
                 "reranked_chunks": [chunk.model_dump() for chunk in reranked],
                 "latency_ms": latency,
                 "route": "normal",
+                "effective_query": query if query != stream_original_query else None,
             },
         )
 

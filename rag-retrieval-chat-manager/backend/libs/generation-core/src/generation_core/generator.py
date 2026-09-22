@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Iterator
 
@@ -8,9 +9,26 @@ from rag_shared.chunk_utils import image_data_uri, split_chunks
 from rag_shared.config import Settings
 from rag_shared.types import RerankedChunk
 
-from generation_core.prompt_builder import NO_SOURCES_ANSWER, build_fusion_prompt, build_rag_prompt
+from generation_core.prompt_builder import (
+    NO_SOURCES_ANSWER,
+    build_fusion_prompt,
+    build_query_rewrite_prompt,
+    build_rag_prompt,
+)
 from generation_core.result import GenerationResult
 from generation_core.vision_generator import VisionGenerator
+
+logger = logging.getLogger(__name__)
+
+# A rewrite that runs away from the question is worse than no rewrite, because
+# retrieval is then searching for something the user never asked. Four times the
+# question, plus slack for the resolved references, is the ceiling.
+_REWRITE_GROWTH_FACTOR = 4
+_REWRITE_SLACK_CHARS = 80
+
+# One question, one line. A dedicated cap keeps the rewrite from paying for the
+# generation budget. Raise it if a rewrite ever legitimately needs more.
+_REWRITE_MAX_TOKENS = 120
 
 
 class Generator:
@@ -26,6 +44,48 @@ class Generator:
             model=settings.vision_model,
         )
 
+    def rewrite_query(
+        self,
+        question: str,
+        history: list[dict[str, str]],
+        *,
+        model: str | None = None,
+    ) -> str:
+        """Turn a follow-up into a standalone question for retrieval.
+
+        Returns the original question whenever the rewrite cannot be trusted:
+        no history, a call failure, an empty reply, or a reply that grew so far
+        past the question that it is answering rather than rewriting. Retrieval
+        quality depends on this, so a bad rewrite is worse than none.
+        """
+        if not history:
+            return question
+        try:
+            response = self._client.chat.completions.create(
+                model=model or self._settings.chat_model,
+                messages=build_query_rewrite_prompt(question, history),
+                max_tokens=_REWRITE_MAX_TOKENS,
+                temperature=0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - a rewrite must not fail the turn
+            logger.warning("query rewrite call failed error=%s", exc)
+            return question
+
+        raw = (response.choices[0].message.content or "").strip()
+        if not raw:
+            return question
+        rewritten = raw.splitlines()[0].strip().strip('"').strip("'").strip()
+        if not rewritten:
+            return question
+        if len(rewritten) > len(question) * _REWRITE_GROWTH_FACTOR + _REWRITE_SLACK_CHARS:
+            logger.warning(
+                "query rewrite discarded as runaway question_chars=%s rewritten_chars=%s",
+                len(question),
+                len(rewritten),
+            )
+            return question
+        return rewritten
+
     def _generate_text(
         self,
         query: str,
@@ -35,8 +95,9 @@ class Generator:
         max_tokens: int | None = None,
         temperature: float | None = None,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> str:
-        messages = build_rag_prompt(query, chunks, system_prompt=system_prompt)
+        messages = build_rag_prompt(query, chunks, system_prompt=system_prompt, history=history)
         response = self._client.chat.completions.create(
             model=model or self._settings.chat_model,
             messages=messages,
@@ -94,6 +155,7 @@ class Generator:
         max_tokens: int | None = None,
         temperature: float | None = None,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> Iterator[str]:
         """Yield the answer text in deltas.
 
@@ -112,6 +174,7 @@ class Generator:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 system_prompt=system_prompt,
+                history=history,
             )
             if result.answer:
                 yield result.answer
@@ -120,7 +183,9 @@ class Generator:
         if not text_chunks:
             return
 
-        messages = build_rag_prompt(query, text_chunks, system_prompt=system_prompt)
+        messages = build_rag_prompt(
+            query, text_chunks, system_prompt=system_prompt, history=history
+        )
         stream = self._client.chat.completions.create(
             model=model or self._settings.chat_model,
             messages=messages,
@@ -146,6 +211,7 @@ class Generator:
         max_tokens: int | None = None,
         temperature: float | None = None,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> GenerationResult:
         text_chunks, image_chunks = split_chunks(chunks)
         latency: dict[str, int] = {}
@@ -162,6 +228,7 @@ class Generator:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 system_prompt=system_prompt,
+                history=history,
             )
             latency["generate_text"] = int((time.perf_counter() - t0) * 1000)
 

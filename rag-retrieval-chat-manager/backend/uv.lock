@@ -2872,6 +2872,7 @@ source = { editable = "libs/rag-core" }
 dependencies = [
     { name = "generation-core" },
     { name = "rag-shared" },
+    { name = "redis" },
     { name = "reranker-core" },
     { name = "retrieval-core" },
 ]
@@ -2880,6 +2881,7 @@ dependencies = [
 requires-dist = [
     { name = "generation-core", editable = "libs/generation-core" },
     { name = "rag-shared", editable = "libs/shared" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "reranker-core", editable = "libs/reranker-core" },
     { name = "retrieval-core", editable = "libs/retrieval-core" },
 ]

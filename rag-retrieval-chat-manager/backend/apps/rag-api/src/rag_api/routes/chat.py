@@ -7,6 +7,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from rag_core import PipelineRequest
+from rag_core.schemas import SessionTurn
+from rag_core.session_memory import DEFAULT_TTL_S, SessionMemory
 from rag_db.models.chat import ChatPipelineTrace
 from rag_db.repositories.chat_repository import ChatRepository
 from rag_db.repositories.guardrails_repository import GuardrailsRepository
@@ -22,6 +24,22 @@ router = APIRouter(tags=["chat"])
 class ChatRequest(PipelineRequest):
     session_id: uuid.UUID | None = None
     guardrails_config_id: uuid.UUID | None = None
+    # The assistant route fills these in when the pipeline's Knowledge Product has
+    # the cache_redisvl destination enabled. Absent means the turn is stateless.
+    session_memory_prefix: str | None = None
+    session_memory_ttl_s: int | None = None
+
+
+def _session_memory(settings: Settings, body: ChatRequest) -> SessionMemory | None:
+    """The conversation memory for this turn, or None when the product has no Redis."""
+    if not body.session_memory_prefix:
+        return None
+    return SessionMemory(
+        settings,
+        prefix=body.session_memory_prefix,
+        ttl_s=body.session_memory_ttl_s or DEFAULT_TTL_S,
+    )
+
 
 
 class SourceCitation(BaseModel):
@@ -37,6 +55,9 @@ class ChatResponse(BaseModel):
     sources: list[SourceCitation]
     trace_id: uuid.UUID | None = None
     metrics_status: str
+    # Present only when the session memory rewrote a follow-up into a standalone
+    # question. It is what retrieval actually searched for.
+    effective_query: str | None = None
 
 
 class MetricsResponse(BaseModel):
@@ -258,7 +279,14 @@ def _persist_chat_turn(
         if session_id and repo.get_session(session_id):
             sid = session_id
         else:
-            session = repo.create_session(source_type=source_type, source_id=source_id)
+            # Keep the caller's id when the row does not exist yet. The session
+            # memory is keyed on it, so minting a second id here would split one
+            # conversation across two keys.
+            session = repo.create_session(
+                session_id=session_id,
+                source_type=source_type,
+                source_id=source_id,
+            )
             sid = session.id
 
         repo.add_message(sid, "user", query)
@@ -364,15 +392,23 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
     config, source_type, source_id = pipeline.from_request(body)
     generation_model = body.generation_model or settings.chat_model
 
+    # One id for the whole turn. The memory key and the chat_sessions row are both
+    # derived from it, so minting it in two places would split one conversation.
+    turn_session_id = body.session_id or uuid.uuid4()
+    memory = _session_memory(settings, body)
+    if memory:
+        config.history = memory.load(str(turn_session_id))
+
     with rag_pipeline_span(
         "rag.chat",
-        session_id=str(body.session_id) if body.session_id else None,
+        session_id=str(turn_session_id),
         query=body.query,
         observation_type="generation",
         model=generation_model,
         metadata={
             "retrieval_mode": config.retrieval_mode.value,
             "rerank_enabled": config.rerank_enabled,
+            "session_turns": len(config.history),
         },
     ) as span:
         # ── Guardrails: input validation ─────────────────────────
@@ -390,7 +426,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
                 session_id, message_id, trace_id, metrics_status = _persist_chat_turn(
                     settings=settings,
                     queue=queue,
-                    session_id=body.session_id,
+                    session_id=turn_session_id,
                     source_type=source_type,
                     source_id=source_id,
                     query=body.query,
@@ -453,7 +489,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         session_id, message_id, trace_id, metrics_status = _persist_chat_turn(
             settings=settings,
             queue=queue,
-            session_id=body.session_id,
+            session_id=turn_session_id,
             source_type=source_type,
             source_id=source_id,
             query=body.query,
@@ -467,6 +503,17 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
             reranked_chunks=[c.model_dump() for c in result.reranked_chunks],
             latency_ms=latency_ms,
         )
+
+        # Remember the exchange. A guardrail-blocked turn is not stored: it is not
+        # part of the conversation, and replaying the canned block would poison it.
+        if memory:
+            memory.append(
+                str(session_id),
+                [
+                    SessionTurn(role="user", content=body.query),
+                    SessionTurn(role="assistant", content=answer),
+                ],
+            )
 
         set_span_attr(span, "langfuse.session.id", str(session_id))
         set_span_attr(span, "langfuse.observation.metadata.message_id", str(message_id))
@@ -487,6 +534,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         sources=sources,
         trace_id=trace_id,
         metrics_status=metrics_status,
+        effective_query=result.effective_query,
     )
 
 
@@ -510,6 +558,12 @@ async def chat_stream(request: Request, body: ChatRequest):
 
     config, source_type, source_id = pipeline.from_request(body)
     generation_model = body.generation_model or settings.chat_model
+
+    # Same one-id rule as /chat: the memory key and the chat_sessions row agree.
+    turn_session_id = body.session_id or uuid.uuid4()
+    memory = _session_memory(settings, body)
+    if memory:
+        config.history = memory.load(str(turn_session_id))
 
     # Capture request context so the worker thread nests under the same trace.
     # iterate_in_threadpool resumes the generator across pool threads, which
@@ -539,7 +593,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                     sid, msg_id, _, _ = _persist_chat_turn(
                         settings=settings,
                         queue=job_queue,
-                        session_id=body.session_id,
+                        session_id=turn_session_id,
                         source_type=source_type,
                         source_id=source_id,
                         query=body.query,
@@ -567,7 +621,7 @@ async def chat_stream(request: Request, body: ChatRequest):
             out_guard: str | None = None
             with rag_pipeline_span(
                 "rag.chat.stream",
-                session_id=str(body.session_id) if body.session_id else None,
+                session_id=str(turn_session_id),
                 query=body.query,
                 observation_type="generation",
                 model=generation_model,
@@ -634,7 +688,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                 sid, msg_id, _, metrics_status = _persist_chat_turn(
                     settings=settings,
                     queue=job_queue,
-                    session_id=body.session_id,
+                    session_id=turn_session_id,
                     source_type=source_type,
                     source_id=source_id,
                     query=body.query,
@@ -651,6 +705,16 @@ async def chat_stream(request: Request, body: ChatRequest):
                 )
                 set_span_attr(span, "langfuse.session.id", str(sid))
                 set_span_attr(span, "langfuse.observation.metadata.message_id", str(msg_id))
+
+                # Same rule as /chat: a blocked turn is not conversation.
+                if memory and not out_blocked and answer:
+                    memory.append(
+                        str(sid),
+                        [
+                            SessionTurn(role="user", content=body.query),
+                            SessionTurn(role="assistant", content=answer),
+                        ],
+                    )
 
             if out_blocked:
                 _emit(f"data: {json.dumps(_blocked_payload(content=answer, guard=out_guard, phase='output', session_id=sid, message_id=msg_id))}\n\n")

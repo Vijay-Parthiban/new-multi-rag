@@ -23,16 +23,18 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from rag_core.assistant import (
     STRATEGY_LABELS,
     StrategyUnavailable,
     resolve_strategy,
+    session_memory_for_product,
     stores_for_product,
     strategies_for_product,
 )
+from rag_core.session_memory import SessionMemory, SessionMemoryUnavailable
 from rag_db.repositories.prompt_repository import PromptRepository
 from rag_db.services.database import get_session_factory
 from rag_shared.config import Settings
@@ -77,6 +79,37 @@ class OpenAIChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     user: str | None = None
+    # OpenAI defines no session field. This extension carries the memory key, and
+    # `user` is the fallback so a client that already sends a stable id gets memory
+    # without changing anything.
+    session_id: str | None = None
+
+
+def _session_uuid(explicit: str | None, fallback: str | None) -> uuid.UUID | None:
+    """Resolve the session key from an OpenAI body.
+
+    An explicit `session_id` that is not a UUID is rejected, because the caller
+    asked for memory and would otherwise silently get none. A `user` that is not a
+    UUID is ignored: it is an abuse-tracking field, and failing on it would break
+    clients that never intended it as a session.
+    """
+    if explicit:
+        try:
+            return uuid.UUID(explicit)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_SESSION_ID",
+                    "message": f"session_id must be a UUID, got '{explicit[:64]}'.",
+                },
+            ) from exc
+    if fallback:
+        try:
+            return uuid.UUID(fallback)
+        except ValueError:
+            logger.debug("openai_user_is_not_a_session_id user=%s", fallback[:64])
+    return None
 
 
 def _headers(settings: Settings) -> dict[str, str]:
@@ -160,6 +193,7 @@ async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
 
     pipeline["_stores"] = stores
     pipeline["_strategies"] = strategies_for_product(destinations)
+    pipeline["_session_memory"] = session_memory_for_product(destinations)
     return pipeline
 
 
@@ -209,6 +243,10 @@ async def _build_chat_request(
         system_prompt=_system_prompt_for(settings, pipeline),
         strategy=pipeline["rag_strategy"],
         stores=stores,
+        # Absent when the product has no enabled Redis destination, which is what
+        # makes the turn stateless.
+        session_memory_prefix=(pipeline.get("_session_memory") or (None, None))[0],
+        session_memory_ttl_s=(pipeline.get("_session_memory") or (None, None))[1],
         # A request-level guardrails config wins, so the Chat page can try a
         # different one without editing the pipeline.
         guardrails_config_id=body.guardrails_config_id or _as_uuid(pipeline.get("guardrails_config_id")),
@@ -231,6 +269,7 @@ async def get_assistant(slug: str, request: Request) -> dict[str, Any]:
     pipeline = await _resolve_assistant(request, slug)
     stores = pipeline["_stores"]
     product = pipeline.get("knowledge_product") or {}
+    memory = pipeline.get("_session_memory")
     return {
         "slug": pipeline["slug"],
         "name": pipeline["name"],
@@ -251,10 +290,19 @@ async def get_assistant(slug: str, request: Request) -> dict[str, Any]:
         "stores": stores.model_dump(),
         "prompt_template_id": pipeline.get("prompt_template_id"),
         "guardrails_config_id": pipeline.get("guardrails_config_id"),
+        "session_memory": {
+            "enabled": memory is not None,
+            "ttl_seconds": memory[1] if memory else None,
+            "reason": None
+            if memory
+            else "The Knowledge Product has no enabled Redis destination.",
+        },
         "endpoints": {
-            "chat": f"/api/assistants/{pipeline['slug']}/chat",
-            "chat_stream": f"/api/assistants/{pipeline['slug']}/chat/stream",
-            "openai_base_url": f"/v1/assistants/{pipeline['slug']}",
+            "chat": f"/api/assistants/{slug}/chat",
+            "chat_stream": f"/api/assistants/{slug}/chat/stream",
+            "openai_base_url": f"/v1/assistants/{slug}",
+            "session_get": f"/api/assistants/{slug}/sessions/{{session_id}}",
+            "session_end": f"/api/assistants/{slug}/sessions/{{session_id}}",
         },
     }
 
@@ -274,6 +322,65 @@ async def assistant_chat(
 async def assistant_chat_stream(slug: str, body: AssistantChatRequest, request: Request):
     built = await _build_chat_request(request, slug, body)
     return await chat_stream(request, built)
+
+
+def _memory_for(pipeline: dict[str, Any], settings: Settings) -> SessionMemory:
+    """The session memory of this assistant, or 422 when the product has no Redis."""
+    memory = pipeline.get("_session_memory")
+    if not memory:
+        product = (pipeline.get("knowledge_product") or {}).get("name")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SESSION_MEMORY_UNAVAILABLE",
+                "message": (
+                    f"Assistant '{pipeline['slug']}' has no session memory because "
+                    f"'{product or 'its Knowledge Product'}' has no enabled Redis destination. "
+                    "Enable it in the Ingestion Manager."
+                ),
+            },
+        )
+    return SessionMemory(settings, prefix=memory[0], ttl_s=memory[1])
+
+
+@router.get("/api/assistants/{slug}/sessions/{session_id}")
+async def get_assistant_session(
+    slug: str, session_id: uuid.UUID, request: Request
+) -> dict[str, Any]:
+    """What this assistant remembers for one session.
+
+    Read-only, and safe to call on a session that does not exist: `exists` is then
+    false and `turns` is 0.
+    """
+    settings: Settings = request.app.state.settings
+    pipeline = await _resolve_assistant(request, slug)
+    return _memory_for(pipeline, settings).inspect(str(session_id))
+
+
+@router.delete("/api/assistants/{slug}/sessions/{session_id}", status_code=204)
+async def end_assistant_session(
+    slug: str, session_id: uuid.UUID, request: Request
+) -> Response:
+    """End the session and drop everything it remembered.
+
+    This is the only way to clear memory, and it is idempotent: ending a session
+    that already expired, or ending one twice, still answers 204. A caller may
+    therefore retry a failed end without checking first.
+    """
+    settings: Settings = request.app.state.settings
+    pipeline = await _resolve_assistant(request, slug)
+    memory = _memory_for(pipeline, settings)
+    try:
+        memory.clear(str(session_id))
+    except SessionMemoryUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SESSION_MEMORY_UNAVAILABLE",
+                "message": f"Redis refused the request: {exc}",
+            },
+        ) from exc
+    return Response(status_code=204)
 
 
 def _openai_chunk(slug: str, chunk_id: str, created: int, *, content: str | None = None, finish: str | None = None) -> str:
@@ -346,7 +453,14 @@ async def assistant_openai_completions(slug: str, body: OpenAIChatRequest, reque
             }
         }
 
-    built = await _build_chat_request(request, slug, AssistantChatRequest(query=query))
+    built = await _build_chat_request(
+        request,
+        slug,
+        AssistantChatRequest(
+            query=query,
+            session_id=_session_uuid(body.session_id, body.user),
+        ),
+    )
 
     if body.stream:
         inner = await chat_stream(request, built)
@@ -359,6 +473,9 @@ async def assistant_openai_completions(slug: str, body: OpenAIChatRequest, reque
         "object": "chat.completion",
         "created": int(time.time()),
         "model": slug,
+        # Not part of the OpenAI shape. It lets a client that did not send an id
+        # learn the session it just used, so the next turn can continue it.
+        "session_id": str(result.session_id),
         "choices": [
             {
                 "index": 0,

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from rag_shared.types import KpStores, RerankedChunk, RetrievedChunk, SearchMode
+
+
+class SessionTurn(BaseModel):
+    """One remembered turn of a session. Only the text is kept."""
+
+    role: Literal["user", "assistant"]
+    content: str
 
 
 class PipelineConfig(BaseModel):
@@ -22,6 +31,10 @@ class PipelineConfig(BaseModel):
     # legacy scrape-collection path.
     strategy: str | None = None
     stores: KpStores | None = None
+    # Earlier turns of this session, replayed ahead of the context message. Loaded
+    # from the session memory, never from the request body: a caller that could
+    # post its own history would bypass the session the pipeline owns.
+    history: list[SessionTurn] = Field(default_factory=list)
 
 
 class PipelineRequest(BaseModel):
@@ -94,3 +107,6 @@ class ChatResult(BaseModel):
     vision_answer: str | None = None
     text_chunk_count: int = 0
     image_chunk_count: int = 0
+    # The standalone question a session turn was rewritten into, or None when the
+    # turn had no history and the question was searched as written.
+    effective_query: str | None = None

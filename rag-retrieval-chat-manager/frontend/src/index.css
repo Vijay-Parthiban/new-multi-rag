@@ -2064,6 +2064,25 @@ select.input option {
   white-space: nowrap;
 }
 
+.pipeline-chip--memory {
+  border-color: rgba(63, 185, 80, 0.35);
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+
+.view-note {
+  margin: 0 0 0.85rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.view-note code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-link);
+}
+
 .pipeline-card-endpoint {
   display: flex;
   flex-direction: column;
