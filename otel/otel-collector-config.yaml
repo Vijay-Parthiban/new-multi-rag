@@ -1,10 +1,13 @@
-# OpenTelemetry Collector — exporters are driven by env vars in otel/.env
-# Langfuse OTLP (HTTP only): https://<region>.cloud.langfuse.com/api/public/otel
-#   EU:     https://cloud.langfuse.com/api/public/otel
-#   US:     https://us.cloud.langfuse.com/api/public/otel
-#   JP:     https://jp.cloud.langfuse.com/api/public/otel
-#   HIPAA:  https://hipaa.cloud.langfuse.com/api/public/otel
-# Requires x-langfuse-ingestion-version: "4" for Cloud Fast Preview.
+# OpenTelemetry Collector — fans every span out to Phoenix and Langfuse.
+#
+# Credentials live in otel/.env, which is gitignored. Copy otel/.env.example and fill it in.
+#
+# Two exporters are active: Phoenix and Langfuse. Both take OTLP over HTTP. OTLP/HTTP is not
+# optional for either of them here: Langfuse does not accept gRPC at all, and Phoenix Cloud is
+# reached over HTTP on /v1/traces.
+#
+# Adding a platform means adding one exporter and naming it in the traces pipeline below.
+# Arize AX and Grafana Cloud are kept as worked examples further down.
 
 receivers:
   otlp:
@@ -15,19 +18,20 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # First in every pipeline: shed load before anything else allocates.
   memory_limiter:
     check_interval: 5s
     limit_mib: 512
     spike_limit_mib: 128
 
-  # Arize requires model_id or arize.project.name on every span resource
+  # Applied to every span. `openinference.project.name` is how Phoenix routes a span into a
+  # project when the transport is gRPC; over HTTP the x-project-name header below wins.
+  # `deployment.environment` is what separates a test turn from a production turn in both
+  # backends, and it is set per request by the application.
   resource:
     attributes:
-      - key: model_id
-        value: ${env:ARIZE_MODEL_ID}
-        action: upsert
-      - key: arize.project.name
-        value: ${env:ARIZE_PROJECT_NAME}
+      - key: openinference.project.name
+        value: ${env:PHOENIX_PROJECT_NAME}
         action: upsert
       - key: deployment.environment
         value: ${env:OTEL_DEPLOYMENT_ENVIRONMENT}
@@ -36,15 +40,40 @@ processors:
         value: ${env:OTEL_SERVICE_NAMESPACE}
         action: upsert
 
+  # Last in every pipeline. Without it the collector exports one span at a time.
   batch:
     send_batch_size: 256
     timeout: 5s
 
 exporters:
+  # Set OTEL_DEBUG_VERBOSITY to "detailed" to see every span attribute in the collector log.
   debug:
     verbosity: ${env:OTEL_DEBUG_VERBOSITY}
 
-  # Langfuse — OTLP/HTTP (otlp_http is the current component name; otlphttp is deprecated)
+  # Phoenix (Arize). OTLP/HTTP, full /v1/traces path required.
+  #   Self-hosted:  http://localhost:6006/v1/traces   (no auth)
+  #   Phoenix Cloud: https://app.phoenix.arize.com/v1/traces
+  # Local Phoenix needs no Authorization header; leaving PHOENIX_AUTH_HEADER empty sends none.
+  otlp_http/phoenix:
+    endpoint: ${env:PHOENIX_OTLP_ENDPOINT}
+    headers:
+      Authorization: ${env:PHOENIX_AUTH_HEADER}
+      # Routes every span in the request to this Phoenix project. HTTP only; ignored on gRPC.
+      x-project-name: ${env:PHOENIX_PROJECT_NAME}
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  # Langfuse. OTLP/HTTP only, no gRPC.
+  #   EU:    https://cloud.langfuse.com/api/public/otel
+  #   US:    https://us.cloud.langfuse.com/api/public/otel
+  #   JP:    https://jp.cloud.langfuse.com/api/public/otel
+  #   HIPAA: https://hipaa.cloud.langfuse.com/api/public/otel
+  # Auth is HTTP Basic over base64("public_key:secret_key"):
+  #   printf '%s' "pk-lf-...:sk-lf-..." | base64 -w0   →   prefix the result with "Basic "
   otlp_http/langfuse:
     endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
     headers:
@@ -57,32 +86,33 @@ exporters:
       max_interval: 30s
       max_elapsed_time: 300s
 
-  # Arize AX — OTLP gRPC
-  otlp_grpc/arize:
-    endpoint: ${env:ARIZE_OTLP_ENDPOINT}
-    tls:
-      insecure: false
-    headers:
-      api_key: ${env:ARIZE_API_KEY}
-      space_id: ${env:ARIZE_SPACE_ID}
-    timeout: 20s
-    retry_on_failure:
-      enabled: true
-      initial_interval: 1s
-      max_interval: 30s
-      max_elapsed_time: 300s
-
-  # Grafana Cloud OTLP gateway
-  otlp_http/grafana:
-    endpoint: ${env:GRAFANA_OTLP_ENDPOINT}
-    headers:
-      Authorization: ${env:GRAFANA_AUTH_HEADER}
-    timeout: 30s
-    retry_on_failure:
-      enabled: true
-      initial_interval: 1s
-      max_interval: 30s
-      max_elapsed_time: 300s
+  # ── Extension examples. Uncomment the exporter AND add it to the traces pipeline. ──
+  #
+  # Arize AX is a different product from Phoenix: gRPC, and it authenticates with api_key
+  # and space_id rather than a bearer token. It also needs model_id or arize.project.name on
+  # every span resource — add those to the resource processor above when you enable it.
+  #
+  # otlp_grpc/arize:
+  #   endpoint: ${env:ARIZE_OTLP_ENDPOINT}
+  #   tls:
+  #     insecure: false
+  #   headers:
+  #     api_key: ${env:ARIZE_API_KEY}
+  #     space_id: ${env:ARIZE_SPACE_ID}
+  #   timeout: 20s
+  #   retry_on_failure:
+  #     enabled: true
+  #
+  # Grafana Cloud takes metrics and logs as well as traces, which is why the metrics and logs
+  # pipelines below exist at all. Phoenix and Langfuse accept traces only.
+  #
+  # otlp_http/grafana:
+  #   endpoint: ${env:GRAFANA_OTLP_ENDPOINT}
+  #   headers:
+  #     Authorization: ${env:GRAFANA_AUTH_HEADER}
+  #   timeout: 30s
+  #   retry_on_failure:
+  #     enabled: true
 
 service:
   telemetry:
@@ -90,19 +120,21 @@ service:
       level: ${env:OTEL_LOG_LEVEL}
 
   pipelines:
-    # Langfuse + Arize accept traces only
+    # One pipeline, two exporters. Each exporter receives its own copy of the span, so
+    # neither backend can affect what the other sees.
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [debug, otlp_http/langfuse, otlp_grpc/arize, otlp_http/grafana]
+      exporters: [debug, otlp_http/phoenix, otlp_http/langfuse]
 
-    # Grafana Cloud accepts metrics; Langfuse/Arize do not
+    # Declared so a stray metrics or logs export does not fail the collector outright.
+    # Neither Phoenix nor Langfuse accepts them, so they currently go to the debug exporter.
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [debug, otlp_http/grafana]
+      exporters: [debug]
 
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [debug, otlp_http/grafana]
+      exporters: [debug]

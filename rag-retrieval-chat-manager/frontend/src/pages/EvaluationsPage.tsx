@@ -6,6 +6,9 @@ import { formatRelativeTime } from "../utils/format";
 /** Full Langfuse traces URL, e.g. https://cloud.langfuse.com/project/<id>/traces */
 const LANGFUSE_TRACES_URL =
     import.meta.env.VITE_LANGFUSE_TRACES_URL ?? "https://cloud.langfuse.com";
+/** Full Phoenix URL, e.g. https://app.phoenix.arize.com/s/<space>/projects/<id> */
+const PHOENIX_URL =
+    import.meta.env.VITE_PHOENIX_URL ?? "https://app.phoenix.arize.com";
 
 type ViewMode = "latency" | "metrics";
 
@@ -154,6 +157,15 @@ export default function EvaluationsPage() {
                         >
                             Open Langfuse
                         </a>
+                        <a
+                            className="btn btn-sm btn-secondary"
+                            href={PHOENIX_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open Phoenix traces"
+                        >
+                            Open Phoenix
+                        </a>
                         <button type="button" className="btn btn-secondary" onClick={loadStats}>
                             Refresh
                         </button>
@@ -287,8 +299,24 @@ export default function EvaluationsPage() {
                                                             </button>
                                                         )}
                                                         <div>
-                                                            <div className="mono" style={{ fontSize: "0.75rem", marginBottom: "0.25rem" }}>
-                                                                {item.message_id.slice(0, 8)}...
+                                                            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.25rem" }}>
+                                                                <span className="mono" style={{ fontSize: "0.75rem" }}>
+                                                                    {item.message_id.slice(0, 8)}...
+                                                                </span>
+                                                                {/* The mode this turn was traced under. Omitted rather than
+                                                                    guessed when a row predates migration 004. */}
+                                                                {item.trace_mode && (
+                                                                    <span
+                                                                        className={`trace-tag trace-tag--${item.trace_mode === "test" ? "test" : "prod"}`}
+                                                                        title={
+                                                                            item.trace_mode === "test"
+                                                                                ? "Sent from the Chat page"
+                                                                                : "Sent to the callable endpoint"
+                                                                        }
+                                                                    >
+                                                                        {item.trace_mode}
+                                                                    </span>
+                                                                )}
                                                             </div>
                                                             <div className="muted" style={{ fontSize: "0.875rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                                                                 {item.query || "—"}

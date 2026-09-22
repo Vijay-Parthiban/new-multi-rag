@@ -52,6 +52,14 @@ class ChatPipelineTrace(Base):
     retrieved_chunks: Mapped[list] = mapped_column(JSONB, default=list)
     reranked_chunks: Mapped[list] = mapped_column(JSONB, default=list)
     latency_ms: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # "test" for a turn from the Chat page, "prod" for the callable endpoint. Set from the
+    # request header, and anything without it is prod. The Real Time Monitoring page tags
+    # each log with this.
+    trace_mode: Mapped[str] = mapped_column(String, nullable=False, server_default="prod")
+    # The OTEL ids of the turn span, as hex. The metrics worker parents its own span under
+    # these, so one question stays one trace instead of producing a second one.
+    otel_trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    otel_span_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     message: Mapped["ChatMessage"] = relationship(back_populates="trace")

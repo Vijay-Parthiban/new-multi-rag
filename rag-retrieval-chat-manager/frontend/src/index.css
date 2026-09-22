@@ -2070,6 +2070,31 @@ select.input option {
   color: var(--success-text);
 }
 
+/* The test or prod tag on a Real Time Monitoring log. Two tones, so the two modes are
+   distinguishable at a glance without relying on the label alone. */
+.trace-tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.trace-tag--test {
+  border: 1px solid var(--border-glow);
+  background: var(--accent-subtle);
+  color: var(--text-link);
+}
+
+.trace-tag--prod {
+  border: 1px solid rgba(63, 185, 80, 0.35);
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+
 .view-note {
   margin: 0 0 0.85rem;
   font-size: 0.85rem;

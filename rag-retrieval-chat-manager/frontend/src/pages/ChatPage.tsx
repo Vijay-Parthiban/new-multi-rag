@@ -404,7 +404,12 @@ export default function ChatPage() {
 
             for await (const event of streamChat(
                 payload,
-                assistantSlug ? { path: `/api/assistants/${assistantSlug}/chat/stream` } : {},
+                {
+                    ...(assistantSlug ? { path: `/api/assistants/${assistantSlug}/chat/stream` } : {}),
+                    // Every turn from this page is a test turn. An external caller uses the
+                    // same route and sends no header, so its turns are production.
+                    traceMode: "test",
+                },
             )) {
                 if (event.type === "status") {
                     setAgentStatus(event.message || null);

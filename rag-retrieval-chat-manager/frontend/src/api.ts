@@ -792,6 +792,10 @@ export interface RAGChatStatItem {
   } | null;
   metrics_status: string;
   latency_ms: Record<string, number> | null;
+  /** "test" for a turn from this page, "prod" for the callable endpoint. Null before migration 004. */
+  trace_mode?: string | null;
+  /** The OTEL trace id of the turn, for deep-linking into Langfuse or Phoenix. */
+  otel_trace_id?: string | null;
   retrieval_mode: string | null;
   rerank_enabled: boolean | null;
   generation_model: string | null;
@@ -900,13 +904,25 @@ export interface ChatStreamEvent {
   };
 }
 
+/**
+ * The header the backend reads to tag a turn. The Chat page and an external caller hit the
+ * same route, so this is the only thing that separates a test turn from a production one.
+ * Omitting it means production.
+ */
+export const TRACE_MODE_HEADER = "X-RAG-Trace-Mode";
+export type TraceMode = "test" | "prod";
+
 export async function* streamChat(
   payload: any,
-  opts: { path?: string } = {},
+  opts: { path?: string; traceMode?: TraceMode } = {},
 ): AsyncGenerator<ChatStreamEvent> {
   const res = await fetch(`${RAG_API_URL}${opts.path ?? "/chat/stream"}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(RAG_API_KEY) },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(RAG_API_KEY),
+      ...(opts.traceMode ? { [TRACE_MODE_HEADER]: opts.traceMode } : {}),
+    },
     body: JSON.stringify(payload),
   });
 

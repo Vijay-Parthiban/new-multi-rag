@@ -54,6 +54,9 @@ class ChatRepository:
         retrieved_chunks: list,
         reranked_chunks: list,
         latency_ms: dict,
+        trace_mode: str = "prod",
+        otel_trace_id: str | None = None,
+        otel_span_id: str | None = None,
     ) -> ChatPipelineTrace:
         trace = ChatPipelineTrace(
             chat_message_id=chat_message_id,
@@ -66,6 +69,9 @@ class ChatRepository:
             retrieved_chunks=strip_null_bytes(retrieved_chunks),
             reranked_chunks=strip_null_bytes(reranked_chunks),
             latency_ms=strip_null_bytes(latency_ms),
+            trace_mode=trace_mode,
+            otel_trace_id=otel_trace_id,
+            otel_span_id=otel_span_id,
         )
         self._session.add(trace)
         self._session.flush()

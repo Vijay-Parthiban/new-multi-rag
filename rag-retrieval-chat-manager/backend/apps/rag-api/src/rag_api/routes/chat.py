@@ -94,6 +94,12 @@ class ChatStatItem(BaseModel):
     rerank_enabled: bool | None = None
     generation_model: str | None = None
     created_at: str | None = None
+    # "test" for a turn from the Chat page, "prod" for the callable endpoint. Read from the
+    # turn's trace row, so a row written before migration 004 reads back as null.
+    trace_mode: str | None = None
+    # The OTEL trace id of the turn, so the UI can deep-link straight to it in Langfuse or
+    # Phoenix instead of dropping the reader on a list page.
+    otel_trace_id: str | None = None
 
 
 class ChatStatsResponse(BaseModel):
@@ -266,6 +272,7 @@ def _persist_chat_turn(
     retrieved_chunks: list | None = None,
     reranked_chunks: list | None = None,
     latency_ms: dict | None = None,
+    trace_mode: str = "prod",
     save_trace: bool = True,
     enqueue_metrics: bool = True,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None, str]:
@@ -295,6 +302,9 @@ def _persist_chat_turn(
         trace_id: uuid.UUID | None = None
         metrics_status = "skipped"
         if save_trace:
+            # Read the ids of the span this call is running inside. The metrics worker parents
+            # its own span under them later, so one question stays one trace.
+            span_ids = current_span_ids()
             trace_db = repo.save_pipeline_trace(
                 assistant_msg.id,
                 query=query,
@@ -306,6 +316,9 @@ def _persist_chat_turn(
                 retrieved_chunks=retrieved_chunks or [],
                 reranked_chunks=reranked_chunks or [],
                 latency_ms=latency_ms or {},
+                trace_mode=trace_mode,
+                otel_trace_id=span_ids[0] if span_ids else None,
+                otel_span_id=span_ids[1] if span_ids else None,
             )
             trace_id = trace_db.id
             if enqueue_metrics and settings.ragas_enabled and settings.chat_metrics_async:
@@ -383,7 +396,13 @@ def _run_guardrails(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: Request, body: ChatRequest) -> ChatResponse:
-    from rag_shared.tracing import rag_pipeline_span, set_span_attr
+    from rag_shared.tracing import (
+        TRACE_MODE_HEADER,
+        current_span_ids,
+        normalize_trace_mode,
+        rag_pipeline_span,
+        set_span_attr,
+    )
 
     settings = request.app.state.settings
     pipeline = request.app.state.pipeline
@@ -399,6 +418,10 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
     if memory:
         config.history = memory.load(str(turn_session_id))
 
+    # The Chat page and an external caller share this route, so the header is the only thing
+    # that separates them. Absent means production.
+    trace_mode = normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER))
+
     with rag_pipeline_span(
         "rag.chat",
         session_id=str(turn_session_id),
@@ -410,6 +433,10 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
             "rerank_enabled": config.rerank_enabled,
             "session_turns": len(config.history),
         },
+        trace_mode=trace_mode,
+        # Only a pipeline with Redis memory gets a session trace, because only it has a
+        # session to file the turn into.
+        session_trace=memory is not None,
     ) as span:
         # ── Guardrails: input validation ─────────────────────────
         if body.guardrails_config_id:
@@ -427,6 +454,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
                     settings=settings,
                     queue=queue,
                     session_id=turn_session_id,
+                    trace_mode=trace_mode,
                     source_type=source_type,
                     source_id=source_id,
                     query=body.query,
@@ -550,7 +578,13 @@ async def chat_stream(request: Request, body: ChatRequest):
 
     from fastapi.responses import StreamingResponse
     from opentelemetry import context as otel_context
-    from rag_shared.tracing import rag_pipeline_span, set_span_attr
+    from rag_shared.tracing import (
+        TRACE_MODE_HEADER,
+        current_span_ids,
+        normalize_trace_mode,
+        rag_pipeline_span,
+        set_span_attr,
+    )
 
     settings = request.app.state.settings
     pipeline = request.app.state.pipeline
@@ -564,6 +598,9 @@ async def chat_stream(request: Request, body: ChatRequest):
     memory = _session_memory(settings, body)
     if memory:
         config.history = memory.load(str(turn_session_id))
+
+    # Same header rule as /chat. The Chat page sets it; an external caller does not.
+    trace_mode = normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER))
 
     # Capture request context so the worker thread nests under the same trace.
     # iterate_in_threadpool resumes the generator across pool threads, which
@@ -594,6 +631,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                         settings=settings,
                         queue=job_queue,
                         session_id=turn_session_id,
+                        trace_mode=trace_mode,
                         source_type=source_type,
                         source_id=source_id,
                         query=body.query,
@@ -629,7 +667,10 @@ async def chat_stream(request: Request, body: ChatRequest):
                     "retrieval_mode": config.retrieval_mode.value,
                     "rerank_enabled": config.rerank_enabled,
                     "route": effective_route,
+                    "session_turns": len(config.history),
                 },
+                trace_mode=trace_mode,
+                session_trace=memory is not None,
             ) as span:
                 gen = pipeline.stream_chat(
                     body.query, config=config, source_type=source_type, source_id=source_id
@@ -689,6 +730,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                     settings=settings,
                     queue=job_queue,
                     session_id=turn_session_id,
+                    trace_mode=trace_mode,
                     source_type=source_type,
                     source_id=source_id,
                     query=body.query,
@@ -787,6 +829,8 @@ def _build_chat_stat_item(metrics, message, trace) -> ChatStatItem:
         rerank_enabled=trace.rerank_enabled if trace else None,
         generation_model=trace.generation_model if trace else None,
         created_at=message.created_at.isoformat() if message.created_at else None,
+        trace_mode=trace.trace_mode if trace else None,
+        otel_trace_id=trace.otel_trace_id if trace else None,
     )
 
 

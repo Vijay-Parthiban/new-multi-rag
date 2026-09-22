@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import unquote
@@ -72,6 +73,60 @@ def _traces_endpoint(endpoint: str) -> str:
     if base.endswith("/v1/traces"):
         return base
     return f"{base}/v1/traces"
+
+
+# The header the Chat page sets on its own requests. The Chat page and an external caller
+# hit the same route, so the header is the only thing that separates a test turn from a
+# production one. Anything without it counts as production.
+TRACE_MODE_HEADER = "X-RAG-Trace-Mode"
+TRACE_MODE_TEST = "test"
+TRACE_MODE_PROD = "prod"
+
+
+def normalize_trace_mode(raw: str | None) -> str:
+    """Map a request header value to a trace mode. Anything unrecognised is production."""
+    return TRACE_MODE_TEST if (raw or "").strip().lower() == TRACE_MODE_TEST else TRACE_MODE_PROD
+
+
+def session_trace_ids(session_id: str | None) -> tuple[int, int] | None:
+    """The fixed trace id and root span id of a session, derived from its UUID.
+
+    A session runs across many HTTP requests, so its trace cannot be one open span. Deriving
+    the ids from the session id instead means every turn of a session lands in the same trace
+    with no shared state anywhere: the same session id always yields the same two numbers,
+    in any process.
+
+    Returns None when the id is not a UUID, which is the only case that cannot be derived.
+    """
+    if not session_id:
+        return None
+    try:
+        raw = uuid.UUID(str(session_id)).bytes
+    except (ValueError, AttributeError, TypeError):
+        return None
+    trace_id = int.from_bytes(raw, "big")
+    span_id = int.from_bytes(raw[:8], "big")
+    # A trace or span id of zero is invalid in OTLP.
+    if trace_id == 0 or span_id == 0:
+        return None
+    return trace_id, span_id
+
+
+def current_span_ids() -> tuple[str, str] | None:
+    """The hex trace id and span id of the active span.
+
+    Stored on the turn so a later process, the metrics worker, can file its own span into the
+    same trace instead of opening a second one for the same question.
+    """
+    if not HAVE_OTEL:
+        return None
+    try:
+        ctx = trace.get_current_span().get_span_context()
+    except Exception:  # noqa: BLE001
+        return None
+    if ctx is None or not ctx.is_valid:
+        return None
+    return format(ctx.trace_id, "032x"), format(ctx.span_id, "016x")
 
 
 def init_tracing() -> None:
@@ -160,6 +215,68 @@ def set_span_attr(span: trace.Span, key: str, value: Any) -> None:
         span.set_attribute(key, str(value))
 
 
+def _apply_turn_attributes(
+    span: trace.Span,
+    *,
+    session_id: str | None,
+    message_id: str | None,
+    query: str | None,
+    answer: str | None,
+    observation_type: str,
+    model: str | None,
+    metadata: dict[str, Any] | None,
+    trace_mode: str,
+) -> None:
+    """Write the attributes both backends read off a turn span."""
+    # Langfuse reads langfuse.*; Phoenix reads the OpenInference keys. Both are written so
+    # one span renders properly in either platform.
+    set_span_attr(span, "langfuse.observation.type", observation_type)
+    set_span_attr(span, "openinference.span.kind", "CHAIN")
+    set_span_attr(span, "deployment.environment", trace_mode)
+    set_span_attr(span, "rag.trace_mode", trace_mode)
+    if session_id:
+        set_span_attr(span, "langfuse.session.id", session_id)
+        set_span_attr(span, "session.id", session_id)
+    if message_id:
+        set_span_attr(span, "langfuse.observation.metadata.message_id", message_id)
+        set_span_attr(span, "rag.message_id", message_id)
+    if query is not None:
+        set_span_attr(span, "langfuse.trace.input", query)
+        set_span_attr(span, "langfuse.observation.input", query)
+        set_span_attr(span, "input.value", query)
+        set_span_attr(span, "input.mime_type", "text/plain")
+    if answer is not None:
+        set_span_attr(span, "langfuse.trace.output", answer)
+        set_span_attr(span, "langfuse.observation.output", answer)
+        set_span_attr(span, "output.value", answer)
+        set_span_attr(span, "output.mime_type", "text/plain")
+    if model:
+        set_span_attr(span, "langfuse.observation.model.name", model)
+        set_span_attr(span, "gen_ai.request.model", model)
+    if metadata:
+        for key, val in metadata.items():
+            set_span_attr(span, f"langfuse.observation.metadata.{key}", val)
+
+
+def _parent_context(trace_id_hex: str, span_id_hex: str):
+    """A context whose active span is a reference to an existing span id.
+
+    This is how a span is filed into a trace that was created elsewhere: the session trace
+    for a session turn, or the original turn for the metrics span that arrives later. The
+    referenced span need not exist in the same payload; both Langfuse and Phoenix group by
+    trace id and treat a missing parent as a root.
+    """
+    parent = trace.NonRecordingSpan(
+        trace.SpanContext(
+            trace_id=int(trace_id_hex, 16),
+            span_id=int(span_id_hex, 16),
+            is_remote=True,
+            trace_flags=trace.TraceFlags(0x01),
+        )
+    )
+    return trace.set_span_in_context(parent)
+
+
 @contextmanager
 def rag_pipeline_span(
     name: str = "rag.pipeline",
@@ -171,35 +288,59 @@ def rag_pipeline_span(
     observation_type: str = "generation",
     model: str | None = None,
     metadata: dict[str, Any] | None = None,
+    trace_mode: str = TRACE_MODE_PROD,
+    session_trace: bool = False,
+    parent: tuple[str, str] | None = None,
 ) -> Iterator[trace.Span]:
     """
-    Create a root RAG span with Langfuse-recognized attributes.
+    Create a root RAG span with Langfuse- and Phoenix-recognized attributes.
 
-    Langfuse maps:
-      langfuse.session.id, langfuse.observation.input/output,
-      langfuse.trace.input/output, langfuse.observation.type, …
+    `trace_mode` tags the span as a test or a production turn, and is the field the Real Time
+    Monitoring page filters on.
+
+    `session_trace` files this turn into the trace holding every turn of the session. It needs
+    a UUID `session_id`, so only a pipeline with Redis memory can produce one.
+
+    `parent` attaches the span to a trace created elsewhere, given as hex
+    `(trace_id, span_id)`. The metrics span uses it to join the turn it belongs to rather
+    than opening a second trace for the same question.
     """
     tracer = get_tracer()
-    with tracer.start_as_current_span(name, kind=trace.SpanKind.SERVER) as span:
-        set_span_attr(span, "langfuse.observation.type", observation_type)
-        if session_id:
-            set_span_attr(span, "langfuse.session.id", session_id)
-        if message_id:
-            set_span_attr(span, "langfuse.observation.metadata.message_id", message_id)
-        if query is not None:
-            set_span_attr(span, "langfuse.trace.input", query)
-            set_span_attr(span, "langfuse.observation.input", query)
-            set_span_attr(span, "input.value", query)
-        if answer is not None:
-            set_span_attr(span, "langfuse.trace.output", answer)
-            set_span_attr(span, "langfuse.observation.output", answer)
-            set_span_attr(span, "output.value", answer)
-        if model:
-            set_span_attr(span, "langfuse.observation.model.name", model)
-            set_span_attr(span, "gen_ai.request.model", model)
-        if metadata:
-            for key, val in metadata.items():
-                set_span_attr(span, f"langfuse.observation.metadata.{key}", val)
+
+    context = None
+    joined_session = False
+    if parent is not None:
+        context = _parent_context(*parent)
+    elif session_trace:
+        ids = session_trace_ids(session_id)
+        if ids is not None:
+            # Every turn of the session becomes a child of one fixed id derived from the
+            # session, so all of them land in one trace.
+            #
+            # No span is emitted for that id, and that is deliberate: the id is the same in
+            # every process, so emitting one would repeat the same span on every turn. Both
+            # backends group by trace id and show the turns as roots of the session trace.
+            context = _parent_context(format(ids[0], "032x"), format(ids[1], "016x"))
+            joined_session = True
+
+    with tracer.start_as_current_span(
+        name, context=context, kind=trace.SpanKind.SERVER
+    ) as span:
+        _apply_turn_attributes(
+            span,
+            session_id=session_id,
+            message_id=message_id,
+            query=query,
+            answer=answer,
+            observation_type=observation_type,
+            model=model,
+            metadata=metadata,
+            trace_mode=trace_mode,
+        )
+        if joined_session:
+            # Marks the turn as belonging to a session trace, so a reader can tell the two
+            # traces of a session turn apart without knowing the session id.
+            set_span_attr(span, "rag.session_trace", True)
         yield span
 
 
@@ -214,9 +355,15 @@ def emit_rag_pipeline_trace(
     retrieved_chunks: list | None = None,
     trace_info: dict | None = None,
     flush: bool = True,
+    trace_mode: str = TRACE_MODE_PROD,
+    parent: tuple[str, str] | None = None,
 ) -> None:
     """
-    Emit a synthetic post-hoc RAG pipeline span (used by eval-worker after metrics).
+    Emit the metrics span for a turn (used by eval-worker after the metrics compute).
+
+    Pass `parent` as the hex `(trace_id, span_id)` of the original turn and the metrics land
+    inside that turn's trace. Leave it out and this opens a trace of its own, which shows the
+    same question twice in both backends.
 
     Spans are batched via BatchSpanProcessor; set flush=True (default) so RQ jobs
     push to the collector before the worker moves on.
@@ -232,7 +379,7 @@ def emit_rag_pipeline_trace(
     }
 
     with rag_pipeline_span(
-        "rag.pipeline",
+        "rag.pipeline.metrics",
         session_id=session_id,
         message_id=message_id,
         query=query,
@@ -240,6 +387,8 @@ def emit_rag_pipeline_trace(
         observation_type="generation",
         model=trace_info.get("generation_model"),
         metadata={k: v for k, v in metadata.items() if v is not None},
+        trace_mode=trace_mode,
+        parent=parent,
     ) as span:
         set_span_attr(span, "rag.query_length", len(query))
         set_span_attr(span, "rag.output_length", len(answer))

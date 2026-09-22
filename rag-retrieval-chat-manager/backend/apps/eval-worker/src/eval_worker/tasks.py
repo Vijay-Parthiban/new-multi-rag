@@ -24,6 +24,8 @@ def emit_otel_synthetic_trace(
     scores: dict,
     retrieved_chunks: list,
     trace_info: dict,
+    trace_mode: str = "prod",
+    parent: tuple[str, str] | None = None,
 ) -> None:
     from rag_shared.tracing import emit_rag_pipeline_trace
 
@@ -37,6 +39,10 @@ def emit_otel_synthetic_trace(
         retrieved_chunks=retrieved_chunks,
         trace_info=trace_info,
         flush=True,
+        trace_mode=trace_mode,
+        # The turn's own trace id and span id. Without them this opens a second trace and the
+        # same question shows up twice in Langfuse and Phoenix.
+        parent=parent,
     )
 
 
@@ -81,7 +87,13 @@ def compute_chat_metrics(message_id: str) -> None:
                 latency_ms=parsed_latency,
                 scores=scores,
                 retrieved_chunks=db_trace.retrieved_chunks or [],
-                trace_info=trace_info
+                trace_info=trace_info,
+                trace_mode=db_trace.trace_mode or "prod",
+                parent=(
+                    (db_trace.otel_trace_id, db_trace.otel_span_id)
+                    if db_trace.otel_trace_id and db_trace.otel_span_id
+                    else None
+                ),
             )
             
         except Exception as exc:
