@@ -156,6 +156,23 @@
   background: #ffffff;
 }
 
+/* .stats-overview-card and its two text rules use hardcoded dark values and the light theme
+   never overrode them, so the label sat dark grey on a dark grey card. Dark stays as it was. */
+[data-theme="light"] .stats-overview-card {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(209, 218, 233, 0.7);
+}
+
+[data-theme="light"] .stats-overview-card:hover,
+[data-theme="light"] .stats-overview-card.active {
+  background: rgba(255, 255, 255, 1);
+}
+
+[data-theme="light"] .stats-overview-label,
+[data-theme="light"] .stats-overview-subtext {
+  color: var(--text-secondary);
+}
+
 /* ── Theme toggle button ── */
 .theme-toggle {
   display: flex;
@@ -1805,18 +1822,453 @@ select.input option {
    Pipelines
    ═══════════════════════════════════ */
 
-.pipeline-layout {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.25rem;
-  align-items: start;
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
-.pipeline-form .form-body {
+/* The dialog shell. One overlay for create, view, edit and the delete warning. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal-panel {
+  background: var(--bg-default);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-panel--sm {
+  max-width: 460px;
+}
+.modal-panel--md {
+  max-width: 720px;
+}
+.modal-panel--lg {
+  max-width: 820px;
+}
+
+.modal-panel:focus {
+  outline: none;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+  border-color: var(--border-glow);
+  background: var(--bg-glass-hover);
+}
+
+.modal-body {
   padding: 1.25rem;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg-subtle);
+}
+
+/* Pushes the trailing buttons to the right of the destructive one. */
+.modal-spacer {
+  flex: 1;
+}
+
+@media (max-width: 560px) {
+  .modal-overlay {
+    padding: 12px;
+  }
+  .modal-footer {
+    justify-content: stretch;
+  }
+  .modal-footer .btn {
+    flex: 1;
+  }
+  .modal-spacer {
+    display: none;
+  }
+}
+
+.pipeline-form {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+/* .field-label carries only a bottom margin, so without this the label reads as part of the
+   field above it. Scoped to this form: the shared rule is used by the upload pages. */
+.pipeline-form .field-label {
+  margin-top: 0.85rem;
+}
+
+.pipeline-form .field-label:first-child {
+  margin-top: 0;
+}
+
+/* ── Pipeline cards ── */
+.pipeline-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 1rem;
+}
+
+.pipeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.125rem;
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.pipeline-card:hover {
+  border-color: var(--border-glow);
+  box-shadow: var(--shadow-glow);
+}
+
+.pipeline-card:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.pipeline-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pipeline-card-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-card-strategy {
+  flex-shrink: 0;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-glow);
+  background: var(--accent-subtle);
+  color: var(--text-link);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pipeline-card-desc {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pipeline-card-meta {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.pipeline-card-meta div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pipeline-card-meta dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.pipeline-card-meta dd {
+  margin: 0;
+  font-size: 0.82rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pipeline-chip {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.pipeline-card-endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 0.7rem;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  font-size: 0.76rem;
+}
+
+.pipeline-card-endpoint-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.pipeline-card-endpoint code {
+  font-family: var(--font-mono);
+  color: var(--text-link);
+  overflow-wrap: anywhere;
+}
+
+.pipeline-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.25rem;
+}
+
+/* ── View dialog ── */
+.view-desc {
+  margin: 0 0 1.25rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.view-section + .view-section {
+  margin-top: 1.5rem;
+}
+
+.view-section-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.endpoint-row + .endpoint-row {
+  margin-top: 0.75rem;
+}
+
+.endpoint-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.endpoint-hint {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.endpoint-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+}
+
+.endpoint-value code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-link);
+  overflow-wrap: anywhere;
+}
+
+.view-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem 1.25rem;
+  margin: 0;
+}
+
+.view-grid dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
+.view-grid dd {
+  margin: 0;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.view-product {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.view-stores {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.view-stores li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.view-stores li:last-child {
+  border-bottom: none;
+}
+
+.view-store-kind {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.view-stores code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .view-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Delete warning ── */
+.confirm-body {
+  padding: 1.5rem 1.5rem 0.5rem;
+  text-align: center;
+}
+
+.confirm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 0.875rem;
+  border-radius: 999px;
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.confirm-title {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.confirm-text {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.confirm-text strong {
+  color: var(--text-primary);
+}
+
+.confirm-text--warn {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: var(--danger-subtle);
+  text-align: left;
+}
+
+.confirm-text code {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.confirm-text.muted {
+  margin-bottom: 0.25rem;
 }
 
 .form-row {
@@ -1863,45 +2315,6 @@ select.input option {
   background: var(--bg-glass);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-muted);
-}
-
-.pipeline-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.pipeline-list li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 0.875rem;
-  border-bottom: 1px solid var(--border-muted);
-  transition: background 0.2s ease;
-}
-
-.pipeline-list li:hover {
-  background: var(--bg-glass-hover);
-}
-
-.pipeline-list li.active {
-  background: var(--accent-subtle);
-  border-left: 3px solid var(--accent);
-}
-
-.pipeline-list-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  padding: 0.25rem 0;
-  color: var(--text-primary);
 }
 
 .runs-section {

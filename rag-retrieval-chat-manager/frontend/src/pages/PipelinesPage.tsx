@@ -1,13 +1,18 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import {
   IconCheckCircle,
+  IconClose,
   IconCopy,
+  IconDelete,
+  IconEdit,
   IconGuardrails,
   IconPipeline,
+  IconPlus,
   IconPrompts,
+  IconRefresh,
 } from "../components/Icons";
 import {
   ApiError,
@@ -99,6 +104,134 @@ function CopyEndpointButton({ url }: { url: string }) {
       {copied ? <IconCheckCircle size={12} /> : <IconCopy size={12} />}
       {copied ? "Copied" : "Copy"}
     </button>
+  );
+}
+
+/**
+ * One labelled URL with its own copy control. The pipeline hands out two endpoints, so the
+ * label matters more than the URL does.
+ */
+function EndpointRow({ label, url, hint }: { label: string; url: string; hint?: string }) {
+  return (
+    <div className="endpoint-row">
+      <div className="endpoint-label">
+        {label}
+        {hint && <span className="endpoint-hint">{hint}</span>}
+      </div>
+      <div className="endpoint-value">
+        <code>{url}</code>
+        <CopyEndpointButton url={url} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One dialog shell for create, view and edit. Escape closes it, a click on the scrim closes it,
+ * focus moves inside on open, and the background cannot scroll while it is up.
+ */
+function Modal({
+  title,
+  onClose,
+  children,
+  footer,
+  size = "md",
+  initialFocus,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+  size?: "md" | "lg" | "sm";
+  initialFocus?: { current: HTMLElement | null };
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    (initialFocus?.current ?? panelRef.current)?.focus();
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose, initialFocus]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        ref={panelRef}
+        className={`modal-panel modal-panel--${size}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <h2 className="modal-title">{title}</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
+            <IconClose size={14} />
+          </button>
+        </div>
+        <div className="modal-body">{children}</div>
+        {footer && <div className="modal-footer">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Delete asks for a second click. It names the pipeline and says what stops working. */
+function ConfirmDeleteDialog({
+  pipeline,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  pipeline: PipelineRecord;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div
+        className="modal-panel modal-panel--sm"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={`Delete ${pipeline.name}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="confirm-body">
+          <div className="confirm-icon">
+            <IconDelete size={20} />
+          </div>
+          <h2 className="confirm-title">Delete this pipeline?</h2>
+          <p className="confirm-text">
+            <strong>{pipeline.description || pipeline.name}</strong> will be removed permanently.
+          </p>
+          {pipeline.slug && (
+            <p className="confirm-text confirm-text--warn">
+              Its endpoint <code>{assistantBaseUrl(pipeline.slug)}</code> stops working immediately. Any
+              client pointing at it will fail.
+            </p>
+          )}
+          <p className="confirm-text muted">This cannot be undone.</p>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-danger" onClick={onConfirm} disabled={busy}>
+            {busy ? "Deleting…" : "Delete pipeline"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -321,13 +454,17 @@ export default function PipelinesPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
-  const [created, setCreated] = useState<PipelineRecord | null>(null);
-  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [viewing, setViewing] = useState<PipelineRecord | null>(null);
 
   const [editing, setEditing] = useState<PipelineRecord | null>(null);
   const [editDraft, setEditDraft] = useState<Draft>(EMPTY_DRAFT);
   const [editShowErrors, setEditShowErrors] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+
+  const [deleting, setDeleting] = useState<PipelineRecord | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
+  const createNameRef = useRef<HTMLInputElement | null>(null);
   const editNameRef = useRef<HTMLInputElement | null>(null);
 
   const load = useCallback(async () => {
@@ -361,27 +498,22 @@ export default function PipelinesPage() {
     load();
   }, [load]);
 
-  // Escape closes the edit modal, matching its close glyph.
-  useEffect(() => {
-    if (!editing) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeEdit();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [editing]);
-
-  useEffect(() => {
-    if (editing) editNameRef.current?.focus();
-  }, [editing]);
-
+  // Escape and initial focus are the Modal's job now, so no per-dialog listener lives here.
   const eligibleProducts = useMemo(
     () => products.filter((p) => enabledRetrievalDestinations(p.destinations).size > 0),
     [products],
   );
 
-  const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId) ?? null;
-  const selectedStoreDestinations = (selectedPipeline?.knowledge_product?.destinations ?? []).filter((d) =>
+  /** Newest first, so a pipeline created a moment ago is the first card in the grid. */
+  const sortedPipelines = useMemo(
+    () =>
+      [...pipelines].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      ),
+    [pipelines],
+  );
+
+  const viewingStoreDestinations = (viewing?.knowledge_product?.destinations ?? []).filter((d) =>
     enabledRetrievalDestinations([d]).has(d.destination_type),
   );
 
@@ -410,17 +542,24 @@ export default function PipelinesPage() {
         guardrails_config_id: draft.guardrailsConfigId || null,
         embedding_model: productEmbeddingModel(product),
       };
-      const record = await createPipeline(body);
-      setCreated(record);
+      await createPipeline(body);
       setDraft(EMPTY_DRAFT);
       setShowErrors(false);
-      setSelectedPipelineId(record.id);
+      // The card appears in the grid; the dialog closes. The endpoint is one click away on it.
+      setShowCreate(false);
       await load();
     } catch (err) {
       setFormError(describeError(err));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function openCreate() {
+    setDraft(EMPTY_DRAFT);
+    setShowErrors(false);
+    setFormError(null);
+    setShowCreate(true);
   }
 
   function openEdit(pipeline: PipelineRecord) {
@@ -435,6 +574,7 @@ export default function PipelinesPage() {
     });
     setEditShowErrors(false);
     setFormError(null);
+    setViewing(null);
     setEditing(pipeline);
   }
 
@@ -480,14 +620,17 @@ export default function PipelinesPage() {
   }
 
   async function handleDelete(pipeline: PipelineRecord) {
-    if (!window.confirm(`Delete the assistant "${pipeline.name}"?`)) return;
+    setDeletingBusy(true);
     try {
       await deletePipeline(pipeline.id);
-      if (selectedPipelineId === pipeline.id) setSelectedPipelineId(null);
-      if (created?.id === pipeline.id) setCreated(null);
+      setDeleting(null);
+      setViewing(null);
       await load();
     } catch (err) {
+      setDeleting(null);
       setError(describeError(err));
+    } finally {
+      setDeletingBusy(false);
     }
   }
 
@@ -498,9 +641,21 @@ export default function PipelinesPage() {
         description="A pipeline is a chat assistant: one Knowledge Product, one RAG strategy, one chat model, plus an optional prompt template and guardrails config."
         breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Pipelines" }]}
         actions={
-          <button type="button" className="btn btn-secondary" onClick={() => load()}>
-            Refresh assistants
-          </button>
+          <div className="header-actions">
+            <button type="button" className="btn btn-primary" onClick={openCreate}>
+              <IconPlus size={14} />
+              Create Pipeline
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => load()}
+              disabled={loading}
+            >
+              <IconRefresh size={14} />
+              Refresh
+            </button>
+          </div>
         }
       />
 
@@ -545,252 +700,296 @@ export default function PipelinesPage() {
         </div>
       </div>
 
-      {created?.slug && (
-        <section className="panel" style={{ marginBottom: "1.5rem" }}>
-          <div className="panel-header">
-            <h2 className="panel-title">Assistant ready</h2>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setCreated(null)}
-              aria-label="Close"
+      {loading ? (
+        <p className="panel-empty muted">Loading pipelines…</p>
+      ) : sortedPipelines.length === 0 ? (
+        <div className="panel-empty">
+          No pipelines yet. Select <strong>Create Pipeline</strong> to build one.
+        </div>
+      ) : (
+        <div className="pipeline-cards">
+          {sortedPipelines.map((p) => (
+            <article
+              key={p.id}
+              className="pipeline-card"
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${p.name}`}
+              onClick={() => setViewing(p)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setViewing(p);
+                }
+              }}
             >
-              ✕
-            </button>
-          </div>
-          <div className="form-body">
-            <p>
-              <strong>{created.name}</strong> is live. Point an OpenAI client at the base URL, and the
-              SDK appends <span className="mono">/chat/completions</span>.
-            </p>
-            <p className="mono" style={{ fontSize: "0.8rem" }}>
-              {assistantBaseUrl(created.slug)}
-            </p>
-            <p className="mono muted" style={{ fontSize: "0.8rem" }}>
-              Native chat: {assistantChatUrl(created.slug)}
-            </p>
-            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-              <CopyEndpointButton url={assistantBaseUrl(created.slug)} />
-              <Link to="/chat" className="btn btn-secondary btn-sm">
-                Open in Chat
-              </Link>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setCreated(null)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </section>
+              <div className="pipeline-card-head">
+                <h3 className="pipeline-card-name">{p.name}</h3>
+                <span className="pipeline-card-strategy">
+                  {RAG_STRATEGY_LABELS[p.rag_strategy]?.label ?? p.rag_strategy}
+                </span>
+              </div>
+
+              <p className="pipeline-card-desc">{p.description}</p>
+
+              <dl className="pipeline-card-meta">
+                <div>
+                  <dt>Knowledge Product</dt>
+                  <dd>{p.knowledge_product?.name ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>Chat model</dt>
+                  <dd className="mono">{p.chat_model ?? "—"}</dd>
+                </div>
+              </dl>
+
+              <div className="pipeline-card-chips">
+                <span className="pipeline-chip">
+                  {templates.find((t) => t.id === p.prompt_template_id)?.name ?? "No prompt"}
+                </span>
+                <span className="pipeline-chip">
+                  {guardrails.find((g) => g.id === p.guardrails_config_id)?.name ?? "No guardrails"}
+                </span>
+              </div>
+
+              <div className="pipeline-card-endpoint">
+                {p.slug ? (
+                  <>
+                    <span className="pipeline-card-endpoint-label">Endpoint</span>
+                    <code>{assistantBaseUrl(p.slug)}</code>
+                  </>
+                ) : (
+                  <span className="muted">No endpoint. This is a legacy ingestion pipeline.</span>
+                )}
+              </div>
+
+              <div className="pipeline-card-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setViewing(p);
+                  }}
+                >
+                  View
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setDeleting(p);
+                  }}
+                  aria-label={`Delete ${p.name}`}
+                >
+                  <IconDelete size={12} />
+                  Delete
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
       )}
 
-      <div className="pipeline-layout">
-        <form className="panel pipeline-form" onSubmit={handleCreate}>
-          <div className="panel-header">
-            <h2 className="panel-title">New assistant</h2>
-          </div>
-          <fieldset
-            className="form-body"
-            disabled={loading || submitting}
-            style={{ border: 0, margin: 0, minWidth: 0 }}
-          >
-            <PipelineFields
-              draft={draft}
-              setDraft={setDraft}
-              products={eligibleProducts}
-              templates={templates}
-              guardrails={guardrails}
-              chatModels={chatModels}
-              loadingProducts={loading}
-              idPrefix="create"
-              showErrors={showErrors}
-            />
+      {!loading && eligibleProducts.length === 0 && (
+        <div className="panel-empty">
+          No Knowledge Product has an enabled retrieval destination yet.{" "}
+          <a href={INGESTION_KNOWLEDGE_STORE_URL} target="_blank" rel="noreferrer">
+            Open the Knowledge Store
+          </a>
+          .
+        </div>
+      )}
+
+      {showCreate && (
+        <Modal
+          title="Create pipeline"
+          size="lg"
+          onClose={() => setShowCreate(false)}
+          initialFocus={createNameRef}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowCreate(false)}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="create-pipeline-form"
+                className="btn btn-primary"
+                disabled={loading || submitting || !canCreate}
+              >
+                {submitting ? "Creating…" : "Create Pipeline"}
+              </button>
+            </>
+          }
+        >
+          <form id="create-pipeline-form" className="pipeline-form" onSubmit={handleCreate}>
+            <fieldset
+              disabled={loading || submitting}
+              style={{ border: 0, margin: 0, minWidth: 0 }}
+            >
+              <PipelineFields
+                draft={draft}
+                setDraft={setDraft}
+                products={eligibleProducts}
+                templates={templates}
+                guardrails={guardrails}
+                chatModels={chatModels}
+                loadingProducts={loading}
+                idPrefix="create"
+                showErrors={showErrors}
+                onNameRef={(el) => {
+                  createNameRef.current = el;
+                }}
+              />
+            </fieldset>
             {formError && <div className="alert alert-error">{formError}</div>}
-            <button type="submit" className="btn btn-primary" disabled={loading || submitting || !canCreate}>
-              {submitting ? "Creating…" : "Create assistant"}
-            </button>
-          </fieldset>
-        </form>
+          </form>
+        </Modal>
+      )}
 
-        <section className="panel pipeline-list-panel">
-          <div className="panel-header">
-            <h2 className="panel-title">Saved assistants</h2>
-          </div>
-          {loading ? (
-            <p className="panel-empty muted">Loading assistants…</p>
-          ) : pipelines.length === 0 ? (
-            <p className="panel-empty muted">No pipelines configured yet.</p>
-          ) : (
-            <ul className="pipeline-list">
-              {pipelines.map((p) => (
-                <li
-                  key={p.id}
-                  className={selectedPipelineId === p.id ? "active" : ""}
-                  style={{ alignItems: "flex-start" }}
-                >
-                  <button
-                    type="button"
-                    className="pipeline-list-item"
-                    style={{ textAlign: "left" }}
-                    onClick={() => setSelectedPipelineId(p.id)}
-                  >
-                    <strong>{p.description}</strong>
-                    <span className="muted">
-                      {p.name} · {RAG_STRATEGY_LABELS[p.rag_strategy]?.label ?? p.rag_strategy}
-                    </span>
-                    {p.knowledge_product && (
-                      <span className="muted">Knowledge Product: {p.knowledge_product.name}</span>
-                    )}
-                    <span className="muted mono">{p.chat_model ?? "No chat model"}</span>
-                    <span style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", margin: "0.25rem 0" }}>
-                      <span style={CHIP_STYLE}>
-                        {templates.find((t) => t.id === p.prompt_template_id)?.name ?? "No prompt"}
-                      </span>
-                      <span style={CHIP_STYLE}>
-                        {guardrails.find((g) => g.id === p.guardrails_config_id)?.name ?? "No guardrails"}
-                      </span>
-                    </span>
-                    <span className="muted mono" style={{ fontSize: "0.78rem" }}>
-                      {p.slug ? assistantBaseUrl(p.slug) : "No endpoint"}
-                    </span>
-                  </button>
-                  <div style={{ display: "flex", gap: "0.4rem", marginLeft: "0.5rem", flexWrap: "wrap" }}>
-                    {p.slug && <CopyEndpointButton url={assistantBaseUrl(p.slug)} />}
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => openEdit(p)}
-                      aria-label={`Edit ${p.name}`}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      onClick={() => handleDelete(p)}
-                      aria-label={`Delete ${p.name}`}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+      {viewing && (
+        <Modal
+          title={viewing.name}
+          size="lg"
+          onClose={() => setViewing(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-danger" onClick={() => setDeleting(viewing)}>
+                <IconDelete size={12} />
+                Delete
+              </button>
+              <span className="modal-spacer" />
+              <Link to="/chat" className="btn btn-secondary">
+                Open in Chat
+              </Link>
+              <button type="button" className="btn btn-secondary" onClick={() => setViewing(null)}>
+                Close
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => openEdit(viewing)}>
+                <IconEdit size={12} />
+                Edit configuration
+              </button>
+            </>
+          }
+        >
+          <p className="view-desc">{viewing.description}</p>
 
-          {selectedPipeline && (
-            <div className="runs-section" style={{ marginTop: "2rem" }}>
-              <h3 className="runs-title">Assistant summary</h3>
-              <div className="panel" style={{ background: "var(--bg-inset)", marginTop: "1rem" }}>
-                <div className="form-body">
-                  {selectedPipeline.knowledge_product ? (
-                    <p style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                      <strong>{selectedPipeline.knowledge_product.name}</strong>
-                      <StatusBadge status={selectedPipeline.knowledge_product.status} />
-                    </p>
+          <section className="view-section">
+            <h3 className="view-section-title">Endpoint</h3>
+            {viewing.slug ? (
+              <>
+                <EndpointRow
+                  label="OpenAI-compatible base URL"
+                  url={assistantBaseUrl(viewing.slug)}
+                  hint="Point an OpenAI client's base_url here."
+                />
+                <EndpointRow label="Native chat URL" url={assistantChatUrl(viewing.slug)} />
+              </>
+            ) : (
+              <p className="muted">
+                No endpoint. This is a legacy ingestion pipeline, which the assistant routes do not serve.
+              </p>
+            )}
+          </section>
+
+          <section className="view-section">
+            <h3 className="view-section-title">Configuration</h3>
+            <dl className="view-grid">
+              <div>
+                <dt>Knowledge Product</dt>
+                <dd>
+                  {viewing.knowledge_product ? (
+                    <span className="view-product">
+                      {viewing.knowledge_product.name}
+                      <StatusBadge status={viewing.knowledge_product.status} />
+                    </span>
                   ) : (
-                    <p className="muted">This pipeline has no Knowledge Product.</p>
+                    "—"
                   )}
-
-                  <div style={{ marginTop: "0.75rem" }}>
-                    <div className="muted" style={{ fontSize: "0.78rem" }}>
-                      Stores read
-                    </div>
-                    {selectedStoreDestinations.length === 0 ? (
-                      <p className="field-hint">No enabled retrieval destination.</p>
-                    ) : (
-                      selectedStoreDestinations.map((d) => {
-                        const store = destinationStoreLabel(d) ?? d.destination_type;
-                        const table = d.config?.table_name as string | undefined;
-                        return (
-                          <div key={d.destination_type} className="mono muted" style={{ fontSize: "0.8rem" }}>
-                            {d.destination_type}: {store}
-                            {table ? `.${table}` : ""}
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.75rem" }}>
-                    Strategy:{" "}
-                    <span className="mono">
-                      {RAG_STRATEGY_LABELS[selectedPipeline.rag_strategy]?.label ??
-                        selectedPipeline.rag_strategy}
-                    </span>
-                    <br />
-                    Chat model: <span className="mono">{selectedPipeline.chat_model ?? "—"}</span>
-                    <br />
-                    Prompt template:{" "}
-                    {templates.find((t) => t.id === selectedPipeline.prompt_template_id)?.name ??
-                      "No prompt"}
-                    <br />
-                    Guardrails:{" "}
-                    {guardrails.find((g) => g.id === selectedPipeline.guardrails_config_id)?.name ??
-                      "No guardrails"}
-                    <br />
-                    Created: {new Date(selectedPipeline.created_at).toLocaleString()}
-                    <br />
-                    Updated: {new Date(selectedPipeline.updated_at).toLocaleString()}
-                  </div>
-                </div>
+                </dd>
               </div>
-            </div>
-          )}
+              <div>
+                <dt>RAG strategy</dt>
+                <dd>{RAG_STRATEGY_LABELS[viewing.rag_strategy]?.label ?? viewing.rag_strategy}</dd>
+              </div>
+              <div>
+                <dt>Chat model</dt>
+                <dd className="mono">{viewing.chat_model ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Prompt template</dt>
+                <dd>
+                  {templates.find((t) => t.id === viewing.prompt_template_id)?.name ?? "No prompt"}
+                </dd>
+              </div>
+              <div>
+                <dt>Guardrails config</dt>
+                <dd>
+                  {guardrails.find((g) => g.id === viewing.guardrails_config_id)?.name ??
+                    "No guardrails"}
+                </dd>
+              </div>
+              <div>
+                <dt>Created</dt>
+                <dd>{new Date(viewing.created_at).toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Updated</dt>
+                <dd>{new Date(viewing.updated_at).toLocaleString()}</dd>
+              </div>
+            </dl>
+          </section>
 
-          {!loading && eligibleProducts.length === 0 && (
-            <div className="panel-empty">
-              No Knowledge Product has an enabled retrieval destination yet.{" "}
-              <a href={INGESTION_KNOWLEDGE_STORE_URL} target="_blank" rel="noreferrer">
-                Open the Knowledge Store
-              </a>
-              .
-            </div>
-          )}
-        </section>
-      </div>
+          <section className="view-section">
+            <h3 className="view-section-title">Stores read</h3>
+            {viewingStoreDestinations.length === 0 ? (
+              <p className="field-hint">No enabled retrieval destination.</p>
+            ) : (
+              <ul className="view-stores">
+                {viewingStoreDestinations.map((d) => {
+                  const store = destinationStoreLabel(d) ?? d.destination_type;
+                  const table = d.config?.table_name as string | undefined;
+                  return (
+                    <li key={d.destination_type}>
+                      <span className="view-store-kind">{d.destination_type}</span>
+                      <code>
+                        {store}
+                        {table ? `.${table}` : ""}
+                      </code>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </Modal>
+      )}
 
       {editing && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pipeline-modal-title"
-          onClick={closeEdit}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 1000,
-            background: "rgba(0,0,0,0.75)",
-            backdropFilter: "blur(12px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "24px",
-          }}
-        >
-          <form
-            onSubmit={handleEditSubmit}
-            onClick={(event) => event.stopPropagation()}
-            style={{
-              background: "#111622",
-              border: "1px solid rgba(88,166,253,0.3)",
-              borderRadius: 16,
-              padding: "24px",
-              width: "min(720px, 100%)",
-              maxHeight: "90vh",
-              overflowY: "auto",
-            }}
-          >
-            <div className="page-header-row">
-              <h2 id="pipeline-modal-title">Edit pipeline</h2>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={closeEdit}
-                aria-label="Close"
-              >
-                ✕
+        <Modal
+          title="Edit pipeline"
+          size="lg"
+          onClose={closeEdit}
+          initialFocus={editNameRef}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={closeEdit}>
+                Cancel
               </button>
-            </div>
-
+              <button
+                type="submit"
+                form="edit-pipeline-form"
+                className="btn btn-primary"
+                disabled={savingEdit}
+              >
+                {savingEdit ? "Saving…" : "Save changes"}
+              </button>
+            </>
+          }
+        >
+          <form id="edit-pipeline-form" className="pipeline-form" onSubmit={handleEditSubmit}>
             <PipelineFields
               draft={editDraft}
               setDraft={setEditDraft}
@@ -805,19 +1004,18 @@ export default function PipelinesPage() {
                 editNameRef.current = el;
               }}
             />
-
             {formError && <div className="alert alert-error">{formError}</div>}
-
-            <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
-              <button type="button" className="btn btn-secondary" onClick={closeEdit}>
-                Cancel
-              </button>
-              <button type="submit" className="btn btn-primary" disabled={savingEdit}>
-                {savingEdit ? "Saving…" : "Save"}
-              </button>
-            </div>
           </form>
-        </div>
+        </Modal>
+      )}
+
+      {deleting && (
+        <ConfirmDeleteDialog
+          pipeline={deleting}
+          busy={deletingBusy}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => void handleDelete(deleting)}
+        />
       )}
     </div>
   );
