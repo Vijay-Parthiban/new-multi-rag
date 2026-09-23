@@ -1,2 +1,6 @@
 .env
 _test-*.yaml
+# The collector binary is a 167 MB download, not source.
+otelcol.exe
+# Generated at run time by run-local-collector.py from otel-collector-config.yaml.
+otel-collector-local.derived.yaml

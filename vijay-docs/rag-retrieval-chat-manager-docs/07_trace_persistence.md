@@ -1,62 +1,25 @@
-# 07 — Tracking Page & Trace Persistence
+# 07 — Trace Persistence and OTLP Export
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-23
 
-## 1. Executive Summary & Page Purpose
-The **Tracking** page (`frontend/src/pages/TrackingPage.tsx`, route `/tracking`, nav label "Tracking") is a **read-only operational monitor**. Its own header describes the scope exactly: title "Pipeline Tracking", description "Monitor document ingestion status and web scraper job history." (`TrackingPage.tsx:94-95`). It lists ingestion pipeline runs, scraper crawl jobs and scraper scrape jobs, and it polls every 5 minutes while it is the active route.
+## 1. What this document covers
 
-It is **not** a distributed-trace / span-waterfall inspector. The RAG API has no `/tracking/*` routes at all: `create_app()` registers only health, search, retrieve, rerank, generate, chat, evaluate, prompts, guardrails, guardrails-evaluate and knowledge routers (`rag_api/main.py:71-81`). Message-level pipeline trace data is persisted in Postgres and read back through the chat endpoints (section 4); the OpenTelemetry side is export-only to the collector (section 5).
+Traces are stored in Postgres as rows, not as an OpenTelemetry span tree, and the OpenTelemetry
+side is export-only. Those two halves are what this document describes.
 
----
-
-## 2. Data Sources & Endpoints
-
-| UI area | Endpoint called | Client function | Base URL |
-|---|---|---|---|
-| Summary cards, "File Ingestion Runs" tab | `GET /api/pipelines/runs?limit=100` | `listAllPipelineRuns(100)` (`frontend/src/api.ts:453-455`) | `VITE_API_URL`, default `http://localhost:8007` (`api.ts:3`) — the ingestion manager |
-| "Crawl Jobs" tab | `GET /crawls?limit=50` | `listScraperCrawls(50)` (`api.ts:503-505`) | `VITE_SCRAPER_URL`, default `http://localhost:8000` (`api.ts:4`) |
-| "Scrape Jobs" tab | `GET /scrapes?limit=50` | `listScraperScrapes(50)` (`api.ts:507-509`) | `VITE_SCRAPER_URL`, default `http://localhost:8000` |
-
-Scraper calls use the `X-API-Key` header with `VITE_SCRAPER_API_KEY` (`api.ts:5-8, 459-470`); ingestion calls use `VITE_API_KEY` (`api.ts:12-13, 51-58`). The page never touches the RAG API (`VITE_RAG_API_URL`, default `http://localhost:8001`, `api.ts:5`) — the trace data described in section 4 is served by that API but is not rendered here.
-
-Load behaviour (`TrackingPage.tsx:41-89`):
-
-- `loadRuns`, `loadCrawls`, `loadScrapes` each run on mount and on a `setInterval` of 300000 ms, but only while `location.pathname === "/tracking"` (persistent-mount pages stay mounted behind other routes).
-- Each loader keeps its own error state: a pipeline-run failure renders an error alert, a crawl/scrape failure renders the warning `Scraper API: <message>. Make sure the scraper service is running at <VITE_SCRAPER_URL>` (`TrackingPage.tsx:266-268, 352-355`).
+> **The Tracking page was removed on 2026-09-23.** It was a read-only operational monitor that
+> listed ingestion pipeline runs, scraper crawl jobs and scraper scrape jobs, and its route was
+> `/tracking`. It is gone from the retrieval frontend: the nav item, the route, the page
+> component, its icon, its styles and the scraper API client it was the only user of. The
+> ingestion frontend keeps its own unused copy of `TrackingPage.tsx`; nothing mounts it.
+>
+> What the page read is unchanged and still reachable elsewhere: pipeline runs come from
+> `GET /api/pipelines/runs` on the ingestion manager, and the crawl and scrape jobs come from the
+> web-scraper API on port 8000. Neither is rendered anywhere in the retrieval frontend now.
 
 ---
 
-## 3. What the Page Displays
-
-```
-+-----------------------------------------------------------------------------------------------+
-|  Pipeline Tracking                                            [ Refresh ]                      |
-|  Monitor document ingestion status and web scraper job history.                               |
-+-----------------------------------------------------------------------------------------------+
-|  Total runs | Active | Completed | Failed | Crawl jobs | Scrape jobs                           |
-+-----------------------------------------------------------------------------------------------+
-|  [ File Ingestion Runs (n) ] [ Crawl Jobs ] [ Scrape Jobs ]                                   |
-|  Pipeline            | Status    | Files | Pages | Points | Scraper job | Started | Completed |
-|  name / description  | pending   | 8/10  | 142   | 980    | job id ab…   | 5m ago  | —         |
-|  collection          | processing|       |       |        |              |         |           |
-|  ...failure rows are tinted red, per-run error_message printed as alert blocks...              |
-+-----------------------------------------------------------------------------------------------+
-|  Crawl Jobs: ID | Seed URL | Status | Mode | Pages crawled | Total links | Markdown | Image |   |
-|              Error                                                                            |
-|  Scrape Jobs: same panel pattern                                                              |
-+-----------------------------------------------------------------------------------------------+
-```
-
-- Summary card counters (`TrackingPage.tsx:110-136`): `runs.length`, active = `status === "pending" || status === "processing"`, completed = `status === "completed" || status === "success"`, failed = `status === "failed"`, plus `crawls.length` and `scrapes.length`.
-- Tab badges: the "File Ingestion Runs" tab shows the active-run count (`TrackingPage.tsx:139-161`).
-- Ingestion table columns (`TrackingPage.tsx:192-235`): Pipeline (name, description, `qdrant_collection`), Status badge, Files `files_processed/files_total`, Pages (`pages_indexed`), Points (`points_upserted`), Scraper job (`scraper_crawl_job_id`, truncated), Started / Completed relative timestamps. Rows are tinted for `failed` and `processing`.
-- Crawl table columns (`TrackingPage.tsx:278-345`): ID, Seed URL (link), Status, Mode, Pages crawled (`result.pages_crawled`), Total links (`result.total_links`), Markdown ingested, Image ingested, Error message.
-- Empty states: "No pipeline runs yet. Go to Pipelines to start one." (`:187`), "No crawl jobs found in the scraper service." (`:272`), "No scrape jobs found. Start a pipeline with web scraping enabled." (`:359`).
-- Nothing on this page renders spans, trace trees, TTFT, token counts or retrieved-chunk payloads.
-
----
-
-## 4. Trace Persistence & Retrieval (chat path)
+## 2. Trace Persistence & Retrieval (chat path)
 
 Traces are stored as rows, not as an OpenTelemetry span tree.
 
@@ -94,7 +57,7 @@ Traces are stored as rows, not as an OpenTelemetry span tree.
 
 ---
 
-## 5. OpenTelemetry Export Configuration
+## 3. OpenTelemetry Export Configuration
 
 Traces are emitted by the backend process and shipped over OTLP/HTTP to the collector; the collector fans out to **Phoenix and Langfuse**. The application picks no backend: it exports once and the collector copies the span to each. Configuration is env-driven in `libs/shared/src/rag_shared/tracing.py:77-137`:
 
@@ -110,7 +73,7 @@ Traces are emitted by the backend process and shipped over OTLP/HTTP to the coll
 | `OTEL_DEPLOYMENT_ENVIRONMENT` | `"production"` | resource attribute default |
 | `OTEL_SERVICE_NAMESPACE` | `"rag-platform"` | resource attribute default |
 
-Backend credentials for a backend are **not** read here. They live in `otel/.env`, which the collector reads. See Section 6.
+Backend credentials for a backend are **not** read here. They live in `otel/.env`, which the collector reads. See Section 4.
 
 - Exporter: `OTLPSpanExporter` from `opentelemetry.exporter.otlp.proto.http.trace_exporter`, batched via `BatchSpanProcessor` (`tracing.py:106-116`).
 - Outbound HTTP is auto-instrumented with `HTTPXClientInstrumentor().instrument()` when the package is installed, so LiteLLM/Qdrant calls appear as child spans only when a parent span is active (`tracing.py:126-127`).
@@ -137,7 +100,7 @@ Attributes set on these spans (`tracing.py:218-258, 393-413`): Langfuse-recogniz
 
 ---
 
-## 6. Collector Configuration (`otel/`)
+## 4. Collector Configuration (`otel/`)
 
 `otel/otel-collector-config.yaml`:
 
@@ -148,4 +111,4 @@ Attributes set on these spans (`tracing.py:218-258, 393-413`): Langfuse-recogniz
 - All exporter credentials come from `otel/.env` (`OTEL_LOG_LEVEL`, `OTEL_DEBUG_VERBOSITY`, `OTEL_DEPLOYMENT_ENVIRONMENT`, `OTEL_SERVICE_NAMESPACE`, `LANGFUSE_OTLP_ENDPOINT`, `LANGFUSE_AUTH_HEADER`, `PHOENIX_OTLP_ENDPOINT`, `PHOENIX_API_KEY`, `PHOENIX_PROJECT_NAME`). `otel/.env.example` documents the same keys with placeholders, and `otel/.env` itself is gitignored.
 - Arize AX and Grafana Cloud are kept as **commented worked examples** in the file. Arize is a different product from Phoenix: gRPC, authenticated with `api_key` and `space_id` rather than a bearer token. Adding a platform is a collector change and nothing else.
 
-The collector exposes no query API back to the UI; the operator reads traces in Phoenix or Langfuse, not in the Tracking page. The Real Time Monitoring page links out to both.
+The collector exposes no query API back to the UI; the operator reads traces in Phoenix or Langfuse. The Real Time Monitoring page links out to both.

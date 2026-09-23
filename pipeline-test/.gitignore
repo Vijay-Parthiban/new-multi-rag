@@ -1,0 +1,11 @@
+# Local settings. The tracked reference is .env.example.
+backend/.env
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Node and build output
+frontend/node_modules/
+frontend/dist/

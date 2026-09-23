@@ -7,7 +7,7 @@ from generation_core import Generator
 from rag_core import PipelineConfig, RAGPipeline
 from rag_shared.chunk_utils import is_image_chunk, passage_text_for_chunk
 from rag_shared.config import Settings
-from rag_shared.types import RerankedChunk, RetrievedChunk
+from rag_shared.types import KpStores, RerankedChunk, RetrievedChunk
 from reranker_core import build_reranker
 from retrieval_core import Retriever
 
@@ -51,10 +51,17 @@ class GoldenItemEvaluator:
         item: GoldenItem,
         config: PipelineConfig,
         k_values: list[int] | None = None,
+        *,
+        strategy: str | None = None,
+        stores: KpStores | None = None,
     ) -> EvalItemResult:
         k_values = k_values or [1, 3, 5, 10]
         expected = item.parsed_sources()
 
+        # With a strategy and stores this reads the Knowledge Product's own stores, which is
+        # what evaluates a pipeline. Without them the retriever falls back to the legacy scrape
+        # collection, which holds a different corpus and reports near-zero scores for a reason
+        # that has nothing to do with the pipeline.
         retrieved = self._retriever.retrieve(
             item.question,
             mode=config.retrieval_mode,
@@ -62,6 +69,8 @@ class GoldenItemEvaluator:
             collection=config.collection,
             embedding_model=config.embedding_model,
             sparse_embedding_model=config.sparse_embedding_model,
+            strategy=strategy,
+            stores=stores,
         )
         # Formula-based retrieval metrics only (no LLM-as-judge for IRS).
         retrieval_metrics = compute_retrieval_metrics(retrieved, expected, k_values)

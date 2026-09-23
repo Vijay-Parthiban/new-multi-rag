@@ -62,6 +62,24 @@ def enabled_retrieval_destinations(product: KnowledgeProduct) -> set[str]:
     }
 
 
+class ModelSettings(BaseModel):
+    """Sampling settings for an assistant's model call.
+
+    Mirrors the retrieval manager's schema of the same name. The two projects
+    deploy separately, so each validates on its own side: this one guards what
+    gets stored, and that one guards what gets sent to the model.
+
+    Every field is optional. Unset means "use the service default", which is how
+    a pipeline behaved before this field existed.
+    """
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    # The sampler's cutoff, not how many chunks reach the prompt.
+    top_k: int | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, ge=1, le=32768)
+
+
 class PipelineCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = Field(min_length=8, max_length=512)
@@ -84,6 +102,7 @@ class PipelineCreateRequest(BaseModel):
     chat_model: str | None = Field(default=None, max_length=128)
     prompt_template_id: uuid.UUID | None = None
     guardrails_config_id: uuid.UUID | None = None
+    model_settings: ModelSettings | None = None
 
     @field_validator("directory_names")
     @classmethod
@@ -117,6 +136,7 @@ class PipelinePatchRequest(BaseModel):
     guardrails_config_id: uuid.UUID | None = None
     knowledge_product_id: uuid.UUID | None = None
     embedding_model: str | None = Field(default=None, max_length=128)
+    model_settings: ModelSettings | None = None
 
     @field_validator("directory_names")
     @classmethod
@@ -148,6 +168,7 @@ def _pipeline_to_dict(p: Pipeline) -> dict:
         "scraper_max_pages": p.scraper_max_pages,
         "scraper_mode": p.scraper_mode,
         "chat_model": p.chat_model,
+        "model_settings": p.model_settings or None,
         "prompt_template_id": str(p.prompt_template_id) if p.prompt_template_id else None,
         "guardrails_config_id": (
             str(p.guardrails_config_id) if p.guardrails_config_id else None
@@ -423,6 +444,7 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
         chat_model=body.chat_model,
         prompt_template_id=body.prompt_template_id,
         guardrails_config_id=body.guardrails_config_id,
+        model_settings=(body.model_settings.model_dump() if body.model_settings else None),
     )
     db.add(pipeline)
     await db.commit()
@@ -508,6 +530,10 @@ async def update_pipeline(
         pipeline.prompt_template_id = sent["prompt_template_id"]
     if "guardrails_config_id" in sent:
         pipeline.guardrails_config_id = sent["guardrails_config_id"]
+    # Same rule as the two attachments above: sending null clears the settings,
+    # and omitting the key leaves them alone.
+    if "model_settings" in sent:
+        pipeline.model_settings = sent["model_settings"]
 
     if body.directory_names is not None:
         pipeline.directory_names = body.directory_names

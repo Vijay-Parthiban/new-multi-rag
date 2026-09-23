@@ -1,6 +1,8 @@
+import json
 import logging
 import os
 import uuid
+from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import unquote
@@ -86,6 +88,53 @@ TRACE_MODE_PROD = "prod"
 def normalize_trace_mode(raw: str | None) -> str:
     """Map a request header value to a trace mode. Anything unrecognised is production."""
     return TRACE_MODE_TEST if (raw or "").strip().lower() == TRACE_MODE_TEST else TRACE_MODE_PROD
+
+
+# Both backends group a conversation by session id, and both take a list of tags, but they
+# disagree on the encoding. Langfuse maps `langfuse.trace.tags` as a native string array.
+# Arize and Phoenix follow OpenInference, which stores `tag.tags` as a JSON string. Both are
+# written, so one span renders correctly in either platform.
+LANGFUSE_TAGS_ATTR = "langfuse.trace.tags"
+OPENINFERENCE_TAGS_ATTR = "tag.tags"
+
+# A turn is labelled by its mode and by the one thing that changes its behaviour: whether the
+# pipeline keeps the conversation. The tag is derived, never client-supplied, so it always
+# agrees with what the turn actually did.
+#
+# The mode is part of the tag because the two paths are otherwise indistinguishable in a
+# backend: a turn from the Chat page and a call to the pipeline endpoint carry the same span
+# name and the same attributes. `deployment.environment` separates them too, but a tag can be
+# read on the same screen as the trace.
+TAG_TEST_SESSION = "test-session"
+TAG_TEST_STATELESS = "test-stateless"
+TAG_PROD_SESSION = "prod-session"
+TAG_PROD_STATELESS = "prod-stateless"
+
+
+def turn_tags(trace_mode: str, has_session_memory: bool) -> list[str]:
+    """The tag for one turn: `{mode}-{session|stateless}`.
+
+    The mode picks the prefix and the memory gate picks the suffix. A turn from the Chat page
+    reads `test-session` or `test-stateless`; a call to the pipeline endpoint reads
+    `prod-session` or `prod-stateless`.
+    """
+    if trace_mode == TRACE_MODE_TEST:
+        return [TAG_TEST_SESSION if has_session_memory else TAG_TEST_STATELESS]
+    return [TAG_PROD_SESSION if has_session_memory else TAG_PROD_STATELESS]
+
+
+def set_span_tags(span: trace.Span, tags: Sequence[str]) -> None:
+    """Tag a span for both backends.
+
+    Langfuse tags are capped at 200 characters and it drops an over-long one, so a tag is
+    trimmed here rather than silently lost. `set_span_attr` cannot be used: it stringifies
+    anything that is not a scalar, and Langfuse needs a real array.
+    """
+    cleaned = [tag[:200] for tag in tags if tag]
+    if not cleaned:
+        return
+    span.set_attribute(LANGFUSE_TAGS_ATTR, cleaned)
+    span.set_attribute(OPENINFERENCE_TAGS_ATTR, json.dumps(cleaned))
 
 
 def session_trace_ids(session_id: str | None) -> tuple[int, int] | None:
@@ -291,6 +340,8 @@ def rag_pipeline_span(
     trace_mode: str = TRACE_MODE_PROD,
     session_trace: bool = False,
     parent: tuple[str, str] | None = None,
+    tags: Sequence[str] | None = None,
+    attributes: dict[str, Any] | None = None,
 ) -> Iterator[trace.Span]:
     """
     Create a root RAG span with Langfuse- and Phoenix-recognized attributes.
@@ -304,6 +355,9 @@ def rag_pipeline_span(
     `parent` attaches the span to a trace created elsewhere, given as hex
     `(trace_id, span_id)`. The metrics span uses it to join the turn it belongs to rather
     than opening a second trace for the same question.
+
+    `tags` labels the trace in both backends. `attributes` carries pre-flattened context,
+    which is how the pipeline and Knowledge Product records reach the trace.
     """
     tracer = get_tracer()
 
@@ -341,6 +395,9 @@ def rag_pipeline_span(
             # Marks the turn as belonging to a session trace, so a reader can tell the two
             # traces of a session turn apart without knowing the session id.
             set_span_attr(span, "rag.session_trace", True)
+        set_span_tags(span, tags or [])
+        for key, value in (attributes or {}).items():
+            set_span_attr(span, key, value)
         yield span
 
 
@@ -414,3 +471,107 @@ def emit_rag_pipeline_trace(
 
     if flush:
         force_flush()
+
+
+# A long conversation would otherwise put an unbounded string on the span. The limit is high
+# enough for a realistic session and low enough that no backend rejects the span.
+MAX_TRANSCRIPT_CHARS = 60_000
+
+
+@contextmanager
+def rag_turn_span(
+    *,
+    question: str,
+    answer: str,
+    turn_index: int,
+    session_id: str | None = None,
+    tags: Sequence[str] | None = None,
+    trace_mode: str = TRACE_MODE_PROD,
+    name: str = "rag.chat.turn",
+) -> Iterator[trace.Span]:
+    """One question and its answer, as a child of the span that is already active.
+
+    This is what makes a session trace readable: the root span is the conversation, and each
+    turn hangs off it carrying its own input and output.
+
+    The session id and the tags are repeated on every turn. Langfuse filters and aggregates
+    on a trace attribute it finds on the span in front of it, so a value that lives only on
+    the root is invisible on the children.
+    """
+    with get_tracer().start_as_current_span(name) as span:
+        _apply_turn_attributes(
+            span,
+            session_id=session_id,
+            message_id=None,
+            query=question,
+            answer=answer,
+            observation_type="generation",
+            model=None,
+            metadata=None,
+            trace_mode=trace_mode,
+        )
+        set_span_attr(span, "rag.turn.index", turn_index)
+        set_span_tags(span, tags or [])
+        yield span
+
+
+def emit_session_trace(
+    *,
+    session_id: str,
+    turns: Sequence[tuple[str, str]],
+    trace_mode: str = TRACE_MODE_PROD,
+    tags: Sequence[str] | None = None,
+    attributes: dict[str, Any] | None = None,
+    label: str | None = None,
+    flush: bool = True,
+) -> tuple[str | None, int]:
+    """Emit one trace that holds every question and answer of a session.
+
+    The root span is the conversation. Each turn is a child span, so the whole session reads
+    as a single trace rather than a list of unrelated ones. The session id goes on the root
+    as well, so the backends also group this trace with the per-turn traces of the session.
+
+    Returns the hex trace id and the number of turns written, so the caller can report what
+    it sent.
+    """
+    root_query = turns[0][0] if turns else None
+    root_answer = turns[-1][1] if turns else None
+
+    trace_id: str | None = None
+    with rag_pipeline_span(
+        "rag.session",
+        session_id=session_id,
+        query=root_query,
+        answer=root_answer,
+        observation_type="chain",
+        metadata={"turns": len(turns), "session_label": label},
+        trace_mode=trace_mode,
+        tags=tags or [],
+        attributes=attributes or {},
+    ) as span:
+        set_span_attr(span, "rag.session.turns", len(turns))
+        set_span_attr(
+            span,
+            "rag.session.transcript",
+            json.dumps(
+                [{"question": q, "answer": a} for q, a in turns], ensure_ascii=False
+            )[:MAX_TRANSCRIPT_CHARS],
+        )
+        for index, (question, answer) in enumerate(turns, start=1):
+            with rag_turn_span(
+                question=question,
+                answer=answer,
+                turn_index=index,
+                session_id=session_id,
+                tags=tags or [],
+                trace_mode=trace_mode,
+            ):
+                pass
+
+        context = span.get_span_context()
+        if context is not None and context.is_valid:
+            trace_id = format(context.trace_id, "032x")
+
+    if flush:
+        force_flush()
+    return trace_id, len(turns)

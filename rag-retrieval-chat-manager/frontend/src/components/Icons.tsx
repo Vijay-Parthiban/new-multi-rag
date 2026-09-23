@@ -69,15 +69,6 @@ export function IconPipeline({ className, size = 16 }: IconProps) {
   );
 }
 
-export function IconTracking({ className, size = 16 }: IconProps) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-      <path d="M1.5 1.75a.75.75 0 0 0-1.5 0v12.5c0 .414.336.75.75.75H14.25a.75.75 0 0 0 0-1.5H1.5V1.75Z" />
-      <path d="M13.97 3.97a.75.75 0 0 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0L7.75 7.81 4.28 11.28a.75.75 0 0 1-1.06-1.06l4-4a.75.75 0 0 1 1.06 0l1.72 1.72 3.97-3.97Z" />
-    </svg>
-  );
-}
-
 export function IconChat({ className, size = 16 }: IconProps) {
   return (
     <svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>

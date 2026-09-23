@@ -2482,207 +2482,6 @@ select.input option {
 }
 
 /* ═══════════════════════════════════
-   Tracking Page
-   ═══════════════════════════════════ */
-
-.tracking-summary {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1.25rem;
-}
-
-.tracking-card {
-  flex: 1;
-  min-width: 100px;
-  background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 1.125rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  transition: all 0.3s ease;
-  animation: cardEntrance 0.4s ease-out both;
-}
-
-.tracking-card:nth-child(1) {
-  animation-delay: 0.05s;
-}
-
-.tracking-card:nth-child(2) {
-  animation-delay: 0.1s;
-}
-
-.tracking-card:nth-child(3) {
-  animation-delay: 0.15s;
-}
-
-.tracking-card:nth-child(4) {
-  animation-delay: 0.2s;
-}
-
-.tracking-card:nth-child(5) {
-  animation-delay: 0.25s;
-}
-
-.tracking-card:nth-child(6) {
-  animation-delay: 0.3s;
-}
-
-.tracking-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-.tracking-card-active {
-  border-color: rgba(56, 139, 253, 0.4);
-  background: rgba(56, 139, 253, 0.08);
-}
-
-.tracking-card-success {
-  border-color: rgba(63, 185, 80, 0.4);
-  background: rgba(63, 185, 80, 0.08);
-}
-
-.tracking-card-error {
-  border-color: rgba(248, 81, 73, 0.4);
-  background: rgba(248, 81, 73, 0.08);
-}
-
-.tracking-card-num {
-  font-size: 1.625rem;
-  font-weight: 800;
-  line-height: 1;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-}
-
-.tracking-card-label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.tracking-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 1rem;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.tracking-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1.125rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  margin-bottom: -1px;
-  transition: all 0.2s ease;
-}
-
-.tracking-tab:hover {
-  color: var(--text-primary);
-  background: var(--bg-glass);
-}
-
-.tracking-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  font-weight: 600;
-}
-
-.tab-badge {
-  background: var(--gradient-accent);
-  color: #fff;
-  font-size: 0.625rem;
-  font-weight: 700;
-  padding: 0.125rem 0.4rem;
-  border-radius: 999px;
-  min-width: 1.1rem;
-  text-align: center;
-}
-
-.tracking-pipeline-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
-.tracking-pipeline-name {
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-
-.tracking-pipeline-desc {
-  font-size: 0.75rem;
-}
-
-.tracking-table th,
-.tracking-table td {
-  white-space: nowrap;
-}
-
-.tracking-url {
-  color: var(--text-link);
-  text-decoration: none;
-  font-size: 0.8125rem;
-  transition: color 0.15s ease;
-}
-
-.tracking-url:hover {
-  text-decoration: underline;
-  color: var(--text-link-hover);
-}
-
-.text-success {
-  color: var(--success-text);
-  font-weight: 600;
-}
-
-.text-danger {
-  color: var(--danger);
-}
-
-.row-failed td {
-  background: rgba(248, 81, 73, 0.05);
-}
-
-.row-active td {
-  background: rgba(210, 153, 34, 0.05);
-}
-
-.embedding-badge {
-  display: inline-block;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 0.125rem 0.4375rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.embedding-markdown {
-  background: var(--accent-subtle);
-  color: var(--accent-emphasis);
-}
-
-.embedding-image {
-  background: rgba(163, 113, 247, 0.12);
-  color: #a371f7;
-}
-
-/* ═══════════════════════════════════
    Chat Page Layout
    ═══════════════════════════════════ */
 
@@ -2695,6 +2494,24 @@ select.input option {
   margin: -0.5rem -1rem 0;
 }
 
+/* The conversation list is hidden, not just narrowed, so the messages take the
+   full width. The toggle in the config bar brings it back.
+
+   One column, not "0 1fr": a display:none item leaves the grid, so the main
+   area would auto-place into the zero-width first track. */
+.chat-layout--aside-collapsed {
+  grid-template-columns: 1fr;
+}
+
+.chat-layout--aside-collapsed .chat-sidebar {
+  display: none;
+}
+
+/* Names the action and its state, so a collapsed panel is never a dead end. */
+.chat-panel-toggle {
+  white-space: nowrap;
+}
+
 /* ── Chat Sidebar ── */
 
 .chat-sidebar {
@@ -2702,7 +2519,9 @@ select.input option {
   flex-direction: column;
   border-right: 1px solid var(--border-default);
   background: var(--bg-subtle);
-  overflow: hidden;
+  /* The config stack above the session list can outgrow a short window, and it
+     must stay reachable. The list keeps its own scroll region. */
+  overflow-y: auto;
 }
 
 .chat-sidebar-header {
@@ -2912,7 +2731,128 @@ select.input option {
   gap: 3px;
 }
 
+/* ── Override Badge ── */
+
+/* Marks a value that differs from what the pipeline saved. It carries the word
+   "modified", not colour alone, so the state reads without colour perception. */
+.chat-override-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.5rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-glow);
+  background: var(--accent-subtle);
+  color: var(--accent-emphasis);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ── Model Settings Controls ── */
+
+.chat-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
+}
+
+.chat-setting-label {
+  display: flex;
+  align-items: center;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.chat-setting input,
+.chat-setting select {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+/* Persistent helper text, not a placeholder: the meaning of each knob is not
+   obvious from its name alone. */
+.chat-setting-hint {
+  font-size: 0.625rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
 /* ── Main Chat Area ── */
+
+/* Pipeline configuration. Two rows: what the pipeline fixes, then the working
+   copies the Chat page may change. It lives here rather than in the sidebar so
+   the conversation list keeps its height. */
+.chat-config-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-default);
+  flex-shrink: 0;
+}
+
+.chat-config-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  min-height: 28px;
+}
+
+/* auto-fit, so the controls reflow instead of each input shrinking to an
+   unusable width as the window narrows. */
+.chat-config-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+}
+
+.chat-config-bar-note {
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.chat-config-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+}
+
+.chat-config-bar-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+/* Names the state in words, so it is not conveyed by styling alone. */
+.chat-config-lock {
+  padding: 0 0.25rem;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.chat-config-bar-spacer {
+  flex: 1;
+  min-width: 0.5rem;
+}
 
 .chat-main {
   display: flex;
@@ -2921,92 +2861,48 @@ select.input option {
   background: rgba(10, 12, 18, 0.3);
 }
 
-/* ── Config Toolbar ── */
-
-.chat-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 1.25rem;
-  border-bottom: 1px solid var(--border-muted);
-  background: var(--bg-subtle);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  min-height: 44px;
-}
-
-.chat-toolbar-group {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.chat-toolbar-group label {
-  font-weight: 600;
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.chat-toolbar-group select,
-.chat-toolbar-group input[type="number"] {
-  padding: 0.25rem 0.375rem;
-  font-size: 0.75rem;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-glass);
-  color: var(--text-primary);
-  font-family: inherit;
-  width: auto;
-  min-width: 0;
-}
-
-.chat-toolbar-group select:focus,
-.chat-toolbar-group input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-glow);
-}
-
-.chat-toolbar-group input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--accent);
-}
-
-.chat-toolbar-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--border-default);
-  flex-shrink: 0;
-}
-
-.chat-toolbar-session {
+/* The session the next turn continues, shown in the config bar. */
+.chat-session-indicator {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-left: auto;
   font-size: 0.75rem;
 }
 
-.chat-toolbar-session .session-dot {
+.chat-session-indicator .session-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.chat-toolbar-session .session-dot.connected {
+.chat-session-indicator .session-dot.connected {
   background: #3fb950;
   box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
 }
 
-.chat-toolbar-session .session-dot.new {
+.chat-session-indicator .session-dot.new {
   background: #d29922;
   box-shadow: 0 0 6px rgba(210, 153, 34, 0.4);
+}
+
+/* Whether the selected pipeline keeps the conversation, shown beside the pipeline. */
+.memory-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.memory-chip--on {
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+}
+
+.memory-chip--off {
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
 }
 
 /* ── Messages Area ── */

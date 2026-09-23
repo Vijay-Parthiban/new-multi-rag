@@ -108,10 +108,24 @@ tries a pipeline is distinguishable from real traffic. See
 | `POST` | `/api/assistants/{slug}/chat/stream` | Native chat, server-sent events. |
 | `POST` | `/v1/assistants/{slug}/chat/completions` | The OpenAI chat-completions shape. |
 | `GET` | `/api/assistants/{slug}/sessions/{session_id}` | What the assistant remembers for one session. |
-| `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | End the session and clear its memory. |
+| `POST` | `/api/assistants/{slug}/sessions/{session_id}/close` | End the conversation: export it as one trace, then clear its memory. |
+| `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | End the session and clear its memory, without exporting it. |
 
-The last two exist only when the product's Redis destination is enabled. See
+`GET` and `DELETE` exist only when the product's Redis destination is enabled. See
 [15 — Assistant Session Memory](./15_assistant_session_memory.md).
+
+`POST .../close` works either way, because ending a conversation is meaningful in both cases.
+It answers with what happened, and a stateless pipeline reports that there was nothing to export
+and nothing to clear:
+
+```json
+{ "session_id": "…", "turns": 2,
+  "memory": { "enabled": true, "cleared": true },
+  "trace":  { "emitted": true, "trace_id": "12047f48…", "tags": ["prod-session"] } }
+```
+
+It is idempotent, so a retry answers 200 again. It never deletes the conversation: the turns
+stay in the history. See [16 — Observability and Tracing](./16_observability_tracing.md) §4.
 
 ### 3.1 `GET /api/assistants/{slug}`
 
@@ -489,7 +503,7 @@ strategy choice reaches the read path.
    blocking call and yields the whole answer as a single token event.
 3. **A pipeline with a null slug is a legacy ingestion pipeline.** The Chat page keeps the old
    `/chat/stream` path for it, and that path reads `scrape_embeddings` on the scraper's Qdrant. The
-   legacy ingestion table and its routes stay, because the Tracking page and the web scraper still read
+   legacy ingestion table and its routes stay, because the ingestion side and the web scraper still read
    pipeline runs.
 4. **Always set `chat_model` on the pipeline.** `Settings.chat_model` is still
    `llama-3.3-70b-versatile`, which the proxy does not serve. An assistant always carries an explicit

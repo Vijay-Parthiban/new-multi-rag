@@ -3,16 +3,19 @@ import PageHeader from "../components/PageHeader";
 import {
   createEvaluationRun,
   deleteGoldenDataset,
+  destinationStoreLabel,
   EvalRunItemRow,
   EvalRunResponse,
   getEvaluationRun,
   GoldenDatasetSummary,
+  HF_EVAL_CORPUS,
+  HF_EVAL_DATASET,
+  importHuggingFaceDataset,
   listDatasetRuns,
   listEvaluationRunItems,
   listGoldenDatasets,
   listPipelines,
   PipelineRecord,
-  uploadGoldenDataset,
 } from "../api";
 import { formatRelativeTime } from "../utils/format";
 
@@ -377,6 +380,46 @@ function RubricTable({ items, status }: { items: EvalRunItemRow[], status?: stri
   );
 }
 
+/**
+ * The stores a pipeline's own turns read.
+ *
+ * A Knowledge-Product-backed pipeline leaves `qdrant_collection` and `embedding_model` empty,
+ * because its stores live on the product's destinations, one per destination type. Reading the
+ * legacy field would evaluate the service default collection instead of the pipeline's own,
+ * which retrieves nothing and scores zero for a reason that has nothing to do with the pipeline.
+ */
+function pipelineStores(pipeline: PipelineRecord | null) {
+  const product = pipeline?.knowledge_product;
+  if (!product) {
+    return {
+      collection: pipeline?.qdrant_collection ?? null,
+      embedding: pipeline?.embedding_model ?? null,
+      sparse: pipeline?.sparse_embedding_model ?? null,
+      opensearch: null as string | null,
+      pgSchema: null as string | null,
+      pgTable: null as string | null,
+    };
+  }
+  const enabled = (destinationType: string) =>
+    (product.destinations ?? []).find(
+      (d) => d.destination_type === destinationType && d.enabled,
+    );
+  const name = (destinationType: string) => {
+    const found = enabled(destinationType);
+    return found ? destinationStoreLabel(found) : null;
+  };
+  const relational = enabled("relational_pgvector");
+  // The vector collection and the search index are stores; the sparse field is a model.
+  return {
+    collection: name("vector_qdrant"),
+    embedding: product.text_embedding_model ?? null,
+    sparse: product.sparse_embedding_model ?? null,
+    opensearch: name("lexical_opensearch"),
+    pgSchema: name("relational_pgvector"),
+    pgTable: relational ? ((relational.config?.table_name as string) ?? null) : null,
+  };
+}
+
 export default function GoldenEvaluationsPage() {
   const [datasets, setDatasets] = useState<GoldenDatasetSummary[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
@@ -393,15 +436,12 @@ export default function GoldenEvaluationsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [uploadReplace, setUploadReplace] = useState(false);
+  // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
+  const [rowsToTest, setRowsToTest] = useState(5);
+  const [hfBusy, setHfBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<"analytics" | "drilldown">("analytics");
   const [drilldownCategory, setDrilldownCategory] = useState("all");
   const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
-  // RAG mode config
-  const [ragMode, setRagMode] = useState("normal");
-  const [scMaxLoops, setScMaxLoops] = useState(3);
-  const [routerEnabled, setRouterEnabled] = useState(false);
-  const [routerMode, setRouterMode] = useState("llm");
 
   function toggleItemExpanded(itemId: string) {
     setExpandedItemIds((prev) => {
@@ -416,6 +456,14 @@ export default function GoldenEvaluationsPage() {
     () => pipelines.find((p) => p.id === pipelineId) || null,
     [pipelines, pipelineId],
   );
+
+  // What the selected pipeline actually reads, and how large the selected set is.
+  const stores = useMemo(() => pipelineStores(selectedPipeline), [selectedPipeline]);
+  const selectedDataset = useMemo(
+    () => datasets.find((d) => d.dataset_id === selectedDatasetId) ?? null,
+    [datasets, selectedDatasetId],
+  );
+  const selectedDatasetCount = selectedDataset?.item_count ?? 0;
 
   const loadDatasets = useCallback(async () => {
     const items = await listGoldenDatasets();
@@ -514,18 +562,18 @@ export default function GoldenEvaluationsPage() {
     [runItems, drilldownCategory],
   );
 
-  async function onUpload(file: File | null) {
-    if (!file) return;
-    setBusy(true);
+  /** Fetch the built-in evaluation set from the Hub and select it. */
+  async function onImportHfDataset() {
+    setHfBusy(true);
     setError(null);
     try {
-      const res = await uploadGoldenDataset(file, uploadReplace);
+      const res = await importHuggingFaceDataset(true);
       await loadDatasets();
       setSelectedDatasetId(res.dataset_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(err instanceof Error ? err.message : "Could not import the evaluation set");
     } finally {
-      setBusy(false);
+      setHfBusy(false);
     }
   }
 
@@ -551,17 +599,27 @@ export default function GoldenEvaluationsPage() {
     setBusy(true);
     setError(null);
     try {
+      // The run carries the pipeline's own stores, so the evaluation measures that pipeline
+      // rather than whatever collection the service defaults to. The strategy and the store
+      // names travel together: the evaluator reads the knowledge-product stores only when both
+      // are present.
+      const stores = pipelineStores(selectedPipeline);
       const created = await createEvaluationRun(selectedDatasetId, {
         retrieval_mode: retrievalMode,
         retrieve_limit: retrieveLimit,
         rerank_enabled: rerankEnabled,
-        collection: selectedPipeline.qdrant_collection,
-        embedding_model: selectedPipeline.embedding_model,
-        sparse_embedding_model: selectedPipeline.sparse_embedding_model,
-        rag_mode: routerEnabled ? "normal" : ragMode,
-        self_corrective_max_loops: scMaxLoops,
-        router_enabled: routerEnabled,
-        router_mode: routerEnabled ? routerMode : undefined,
+        rag_strategy: selectedPipeline.rag_strategy,
+        // The pipeline's own chat model. Without it the service default applies, and the
+        // service default is a model the proxy does not serve.
+        generation_model: selectedPipeline.chat_model,
+        collection: stores.collection,
+        embedding_model: stores.embedding,
+        sparse_embedding_model: stores.sparse,
+        opensearch_index: stores.opensearch,
+        pg_schema: stores.pgSchema,
+        pg_table: stores.pgTable,
+        // A random sample, so a run stays cheap. No seed, so each run draws a fresh one.
+        sample_size: rowsToTest,
       });
       const run = await getEvaluationRun(created.run_id);
       setSelectedRun(run);
@@ -607,8 +665,8 @@ export default function GoldenEvaluationsPage() {
   return (
     <div className="page">
       <PageHeader
-        title="Offline Evaluation (Golden Datasets)"
-        description="Upload golden datasets, run pipeline-aligned evaluations, and inspect retrieval / rerank / generation KPIs."
+        title="Offline Evaluation"
+        description="Pick a pipeline configuration, run a random sample of the evaluation set through it, and read the retrieval, rerank and generation scores."
         breadcrumbs={[
           { label: "Overview", to: "/" },
           { label: "Offline Evaluation" },
@@ -628,25 +686,24 @@ export default function GoldenEvaluationsPage() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
         <div className="panel">
-          <div className="panel-header">
-            <h3 className="panel-title">Datasets</h3>
+          <div className="panel-header" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+            <h3 className="panel-title">Evaluation set</h3>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => void onImportHfDataset()}
+              disabled={hfBusy}
+            >
+              {hfBusy ? "Importing…" : "Refresh from Hugging Face"}
+            </button>
           </div>
           <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
-            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-              <input
-                type="file"
-                accept=".json,application/json"
-                disabled={busy}
-                onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
-              />
-              <label className="muted" style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
-                <input
-                  type="checkbox"
-                  checked={uploadReplace}
-                  onChange={(e) => setUploadReplace(e.target.checked)}
-                />
-                Replace if name exists
-              </label>
+            <div className="alert alert-warn" style={{ fontSize: "0.8rem", margin: 0 }}>
+              <strong>This set asks about the Hugging Face documentation.</strong> Its questions are
+              answerable only from the companion corpus <code>{HF_EVAL_CORPUS}</code>. A pipeline
+              whose Knowledge Product does not hold that corpus retrieves nothing, so every score
+              reads near zero. That measures the corpus, not the pipeline. Questions come from{" "}
+              <code>{HF_EVAL_DATASET}</code>.
             </div>
             {loading ? (
               <p className="muted">Loading datasets…</p>
@@ -694,11 +751,11 @@ export default function GoldenEvaluationsPage() {
 
         <div className="panel">
           <div className="panel-header">
-            <h3 className="panel-title">New Run</h3>
+            <h3 className="panel-title">Run</h3>
           </div>
           <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
             <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-              Pipeline
+              Pipeline configuration
               <select
                 className="input"
                 value={pipelineId}
@@ -706,20 +763,35 @@ export default function GoldenEvaluationsPage() {
               >
                 {pipelines.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} · {p.qdrant_collection}
+                    {p.name} · {p.rag_strategy}
+                    {p.knowledge_product ? ` · ${p.knowledge_product.name}` : ""}
                   </option>
                 ))}
               </select>
             </label>
             {selectedPipeline && (
               <p className="muted" style={{ fontSize: "0.8rem", margin: 0 }}>
-                collection={selectedPipeline.qdrant_collection} · embedding=
-                {selectedPipeline.embedding_model}
-                {selectedPipeline.sparse_embedding_model
-                  ? ` · sparse=${selectedPipeline.sparse_embedding_model}`
-                  : ""}
+                reads {stores.collection ?? "the service default collection"} · embedding=
+                {stores.embedding ?? "default"}
+                {stores.sparse ? ` · sparse=${stores.sparse}` : ""}
               </p>
             )}
+            <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
+              Rows to test
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={200}
+                value={rowsToTest}
+                onChange={(e) => setRowsToTest(Math.max(1, Number(e.target.value) || 1))}
+                style={{ width: 110 }}
+              />
+            </label>
+            <p className="muted" style={{ fontSize: "0.75rem", margin: 0 }}>
+              {rowsToTest} of {selectedDatasetCount} rows, chosen at random on every run. Each row
+              costs one retrieval, one generation and one scoring pass.
+            </p>
             <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
               <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
                 Retrieval
@@ -753,57 +825,9 @@ export default function GoldenEvaluationsPage() {
                 />
                 Rerank
               </label>
-              <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                Strategy
-                <select
-                  className="input"
-                  value={routerEnabled ? "auto" : "manual"}
-                  onChange={(e) => setRouterEnabled(e.target.value === "auto")}
-                >
-                  <option value="manual">Manual Selection</option>
-                  <option value="auto">Intelligent (Auto)</option>
-                </select>
-              </label>
-              {routerEnabled && (
-                <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                  Classifier
-                  <select
-                    className="input"
-                    value={routerMode}
-                    onChange={(e) => setRouterMode(e.target.value)}
-                  >
-                    <option value="llm">LLM (small model)</option>
-                    <option value="heuristic">Heuristic rules</option>
-                  </select>
-                </label>
-              )}
-              {!routerEnabled && (
-                <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                  RAG Mode
-                  <select
-                    className="input"
-                    value={ragMode}
-                    onChange={(e) => setRagMode(e.target.value)}
-                  >
-                    <option value="normal">Normal</option>
-                    <option value="self_corrective">Self-Corrective</option>
-                  </select>
-                </label>
-              )}
-              {(routerEnabled || ragMode === "self_corrective") && (
-                <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                  Max Loops
-                  <input
-                    className="input"
-                    type="number"
-                    min={1}
-                    max={5}
-                    value={scMaxLoops}
-                    onChange={(e) => setScMaxLoops(Math.min(5, Math.max(1, Number(e.target.value) || 1)))}
-                    style={{ width: 72 }}
-                  />
-                </label>
-              )}
+              {/* The offline evaluator runs retrieve -> rerank -> generate and scores each
+                  stage. It has no router and no self-corrective loop, so the Strategy, RAG
+                  Mode and Max Loops controls that used to sit here changed nothing. */}
             </div>
             <button
               type="button"
@@ -811,7 +835,7 @@ export default function GoldenEvaluationsPage() {
               disabled={busy || !selectedDatasetId || !pipelineId}
               onClick={() => void onStartRun()}
             >
-              Start evaluation run
+              {busy ? "Running…" : `Run evaluation on ${rowsToTest} row${rowsToTest === 1 ? "" : "s"}`}
             </button>
           </div>
         </div>

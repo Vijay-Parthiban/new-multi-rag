@@ -26,6 +26,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from rag_api.session_close import SessionNotFound, close_session
 from rag_core.assistant import (
     STRATEGY_LABELS,
     StrategyUnavailable,
@@ -37,7 +38,9 @@ from rag_core.assistant import (
 from rag_core.session_memory import SessionMemory, SessionMemoryUnavailable
 from rag_db.repositories.prompt_repository import PromptRepository
 from rag_db.services.database import get_session_factory
+from rag_core.schemas import ModelSettings
 from rag_shared.config import Settings
+from rag_shared.tracing import TRACE_MODE_HEADER, normalize_trace_mode
 from rag_shared.types import SearchMode
 
 from rag_api.routes.chat import ChatRequest, ChatResponse, chat, chat_stream
@@ -57,6 +60,12 @@ class AssistantChatRequest(BaseModel):
     session_id: uuid.UUID | None = Field(default=None, description="Continue an existing session.")
     guardrails_config_id: uuid.UUID | None = Field(
         default=None, description="Overrides the pipeline's guardrails config for this request."
+    )
+    prompt_template_id: uuid.UUID | None = Field(
+        default=None, description="Overrides the pipeline's prompt template for this request."
+    )
+    model_settings: ModelSettings | None = Field(
+        default=None, description="Overrides the pipeline's model settings for this request."
     )
     retrieval_mode: SearchMode | None = None
     retrieve_limit: int | None = Field(default=None, ge=1, le=50)
@@ -197,8 +206,15 @@ async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
     return pipeline
 
 
-def _system_prompt_for(settings: Settings, pipeline: dict[str, Any]) -> str | None:
-    template_id = pipeline.get("prompt_template_id")
+def _system_prompt_for(
+    settings: Settings, pipeline: dict[str, Any], override_id: Any = None
+) -> str | None:
+    """The system message for this turn.
+
+    A request-level template wins, so the Chat page can try a different one
+    without editing the pipeline, the same way it can try a guardrails config.
+    """
+    template_id = override_id or pipeline.get("prompt_template_id")
     if not template_id:
         return None
     session_factory = get_session_factory(settings)
@@ -240,7 +256,10 @@ async def _build_chat_request(
         generation_model=pipeline.get("chat_model") or settings.chat_model,
         collection=stores.qdrant_collection,
         embedding_model=product.get("text_embedding_model") or settings.embedding_model,
-        system_prompt=_system_prompt_for(settings, pipeline),
+        system_prompt=_system_prompt_for(settings, pipeline, body.prompt_template_id),
+        # Absent when this pipeline has no saved settings, which leaves the
+        # service defaults in charge.
+        model_settings=body.model_settings or _pipeline_model_settings(pipeline),
         strategy=pipeline["rag_strategy"],
         stores=stores,
         # Absent when the product has no enabled Redis destination, which is what
@@ -250,6 +269,9 @@ async def _build_chat_request(
         # A request-level guardrails config wins, so the Chat page can try a
         # different one without editing the pipeline.
         guardrails_config_id=body.guardrails_config_id or _as_uuid(pipeline.get("guardrails_config_id")),
+        # Taken from the pipeline that was just resolved, not from the request, so the trace
+        # context always describes the pipeline that actually ran.
+        pipeline_id=str(pipeline["id"]) if pipeline.get("id") else None,
     )
 
 
@@ -259,6 +281,25 @@ def _as_uuid(value: Any) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(value))
     except ValueError:
+        return None
+
+
+def _pipeline_model_settings(pipeline: dict[str, Any]) -> ModelSettings | None:
+    """The pipeline's saved sampling settings, or None when it has none.
+
+    The ingestion manager stores these as JSON, so a malformed value is dropped
+    rather than failing the turn. Returning None leaves the service defaults in
+    charge, which is how an unconfigured pipeline behaved before this existed.
+    """
+    raw = pipeline.get("model_settings")
+    if not raw:
+        return None
+    try:
+        return ModelSettings(**raw)
+    except Exception:  # noqa: BLE001 - bad saved data must not break a chat turn
+        logger.warning(
+            "ignoring malformed model_settings slug=%s", pipeline.get("slug")
+        )
         return None
 
 
@@ -381,6 +422,34 @@ async def end_assistant_session(
             },
         ) from exc
     return Response(status_code=204)
+
+
+@router.post("/api/assistants/{slug}/sessions/{session_id}/close")
+async def close_assistant_session(
+    slug: str, session_id: uuid.UUID, request: Request
+) -> dict[str, Any]:
+    """End a session from the pipeline endpoint, which is the production path.
+
+    The pipeline comes from the slug, so a caller names one thing and the export always
+    describes the pipeline that actually served the conversation. The trace mode comes from the
+    usual header, and a caller that sends none is production.
+
+    The work lives in `session_close.close_session`: write the conversation out as one trace,
+    then drop what it remembered. It runs in a worker thread, because it does blocking
+    database, Redis and HTTP work and this handler is async.
+    """
+    settings: Settings = request.app.state.settings
+    pipeline = await _resolve_assistant(request, slug)
+    try:
+        return await asyncio.to_thread(
+            close_session,
+            settings,
+            session_id,
+            pipeline_id=str(pipeline["id"]) if pipeline.get("id") else None,
+            trace_mode=normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER)),
+        )
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 def _openai_chunk(slug: str, chunk_id: str, created: int, *, content: str | None = None, finish: str | None = None) -> str:

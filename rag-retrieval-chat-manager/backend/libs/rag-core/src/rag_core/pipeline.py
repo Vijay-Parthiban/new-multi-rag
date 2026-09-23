@@ -151,6 +151,7 @@ class RAGPipeline:
             fusion_model=cfg.fusion_model,
             system_prompt=cfg.system_prompt,
             history=_history_payload(cfg),
+            **cfg.sampling_kwargs(),
         )
         latency.update(generation.latency_ms)
         latency["generate"] = generation.latency_ms.get("generate_total", 0)
@@ -216,6 +217,7 @@ class RAGPipeline:
             model=cfg.generation_model,
             system_prompt=cfg.system_prompt,
             history=_history_payload(cfg),
+            **cfg.sampling_kwargs(),
         ):
             parts.append(delta)
             yield StreamEvent(type="token", content=delta)

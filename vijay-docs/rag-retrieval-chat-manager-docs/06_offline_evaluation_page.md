@@ -1,9 +1,19 @@
 # 06 — Offline Evaluation & Golden Datasets Page
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-23
 
 ## 1. Executive Summary & Page Purpose
-The **Offline Evaluation** page (`frontend/src/pages/GoldenEvaluationsPage.tsx`, route `/golden-evaluations`, nav label "Offline Evaluation") benchmarks one RAG pipeline configuration against a golden question/answer dataset stored in Postgres. It uploads, lists and deletes datasets, starts an evaluation run, polls the run to completion, and renders aggregate and per-question scores split into three stages: **retrieval**, **reranking**, **generation**.
+The **Offline Evaluation** page (`frontend/src/pages/GoldenEvaluationsPage.tsx`, route `/golden-evaluations`, nav label "Offline Evaluation") benchmarks **one pipeline configuration** against a golden question/answer dataset stored in Postgres. The operator picks a pipeline, picks how many rows to run, starts a run, and reads aggregate and per-question scores split into three stages: **retrieval**, **reranking**, **generation**.
+
+The page was reworked on 2026-09-23 around a built-in evaluation set:
+
+- **The set** is imported from the Hugging Face Hub once, through `POST /evaluate/datasets/huggingface`: **65** question/answer pairs drawn from the Hugging Face documentation (`m-ric/huggingface_doc_qa_eval`). It is stored as an ordinary golden dataset, so a run against it is an ordinary run and its rows appear in the dataset list.
+- **Rows to test** samples N rows at random, default **5**. The sample belongs to the run, and a seed makes it reproducible.
+- **The pipeline picker** fills in the pipeline's own configuration: its strategy, its Knowledge Product's store names, its embedding model and its chat model. The evaluator reads those stores, so the run measures that pipeline rather than the service defaults.
+
+> **The set and the corpus must match.** Every question in the built-in set is answerable only from `A-Roucher/huggingface_doc`, the corpus it was generated from. A pipeline whose Knowledge Product does not hold that corpus retrieves nothing: every retrieval metric reads 0.0 and the generated answer names the file it did read instead. That measures the corpus, not the pipeline. The page states this beside the control.
+
+The upload-a-JSON control and the Strategy / RAG Mode / Max Loops selects were removed: the offline evaluator runs `retrieve → rerank → generate` and has no router and no self-corrective loop, so those three never changed anything.
 
 It is not the live-metrics page: `pages/EvaluationsPage.tsx` serves `/evaluations` ("Real Time Monitoring") from chat metrics. No `/evaluations/offline` or `/evaluations/golden` route exists; `App.tsx` only keeps the `/directories*` legacy redirects.
 
@@ -170,17 +180,18 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 
 ```
 +-----------------------------------------------------------------------------------------------+
-|  Offline Evaluation (Golden Datasets)                     [ Refresh ]                          |
-|  Upload golden datasets, run pipeline-aligned evaluations, inspect retrieval/rerank/generation |
+|  Offline Evaluation                                                                           |
+|  Pick a pipeline configuration, run a random sample of the evaluation set, read the scores     |
 +-----------------------------------------------------+-----------------------------------------+
-|  Datasets                                           |  New Run                                |
-|  [ choose .json file ] [x] Replace if name exists   |  Pipeline (name · collection)           |
-|  - dataset A (32 items)                       Delete |  Retrieval: dense | sparse | hybrid     |
-|  - dataset B (12 items)                       Delete |  Chunk limit, Rerank checkbox           |
-|                                                     |  Strategy: Manual | Intelligent (Auto)  |
-|                                                     |  (Classifier llm|heuristic, RAG Mode,   |
-|                                                     |   Max Loops 1-5)                        |
-|                                                     |  [ Start evaluation run ]               |
+|  Evaluation set            [ Refresh from HF ]      |  Run                                    |
+|  != This set asks about the Hugging Face            |  Pipeline configuration                 |
+|     documentation. Its questions are answerable     |  (name · strategy · knowledge product)  |
+|     only from A-Roucher/huggingface_doc ...=        |  reads <store> · embedding=<model>      |
+|  - HF Doc QA (65 items)                       Delete |  Rows to test [ 5 ]                     |
+|                                                     |  5 of 65 rows, chosen at random         |
+|                                                     |  Retrieval: dense | sparse | hybrid     |
+|                                                     |  Chunk limit, Rerank checkbox           |
+|                                                     |  [ Run evaluation on 5 rows ]           |
 +-----------------------------------------------------+-----------------------------------------+
 |  Runs (10 per page, server-side skip/limit paging)                                            |
 |  Run       | Status    | Progress        | Created | Config                               |
@@ -196,12 +207,26 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 +-----------------------------------------------------------------------------------------------+
 ```
 
-Sources: `GoldenEvaluationsPage.tsx:19` (page size 10), `:610-620` (header), `:630-660` (dataset panel incl. `accept=".json,application/json"` and the replace checkbox), `:697-818` (new-run panel), `:820-925` (runs table and paging), `:925-995` (tabs, overall KPIs, rubric table), `:997-1216` (drill-down table). Rubric thresholds are 0.85 / 0.65 (`:288-311`). The "Metrics by Category" panel renders only if `aggregate_metrics.categories` exists (`:949`), which the aggregation code never produces.
+Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the evaluation-set panel, the run panel, the runs table and paging, the stage tabs and rubric table, and the drill-down table. Rubric thresholds are 0.85 / 0.65. The "Metrics by Category" panel renders only if `aggregate_metrics.categories` exists, which the aggregation code never produces.
+
+The Strategy, Classifier, RAG Mode and Max Loops controls are gone: the offline evaluator runs `retrieve → rerank → generate` and has no router and no self-corrective loop, so they changed nothing.
 
 ---
 
-## 8. Current Code Caveats (verified in the working tree)
+## 8. Defects found and fixed on 2026-09-23
 
-- `run_evaluation` calls `evaluator.evaluate_item(golden, config, k_values, router_enabled=..., router_mode=...)` (`eval_worker/tasks.py:175-181`), but `GoldenItemEvaluator.evaluate_item` accepts only `(item, config, k_values)` (`eval_core/runner.py:49-54`). The unexpected keyword arguments raise `TypeError` for every item, which the per-item handler records as a `failed` run item.
-- The same block reads `result.latency_ms` (`eval_worker/tasks.py:211-220`), but `EvalItemResult` defines no `latency_ms` field (`eval_core/runner.py:33-42`), so even a corrected call would fail at that line.
-- `generation_metrics` for offline items contain only RAGAS keys, so `generation_metrics.route` and `generation_metrics.sc_iterations` never exist: the drill-down Route badge falls back to the run config and the CRAG loop expansion stays inert (`GoldenEvaluationsPage.tsx:1042-1043, 1111-1120`).
+The page could not produce a result before this date. Every one of these fails **every** item, and the first two were already recorded in this section before the fix.
+
+| Defect | Effect | Fix |
+|---|---|---|
+| `run_evaluation` passed `router_enabled=` / `router_mode=` to `evaluate_item`, which never accepted them | `TypeError` on every item | The arguments are gone, and the worker no longer computes them |
+| The block read `result.latency_ms`, and `EvalItemResult` defines no such field | Failed **after** each successful evaluation, so no result was ever saved | Read through `getattr(result, "latency_ms", None) or {}` |
+| The evaluator called `Retriever.retrieve` without `strategy` and `stores` | Always read the legacy scrape collection on Qdrant `:6333`, never a Knowledge Product store on `:6335` — `404 Collection doesn't exist` | `evaluate_item` takes `strategy` and `stores`; the run config carries them |
+| The run carried no `generation_model` | Fell back to `settings.chat_model`, `llama-3.3-70b-versatile`, which the proxy does not serve (`400 Invalid model name`) | The page sends the pipeline's `chat_model` |
+| `settings.ragas_judge_model` defaulted to `llama-3.3-70b-versatile`, also unserved | RAGAS scoring never returned, so a run stalled on its first item | `RAGAS_JUDGE_MODEL=Gpt-oss-20b` in `backend/.env` |
+
+Still true:
+
+- `generation_metrics` for offline items hold only RAGAS keys, so `generation_metrics.route` and `generation_metrics.sc_iterations` never exist: the drill-down Route badge falls back to the run config and the CRAG loop expansion stays inert (`GoldenEvaluationsPage.tsx:1042-1043, 1111-1120`).
+- The run progress denominator is the **dataset** size, not the sample, so a 3-row sample of 65 reports `3/65`. Cosmetic, but it reads as a stalled run.
+- Offline runs share the `eval` queue with per-message chat metrics on a single worker. A backlog of `compute_chat_metrics` jobs starves them; 78 pending jobs at roughly 4m40s each is about six hours. Offline runs need their own queue or more workers.

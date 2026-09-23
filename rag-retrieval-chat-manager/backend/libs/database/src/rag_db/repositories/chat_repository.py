@@ -125,6 +125,70 @@ class ChatRepository:
     def get_session(self, session_id: uuid.UUID) -> ChatSession | None:
         return self._session.get(ChatSession, session_id)
 
+    def soft_delete_session(self, session_id: uuid.UUID) -> bool:
+        """Take a conversation out of the history list.
+
+        Returns False when the session does not exist or is already gone, so the
+        caller can answer 404. The turns are flagged as well: a listing that
+        starts from messages then agrees with one that starts from the session.
+        """
+        session = self._session.get(ChatSession, session_id)
+        if session is None or session.deleted_at is not None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        session.deleted_at = now
+        self._session.query(ChatMessage).filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.deleted_at.is_(None),
+        ).update({ChatMessage.deleted_at: now}, synchronize_session=False)
+        self._session.flush()
+        return True
+
+    def soft_delete_message_turn(self, message_id: uuid.UUID) -> list[uuid.UUID] | None:
+        """Remove one turn: the message asked for, and the other half of it.
+
+        A question and its reply are one turn, so removing a reply must not
+        leave an orphan question behind. Returns the ids that were hidden, or
+        None when there was nothing to remove.
+        """
+        target = self._session.get(ChatMessage, message_id)
+        if target is None or target.deleted_at is not None:
+            return None
+
+        # Ordered the way the Chat page renders, so the other half is the
+        # neighbour in the thread rather than a guess from timestamps alone.
+        # "user" sorts after "assistant", so role descending puts the question
+        # first when both share a timestamp.
+        thread = (
+            self._session.query(ChatMessage)
+            .filter(
+                ChatMessage.session_id == target.session_id,
+                ChatMessage.deleted_at.is_(None),
+            )
+            .order_by(ChatMessage.created_at.asc(), ChatMessage.role.desc())
+            .all()
+        )
+        index = next((i for i, m in enumerate(thread) if m.id == message_id), None)
+        if index is None:
+            return None
+
+        turn = [target]
+        if target.role == "assistant" and index > 0:
+            partner = thread[index - 1]
+            if partner.role == "user":
+                turn.append(partner)
+        elif target.role != "assistant" and index + 1 < len(thread):
+            partner = thread[index + 1]
+            if partner.role == "assistant":
+                turn.append(partner)
+
+        now = datetime.now(timezone.utc)
+        for message in turn:
+            message.deleted_at = now
+        self._session.flush()
+        return [message.id for message in turn]
+
     def list_sessions(
         self, limit: int = 50
     ) -> list[tuple[ChatSession, int, datetime | None, str | None]]:
@@ -137,6 +201,7 @@ class ChatRepository:
                 func.max(ChatMessage.created_at).label("last_message_at"),
             )
             .join(ChatMessage, ChatMessage.session_id == ChatSession.id)
+            .filter(ChatSession.deleted_at.is_(None), ChatMessage.deleted_at.is_(None))
             .group_by(ChatSession.id)
             .order_by(func.max(ChatMessage.created_at).desc())
             .limit(limit)
@@ -169,7 +234,7 @@ class ChatRepository:
             self._session.query(ChatMessage, ChatPipelineTrace, ChatMessageMetrics)
             .outerjoin(ChatPipelineTrace, ChatPipelineTrace.chat_message_id == ChatMessage.id)
             .outerjoin(ChatMessageMetrics, ChatMessageMetrics.chat_message_id == ChatMessage.id)
-            .filter(ChatMessage.session_id == session_id)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.deleted_at.is_(None))
             .order_by(ChatMessage.created_at.asc())
             .all()
         )
@@ -179,7 +244,7 @@ class ChatRepository:
             self._session.query(ChatMessageMetrics, ChatMessage, ChatPipelineTrace)
             .join(ChatMessage, ChatMessageMetrics.chat_message_id == ChatMessage.id)
             .outerjoin(ChatPipelineTrace, ChatPipelineTrace.chat_message_id == ChatMessage.id)
-            .filter(ChatMessage.role == "assistant")
+            .filter(ChatMessage.role == "assistant", ChatMessage.deleted_at.is_(None))
             .order_by(ChatMessage.created_at.desc())
             .limit(limit)
             .all()

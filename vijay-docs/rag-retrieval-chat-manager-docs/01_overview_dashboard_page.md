@@ -14,7 +14,7 @@ The page is presentation-only apart from a single count: it fetches the number o
 ```
 +-------------------------------------------------------------------------------------------------------------+
 | Sidebar (AppLayout.tsx:23-35): Retrieval & Chat | Overview | Knowledge Store | Pipelines | Chat | Prompts |  |
-|   Real Time Monitoring | Offline Evaluation | Tracking | Guard Config | Guard Traces | Guard Evaluation       |
+|   Real Time Monitoring | Offline Evaluation | Guard Config | Guard Traces | Guard Evaluation                |
 +-------------------------------------------------------------------------------------------------------------+
 | PageHeader: "Retrieval & Chat Overview"                                                                     |
 |   "Manage RAG pipelines, synthesize answers, monitor retrieval latency, and evaluate model performance."    |
@@ -64,7 +64,7 @@ fresh platform shows `—` for both cards until the first metrics job completes.
 | `/evaluations` | Real-Time Monitoring | Monitor Quality | Real Time Monitoring |
 | `/guardrails/config` | Guardrail Policy Rules | Configure Guardrails | Guard Config |
 
-Every destination exists in the sidebar `NAV` list; the page offers no link to the Knowledge Store detail page, Tracking, Offline Evaluation, Guard Traces, or Guard Evaluation, which are reachable only from the sidebar or, for the detail page, from a product card's `View` button.
+Every destination exists in the sidebar `NAV` list; the page offers no link to the Knowledge Store detail page, Offline Evaluation, Guard Traces, or Guard Evaluation, which are reachable only from the sidebar or, for the detail page, from a product card's `View` button.
 
 Card and panel descriptions are static UI copy. The reranker referenced as "Cohere" is implemented as a LiteLLM reranker (`reranker_core/litellm_reranker.py`, model alias `nvidia-rerank`), and the "Ragas & DeepEval" wording covers Ragas metrics only (`eval_core/ragas_client.py`).
 

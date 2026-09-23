@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from eval_core.dataset_schema import GoldenDatasetPayload, parse_golden_dataset_json
+import httpx
+from eval_core.dataset_schema import (
+    GoldenDatasetItemPayload,
+    GoldenDatasetPayload,
+    parse_golden_dataset_json,
+)
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
@@ -19,9 +25,22 @@ class EvalRunConfig(BaseModel):
     top_k: int = 5
     generation_model: str | None = None
     k_values: list[int] = Field(default_factory=lambda: [1, 3, 5, 10])
+    # The stores to read. Filling these in runs the evaluation on one pipeline's configuration
+    # rather than on the service defaults.
     collection: str | None = None
     embedding_model: str | None = None
     sparse_embedding_model: str | None = None
+    # An assistant pipeline reads its Knowledge Product's stores, which means the strategy and
+    # the store names travel together. Without a strategy the evaluator reads the legacy scrape
+    # collection, which is a different corpus entirely.
+    rag_strategy: str | None = None
+    opensearch_index: str | None = None
+    pg_schema: str | None = None
+    pg_table: str | None = None
+    # Evaluate a random sample rather than the whole dataset. The seed is stored with the run,
+    # so a sample can be reproduced exactly.
+    sample_size: int | None = Field(default=None, ge=1, le=500)
+    seed: int | None = None
     # RAG execution strategy
     rag_mode: str = "normal"  # "normal" | "self_corrective"
     self_corrective_max_loops: int = 3
@@ -161,6 +180,130 @@ async def upload_dataset(
         raise HTTPException(status_code=422, detail=f"Invalid dataset JSON: {exc}") from exc
 
     return _import_dataset_from_payload(payload, settings=settings, replace=replace)
+
+
+# The built-in evaluation set: question and answer pairs drawn from the Hugging Face
+# documentation. It ships with a companion corpus, and every question is answerable only from
+# that corpus. A pipeline whose Knowledge Product does not hold those documents therefore
+# retrieves nothing and scores near zero, which is a statement about the corpus and not about
+# the pipeline. The page says so beside the control.
+HF_DATASET = "m-ric/huggingface_doc_qa_eval"
+HF_CORPUS_DATASET = "A-Roucher/huggingface_doc"
+HF_DATASET_NAME = "HF Doc QA"
+_HF_ROWS_URL = "https://datasets-server.huggingface.co/rows"
+_HF_PAGE = 100
+_HF_TIMEOUT_S = 60.0
+
+
+class HuggingFaceDatasetRequest(BaseModel):
+    """Options for importing the built-in evaluation set."""
+
+    replace: bool = False
+
+
+def _fetch_hf_rows(dataset: str) -> list[dict[str, Any]]:
+    """Every row of a dataset, read through the Hub rows API.
+
+    The API pages and caps a page at 100 rows, so this walks it. The built-in set is 65 rows,
+    which is a single request.
+    """
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    with httpx.Client(timeout=_HF_TIMEOUT_S) as client:
+        while True:
+            response = client.get(
+                _HF_ROWS_URL,
+                params={
+                    "dataset": dataset,
+                    "config": "default",
+                    "split": "train",
+                    "offset": offset,
+                    "length": _HF_PAGE,
+                },
+            )
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "code": "DATASET_FETCH_FAILED",
+                        "message": (
+                            f"Could not read {dataset} from the Hugging Face Hub "
+                            f"(HTTP {response.status_code}). This import needs outbound access "
+                            "to datasets-server.huggingface.co."
+                        ),
+                    },
+                )
+            payload = response.json()
+            batch = payload.get("rows") or []
+            rows.extend((row.get("row") or {}) for row in batch)
+            offset += len(batch)
+            if not batch or offset >= int(payload.get("num_rows_total") or 0):
+                return rows
+
+
+def _hf_rows_to_items(
+    rows: list[dict[str, Any]], dataset: str
+) -> list[GoldenDatasetItemPayload]:
+    """Map the dataset's columns onto the golden dataset shape.
+
+    `source_doc` names the file the answer came from. It becomes the expected source, which is
+    what retrieval is scored against.
+    """
+    items: list[GoldenDatasetItemPayload] = []
+    for row in rows:
+        question = (row.get("question") or "").strip()
+        if not question:
+            continue
+        source = (row.get("source_doc") or "").strip()
+        items.append(
+            GoldenDatasetItemPayload(
+                question=question,
+                ground_truth_answer=(row.get("answer") or "").strip() or None,
+                expected_sources=[{"name": source}] if source else [],
+                metadata={
+                    "hf_dataset": dataset,
+                    "source_doc": source,
+                    "standalone_score": row.get("standalone_score"),
+                    "relevance_score": row.get("relevance_score"),
+                },
+            )
+        )
+    return items
+
+
+@router.post("/datasets/huggingface", response_model=CreateDatasetResponse)
+def import_huggingface_dataset(
+    body: HuggingFaceDatasetRequest | None = None,
+    settings: Settings = Depends(get_settings),
+) -> CreateDatasetResponse:
+    """Import the built-in evaluation set from the Hugging Face Hub.
+
+    The set is stored as an ordinary golden dataset, so a run against it is an ordinary run and
+    its rows are visible in the dataset list. Importing it again with `replace` refreshes it.
+    """
+    rows = _fetch_hf_rows(HF_DATASET)
+    items = _hf_rows_to_items(rows, HF_DATASET)
+    if not items:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DATASET_EMPTY",
+                "message": f"{HF_DATASET} returned no usable rows.",
+            },
+        )
+    return _import_dataset_from_payload(
+        GoldenDatasetPayload(
+            name=HF_DATASET_NAME,
+            description=(
+                f"{len(items)} question and answer pairs from the Hugging Face documentation "
+                f"({HF_DATASET}). The companion corpus is {HF_CORPUS_DATASET}: a pipeline can "
+                "only answer these questions if its Knowledge Product holds that corpus."
+            ),
+            items=items,
+        ),
+        settings=settings,
+        replace=body.replace if body else False,
+    )
 
 
 @router.get("/datasets", response_model=DatasetListResponse)

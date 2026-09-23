@@ -14,6 +14,25 @@ class SessionTurn(BaseModel):
     content: str
 
 
+class ModelSettings(BaseModel):
+    """Sampling settings for the model call.
+
+    Every field is optional and unset means "use the value below me in the
+    chain". Nothing here defaults to a real number, because a request that
+    carried defaults would silently mask the pipeline it belongs to. The chain
+    is request override -> pipeline settings -> service Settings.
+
+    ``top_k`` here is the sampler's cutoff, and is a different thing from
+    ``PipelineConfig.top_k``, which is how many reranked chunks reach the prompt.
+    Many providers, OpenAI included, ignore a sampler top_k.
+    """
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
+    max_tokens: int | None = Field(default=None, ge=1, le=32768)
+
+
 class PipelineConfig(BaseModel):
     retrieval_mode: SearchMode = SearchMode.HYBRID
     retrieve_limit: int = 20
@@ -35,6 +54,24 @@ class PipelineConfig(BaseModel):
     # from the session memory, never from the request body: a caller that could
     # post its own history would bypass the session the pipeline owns.
     history: list[SessionTurn] = Field(default_factory=list)
+    # Sampling settings for the answering call. Unset means the service
+    # defaults in Settings apply, which is how every pipeline behaved before
+    # this field existed.
+    model_settings: ModelSettings | None = None
+
+    def sampling_kwargs(self) -> dict[str, float | int | None]:
+        """Sampling arguments for the answering call, ready to unpack.
+
+        The generator falls back to Settings for any value left as None, so an
+        unset field keeps the previous behaviour instead of forcing a value.
+        """
+        settings = self.model_settings or ModelSettings()
+        return {
+            "max_tokens": settings.max_tokens,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "top_k": settings.top_k,
+        }
 
 
 class PipelineRequest(BaseModel):
@@ -63,6 +100,9 @@ class PipelineRequest(BaseModel):
     stores: KpStores | None = Field(
         default=None, description="Optional knowledge-product store names the strategy reads."
     )
+    model_settings: ModelSettings | None = Field(
+        default=None, description="Optional sampling settings that override the pipeline's."
+    )
 
     def to_config(self) -> PipelineConfig:
         return PipelineConfig(
@@ -80,6 +120,7 @@ class PipelineRequest(BaseModel):
             system_prompt=self.system_prompt,
             strategy=self.strategy,
             stores=self.stores,
+            model_settings=self.model_settings,
         )
 
 

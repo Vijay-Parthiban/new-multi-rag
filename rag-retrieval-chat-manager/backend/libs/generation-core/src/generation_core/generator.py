@@ -44,6 +44,33 @@ class Generator:
             model=settings.vision_model,
         )
 
+    def _sampling(
+        self,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, float | int]:
+        """Sampling arguments for one model call.
+
+        An argument left as None falls back to Settings, so a caller that
+        supplies nothing keeps the previous behaviour. ``top_p`` and ``top_k``
+        are only sent when set: ``top_k`` is not an OpenAI parameter, and many
+        OpenAI-compatible providers reject an unknown field.
+        """
+        params: dict[str, float | int] = {
+            "max_tokens": max_tokens or self._settings.chat_max_tokens,
+            "temperature": (
+                temperature if temperature is not None else self._settings.chat_temperature
+            ),
+        }
+        if top_p is not None:
+            params["top_p"] = top_p
+        if top_k:
+            params["top_k"] = top_k
+        return params
+
     def rewrite_query(
         self,
         question: str,
@@ -94,6 +121,8 @@ class Generator:
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         system_prompt: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> str:
@@ -101,8 +130,9 @@ class Generator:
         response = self._client.chat.completions.create(
             model=model or self._settings.chat_model,
             messages=messages,
-            max_tokens=max_tokens or self._settings.chat_max_tokens,
-            temperature=temperature if temperature is not None else self._settings.chat_temperature,
+            **self._sampling(
+                max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k
+            ),
         )
         return response.choices[0].message.content or ""
 
@@ -132,6 +162,8 @@ class Generator:
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> str:
         messages = build_fusion_prompt(
             query,
@@ -141,8 +173,9 @@ class Generator:
         response = self._client.chat.completions.create(
             model=model or self._settings.fusion_model,
             messages=messages,
-            max_tokens=max_tokens or self._settings.chat_max_tokens,
-            temperature=temperature if temperature is not None else self._settings.chat_temperature,
+            **self._sampling(
+                max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k
+            ),
         )
         return response.choices[0].message.content or ""
 
@@ -154,6 +187,8 @@ class Generator:
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         system_prompt: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> Iterator[str]:
@@ -173,6 +208,8 @@ class Generator:
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
                 system_prompt=system_prompt,
                 history=history,
             )
@@ -189,8 +226,9 @@ class Generator:
         stream = self._client.chat.completions.create(
             model=model or self._settings.chat_model,
             messages=messages,
-            max_tokens=max_tokens or self._settings.chat_max_tokens,
-            temperature=temperature if temperature is not None else self._settings.chat_temperature,
+            **self._sampling(
+                max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k
+            ),
             stream=True,
         )
         for chunk in stream:
@@ -210,9 +248,17 @@ class Generator:
         fusion_model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         system_prompt: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> GenerationResult:
+        """Answer one question.
+
+        ``top_p`` and ``top_k`` reach the text and fusion calls. The vision pass
+        keeps its own signature, so it takes only ``max_tokens`` and
+        ``temperature``.
+        """
         text_chunks, image_chunks = split_chunks(chunks)
         latency: dict[str, int] = {}
 
@@ -227,6 +273,8 @@ class Generator:
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
                 system_prompt=system_prompt,
                 history=history,
             )
@@ -252,6 +300,8 @@ class Generator:
                 model=fusion_model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
             )
             latency["generate_fusion"] = int((time.perf_counter() - t0) * 1000)
         elif text_answer:

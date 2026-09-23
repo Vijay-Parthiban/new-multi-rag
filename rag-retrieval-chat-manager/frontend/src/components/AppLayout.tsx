@@ -1,13 +1,12 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconChat, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconTracking, IconEvaluation } from "./Icons";
+import { IconChat, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconEvaluation } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
 import DirectoryPage from "../pages/DirectoryPage";
 import FileViewerPage from "../pages/FileViewerPage";
 import PipelinesPage from "../pages/PipelinesPage";
-import TrackingPage from "../pages/TrackingPage";
 import ChatPage from "../pages/ChatPage";
 import EvaluationsPage from "../pages/EvaluationsPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
@@ -29,7 +28,6 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/prompts", label: "Prompts", icon: IconPrompts },
   { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
   { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
-  { to: "/tracking", label: "Tracking", icon: IconTracking },
   { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
   { to: "/guardrails/traces", label: "Guard Traces", icon: IconGuardrails },
   { to: "/guardrails/evaluation", label: "Guard Evaluation", icon: IconGuardrails },
@@ -124,7 +122,6 @@ export default function AppLayout() {
   const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
   const isGoldenEvaluations = path === "/golden-evaluations";
-  const isTracking = path === "/tracking";
   const isGuardrailsConfig = path === "/guardrails/config";
   const isGuardrailsTraces = path === "/guardrails/traces";
   const isGuardrailsEvaluation = path === "/guardrails/evaluation";
@@ -204,10 +201,6 @@ export default function AppLayout() {
 
         <PersistentPage visible={isGoldenEvaluations}>
           <GoldenEvaluationsPage />
-        </PersistentPage>
-
-        <PersistentPage visible={isTracking}>
-          <TrackingPage />
         </PersistentPage>
 
         <PersistentPage visible={isGuardrailsConfig}>

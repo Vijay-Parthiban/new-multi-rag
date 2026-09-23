@@ -10,13 +10,20 @@ import {
     createEvaluationRun,
     getEvaluationRun,
     listGuardrailsConfigs,
+    listPromptTemplates,
+    closeChatSession,
     deleteChatSession,
     deleteChatMessage,
+    sessionMemoryFor,
     PipelineRecord,
+    PromptTemplate,
     ChatSession,
     ChatMessage,
     RAGMetricsResponse,
     GuardrailsConfig,
+    ModelSettings,
+    DEFAULT_MODEL_SETTINGS,
+    MODEL_SETTING_FIELDS,
 } from "../api";
 import { IconChat, IconMoreHorizontal } from "../components/Icons";
 import MarkdownMessage from "../components/MarkdownMessage";
@@ -72,6 +79,26 @@ function BlockedCard({
     );
 }
 
+/**
+ * The pipeline's saved settings, with any unset key filled from the defaults.
+ *
+ * A saved record can leave a key out, or set it to null, when it predates that
+ * key. Both mean "not configured", so the default fills the gap rather than the
+ * input rendering empty.
+ */
+function seedModelSettings(saved?: ModelSettings | null): Required<ModelSettings> {
+    const out = { ...DEFAULT_MODEL_SETTINGS };
+    if (saved) {
+        for (const field of MODEL_SETTING_FIELDS) {
+            const value = saved[field.key];
+            if (value !== null && value !== undefined) {
+                out[field.key] = value;
+            }
+        }
+    }
+    return out;
+}
+
 export default function ChatPage() {
     const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
     const [selectedPipeline, setSelectedPipeline] = useState<PipelineRecord | null>(null);
@@ -82,6 +109,9 @@ export default function ChatPage() {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState("");
     const [chatLoading, setChatLoading] = useState(false);
+    // False until a conversation is started or opened. The chat area is blank until then,
+    // so the first turn cannot be sent into a session the user never began.
+    const [composerReady, setComposerReady] = useState(false);
 
     // Streaming state
     const [agentStatus, setAgentStatus] = useState<string | null>(null);
@@ -98,7 +128,47 @@ export default function ChatPage() {
     const [topK, setTopK] = useState<number>(5);
 
     const [guardrailsConfigs, setGuardrailsConfigs] = useState<GuardrailsConfig[]>([]);
-    const [selectedGuardrailsConfig, setSelectedGuardrailsConfig] = useState<GuardrailsConfig | null>(null);
+    const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+
+    // Working copies of the pipeline's own settings. A turn reads these, so they
+    // can be changed and tried without writing back to the pipeline. Picking
+    // another pipeline, or pressing Reset, puts them back to the saved values.
+    const [overridePromptId, setOverridePromptId] = useState<string>("");
+    const [overrideGuardrailsId, setOverrideGuardrailsId] = useState<string>("");
+    const [overrideSettings, setOverrideSettings] = useState<ModelSettings>({
+        ...DEFAULT_MODEL_SETTINGS,
+    });
+    // Bumped by Reset so the seeding effect runs again for the same pipeline.
+    const [resetNonce, setResetNonce] = useState(0);
+
+    // Both panels start open. The choice is remembered, so a reload does not
+    // undo it and does not fight the pipeline seeding below.
+    const [showConfig, setShowConfig] = useState<boolean>(
+        () => localStorage.getItem("chat.configCollapsed") !== "1",
+    );
+    const [showAside, setShowAside] = useState<boolean>(
+        () => localStorage.getItem("chat.asideCollapsed") !== "1",
+    );
+
+    useEffect(() => {
+        localStorage.setItem("chat.configCollapsed", showConfig ? "0" : "1");
+    }, [showConfig]);
+
+    useEffect(() => {
+        localStorage.setItem("chat.asideCollapsed", showAside ? "0" : "1");
+    }, [showAside]);
+
+    // Derived, not stored: the id is the single source of truth, so seeding it
+    // from a pipeline needs no second lookup when the option list arrives late.
+    const selectedGuardrailsConfig =
+        guardrailsConfigs.find((c) => c.id === overrideGuardrailsId) ?? null;
+
+    // Whether this pipeline keeps the conversation. This is the same rule the backend
+    // applies and the Pipelines page shows, read from the Knowledge Product's destinations:
+    // an enabled Redis destination is the whole gate.
+    const memoryState = sessionMemoryFor(selectedPipeline?.knowledge_product?.destinations);
+    // An open conversation, or one just started, is what makes the composer live.
+    const chatReady = composerReady || Boolean(activeSessionId);
 
     // Stats
     const [stats, setStats] = useState<any>(null);
@@ -123,7 +193,16 @@ export default function ChatPage() {
         loadStats();
         loadDatasets();
         loadGuardrailsConfigs();
+        loadPromptTemplates();
     }, []);
+
+    // Seed the working copies from the chosen pipeline, and again on Reset.
+    useEffect(() => {
+        if (!selectedPipeline) return;
+        setOverridePromptId(selectedPipeline.prompt_template_id ?? "");
+        setOverrideGuardrailsId(selectedPipeline.guardrails_config_id ?? "");
+        setOverrideSettings(seedModelSettings(selectedPipeline.model_settings));
+    }, [selectedPipeline, resetNonce]);
 
     // Scroll to bottom on new message
     useEffect(() => {
@@ -216,10 +295,10 @@ export default function ChatPage() {
     const loadSessions = async () => {
         try {
             const list = await listChatSessions();
+            // The list is refreshed, but no conversation is opened. The chat area starts
+            // blank, and a conversation begins only when + New is pressed or a history row
+            // is chosen, so the page never lands in the middle of an old session.
             setSessions(list);
-            if (list.length > 0 && !activeSessionId) {
-                setActiveSessionId(list[0].session_id);
-            }
         } catch (err) {
             console.error("Failed to load sessions", err);
         }
@@ -258,14 +337,19 @@ export default function ChatPage() {
     const loadGuardrailsConfigs = async () => {
         try {
             const res = await listGuardrailsConfigs(false);
-            const items = res.items || [];
-            setGuardrailsConfigs(items);
-            setSelectedGuardrailsConfig((prev) => {
-                if (!prev) return prev;
-                return items.find((c) => c.id === prev.id) || null;
-            });
+            // The chosen id is the selection, so only the options change here.
+            setGuardrailsConfigs(res.items || []);
         } catch (err) {
             console.error("Failed to load guardrails configs", err);
+        }
+    };
+
+    const loadPromptTemplates = async () => {
+        try {
+            const res = await listPromptTemplates();
+            setPromptTemplates(res.items || []);
+        } catch (err) {
+            console.error("Failed to load prompt templates", err);
         }
     };
 
@@ -296,8 +380,42 @@ export default function ChatPage() {
     const handleStartNewSession = () => {
         setActiveSessionId(null);
         setMessages([]);
+        setMessageMetrics({});
         setSessionMenuId(null);
         setMessageMenuId(null);
+        // The next turn goes into a conversation that now exists. Until + New is pressed the
+        // area stays blank, so a turn is never sent into a session nobody opened.
+        setComposerReady(true);
+    };
+
+    /**
+     * Close the conversation.
+     *
+     * A pipeline with session memory exports the whole conversation as one trace and drops
+     * what it remembered. A stateless pipeline kept nothing, so this only closes the page.
+     */
+    const handleEndSession = async () => {
+        const keepsMemory = memoryState.enabled;
+        const question = keepsMemory
+            ? "End this session?\n\nThe conversation closes, its session memory is removed, and it stays in chat history."
+            : "Close this chat?\n\nThe conversation closes and stays in chat history.";
+        if (!window.confirm(question)) return;
+
+        if (activeSessionId) {
+            try {
+                await closeChatSession(activeSessionId, selectedPipeline?.id ?? null);
+            } catch (err) {
+                console.error("Failed to close the session", err);
+                alert("Failed to close the session");
+                return;
+            }
+        }
+
+        setActiveSessionId(null);
+        setMessages([]);
+        setMessageMetrics({});
+        setComposerReady(false);
+        await loadSessions();
     };
 
     const handleDeleteSession = async (sessionId: string) => {
@@ -366,11 +484,20 @@ export default function ChatPage() {
             const payload: any = {
                 query: userMessage.content,
                 session_id: activeSessionId,
+                // Names the pipeline for the trace. The backend reads the pipeline and its
+                // Knowledge Product from the ingestion service itself, so the recorded
+                // configuration describes what actually ran.
+                pipeline_id: selectedPipeline?.id ?? undefined,
                 retrieval_mode: retrievalMode,
                 retrieve_limit: retrieveLimit,
                 rerank_enabled: rerankEnabled,
                 top_k: topK,
-                guardrails_config_id: selectedGuardrailsConfig?.id || undefined,
+                // The working copies, not the pipeline's saved values. The
+                // assistant route treats each of these as an override for this
+                // turn only, so nothing here is written back to the pipeline.
+                guardrails_config_id: overrideGuardrailsId || undefined,
+                prompt_template_id: overridePromptId || undefined,
+                model_settings: overrideSettings,
             };
 
             // An assistant resolves its own collection, embedding model and
@@ -531,6 +658,19 @@ export default function ChatPage() {
         }
     };
 
+    // What the pipeline saved, for comparing against the working copies.
+    const savedSettings = seedModelSettings(selectedPipeline?.model_settings);
+    const promptOverridden = overridePromptId !== (selectedPipeline?.prompt_template_id ?? "");
+    const guardrailsOverridden =
+        overrideGuardrailsId !== (selectedPipeline?.guardrails_config_id ?? "");
+    const settingsOverridden = MODEL_SETTING_FIELDS.some(
+        (f) => overrideSettings[f.key] !== savedSettings[f.key],
+    );
+    const isOverridden = promptOverridden || guardrailsOverridden || settingsOverridden;
+
+    // Reset re-seeds from the pipeline; it writes nothing back.
+    const resetOverrides = () => setResetNonce((n) => n + 1);
+
     // Stable sort: chronologically by created_at, with role-based tie-breaker
     const sortedMessages = [...messages].sort((a, b) => {
         const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -547,7 +687,7 @@ export default function ChatPage() {
 
     return (
         <div className="page" style={{ maxWidth: "100%", padding: "1rem 1rem 0" }}>
-            <div className="chat-layout">
+            <div className={`chat-layout${showAside ? "" : " chat-layout--aside-collapsed"}`}>
 
                 {/* ═══ LEFT: Conversation Sidebar ═══ */}
                 <div className="chat-sidebar">
@@ -597,37 +737,14 @@ export default function ChatPage() {
                                 {selectedPipeline.slug && (
                                     <div><span className="muted">Endpoint:</span> <span className="mono" style={{ wordBreak: "break-all" }}>{selectedPipeline.slug}</span></div>
                                 )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Guardrails Config Selector */}
-                    <div className="chat-pipeline-config">
-                        <div className="chat-sidebar-section-title">Guardrails</div>
-                        <select
-                            className="input"
-                            value={selectedGuardrailsConfig?.id || ""}
-                            onFocus={() => loadGuardrailsConfigs()}
-                            onChange={(e) => {
-                                const found = guardrailsConfigs.find((c) => c.id === e.target.value);
-                                setSelectedGuardrailsConfig(found || null);
-                            }}
-                        >
-                            <option value="">None</option>
-                            {guardrailsConfigs.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                    {c.name}{c.is_active ? "" : " (inactive)"}
-                                </option>
-                            ))}
-                        </select>
-
-                        {selectedGuardrailsConfig && (
-                            <div className="chat-pipeline-info">
-                                <div><span className="muted">Mode:</span> <span className="mono">{selectedGuardrailsConfig.mode}</span></div>
-                                <div><span className="muted">Guards:</span> <span className="mono">{selectedGuardrailsConfig.guards.join(", ") || "—"}</span></div>
-                                {selectedGuardrailsConfig.description && (
-                                    <div><span className="muted">About:</span> {selectedGuardrailsConfig.description}</div>
-                                )}
+                                <div>
+                                    <span className="muted">Memory:</span>{" "}
+                                    <span className={`memory-chip ${memoryState.enabled ? "memory-chip--on" : "memory-chip--off"}`}>
+                                        {memoryState.enabled
+                                            ? `available · ${memoryState.ttlSeconds ? Math.round(memoryState.ttlSeconds / 3600) + "h" : "no"} TTL`
+                                            : "not available"}
+                                    </span>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -649,7 +766,10 @@ export default function ChatPage() {
                                     <div
                                         key={s.session_id}
                                         className={`chat-session-item ${isActive ? "active" : ""}`}
-                                        onClick={() => setActiveSessionId(s.session_id)}
+                                        onClick={() => {
+                                            setActiveSessionId(s.session_id);
+                                            setComposerReady(true);
+                                        }}
                                     >
                                         <div className="chat-session-item-main">
                                             <span className="session-preview">
@@ -700,66 +820,281 @@ export default function ChatPage() {
                 {/* ═══ RIGHT: Main Chat Area ═══ */}
                 <div className="chat-main">
 
-                    {/* Config Toolbar */}
-                    <div className="chat-toolbar">
-                        <div className="chat-toolbar-group">
-                            <label>Mode</label>
-                            <select value={retrievalMode} onChange={(e) => setRetrievalMode(e.target.value)}>
-                                <option value="hybrid">Hybrid</option>
-                                <option value="dense">Dense</option>
-                                <option value="sparse">Sparse</option>
-                            </select>
+                    {/* Pipeline configuration. Strategy and Model are fixed by
+                        the pipeline and cannot be changed here. Everything to
+                        the right of them is a working copy: it applies to the
+                        turns from this page, and Reset restores the values the
+                        pipeline saved. Nothing here is written back. */}
+                    <div className="chat-config-bar">
+                        <div className="chat-config-bar-row">
+                            <button
+                                type="button"
+                                className="btn btn-sm chat-panel-toggle"
+                                onClick={() => setShowAside((v) => !v)}
+                                aria-expanded={showAside}
+                                title={showAside ? "Hide the conversation list" : "Show the conversation list"}
+                            >
+                                {showAside ? "◀ History" : "▶ History"}
+                            </button>
+
+                            <div className="chat-config-bar-item">
+                                <span className="chat-config-bar-label">Strategy</span>
+                                <span className="mono">{selectedPipeline?.rag_strategy ?? "—"}</span>
+                                <span className="chat-config-lock" title="Fixed by the pipeline">
+                                    locked
+                                </span>
+                            </div>
+                            <div className="chat-config-bar-item">
+                                <span className="chat-config-bar-label">Model</span>
+                                <span className="mono" style={{ wordBreak: "break-all" }}>
+                                    {selectedPipeline?.chat_model ?? "—"}
+                                </span>
+                                <span className="chat-config-lock" title="Fixed by the pipeline">
+                                    locked
+                                </span>
+                            </div>
+
+                            <div className="chat-config-bar-spacer" />
+
+                            {/* The session the next turn continues. */}
+                            <div className="chat-session-indicator">
+                                <div className={`session-dot ${activeSessionId ? "connected" : "new"}`} />
+                                <span className="mono" style={{ color: "var(--text-secondary)" }}>
+                                    {activeSessionId ? activeSessionId.substring(0, 12) + "…" : "New Session"}
+                                </span>
+                            </div>
+
+                            {/* Ending the conversation. A pipeline with session memory is
+                                asked to end a session, because there is memory to drop and a
+                                whole conversation to export. One without keeps nothing, so it
+                                only closes the chat. */}
+                            {chatReady && (
+                                <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    onClick={handleEndSession}
+                                    disabled={chatLoading}
+                                    title={
+                                        memoryState.enabled
+                                            ? "Close this conversation, export it as one trace, and remove its session memory"
+                                            : "Close this conversation"
+                                    }
+                                >
+                                    {memoryState.enabled ? "End Session" : "End Chat"}
+                                </button>
+                            )}
+
+                            {isOverridden && (
+                                <span className="chat-override-badge" role="status">
+                                    testing overrides
+                                </span>
+                            )}
+
+                            <button
+                                type="button"
+                                className="btn btn-sm chat-panel-toggle"
+                                onClick={() => setShowConfig((v) => !v)}
+                                aria-expanded={showConfig}
+                                aria-controls="chat-config-controls"
+                                title={
+                                    showConfig
+                                        ? "Hide the settings below"
+                                        : "Show the settings to change and test"
+                                }
+                            >
+                                {showConfig ? "Hide settings" : "Show settings"}
+                            </button>
+
+                            <button
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={resetOverrides}
+                                disabled={!isOverridden}
+                                title={
+                                    isOverridden
+                                        ? "Restore the values saved on this pipeline"
+                                        : "Already showing the values saved on this pipeline"
+                                }
+                            >
+                                Reset
+                            </button>
                         </div>
 
-                        <div className="chat-toolbar-divider" />
-
-                        <div className="chat-toolbar-group">
-                            <label>Limit</label>
-                            <input
-                                type="number"
-                                min={1}
-                                max={50}
-                                value={retrieveLimit}
-                                onChange={(e) => setRetrieveLimit(parseInt(e.target.value) || 1)}
-                                style={{ width: "52px" }}
-                            />
-                        </div>
-
-                        <div className="chat-toolbar-divider" />
-
-                        <div className="chat-toolbar-group">
-                            <label>Rerank</label>
-                            <input
-                                type="checkbox"
-                                checked={rerankEnabled}
-                                onChange={(e) => setRerankEnabled(e.target.checked)}
-                            />
-                        </div>
-
-                        {rerankEnabled && (
+                        {showConfig && (
                             <>
-                                <div className="chat-toolbar-divider" />
-                                <div className="chat-toolbar-group">
-                                    <label>Top K</label>
+                            <div className="chat-config-bar-row chat-config-controls" id="chat-config-controls">
+                                {/* How the sources are found, before the model
+                                    sees them. These four are the old toolbar. */}
+                                <div className="chat-setting">
+                                    <label className="chat-setting-label" htmlFor="chat-override-mode">
+                                        Retrieval mode
+                                    </label>
+                                    <select
+                                        id="chat-override-mode"
+                                        className="input"
+                                        value={retrievalMode}
+                                        onChange={(e) => setRetrievalMode(e.target.value)}
+                                    >
+                                        <option value="hybrid">Hybrid</option>
+                                        <option value="dense">Dense</option>
+                                        <option value="sparse">Sparse</option>
+                                    </select>
+                                    <span className="chat-setting-hint">
+                                        Which store to search: vectors, keywords, or both fused.
+                                    </span>
+                                </div>
+
+                                <div className="chat-setting">
+                                    <label className="chat-setting-label" htmlFor="chat-override-limit">
+                                        Retrieve limit
+                                    </label>
                                     <input
+                                        id="chat-override-limit"
+                                        className="input"
                                         type="number"
                                         min={1}
-                                        max={20}
-                                        value={topK}
-                                        onChange={(e) => setTopK(parseInt(e.target.value) || 1)}
-                                        style={{ width: "48px" }}
+                                        max={50}
+                                        value={retrieveLimit}
+                                        title="How many chunks to fetch before reranking."
+                                        onChange={(e) => setRetrieveLimit(parseInt(e.target.value) || 1)}
                                     />
+                                    <span className="chat-setting-hint">
+                                        Chunks fetched before reranking.
+                                    </span>
                                 </div>
+
+                                <div className="chat-setting">
+                                    <label className="chat-setting-label" htmlFor="chat-override-rerank">
+                                        Rerank
+                                    </label>
+                                    <input
+                                        id="chat-override-rerank"
+                                        type="checkbox"
+                                        checked={rerankEnabled}
+                                        onChange={(e) => setRerankEnabled(e.target.checked)}
+                                    />
+                                    <span className="chat-setting-hint">
+                                        Reorder the fetched chunks by relevance.
+                                    </span>
+                                </div>
+
+                                {rerankEnabled && (
+                                    <div className="chat-setting">
+                                        <label className="chat-setting-label" htmlFor="chat-override-chunks">
+                                            Top K (chunks)
+                                        </label>
+                                        <input
+                                            id="chat-override-chunks"
+                                            className="input"
+                                            type="number"
+                                            min={1}
+                                            max={20}
+                                            value={topK}
+                                            onChange={(e) => setTopK(parseInt(e.target.value) || 1)}
+                                        />
+                                        <span className="chat-setting-hint">
+                                            How many reranked chunks reach the prompt.
+                                        </span>
+                                    </div>
+                                )}
+
+                                <div className="chat-setting">
+                                    <label className="chat-setting-label" htmlFor="chat-override-prompt">
+                                        Prompt template
+                                        {promptOverridden && (
+                                            <span className="chat-override-badge">modified</span>
+                                        )}
+                                    </label>
+                                    <select
+                                        id="chat-override-prompt"
+                                        className="input"
+                                        value={overridePromptId}
+                                        onFocus={() => loadPromptTemplates()}
+                                        onChange={(e) => setOverridePromptId(e.target.value)}
+                                    >
+                                        <option value="">Pipeline default</option>
+                                        {promptTemplates.map((t) => (
+                                            <option key={t.id} value={t.id}>
+                                                {t.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="chat-setting">
+                                    <label
+                                        className="chat-setting-label"
+                                        htmlFor="chat-override-guardrails"
+                                    >
+                                        Guardrails
+                                        {guardrailsOverridden && (
+                                            <span className="chat-override-badge">modified</span>
+                                        )}
+                                    </label>
+                                    <select
+                                        id="chat-override-guardrails"
+                                        className="input"
+                                        value={overrideGuardrailsId}
+                                        onFocus={() => loadGuardrailsConfigs()}
+                                        onChange={(e) => setOverrideGuardrailsId(e.target.value)}
+                                    >
+                                        <option value="">None</option>
+                                        {guardrailsConfigs.map((c) => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.name}
+                                                {c.is_active ? "" : " (inactive)"}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {MODEL_SETTING_FIELDS.map((field) => (
+                                    <div className="chat-setting" key={field.key}>
+                                        <label
+                                            className="chat-setting-label"
+                                            htmlFor={`chat-setting-${field.key}`}
+                                        >
+                                            {field.label}
+                                            {settingsOverridden &&
+                                                overrideSettings[field.key] !== savedSettings[field.key] && (
+                                                    <span className="chat-override-badge">
+                                                        modified
+                                                    </span>
+                                                )}
+                                        </label>
+                                        <input
+                                            id={`chat-setting-${field.key}`}
+                                            className="input"
+                                            type="number"
+                                            min={field.min}
+                                            max={field.max}
+                                            step={field.step}
+                                            value={overrideSettings[field.key] ?? ""}
+                                            title={field.hint}
+                                            onChange={(e) => {
+                                                const raw = e.target.value;
+                                                setOverrideSettings((prev) => ({
+                                                    ...prev,
+                                                    [field.key]: raw === "" ? null : Number(raw),
+                                                }));
+                                            }}
+                                        />
+                                        <span className="chat-setting-hint">{field.hint}</span>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="chat-config-bar-note">
+                                Values saved on this pipeline. Changes above apply to this page only
+                                and are restored by Reset or a page refresh.
+                                {selectedGuardrailsConfig && (
+                                    <>
+                                        {" "}Guardrails mode: {selectedGuardrailsConfig.mode}.
+                                    </>
+                                )}
+                            </div>
                             </>
                         )}
-
-                        {/* Session indicator */}
-                        <div className="chat-toolbar-session">
-                            <div className={`session-dot ${activeSessionId ? "connected" : "new"}`} />
-                            <span className="mono" style={{ color: "var(--text-secondary)" }}>
-                                {activeSessionId ? activeSessionId.substring(0, 12) + "…" : "New Session"}
-                            </span>
-                        </div>
                     </div>
 
                     {/* Messages */}
@@ -767,10 +1102,15 @@ export default function ChatPage() {
                         {sortedMessages.length === 0 ? (
                             <div className="chat-empty">
                                 <IconChat className="empty-icon" size={36} />
-                                <h3>RAG Playground</h3>
+                                <h3>{chatReady ? "New conversation" : "Click New to start chatting"}</h3>
                                 <p>
-                                    Ask questions about your ingested documents. Select an assistant in the sidebar
-                                    to read its Knowledge Product, or a legacy pipeline to read the scrape collection.
+                                    {chatReady
+                                        ? memoryState.enabled
+                                            ? "This pipeline keeps the conversation, so a follow-up question is understood in context. End the session when you are done to export it and clear the memory."
+                                            : "This pipeline keeps no conversation, so each question is answered on its own. Every turn is traced separately."
+                                        : memoryState.enabled
+                                            ? `Select a pipeline in the sidebar, then press + New. "${selectedPipeline?.knowledge_product?.name ?? "This pipeline"}" has Redis enabled, so the conversation will be remembered.`
+                                            : `Select a pipeline in the sidebar, then press + New. "${selectedPipeline?.knowledge_product?.name ?? "This pipeline"}" has no Redis destination, so each question will be answered on its own.`}
                                 </p>
                             </div>
                         ) : (
@@ -961,13 +1301,13 @@ export default function ChatPage() {
                                 type="text"
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
-                                placeholder="Ask anything about your documents…"
-                                disabled={chatLoading}
+                                placeholder={chatReady ? "Ask anything about your documents…" : "Click + New to start chatting"}
+                                disabled={chatLoading || !chatReady}
                             />
                             <button
                                 type="submit"
                                 className="btn btn-primary chat-send-btn"
-                                disabled={chatLoading || !inputText.trim()}
+                                disabled={chatLoading || !chatReady || !inputText.trim()}
                             >
                                 Send
                             </button>

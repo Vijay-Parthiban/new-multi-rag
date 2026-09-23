@@ -39,7 +39,7 @@ and not on the scraping Qdrant at 6333, and LiteLLM is **not** in this repositor
 | Qdrant (knowledge products) | **6335** | 6333 | **external** container | Every `kp_*` collection the assistants read |
 | MinIO | 9000, 9001 | 9000, 9001 | `rag-ingestion-manager/docker-compose.yaml` | Source document buckets |
 | OpenSearch | 9200, 9600 | 9200, 9600 | `rag-ingestion-manager/docker-compose.yaml` | `kp_*` lexical indexes, BM25 |
-| Web scraper API | 8000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | Tracking page, `scrape_embeddings` |
+| Web scraper API | 8000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | `scrape_embeddings`, the ingestion scraper path |
 | Guardrails service | 18000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | Guard checks, guard traces |
 | LiteLLM proxy | 4000 | 4000 | **external** container | Every chat, embedding, rerank and caption call. It requires a key: `OPENAI_API_KEY`, `sk-bot` by default |
 | LiteLLM database | 5433 | 5432 | **external** container | LiteLLM's own keys and spend |

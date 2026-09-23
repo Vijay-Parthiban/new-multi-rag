@@ -4,10 +4,8 @@ import { computeFileHash } from "./hash";
 // backend binds IPv4 only, so every request first waits for a connection that never
 // answers. The penalty is about 2 seconds per call, on a call that otherwise takes 3 ms.
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8007";
-export const SCRAPER_URL = import.meta.env.VITE_SCRAPER_URL ?? "http://127.0.0.1:8000";
 export const RAG_API_URL = import.meta.env.VITE_RAG_API_URL ?? "http://127.0.0.1:8001";
 export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
-export const SCRAPER_API_KEY = import.meta.env.VITE_SCRAPER_API_KEY ?? API_KEY;
 export const RAG_API_KEY = import.meta.env.VITE_RAG_API_KEY ?? API_KEY;
 
 export const CHUNK_SIZE = 5 * 1024 * 1024;
@@ -226,8 +224,88 @@ export interface PipelineKnowledgeProduct {
   status: string;
   chunk_strategy: string;
   text_embedding_model: string;
+  /** The BM25 model the lexical destination embeds with. */
+  sparse_embedding_model?: string | null;
   destinations: PipelineDestinationSummary[];
 }
+
+/**
+ * Sampling settings for an assistant's model call.
+ *
+ * Unset means the service default applies. The Chat page sends these to try a
+ * value without saving it; the Pipelines page saves them on the pipeline.
+ */
+export interface ModelSettings {
+  temperature?: number | null;
+  top_p?: number | null;
+  /** The sampler's cutoff. Not the count of chunks that reach the prompt. */
+  top_k?: number | null;
+  max_tokens?: number | null;
+}
+
+/**
+ * What a new pipeline starts with: tuned for grounded answers, not for creative
+ * writing.
+ *
+ * `temperature` is low because a RAG answer should stay close to the retrieved
+ * passages. `top_p` stays neutral so temperature is the only knob in play, which
+ * is what the model providers recommend — changing both at once makes the result
+ * hard to reason about. `top_k` is 0, meaning off: it is not an OpenAI parameter
+ * and many providers ignore it.
+ */
+export const DEFAULT_MODEL_SETTINGS: Required<ModelSettings> = {
+  temperature: 0.1,
+  top_p: 1.0,
+  top_k: 0,
+  max_tokens: 1024,
+};
+
+/** One knob, described once so both pages render it the same way. */
+export interface ModelSettingField {
+  key: keyof ModelSettings;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  /** Shown under the input, so the control explains itself. */
+  hint: string;
+}
+
+/** The sampling knobs the UI exposes, in display order. */
+export const MODEL_SETTING_FIELDS: readonly ModelSettingField[] = [
+  {
+    key: "temperature",
+    label: "Temperature",
+    min: 0,
+    max: 2,
+    step: 0.05,
+    hint: "Lower keeps the answer close to the passages. 0.1 suits factual work.",
+  },
+  {
+    key: "top_p",
+    label: "Top P",
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    hint: "Nucleus sampling. Leave at 1 so temperature is the only knob.",
+  },
+  {
+    key: "top_k",
+    label: "Top K (sampler)",
+    min: 0,
+    max: 200,
+    step: 1,
+    hint: "0 turns it off. Not an OpenAI parameter, so some models ignore it.",
+  },
+  {
+    key: "max_tokens",
+    label: "Max tokens",
+    min: 1,
+    max: 32768,
+    step: 1,
+    hint: "Ceiling on the answer length.",
+  },
+];
 
 export interface PipelineRecord {
   id: string;
@@ -250,6 +328,8 @@ export interface PipelineRecord {
   /** External name the chat endpoints address this pipeline by. */
   slug: string | null;
   chat_model: string | null;
+  /** Sampling settings saved on the pipeline. Null means service defaults. */
+  model_settings: ModelSettings | null;
   prompt_template_id: string | null;
   guardrails_config_id: string | null;
   /** True when the strategy names a knowledge-product store. */
@@ -257,23 +337,6 @@ export interface PipelineRecord {
   knowledge_product: PipelineKnowledgeProduct | null;
   created_at: string;
   updated_at: string;
-}
-
-export interface PipelineRunRecord {
-  id: string;
-  pipeline_id: string;
-  status: string;
-  files_total: number;
-  files_processed: number;
-  pages_indexed: number;
-  points_upserted: number;
-  scraper_crawl_job_id: string | null;
-  scraper_scrape_job_id: string | null;
-  error_message: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-  pipeline_name?: string;
 }
 
 export interface CreatePipelineRequest {
@@ -297,6 +360,7 @@ export interface CreatePipelineRequest {
   chat_model?: string | null;
   prompt_template_id?: string | null;
   guardrails_config_id?: string | null;
+  model_settings?: ModelSettings | null;
 }
 
 export interface PipelinePatchRequest {
@@ -314,6 +378,7 @@ export interface PipelinePatchRequest {
   guardrails_config_id?: string | null;
   knowledge_product_id?: string;
   embedding_model?: string;
+  model_settings?: ModelSettings | null;
 }
 
 /** The strategies an assistant may run, in the order the form shows them. */
@@ -602,14 +667,6 @@ export async function refreshKnowledgeProduct(productId: string): Promise<void> 
   });
 }
 
-export async function startPipelineRun(pipelineId: string): Promise<PipelineRunRecord> {
-  return apiFetch<PipelineRunRecord>(`/api/pipelines/${pipelineId}/run`, { method: "POST" });
-}
-
-export async function listPipelineRuns(pipelineId: string): Promise<PipelineRunRecord[]> {
-  return apiFetch<PipelineRunRecord[]>(`/api/pipelines/${pipelineId}/runs`);
-}
-
 export async function getPipelineCatalog(): Promise<PipelineCatalogEntry[]> {
   return apiFetch<PipelineCatalogEntry[]>("/api/pipelines/catalog");
 }
@@ -617,77 +674,6 @@ export async function getPipelineCatalog(): Promise<PipelineCatalogEntry[]> {
 export async function getPipelineByDescription(description: string): Promise<PipelineRecord> {
   const params = new URLSearchParams({ description });
   return apiFetch<PipelineRecord>(`/api/pipelines/by-description?${params}`);
-}
-
-export interface PipelineRunWithPipeline extends PipelineRunRecord {
-  pipeline_description?: string;
-  qdrant_collection?: string;
-}
-
-export async function listAllPipelineRuns(limit = 100): Promise<PipelineRunWithPipeline[]> {
-  return apiFetch<PipelineRunWithPipeline[]>(`/api/pipelines/runs?limit=${limit}`);
-}
-
-// --- Scraper API ---
-
-async function scraperFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = {
-    ...authHeaders(SCRAPER_API_KEY),
-    ...(init?.headers ?? {}),
-  };
-  const res = await fetch(`${SCRAPER_URL}${path}`, { ...init, headers });
-  if (!res.ok) {
-    throw new Error(`Scraper API error ${res.status}: ${res.statusText}`);
-  }
-  return res.json() as Promise<T>;
-}
-
-export interface ScraperCrawlResult {
-  links_file_path: string;
-  total_links: number;
-  pages_crawled: number;
-  metadata: Record<string, unknown> | null;
-}
-
-export interface ScraperCrawlJob {
-  id: string;
-  seed_url: string;
-  max_depth: number;
-  max_pages: number;
-  mode: string;
-  status: string;
-  error_message: string | null;
-  markdown_ingested: boolean;
-  image_ingested: boolean;
-  markdown_indexed_at: string | null;
-  image_indexed_at: string | null;
-  result: ScraperCrawlResult | null;
-}
-
-export interface ScraperScrapeJob {
-  id: string;
-  crawl_job_id: string;
-  status: string;
-  output_dir: string | null;
-  embedding_source: string;
-  pages_scraped: number;
-  error_message: string | null;
-}
-
-export async function listScraperCrawls(limit = 20): Promise<ScraperCrawlJob[]> {
-  return scraperFetch<ScraperCrawlJob[]>(`/crawls?limit=${limit}`);
-}
-
-export async function listScraperScrapes(limit = 20): Promise<ScraperScrapeJob[]> {
-  return scraperFetch<ScraperScrapeJob[]>(`/scrapes?limit=${limit}`);
-}
-
-export async function getScraperCrawl(jobId: string): Promise<ScraperCrawlJob> {
-  return scraperFetch<ScraperCrawlJob>(`/crawls/${jobId}`);
-}
-
-export async function getScraperScrape(jobId: string): Promise<ScraperScrapeJob> {
-  return scraperFetch<ScraperScrapeJob>(`/scrapes/${jobId}`);
 }
 
 // --- RAG API Endpoints ---
@@ -847,6 +833,35 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
   await ragFetch<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" });
 }
 
+export interface CloseChatSessionResponse {
+  session_id: string;
+  turns: number;
+  memory: { enabled: boolean; cleared: boolean };
+  trace: { emitted: boolean; trace_id: string | null; tags: string[] };
+}
+
+/**
+ * End a conversation on the server.
+ *
+ * A pipeline with session memory exports the whole conversation as one trace and drops what
+ * it remembered. A stateless pipeline kept nothing, so `memory.enabled` is false and no
+ * session trace is written: its turns were already traced one by one.
+ */
+export async function closeChatSession(
+  sessionId: string,
+  pipelineId?: string | null,
+): Promise<CloseChatSessionResponse> {
+  return ragFetch<CloseChatSessionResponse>(`/chat/sessions/${sessionId}/close`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      // A conversation from this page is a test conversation, the same as its turns.
+      [TRACE_MODE_HEADER]: "test",
+    },
+    body: JSON.stringify({ pipeline_id: pipelineId ?? null }),
+  });
+}
+
 export async function deleteChatMessage(
   messageId: string
 ): Promise<{ session_id: string; deleted_message_ids: string[] }> {
@@ -983,6 +998,34 @@ export async function deleteGoldenDataset(datasetId: string): Promise<void> {
   await ragFetch(`/evaluate/datasets/${datasetId}`, { method: "DELETE" });
 }
 
+/** The built-in evaluation set: question and answer pairs from the Hugging Face documentation. */
+export const HF_EVAL_DATASET = "m-ric/huggingface_doc_qa_eval";
+/** The corpus those questions are drawn from. A pipeline can only answer them if it holds this. */
+export const HF_EVAL_CORPUS = "A-Roucher/huggingface_doc";
+
+/**
+ * Import the built-in evaluation set from the Hugging Face Hub.
+ *
+ * The rows are stored as an ordinary golden dataset, so a run against them is an ordinary run.
+ */
+export async function importHuggingFaceDataset(replace = true): Promise<{
+  dataset_id: string;
+  name: string;
+  item_count: number;
+  replaced: boolean;
+}> {
+  return ragFetch<{
+    dataset_id: string;
+    name: string;
+    item_count: number;
+    replaced: boolean;
+  }>("/evaluate/datasets/huggingface", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ replace }),
+  });
+}
+
 export interface DatasetRunsResponse {
   items: EvalRunResponse[];
   count: number;
@@ -1031,7 +1074,16 @@ export async function createEvaluationRun(
     collection?: string | null;
     embedding_model?: string | null;
     sparse_embedding_model?: string | null;
+    /** With a strategy, the evaluator reads the pipeline's knowledge-product stores. */
+    rag_strategy?: string | null;
+    opensearch_index?: string | null;
+    pg_schema?: string | null;
+    pg_table?: string | null;
     k_values?: number[];
+    /** Evaluate a random sample of this many rows instead of the whole set. */
+    sample_size?: number | null;
+    /** Makes a sample reproducible. Omit for a fresh sample on every run. */
+    seed?: number | null;
     rag_mode?: string;
     self_corrective_max_loops?: number;
     router_enabled?: boolean;

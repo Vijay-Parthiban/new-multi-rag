@@ -123,7 +123,7 @@ of its own. Every control below left the form, with the code behind it:
 | `Run`, `Recent Activity`, `Pipeline Details & Stats` | Pipeline runs and MinIO sync counters. An assistant runs no ingestion job. |
 | `Trigger Sync`, `Refresh stats` | The matching header actions. Only `Create Pipeline` and `Refresh` remain. |
 
-The legacy ingestion table and its routes stay in the backend, because the Tracking page and the web scraper
+The legacy ingestion table and its routes stay in the backend, because the ingestion side and the web scraper
 still read pipeline runs. The Pipelines page is simply no longer the place where they are created.
 
 ---

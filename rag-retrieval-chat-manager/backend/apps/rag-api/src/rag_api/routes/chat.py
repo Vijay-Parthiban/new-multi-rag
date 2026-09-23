@@ -3,9 +3,12 @@ from __future__ import annotations
 import uuid
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from rag_api.session_close import SessionNotFound, close_session
+from rag_api.trace_context import fetch_context, fetch_context_async
 from rag_core import PipelineRequest
 from rag_core.schemas import SessionTurn
 from rag_core.session_memory import DEFAULT_TTL_S, SessionMemory
@@ -15,6 +18,7 @@ from rag_db.repositories.guardrails_repository import GuardrailsRepository
 from rag_db.services.database import get_session_factory
 from rag_shared.config import Settings, get_settings
 from rag_shared.guardrails_client import run_guardrails_check, check_blocked
+from rag_shared.tracing import TRACE_MODE_HEADER, normalize_trace_mode, turn_tags
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,17 @@ class ChatRequest(PipelineRequest):
     # the cache_redisvl destination enabled. Absent means the turn is stateless.
     session_memory_prefix: str | None = None
     session_memory_ttl_s: int | None = None
+    # Names the pipeline this turn came from, so the trace can record the pipeline and its
+    # Knowledge Product. The records themselves are read from the ingestion service; this
+    # field only says which one, so a caller cannot label a trace with a pipeline it did
+    # not use.
+    pipeline_id: str | None = None
+
+
+class CloseSessionRequest(BaseModel):
+    """What the Chat page sends when it ends a conversation."""
+
+    pipeline_id: str | None = None
 
 
 def _session_memory(settings: Settings, body: ChatRequest) -> SessionMemory | None:
@@ -39,7 +54,6 @@ def _session_memory(settings: Settings, body: ChatRequest) -> SessionMemory | No
         prefix=body.session_memory_prefix,
         ttl_s=body.session_memory_ttl_s or DEFAULT_TTL_S,
     )
-
 
 
 class SourceCitation(BaseModel):
@@ -280,6 +294,8 @@ def _persist_chat_turn(
     Persist user+assistant messages and optional pipeline trace/metrics job.
     Returns (session_id, assistant_message_id, trace_id|None, metrics_status).
     """
+    from rag_shared.tracing import current_span_ids
+
     session_factory = get_session_factory(settings)
     with session_factory() as db:
         repo = ChatRepository(db)
@@ -421,6 +437,10 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
     # The Chat page and an external caller share this route, so the header is the only thing
     # that separates them. Absent means production.
     trace_mode = normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER))
+    # Both are derived, never taken from the request: the tag has to agree with what the
+    # turn actually did, and the context has to describe the pipeline that actually ran.
+    tags = turn_tags(trace_mode, memory is not None)
+    trace_attributes = fetch_context(settings, body.pipeline_id)
 
     with rag_pipeline_span(
         "rag.chat",
@@ -437,6 +457,8 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         # Only a pipeline with Redis memory gets a session trace, because only it has a
         # session to file the turn into.
         session_trace=memory is not None,
+        tags=tags,
+        attributes=trace_attributes,
     ) as span:
         # ── Guardrails: input validation ─────────────────────────
         if body.guardrails_config_id:
@@ -601,6 +623,8 @@ async def chat_stream(request: Request, body: ChatRequest):
 
     # Same header rule as /chat. The Chat page sets it; an external caller does not.
     trace_mode = normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER))
+    tags = turn_tags(trace_mode, memory is not None)
+    trace_attributes = await fetch_context_async(settings, body.pipeline_id)
 
     # Capture request context so the worker thread nests under the same trace.
     # iterate_in_threadpool resumes the generator across pool threads, which
@@ -671,6 +695,8 @@ async def chat_stream(request: Request, body: ChatRequest):
                 },
                 trace_mode=trace_mode,
                 session_trace=memory is not None,
+                tags=tags,
+                attributes=trace_attributes,
             ) as span:
                 gen = pipeline.stream_chat(
                     body.query, config=config, source_type=source_type, source_id=source_id
@@ -919,6 +945,30 @@ def get_chat_session_messages(
             )
 
     return ChatSessionMessagesResponse(session_id=session_id, count=len(items), items=items)
+
+
+@router.post("/chat/sessions/{session_id}/close")
+def close_chat_session(
+    session_id: uuid.UUID,
+    request: Request,
+    body: CloseSessionRequest | None = None,
+) -> dict[str, Any]:
+    """End a conversation from the Chat page.
+
+    `session_close.close_session` does the work: export the conversation as one trace, then
+    drop what the pipeline remembered. The pipeline id arrives in the body here, because this
+    route is not addressed by a pipeline.
+    """
+    settings: Settings = request.app.state.settings
+    try:
+        return close_session(
+            settings,
+            session_id,
+            pipeline_id=body.pipeline_id if body else None,
+            trace_mode=normalize_trace_mode(request.headers.get(TRACE_MODE_HEADER)),
+        )
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 @router.delete("/chat/sessions/{session_id}")

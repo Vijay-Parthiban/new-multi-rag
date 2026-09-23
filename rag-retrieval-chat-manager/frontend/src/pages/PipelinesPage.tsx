@@ -17,8 +17,11 @@ import {
 import {
   ApiError,
   CreatePipelineRequest,
+  DEFAULT_MODEL_SETTINGS,
   GuardrailsConfig,
   KnowledgeProduct,
+  MODEL_SETTING_FIELDS,
+  ModelSettings,
   PipelinePatchRequest,
   PipelineRecord,
   PromptTemplate,
@@ -63,6 +66,7 @@ type Draft = {
   promptTemplateId: string;
   guardrailsConfigId: string;
   chatModel: string;
+  model_settings: ModelSettings;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -73,6 +77,8 @@ const EMPTY_DRAFT: Draft = {
   promptTemplateId: "",
   guardrailsConfigId: "",
   chatModel: "",
+  // A new pipeline opens on the tuned values, not on empty boxes.
+  model_settings: { ...DEFAULT_MODEL_SETTINGS },
 };
 
 function describeError(err: unknown): string {
@@ -439,6 +445,45 @@ function PipelineFields({
         ))}
       </select>
       {fieldError(chatModelError, draft.chatModel.length > 0)}
+
+      <fieldset style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+        <legend className="field-label">Model settings</legend>
+        <p className="field-hint" style={{ margin: "0 0 0.75rem" }}>
+          These values are saved on the pipeline. The Chat page can override them for a test
+          without saving.
+        </p>
+        {MODEL_SETTING_FIELDS.map((field) => (
+          <div key={field.key}>
+            <label className="field-label" htmlFor={`${idPrefix}-${field.key}`}>
+              {field.label}
+            </label>
+            <input
+              id={`${idPrefix}-${field.key}`}
+              className="input"
+              type="number"
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              value={draft.model_settings[field.key] ?? ""}
+              onChange={(e) => {
+                const next = { ...draft.model_settings };
+                // An empty box means "let the service default apply".
+                next[field.key] = e.target.value === "" ? null : Number(e.target.value);
+                setDraft({ ...draft, model_settings: next });
+              }}
+            />
+            <p className="field-hint">{field.hint}</p>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => setDraft({ ...draft, model_settings: { ...DEFAULT_MODEL_SETTINGS } })}
+        >
+          <IconRefresh size={12} />
+          Reset to defaults
+        </button>
+      </fieldset>
     </>
   );
 }
@@ -543,6 +588,7 @@ export default function PipelinesPage() {
         chat_model: draft.chatModel,
         prompt_template_id: draft.promptTemplateId || null,
         guardrails_config_id: draft.guardrailsConfigId || null,
+        model_settings: draft.model_settings,
         embedding_model: productEmbeddingModel(product),
       };
       await createPipeline(body);
@@ -574,6 +620,13 @@ export default function PipelinesPage() {
       promptTemplateId: pipeline.prompt_template_id ?? "",
       guardrailsConfigId: pipeline.guardrails_config_id ?? "",
       chatModel: pipeline.chat_model ?? "",
+      // A saved record may omit a knob or hold null, so every box falls back on the default.
+      model_settings: {
+        temperature: pipeline.model_settings?.temperature ?? DEFAULT_MODEL_SETTINGS.temperature,
+        top_p: pipeline.model_settings?.top_p ?? DEFAULT_MODEL_SETTINGS.top_p,
+        top_k: pipeline.model_settings?.top_k ?? DEFAULT_MODEL_SETTINGS.top_k,
+        max_tokens: pipeline.model_settings?.max_tokens ?? DEFAULT_MODEL_SETTINGS.max_tokens,
+      },
     });
     setEditShowErrors(false);
     setFormError(null);
@@ -611,6 +664,7 @@ export default function PipelinesPage() {
         // null, not undefined: the backend reads a present null as "detach".
         prompt_template_id: editDraft.promptTemplateId || null,
         guardrails_config_id: editDraft.guardrailsConfigId || null,
+        model_settings: editDraft.model_settings,
       };
       await updatePipeline(editing.id, body);
       closeEdit();

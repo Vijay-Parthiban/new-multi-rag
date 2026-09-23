@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 
 from eval_core.chat_metrics import compute_chat_pipeline_metrics, flatten_chat_metrics
@@ -10,7 +11,7 @@ from rag_db.repositories.chat_repository import ChatRepository
 from rag_db.repositories.evaluation_repository import EvaluationRepository
 from rag_db.services.database import get_session_factory
 from rag_shared.config import get_settings
-from rag_shared.types import SearchMode
+from rag_shared.types import KpStores, SearchMode
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,20 @@ def compute_chat_metrics(message_id: str) -> None:
         db.commit()
 
 
+def _sample(items: list[dict], size: object, seed: object) -> list[dict]:
+    """A random sample of at most `size` items.
+
+    No size, a size of zero, or a size past the end of the set means the whole set: a run that
+    asks for more rows than exist should evaluate all of them rather than fail.
+
+    `random.Random` with an integer seed reproduces the same sample, which is what makes a run
+    repeatable. With no seed it draws a fresh one, which is what a spot check wants.
+    """
+    if not isinstance(size, int) or size <= 0 or size >= len(items):
+        return items
+    return random.Random(seed if isinstance(seed, int) else None).sample(items, size)
+
+
 def run_evaluation(run_id: str) -> None:
     settings = get_settings()
     session_factory = get_session_factory(settings)
@@ -133,13 +148,23 @@ def run_evaluation(run_id: str) -> None:
         rag_mode=config_data.get("rag_mode", "normal"),
         self_corrective_max_loops=int(config_data.get("self_corrective_max_loops", 3)),
     )
+    # The offline evaluator runs retrieve -> rerank -> generate and scores each stage. It has
+    # no router and no self-corrective loop: those belong to the chat path, and passing them
+    # here used to raise on every item.
+    # An assistant pipeline reads its Knowledge Product's stores. The strategy and the store
+    # names travel together: with a strategy the evaluator reads those stores, and without one
+    # it reads the legacy scrape collection, which is a different corpus.
+    kp_strategy = config_data.get("rag_strategy")
+    kp_stores = None
+    if kp_strategy and (config_data.get("collection") or config_data.get("opensearch_index")):
+        kp_stores = KpStores(
+            qdrant_collection=config_data.get("collection"),
+            opensearch_index=config_data.get("opensearch_index"),
+            pg_schema=config_data.get("pg_schema"),
+            pg_table=config_data.get("pg_table"),
+        )
+
     k_values = config_data.get("k_values", [1, 3, 5, 10])
-    router_enabled = bool(config_data.get("router_enabled", False))
-    router_mode = config_data.get("router_mode")
-    if isinstance(router_mode, str):
-        router_mode = router_mode.strip() or None
-    else:
-        router_mode = None
 
     with session_factory() as db:
         eval_repo = EvaluationRepository(db)
@@ -154,6 +179,12 @@ def run_evaluation(run_id: str) -> None:
             }
             for item in raw_items
         ]
+
+    # A run may evaluate a random sample instead of the whole set. This happens before the
+    # progress count is taken, so the count describes what will actually run.
+    dataset_items = _sample(
+        dataset_items, config_data.get("sample_size"), config_data.get("seed")
+    )
 
     total_items = len(dataset_items)
     logger.info("Starting evaluation run=%s dataset_items=%d", run_uuid, total_items)
@@ -184,11 +215,7 @@ def run_evaluation(run_id: str) -> None:
                     category=item["metadata"].get("category"),
                 )
                 result = evaluator.evaluate_item(
-                    golden,
-                    config,
-                    k_values,
-                    router_enabled=router_enabled,
-                    router_mode=router_mode,
+                    golden, config, k_values, strategy=kp_strategy, stores=kp_stores
                 )
 
                 with session_factory() as db:
@@ -214,21 +241,25 @@ def run_evaluation(run_id: str) -> None:
                     if result.generation_metrics:
                         combined_scores.update(result.generation_metrics)
 
+                    # The evaluator does not time its stages, so EvalItemResult carries no
+                    # latency. Reading it directly raised on every item, which meant no result
+                    # was ever saved even when the evaluation itself succeeded.
+                    latency_ms = getattr(result, "latency_ms", None) or {}
                     trace_info = {
                         "retrieval_mode": config.retrieval_mode.value,
                         "rerank_enabled": config.rerank_enabled,
                         "generation_model": config.generation_model,
-                        "route": result.generation_metrics.get("route", "normal"),
-                        "prompt_tokens": result.latency_ms.pop("prompt_tokens", None),
-                        "completion_tokens": result.latency_ms.pop("completion_tokens", None),
+                        "route": (result.generation_metrics or {}).get("route", "normal"),
+                        "prompt_tokens": latency_ms.get("prompt_tokens"),
+                        "completion_tokens": latency_ms.get("completion_tokens"),
                     }
-                    
+
                     emit_otel_synthetic_trace(
                         session_id=f"eval_run_{run_uuid}",
                         message_id=str(run_item_id),
                         query=item["question"],
                         answer=result.generated_answer,
-                        latency_ms=result.latency_ms,
+                        latency_ms=latency_ms,
                         scores=combined_scores,
                         retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
                         trace_info=trace_info

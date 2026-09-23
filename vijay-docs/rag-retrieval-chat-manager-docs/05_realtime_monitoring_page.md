@@ -6,7 +6,7 @@
 The **Real Time Monitoring** page is `frontend/src/pages/EvaluationsPage.tsx`, mounted at route `/evaluations` with sidebar label "Real Time Monitoring" (`frontend/src/components/AppLayout.tsx:29`, `:120`). It shows *recent* chat turns that have an async quality-metrics row and their pipeline latencies, read from a single endpoint: `GET /chat/stats?limit=N` (`EvaluationsPage.tsx:111`).
 
 Scope corrections against the previous version of this document:
-- The page is **not** `TrackingPage.tsx`. `/tracking` is a different page ("Pipeline Tracking": pipeline runs, scraper crawl/scrape jobs) documented separately in `07_tracking_and_traces_page.md`.
+- The page is **not** the removed Tracking page. That was a separate read-only operational monitor for pipeline runs and scraper jobs at `/tracking`; it was removed on 2026-09-23. See `07_trace_persistence.md`.
 - It is a **manual-refresh table**, not a live stream: there is no SSE endpoint and no polling interval in this page (Section 6).
 - The page shows no percentile, cache-hit, cost or token aggregates. The backend has no `p95`, `percentile` or `cache_hit` code at all, and the routes `/tracking/stream` and `/tracking/latency-breakdown` do not exist (the routes package contains only `chat`, `evaluate`, `prompts`, `guardrails`, `guardrails_evaluate`, `health`, `knowledge`, `retrieve`, `rerank`, `search`, `generate`).
 - The previous sample payload for `/tracking/latency-breakdown` was fictional; the real payload shape is in Section 3.
@@ -146,5 +146,5 @@ Two caveats remain, both narrower:
 
 ## 6. Refresh & Polling Behaviour
 - The page calls `GET /chat/stats` on mount (pages are mounted persistently, so this happens when the app loads), whenever `limit` changes (`EvaluationsPage.tsx:108-122`), and on the explicit **Refresh** button.
-- There is no `setInterval`/SSE/websocket in this page: values only change when the operator refreshes or changes the limit. (The separate Tracking page polls every 300 000 ms — `pages/TrackingPage.tsx:81-85`; the Chat page polls `/chat/messages/{id}/metrics` per message until status is `completed`/`failed`, max 40 attempts — `pages/ChatPage.tsx:283-287`.)
+- There is no `setInterval`/SSE/websocket in this page: values only change when the operator refreshes or changes the limit. (The Chat page polls `/chat/messages/{id}/metrics` per message until status is `completed`/`failed`, max 40 attempts — `pages/ChatPage.tsx:283-287`.)
 - **Open Langfuse** and **Open Phoenix** link out to the configured backends; the trace data itself is emitted by the worker, not rendered here. Set `VITE_LANGFUSE_TRACES_URL` and `VITE_PHOENIX_URL` to a deep link to land on the traces rather than a landing page.

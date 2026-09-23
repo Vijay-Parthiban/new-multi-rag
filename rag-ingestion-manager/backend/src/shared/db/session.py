@@ -145,6 +145,7 @@ def _ensure_sqlite_columns(sqlite_path) -> None:
             ("ingestion_profiles", "text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'"),
             ("ingestion_profiles", "caption_model TEXT"),
             ("ingestion_profiles", "image_min_pixels INTEGER DEFAULT 10000"),
+            ("pipelines", "model_settings JSON"),
         ]:
             try:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")

@@ -58,7 +58,7 @@ Repository layout:
 | Qdrant (knowledge products) | container | **6335** | `qdrant_kp_url`; holds every `kp_*` collection the assistants and the KP readers use. A separate server from the 6333 instance. |
 | LiteLLM proxy | host process | 4000 | `litellm_base_url` — embeddings, rerank, chat, vision |
 | guardrails-service | `guardrails-service/server.py` | 18000 → 8000 | compose maps `18000:8000`. `settings.guardrails_url` defaults to `http://localhost:18000`, so a host run needs no override |
-| web-scrapper API | `web-scrapper-workspace` | 8000 | `SCRAPER_URL`; source of the crawl/scrape jobs the Tracking page lists |
+| web-scrapper API | `web-scrapper-workspace` | 8000 | `SCRAPER_URL`; source of the crawl and scrape jobs the ingestion side lists |
 | rag-ingestion-manager | external | 8007 | Knowledge Products proxy target |
 | otel-collector | container `otel` | 4317 / 4318 | OTLP; absent from a native run, so set `OTEL_TRACING_ENABLED=false` |
 

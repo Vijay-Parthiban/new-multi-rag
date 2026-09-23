@@ -18,6 +18,10 @@ class ChatSession(Base):
     source_type: Mapped[str | None] = mapped_column(String, nullable=True)
     source_id: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    # Soft delete. Set when the conversation is taken out of the history list.
+    # The row stays so the turns, traces and metrics behind it survive for
+    # evaluation. Every listing filters on this.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     messages: Mapped[list["ChatMessage"]] = relationship(back_populates="session")
 
@@ -30,6 +34,8 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Soft delete, set per turn. A hidden message is skipped by every listing.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped["ChatSession"] = relationship(back_populates="messages")
     trace: Mapped["ChatPipelineTrace | None"] = relationship(back_populates="message", uselist=False)

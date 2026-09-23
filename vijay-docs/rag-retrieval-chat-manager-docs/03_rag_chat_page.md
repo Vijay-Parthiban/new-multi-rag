@@ -1,6 +1,6 @@
 # 03 — Interactive RAG Chat & Synthesis Page
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-22
 
 ## 1. Executive Summary & Page Purpose
 
@@ -79,9 +79,16 @@ The sidebar block under the pipeline selector shows four lines:
 | `Knowledge Product:` | The product's `name`, then ` · ` and its `chunk_strategy` |
 | `Model:` | `selectedPipeline.chat_model` |
 | `Endpoint:` | `selectedPipeline.slug` |
+| `Memory:` | `available · 24h TTL`, or `not available` |
 
 The `Knowledge Product:`, `Model:` and `Endpoint:` lines render only when the record carries the value. The
 whole block renders only when a pipeline is selected.
+
+The `Memory:` line is the one that decides how the page behaves. It is computed by
+`sessionMemoryFor(selectedPipeline.knowledge_product.destinations)` — the same rule the backend applies and
+the Pipelines page shows: an **enabled** `cache_redisvl` destination that carries an `index_prefix`. A green
+chip reads `available · {n}h TTL`; an amber chip reads `not available`. Nothing about the pipeline is
+different; the Knowledge Product is what decides.
 
 **The embedding model and the sparse model lines are gone.** They were misleading: an assistant resolves its
 collection, embedding model and strategy from its Knowledge Product, and a legacy pipeline's models never
@@ -135,6 +142,7 @@ the plain retrieval path only.
 | `rerank_enabled` | The toolbar Rerank checkbox (default on). |
 | `top_k` | The toolbar Top K (1–20, default 5). |
 | `guardrails_config_id` | The selected guardrails config id, omitted when `None`. |
+| `pipeline_id` | The selected pipeline's id. Names the pipeline for the trace; the backend reads the records itself |
 | `collection`, `embedding_model`, `sparse_embedding_model` | Legacy path only, copied from the record. |
 
 On the assistant path the server applies `AssistantChatRequest`
@@ -165,6 +173,40 @@ The toolbar also shows the session indicator: a dot, plus the first 12 character
 Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:411`, `TRACE_MODE_HEADER` in `api.ts:912`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
 
 This matters because the page and an external caller hit **the same route**. The header is the only thing that separates them in the backends, and it is what tags the row `test` on the Real Time Monitoring page. A caller that knows nothing about the header cannot label real traffic as a test. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
+
+### 3.6 The conversation lifecycle
+
+The page starts with no conversation open, and the flow is the same in both conditions.
+
+| Step | State | What the page shows |
+|---|---|---|
+| Load | Nothing open | `Click New to start chatting`. The composer is disabled, and the placeholder reads `Click + New to start chatting` |
+| Press **+ New** | A conversation exists | `New conversation`, a live composer, and the End button |
+| Send turns | The conversation grows | Normal Q/A. With memory, a follow-up is understood in context |
+| Press **End Session** / **End Chat** | A confirmation | `window.confirm`, then the conversation closes and the area returns to the first state |
+| Open a row in Chat History | That conversation | Its stored messages, and a live composer |
+
+`composerReady` is what gates the first state, and it is set by **+ New** or by opening a history row. It is
+cleared again by ending the conversation. The composer stays disabled until then, so a turn is never sent
+into a session nobody opened.
+
+**The button label follows the memory state.** A pipeline with session memory gets **End Session**: there is
+memory to drop and a whole conversation to export. One without gets **End Chat**: it kept nothing, so there is
+nothing to clear.
+
+Both buttons call `POST /chat/sessions/{id}/close`. The difference is entirely server-side, decided by the
+same Knowledge Product gate. What each condition does:
+
+| | Memory enabled | No memory |
+|---|---|---|
+| Confirmation text | `End this session? …` | `Close this chat? …` |
+| Memory dropped | Yes — the Redis key is deleted | Nothing to drop |
+| Session trace | One trace holding every Q/A pair | None. Each turn was already traced alone |
+| Tag | `test-session` | `test-stateless` |
+| History | The conversation stays, and is listed under Chat History | The same |
+
+Closing twice is safe: the endpoint answers 200 both times. The conversation is never deleted by closing it
+— only `Delete conversation` in the row menu removes it from history.
 
 ---
 
@@ -307,12 +349,23 @@ ingestion pipeline, `422 RAG_STRATEGY_UNAVAILABLE` when a store the strategy nee
   `generation_model`, `route`), `sources`, `metrics_status`, `blocked`, `blocked_by_guard`, `blocked_on`.
   `route` is read from the stored trace `latency_ms.route`, and `blocked` is true when `latency_ms.blocked` is
   set or that route is `blocked` (`routes/chat.py:795-823`).
-- `DELETE /chat/messages/{id}` returns `deleted_message_ids` covering the reply and its question. The page
-  drops them from state and clears their cached metrics (`ChatPage.tsx:324-350`).
-- > **Working-tree gap.** Both DELETE handlers call `ChatRepository.soft_delete_session` and
-  > `ChatRepository.soft_delete_message_turn`, and read `ChatMessage.deleted_at`
-  > (`routes/chat.py:820-845`). Neither the repository nor the chat model defines them, so both endpoints
-  > currently raise `AttributeError` (HTTP 500). The contracts above are what the routes declare.
+- `DELETE /chat/sessions/{id}` soft-deletes the conversation and its turns and answers 204.
+  `DELETE /chat/messages/{id}` returns `deleted_message_ids` covering the reply and its question. The
+  `deleted_at` columns and both repository methods came in migration `005`.
+- `POST /chat/sessions/{id}/close` ends a conversation. It writes the whole-session trace and drops the
+  Redis memory key, and answers with the turn count, the memory result and the trace result:
+
+  ```json
+  {
+    "session_id": "…",
+    "turns": 2,
+    "memory": { "enabled": true, "cleared": true },
+    "trace": { "emitted": true, "trace_id": "12047f48…", "tags": ["test-session"] }
+  }
+  ```
+
+  It is idempotent, so a second call answers 200 again. It never deletes the conversation: the turns stay in
+  history. See [16 — Observability and Tracing](./16_observability_tracing.md) §4 for what it exports.
 
 ### 9.2 Per-message metrics
 

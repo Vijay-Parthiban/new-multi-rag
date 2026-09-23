@@ -50,16 +50,25 @@ exporters:
   debug:
     verbosity: ${env:OTEL_DEBUG_VERBOSITY}
 
-  # Phoenix (Arize). OTLP/HTTP, full /v1/traces path required.
-  #   Self-hosted:  http://localhost:6006/v1/traces   (no auth)
-  #   Phoenix Cloud: https://app.phoenix.arize.com/v1/traces
-  # Local Phoenix needs no Authorization header; leaving PHOENIX_AUTH_HEADER empty sends none.
+  # Phoenix (Arize). OTLP/HTTP. Give it a BASE URL: this exporter appends
+  # /v1/traces itself. The full path here yields /v1/traces/v1/traces and a 405.
+  #   Self-hosted:    http://localhost:6006                    (no auth)
+  #   Phoenix Cloud:  https://app.phoenix.arize.com/s/<handle> (Bearer token)
+  # Phoenix Cloud needs the /s/<handle>/ prefix; without it the host answers 410.
+  # Local Phoenix needs no Authorization header; leaving PHOENIX_AUTH_HEADER empty
+  # sends none.
   otlp_http/phoenix:
     endpoint: ${env:PHOENIX_OTLP_ENDPOINT}
     headers:
       Authorization: ${env:PHOENIX_AUTH_HEADER}
       # Routes every span in the request to this Phoenix project. HTTP only; ignored on gRPC.
       x-project-name: ${env:PHOENIX_PROJECT_NAME}
+      # Phoenix Cloud does not accept this exporter's default User-Agent
+      # ("OpenTelemetry Collector/0.148.0 ...") on /s/<handle>/v1/traces. It answers
+      # 302 to /login, and the exporter reports 400 with an empty message, so every
+      # span is dropped. An empty value fails the same way. Any other value is
+      # accepted, so send an explicit one. Do not remove this line.
+      User-Agent: rag-platform-otel/1.0
     timeout: 30s
     retry_on_failure:
       enabled: true
