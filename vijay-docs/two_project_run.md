@@ -1,10 +1,15 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-24
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
 mandatory. Section 5 gives the fastest path for a machine that already ran the platform.
+
+**Section 5b is the recommended way to run the platform.** It starts each project as one container
+stack, with one command per project and nothing installed on the host. Sections 4 and 5 remain for
+running the nine processes by hand, which is useful when you are changing their code and want a fast
+restart.
 
 The two projects are:
 
@@ -449,6 +454,222 @@ cd rag-retrieval-chat-manager/backend && uv run uvicorn rag_api.main:app --host 
 cd rag-retrieval-chat-manager/backend && uv run rq worker eval --url redis://localhost:6379/0 --worker-class rq.worker.SimpleWorker
 cd rag-retrieval-chat-manager/frontend && node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5174
 ```
+
+---
+
+## 5b. Run each project as one container stack
+
+Sections 4 and 5 start nine processes by hand. The container path is shorter and is the one to prefer:
+**one command per project**, with no shell profile, no `uv` and no Node on the host.
+
+### One-time setup, per machine
+
+Do this once. Nothing here repeats on a normal start.
+
+```bash
+# 1. The network both projects join. It is declared `external: true` in both compose
+#    files, so compose will not create it. Two compose projects cannot share a network
+#    they own: compose rejects a network that carries another project's label.
+docker network create rag-shared
+
+# 2. The four external containers, from their own directories (section 3.1).
+#    qdrant:6335, litellm:4000, litellm_db:5433.
+```
+
+### Run the ingestion project
+
+```bash
+cd rag-ingestion-manager
+docker compose up -d
+```
+
+That starts 15 services: `migrate`, `api`, `worker`, `pathway-worker`, `web`, the shared data tier
+(`postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector`), and the scraper and guardrails
+containers. `migrate` runs to completion and exits `0`; that is success, not a failure.
+
+| Service | Port |
+|---|---|
+| `api` | 8007 |
+| `web` | 5173 |
+| `postgres` · `redis` · `qdrant` · `minio` · `opensearch` | 5432 · 6379 · 6333 · 9000 · 9200 |
+
+Check it:
+
+```bash
+docker compose ps
+docker compose logs migrate          # expect "Exited (0)"
+```
+
+### Run the retrieval project
+
+Start it **after** the ingestion project. It reads that project's Postgres, Redis, Qdrant and
+OpenSearch, and it resolves a pipeline by slug through that project's API.
+
+```bash
+cd rag-retrieval-chat-manager/backend
+docker compose up -d
+```
+
+That starts four services: `migrate`, `rag-api`, `eval-worker`, `web`.
+
+| Service | Port |
+|---|---|
+| `rag-api` | 8001 |
+| `web` | 5174 |
+
+`rag-api` can take a minute to answer its first request, because it imports the evaluation and
+generation stacks on boot. A `connection closed` error in the first 60 seconds is that, not a fault.
+
+Check it:
+
+```bash
+docker compose ps
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8001/chat/stats?limit=1
+```
+
+### Verify both projects
+
+```bash
+# Ingestion API, serving the knowledge products and pipelines
+curl -s http://localhost:8007/api/knowledge-products | head -c 300
+curl -s http://localhost:8007/api/pipelines | head -c 300
+
+# Ingestion and retrieval frontends
+curl -s -o /dev/null -w 'ingestion web %{http_code}\n' http://localhost:5173/
+curl -s -o /dev/null -w 'retrieval web %{http_code}\n' http://localhost:5174/
+
+# Retrieval API resolving a pipeline through the ingestion API.
+# This single call proves the cross-project path: the slug, the `rag` database,
+# and the memory gate all have to work for it to answer.
+curl -s http://localhost:8001/api/assistants/<slug>
+```
+
+### Stop them
+
+```bash
+cd rag-retrieval-chat-manager/backend && docker compose down
+cd rag-ingestion-manager && docker compose down
+```
+
+`down` removes the containers and keeps the named volumes, so your data survives. Add `-v` only when
+you intend to erase it.
+
+### The optional services
+
+Three services in the ingestion compose sit behind the **`extras`** profile, because nothing needs them
+today: `neo4j` (no destination uses it), `opensearch-dashboards` (a UI; the product reads the index
+directly) and `nifi` (the connector sync reaches Google Drive itself). Start them with:
+
+```bash
+cd rag-ingestion-manager
+docker compose --profile extras up -d
+```
+
+### How the two projects share a data tier
+
+They join one Docker network named **`rag-shared`**, which is why the retrieval compose can name
+`postgres`, `redis` and `qdrant` directly. The network is `external: true` in both compose files, so it
+must exist first (see the one-time setup) and neither project claims ownership of it.
+
+The retrieval project has one hard dependency on the ingestion project at runtime: it resolves a
+pipeline by slug through the ingestion API. With that API down, the assistant routes return an error.
+
+Anything outside both projects is reached through `host.docker.internal`: the LiteLLM proxy on 4000,
+the knowledge-product Qdrant on **6335**, the guardrails service, and the ingestion API. Both composes
+set `extra_hosts: host.docker.internal:host-gateway` for that.
+
+### Frontend variables, and why they are not interchangeable
+
+Both frontends read `VITE_*` from the **process environment** when the Vite dev server starts, so the
+compose `environment:` block is the right place for them, not a build argument. The retrieval frontend
+reads two variables and they point at different projects:
+
+| Variable | Points at | Used for |
+|---|---|---|
+| `VITE_API_URL` | the **ingestion** API, `http://localhost:8007` | Sources, knowledge products, pipelines |
+| `VITE_RAG_API_URL` | the **retrieval** API, `http://localhost:8001` | Chat, assistants, guardrails, evaluation |
+
+Setting `VITE_API_URL` to 8001 looks plausible and is wrong: every ingestion-backed call then 404s, and
+the whole frontend fills with console errors while still rendering. `src/api.ts` already falls back to
+the correct values, so the safest thing is to set both explicitly.
+
+### The two Dockerfiles must mirror the repository layout
+
+This is the least obvious requirement, and breaking it fails the build with a confusing message.
+
+`libs/*/pyproject.toml` in the retrieval backend declare their path dependencies as
+`../../../../shared-libs` and `../../../../shared-contracts` — four levels up from `libs/shared`. Four
+levels only land somewhere real if the application sits at the same depth inside the image that it does
+in the repo. So the retrieval image keeps `/app/rag-retrieval-chat-manager/backend/...` and puts the
+shared packages at `/app/shared-libs` and `/app/shared-contracts`.
+
+Flattening it to `/app` makes uv refuse:
+
+```
+cannot normalize a relative path beyond the base directory:
+/app/libs/shared/../../../../shared-libs/platform-common
+```
+
+The compose `command:` entries are therefore **relative** (`sh scripts/run-migrate.sh`), because the
+workdir is the application directory in both layouts.
+
+The ingestion Dockerfile uses pip rather than uv, and pip does not read `[tool.uv.sources]` at all —
+that is a uv-only extension. So it installs `platform-common` and `shared-contracts` from source
+**before** the editable install, which then finds both requirements already satisfied.
+
+### Which env file is authoritative
+
+More than one file exists and they disagree. Know which one your compose reads.
+
+| File | Used by | Values |
+|---|---|---|
+| `rag-ingestion-manager/.env` | The ingestion compose's app services | **Postgres**, container hostnames |
+| `rag-ingestion-manager/backend/.env` | The host run in section 4.1 | **SQLite**, localhost |
+| `rag-retrieval-chat-manager/backend/.env` | The retrieval compose | The `rag` database, container hostnames, `host.docker.internal` for the rest |
+
+Two things to know:
+
+- **`rag-ingestion-manager/.env.rag` is dead.** The retrieval services that used it moved to the
+  retrieval project's own compose, which reads `rag-retrieval-chat-manager/backend/.env`. Delete
+  `.env.rag` when convenient.
+- **The retrieval app's tables live in the `rag` database, not `ingestion`.** `DATABASE_URL` must be
+  `postgresql+psycopg://crawler:crawler@postgres:5432/rag`. Pointing it at `ingestion` makes
+  `rag-db-migrate` create a second copy of the schema inside the ingestion database, silently split
+  from the host run's data.
+
+### The database question: SQLite or Postgres
+
+The host run uses a SQLite file; the container uses Postgres. **They are not the same data.** Moving a
+host setup to containers therefore needs a one-time metadata copy:
+
+1. `DATABASE_URL="postgresql://ingestion:ingestion@localhost:5432/ingestion" uv run ingestion-db-migrate`
+   from `rag-ingestion-manager/backend`, to create the schema in Postgres.
+2. Start the API once against Postgres, then stop it. That creates the two tables alembic does not:
+   `ingestion_profiles` and `ingestion_profile_destinations`, which the app makes at startup.
+3. Copy the rows, parents before children:
+   `sources` → `source_connectors` → `ingestion_profiles` → `ingestion_profile_destinations` →
+   `knowledge_products` → `knowledge_product_destinations` → `knowledge_product_sources` →
+   `knowledge_product_files` → `pipelines`.
+
+Only metadata moves. The document bytes live in MinIO and the four stores, and the Knowledge Product
+keeps its id, so every derived store name (`kp_<slug>_<id8>`) stays valid and **nothing needs
+re-ingesting**.
+
+Do this on 2026-09-24: 18 rows across 9 tables. Row counts matched exactly afterwards, every apparent
+difference was formatting (UUID hyphenation, `1` versus `True`, JSON text versus jsonb), and the four
+store names were identical.
+
+### Two known gaps in the container path
+
+- **The alembic chain is behind the models.** Six columns exist in the models and in no migration:
+  `knowledge_products.ingestion_profile_id`, `knowledge_products.pipeline_fingerprint`,
+  `sources.total_files`, `sources.total_size_bytes`, `sources.connector_sync_interval_seconds` and
+  `source_connectors.sync_interval_seconds`. `Base.metadata.create_all` never alters an existing table,
+  and the patch routine in `src/shared/db/session.py` (`_ensure_sqlite_columns`) runs **only for
+  SQLite**. So a Postgres database created from the migrations alone **lacks those six columns** and the
+  app fails on any query that selects them. Add them by hand, or write the missing migration. This is
+  also why the platform has been running on SQLite.
+- **`nifi`, `neo4j` and `opensearch-dashboards` are declared but unused.** They sit behind `extras`.
 
 ---
 

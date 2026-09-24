@@ -1,0 +1,15 @@
+# node_modules is installed inside the image. Copying the host's would push 100 MB
+# into the build context and overwrite the install with binaries built for the
+# host platform.
+node_modules
+dist
+.vite
+
+# Local configuration never belongs in an image.
+.env
+.env.*
+
+# Editor and VCS noise.
+.git
+.gitignore
+*.log

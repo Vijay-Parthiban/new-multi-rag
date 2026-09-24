@@ -2,11 +2,14 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json ./
+# The lockfile is copied so the install resolves the versions the project pinned.
+COPY package.json package-lock.json ./
 RUN npm install
 
 COPY . .
 
-EXPOSE 5173
+# vite.config.ts sets server.host=0.0.0.0 and server.port=5174, so the dev server
+# is reachable from outside the container on 5174.
+EXPOSE 5174
 
 CMD ["npm", "run", "dev"]

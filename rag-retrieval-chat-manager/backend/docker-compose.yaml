@@ -1,9 +1,28 @@
+# The whole retrieval project: migration, API, evaluation worker, frontend.
+#
+# Run it from this directory:
+#
+#     docker compose up -d
+#
+# The build context is the monorepo root, because
+# rag-retrieval-chat-manager/backend/Dockerfile copies shared-libs from it.
+#
+# This project has no data tier of its own. It reads the stores the ingestion
+# project writes, so DATABASE_URL, REDIS_URL and QDRANT_URL in .env name that
+# project's compose services (postgres, redis, qdrant) and both projects join the
+# same network, `rag-shared`. Start the ingestion project first, or these
+# containers cannot reach their databases.
+#
+# host.docker.internal is needed for the pieces that live outside both projects:
+# the LiteLLM proxy on 4000, the knowledge-product Qdrant on 6335, OpenSearch,
+# the guardrails service and the ingestion API.
+
 services:
   migrate:
     build:
-      context: ..
-      dockerfile: rag-app-workspace/Dockerfile
-    command: ["sh", "/app/scripts/run-migrate.sh"]
+      context: ../..
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
+    command: ["sh", "scripts/run-migrate.sh"]
     env_file:
       - .env
     networks:
@@ -12,9 +31,9 @@ services:
 
   rag-api:
     build:
-      context: ..
-      dockerfile: rag-app-workspace/Dockerfile
-    command: ["sh", "/app/scripts/run-api.sh"]
+      context: ../..
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
+    command: ["sh", "scripts/run-api.sh"]
     ports:
       - "8001:8001"
     depends_on:
@@ -30,12 +49,13 @@ services:
       - hf-cache:/root/.cache/huggingface
     networks:
       - rag-shared
+    restart: unless-stopped
 
   eval-worker:
     build:
-      context: ..
-      dockerfile: rag-app-workspace/Dockerfile
-    command: ["sh", "/app/scripts/run-worker.sh"]
+      context: ../..
+      dockerfile: rag-retrieval-chat-manager/backend/Dockerfile
+    command: ["sh", "scripts/run-worker.sh"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -51,10 +71,38 @@ services:
       - hf-cache:/root/.cache/huggingface
     networks:
       - rag-shared
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5174:5174"
+    # Vite reads VITE_* from the process environment when the dev server starts, so
+    # these are runtime values, not build arguments. src/api.ts reads two of them and
+    # they are not interchangeable: API_URL is the INGESTION api on 8007 (sources,
+    # knowledge products, pipelines) and RAG_API_URL is this project's own api on 8001
+    # (chat, assistants, guardrails, evaluation). Both are what the browser calls, and
+    # both ports are published to the host, so localhost is correct.
+    environment:
+      - VITE_API_URL=http://localhost:8007
+      - VITE_RAG_API_URL=http://localhost:8001
+      - VITE_LANGFUSE_TRACES_URL=${VITE_LANGFUSE_TRACES_URL:-https://jp.cloud.langfuse.com}
+      - VITE_PHOENIX_URL=${VITE_PHOENIX_URL:-https://app.phoenix.arize.com}
+    depends_on:
+      - rag-api
+    networks:
+      - rag-shared
+    restart: unless-stopped
 
 volumes:
   hf-cache:
 
 networks:
+  # Shared with the ingestion project, so it cannot be owned by either one: compose
+  # rejects a network that carries another project's label. It is created once:
+  #
+  #     docker network create rag-shared
   rag-shared:
     external: true
