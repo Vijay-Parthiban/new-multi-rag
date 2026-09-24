@@ -51,9 +51,19 @@ def build_rag_prompt(
         context = "(No sources were retrieved for this question.)"
 
     user = f"Context:\n{context}\n\nQuestion: {query}"
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt or RAG_SYSTEM_PROMPT},
-    ]
+    system = system_prompt or RAG_SYSTEM_PROMPT
+    if history:
+        # Without this the grounding rule wins over the conversation, and a follow-up about
+        # the conversation itself ("what did I just ask?") is refused even though the earlier
+        # turns sit right there in the message list.
+        system += (
+            "\n\nThe messages before the final user message are earlier turns of this session. "
+            "Use them to understand the final question, and answer anything it asks about the "
+            "conversation itself, such as what was asked or answered before. The numbered "
+            "context passages stay the only source for facts about the documents: if a "
+            "document question is not covered by them, say so."
+        )
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
     if history:
         messages.extend({"role": turn["role"], "content": turn["content"]} for turn in history)
     messages.append({"role": "user", "content": user})

@@ -33,8 +33,14 @@ collector fans out. That is what makes a new platform a collector change and not
 | Setting | Value | Where |
 |---|---|---|
 | Collector OTLP receiver | `:4317` gRPC, `:4318` HTTP | `otel-collector-config.yaml` |
-| Application exporter target | `http://otel:4318` | `OTEL_EXPORTER_OTLP_ENDPOINT` in `backend/.env` |
+| Application exporter target | `http://otel:4318` inside compose, `http://localhost:4318` on the host | `OTEL_EXPORTER_OTLP_ENDPOINT` |
 | Credentials | `otel/.env` (gitignored) | `otel/.env.example` is the template |
+
+**The target has to match where the application runs.** `otel` is a compose service name, so an API
+started on the host cannot resolve it and the span is dropped with no error the caller can see. For a
+host run, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` **and** `OTEL_TRACING_ENABLED=true`.
+The runbook's host block sets tracing off, which is right for a quick smoke check and wrong for a real
+one.
 
 ## 2. Two trace modes
 
@@ -283,6 +289,36 @@ traces, not answers.
 | A backend rejects the auth | The collector logs it and retries that exporter alone. The other backend still receives the span |
 | A turn has no OTEL ids | The metrics worker opens its own trace, as before migration `004` |
 | A session id is not a UUID | No session trace. The individual turn trace is unaffected |
+
+**A collector container recreated from a stale env is the quietest failure of all.** `env_file` is read
+only when a container is created. On 2026-09-23 the `otel` container had been created **two days
+before** `otel/.env` was filled in, so it still held the *placeholder* values from `otel/.env.example`:
+`LANGFUSE_AUTH_HEADER=Basic <base64(pk-lf-...:sk-lf-...)>`, and no `PHOENIX_OTLP_ENDPOINT` at all. With
+the Phoenix endpoint unset the collector refuses to start and crash-loops:
+
+```
+Error: invalid configuration: exporters::otlp_http/phoenix: at least one endpoint must be specified
+```
+
+The application half of the chain looked perfectly healthy the whole time, which is what makes this hard
+to find. After editing the collector's env, recreate the container — a restart reuses the old env:
+
+```bash
+cd rag-ingestion-manager && docker compose up -d --force-recreate --no-deps otel-collector
+```
+
+`--no-deps` matters: without it compose may recreate the shared Postgres, Redis and Qdrant containers
+that the running stack already uses.
+
+To confirm the chain afterwards, count what the collector received and check for exporter errors:
+
+```bash
+docker logs otel --tail 3000 2>&1 | grep -oE '"spans": [0-9]+' | awk -F': ' '{s+=$2} END {print s+0}'
+docker logs otel --tail 3000 2>&1 | grep -iE 'error|refused|dropped|retry'
+```
+
+On 2026-09-23 that check read **216 spans received**, `0` Langfuse retries, and one transient Phoenix
+`503 Throttle` that the exporter retried on its own — which is the healthy signature.
 
 ## 8. Verification
 

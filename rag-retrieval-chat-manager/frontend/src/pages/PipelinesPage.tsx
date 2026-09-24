@@ -155,19 +155,28 @@ function Modal({
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
 
+  // The scroll lock and the first focus belong to the dialog's own lifetime. They must not depend
+  // on onClose: the callers pass an inline arrow, so its identity changes on every parent render,
+  // and this effect would run again on every keystroke and pull focus back to the first field.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    (initialFocus?.current ?? panelRef.current)?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [initialFocus]);
+
+  // Escape must always reach the current handler, so it keeps an effect of its own.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    (initialFocus?.current ?? panelRef.current)?.focus();
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousOverflow;
     };
-  }, [onClose, initialFocus]);
+  }, [onClose]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -374,7 +383,7 @@ function PipelineFields({
         onChange={(e) => setDraft({ ...draft, ragStrategy: e.target.value })}
       >
         <option value="" disabled>
-          Select a strategy…
+          {draft.knowledgeProductId ? "Select a strategy…" : "Choose a Knowledge Product first"}
         </option>
         {strategies.map((id) => (
           <option key={id} value={id}>
@@ -382,9 +391,11 @@ function PipelineFields({
           </option>
         ))}
       </select>
-      {strategies.length === 0 && draft.knowledgeProductId ? (
+      {strategies.length === 0 ? (
         <p className="field-hint">
-          This product has no enabled retrieval destination. Enable one in the Ingestion Manager.
+          {draft.knowledgeProductId
+            ? "This product has no enabled retrieval destination. Enable one in the Ingestion Manager."
+            : "A Knowledge Product decides the list: each strategy reads a store that product has enabled. Hybrid needs both the vector and the keyword store."}
         </p>
       ) : (
         fieldError(strategyError, strategies.length > 0)

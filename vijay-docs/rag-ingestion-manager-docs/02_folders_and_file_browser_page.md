@@ -1,6 +1,6 @@
 # 02 — Folders & File Browser Page
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-23
 
 ## 1. Executive Summary & Page Purpose
 
@@ -12,7 +12,7 @@ The sidebar item labeled **Folders** (`/browse`) covers three distinct pages tha
 | `/browse/:name` | `DirectoryPage.tsx` | **Upload folders** (the `directories` table) | List the files of one upload folder; rename/delete files; open the file viewer |
 | `/browse/:name/view/:fileId` | `FileViewerPage.tsx` | Upload folders | Preview one synced file inside an iframe served by the backend |
 
-Important: the nav label and the page title disagree. The nav item is "Folders" (`frontend/src/components/AppLayout.tsx:14`) while `BrowsePage` renders the title **"MinIO Sources & Files Browser"** (`frontend/src/pages/BrowsePage.tsx:136`). `/browse` does **not** show upload folders; upload folders are only reachable through `/browse/:name`. In the reverse direction, `/browse/:name` does not browse MinIO buckets.
+The nav label and the page title agree since **2026-09-23**: both read **Folders**. Before that the title was "MinIO Sources & Files Browser" while the breadcrumb read "Folders / Sources", so one page carried three names. `/browse` does **not** show upload folders; upload folders are only reachable through `/browse/:name`. In the reverse direction, `/browse/:name` does not browse MinIO buckets.
 
 A fourth, **component-level** browser exists — `components/Sources/FileBrowser.tsx` — which is embedded in the Sources page (`SourceDetailPage`) and in the Sources list drawer. It is not mounted on any `/browse` route. It is the only surface with folder-navigation, upload and pagination controls (sections 3.5 and 6), and since 2026-09-20 it is the **only** upload surface in the frontend.
 
@@ -48,30 +48,57 @@ Neither page runs timers unless its path is active:
 
 ### 3.1 `/browse` — BrowsePage (MinIO sources)
 
+The page was reworked on **2026-09-23**. It had used `className="table"`, a class that does not exist
+in `index.css`, so the table carried no styling and the page compensated with inline styles. It now
+uses the same `repo-table-wrap` / `repo-table` pair as every other page, and its own styles live in
+one `.folders-*` block in `index.css`.
+
 ```
 +-----------------------------------------------------------------------+
-| MinIO Sources & Files Browser            [Refresh Files][Manage Sources]|
-| breadcrumb: Overview / Folders / Sources                               |
+| Folders                                  [Refresh files][Manage sources]|
+| breadcrumb: Overview / Folders                                         |
 +-----------------------------------------------------------------------+
-| Selected MinIO Source: [ <source name> (<bucket>) - N connector(s) v ] |
-|                        Bucket: <bucket>  Total Files: N  Connectors: N |
+| Source bucket          [bucket icon] <bucket> [file] N files [srv] N c.|
+| MinIO source  [ <source name> (<bucket>) - N connectors v ]            |
 +-----------------------------------------------------------------------+
-| [ Search files by name or key... ]      Showing X of Y file(s)         |
+| Files                                          Showing 2 of 2          |
+| [search icon] [ Search by name or path... ]                            |
 | +-------------------------------------------------------------------+ |
-| | File Key / Name | Size | Last Modified |          Actions         | |
-| | <key>           | 1.2 KB | 3m ago      | Open & Visualize          | |
+| | File name v | Size v | Modified v |            ACTIONS             | |
+| | [icon] file.pdf      | 1.3 MB | 1h ago |                [ Open ]    | |
+| |        connectors/…/                    (folder, muted, truncated) | |
 | +-------------------------------------------------------------------+ |
 +-----------------------------------------------------------------------+
 ```
 
-- Header: title and description "Select an existing MinIO source bucket to browse files, open, and visualize content directly." with actions **Refresh Files** (re-calls `listSourceFiles` for the current source) and a **Manage Sources** link to `/sources` (`BrowsePage.tsx:135-154`).
-- Source selector: `<select>` of all sources returned by `GET /api/sources`; each option is `name (minio_bucket) — N connector(s)`. The first source is auto-selected (`BrowsePage.tsx:31-36`, `:180-205`). If no sources exist the page renders "No sources configured. Create a source first." instead of the selector (`:181-183`).
-- Bucket/stat strip (only when a source is selected): bucket name (falls back to the source's `minio_bucket`), total file count, connector count (`BrowsePage.tsx:207-221`).
-- Search: single text input, placeholder "Search files by name or key..." (`:211`). Filtering is a case-insensitive substring match on `file.key` only (`:87-89`). The counter reads `Showing {filtered} of {total} file(s)` (`:221`).
-- File table columns: **File Key / Name**, **Size**, **Last Modified**, **Actions** (`:234-269`). Size uses `formatSize` and time uses `formatRelativeTime` (`frontend/src/utils/format.ts:1-19`). There is no sorting control on this page.
-- Each row has a linked key (opens the viewer modal) and an **Open & Visualize** button that does the same thing (`BrowsePage.tsx:252-268`).
-- Empty/loading states: "Loading files from MinIO bucket..." and "No files found in this MinIO source bucket." (`:226-232`).
-- Errors render as an alert with `error.code: error.message` (`:156-160`).
+- Header: title **Folders** and a description in user language, with **Refresh files** (re-calls
+  `listSourceFiles` for the current source, disabled while loading) and a **Manage sources** link to
+  `/sources`.
+- Source selector: `<select className="input">` of all sources from `GET /api/sources`, each option
+  `name (minio_bucket) — N connectors`. The first source is auto-selected. With no sources the page
+  shows "No sources configured yet." and a link to `/sources`, and with the list still loading it
+  shows "Loading sources…".
+- Summary strip (only when a source is selected): bucket, file count and connector count, each with an
+  icon and the count in `strong`.
+- Search: a labelled input with `aria-label="Search files by name or path"`, an `IconSearch`
+  affordance and a clear button that appears only when the field has content. Filtering is still a
+  case-insensitive substring match on `file.key` only.
+- File table columns: **File name**, **Size**, **Modified**, **ACTIONS**.
+- **Every column sorts.** Clicking a header sorts by it and clicking again reverses the direction.
+  The `th` carries `aria-sort` (`ascending` / `descending` / `none`) and the caret is dimmed when the
+  column is inactive. Name sorts on the file name; Size numerically; Modified on the parsed
+  timestamp, with an unparseable value sorting as the epoch rather than breaking the sort.
+- **The file name leads and the folder path follows.** A MinIO key is a long path, so
+  `splitKey()` takes the last segment as the name and shows the prefix beneath it in muted, truncated
+  text with the full key on `title`. Before this, the raw key dominated the row and wrapped to two
+  lines, which pushed `1h ago` onto a second line as well.
+- Size / Modified / Actions are `white-space: nowrap` and tabular figures, so no cell wraps.
+- Each row opens the viewer: the name is a button and **Open** is a secondary button.
+- Loading renders a shimmer skeleton of four rows, and the animation is dropped under
+  `prefers-reduced-motion`. The empty state distinguishes "This bucket has no files" from "No file
+  matches that search", and the search case offers a **Clear search** action.
+- Errors render as `role="alert"` with `error.code: error.message`.
+
 
 ### 3.2 Viewer modal on `/browse`
 
@@ -79,11 +106,14 @@ Clicking a file sets `selectedFile`, resets the view mode to `preview`, and fetc
 
 The modal has a fixed overlay (click outside or the close button clears the selection), a header showing the key, bucket and byte-accurate size, three tabs, and a footer (`BrowsePage.tsx:279-474`):
 
-| Tab (label as implemented) | Content |
+| Tab | Content |
 |---|---|
-| Rendered Visualizer (line 343) | Format dispatch, see table below |
-| Raw Code / Text (line 350) | `<pre>` with `white-space: pre-wrap; word-break: break-all` containing the fetched text (`:404-408`) |
-| Metadata & Links (line 357) | Table of File Key, MinIO Bucket, File Size (formatted + raw bytes), Last Modified (raw ISO string), and a "Direct Stream URL" link to `getSourceFileContentUrl(...)` (`:367-403`) |
+| Preview | Format dispatch, see table below |
+| Raw text | `<pre>` with `white-space: pre-wrap; word-break: break-word` containing the fetched text |
+| Details | Table of File name, **Folder**, MinIO bucket, Size (formatted + raw bytes), Last modified (raw ISO string), and a "Direct link" to `getSourceFileContentUrl(...)` |
+
+The Details table gained a **Folder** row on 2026-09-23, so the split key is visible in full. Each tab
+is a button with `aria-pressed`, an icon, and an accent `border-bottom` while active.
 
 Rendered Visualizer dispatch (`BrowsePage.tsx:411-456`), keyed on the lowercased extension:
 
@@ -95,9 +125,18 @@ Rendered Visualizer dispatch (`BrowsePage.tsx:411-456`), keyed on the lowercased
 | `pdf` | `<iframe>` 60vh tall | `getSourceFileContentUrl` (`:444-451`) |
 | anything else | `MarkdownMessage content={content}` (Markdown rendering) (`:455`) | fetched text |
 
-Footer: **Download File** (anchor with `download` attribute pointing at the content URL) and **Close Visualizer** (`BrowsePage.tsx:464-472`).
+Footer: **Download** (anchor with a `download` attribute pointing at the content URL, with an
+`IconDownload`) and **Close**.
 
-Note: a stray line of JSX at `BrowsePage.tsx:336` renders a literal `Bucket: … | Size: …` text node between the header and the tab strip.
+Accessibility, added on 2026-09-23: the panel is `role="dialog"` with `aria-modal="true"` and an
+`aria-label` naming the file, focus moves into the panel on open, **Escape closes it**, background
+scroll is locked while it is up, and the close control carries `aria-label="Close the file viewer"`.
+The stray JSX text node that used to render a literal `Bucket: … | Size: …` between the header and the
+tab strip is gone.
+
+All six emoji this page used — `🔍` for search, `📄` for a file, `✕` for close, `🎨` `📝` `ℹ️` for the
+tabs, and `⬇` for download — are now SVG icons from `components/Icons.tsx`. Four were added there for
+this page: `IconEye`, `IconCode`, `IconInfo` and `IconDownload`.
 
 ### 3.3 `/browse/:name` — DirectoryPage (upload folder)
 
@@ -153,7 +192,7 @@ Note: a stray line of JSX at `BrowsePage.tsx:336` renders a literal `Bucket: …
   - **Delete** — rendered only when `allowDelete` or an `onDelete` prop is set; asks `window.confirm("Delete {key} from the bucket?")` then calls the `onDelete` prop or `deleteSourceFile` (`:181-197`).
   - When neither applies the **Actions column is omitted entirely** and rows are not focusable for deletion.
 - Who passes what (2026-09-20): the Sources detail page passes `allowUpload` and `allowDelete` only for `minio_manual` and legacy local sources; the Sources drawer does the same through `canManageFiles`. A connector bucket therefore renders Name / Size / Modified with no Actions column, and a manual bucket renders Delete but not Open & Visualize.
-- The `/browse` **BrowsePage** is a separate surface with its own "Open & Visualize" button (section 3.1). It was not changed.
+- The `/browse` **BrowsePage** is a separate surface with its own **Open** button (section 3.1). It was reworked on 2026-09-23; `FileBrowser` itself is unaffected.
 
 ---
 

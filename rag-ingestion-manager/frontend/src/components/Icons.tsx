@@ -259,4 +259,38 @@ export function IconSync({ className, size = 16 }: IconProps) { return (<svg cla
 export function IconPause({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M3.5 2h3v12h-3V2zm6 0h3v12h-3V2z" /></svg>); }
 export function IconPlay({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 2.2v11.6L13.5 8 4 2.2z" /></svg>); }
 export function IconTrash({ className, size = 16 }: IconProps) { return (<svg className={className} width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M5 1h6v1H5V1zM3 3h10v1H3V3zm1 2h8v9H4V5z" /></svg>); }
+export function IconEye({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+  );
+}
+export function IconCode({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points="16 18 22 12 16 6"></polyline>
+      <polyline points="8 6 2 12 8 18"></polyline>
+    </svg>
+  );
+}
+export function IconInfo({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="16" x2="12" y2="12"></line>
+      <line x1="12" y1="8" x2="12.01" y2="8"></line>
+    </svg>
+  );
+}
+export function IconDownload({ className, style, size = 16 }: IconProps) {
+  return (
+    <svg className={className} style={style} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+      <polyline points="7 10 12 15 17 10"></polyline>
+      <line x1="12" y1="15" x2="12" y2="3"></line>
+    </svg>
+  );
+}
 

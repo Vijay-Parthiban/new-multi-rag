@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import {
@@ -12,6 +12,77 @@ import {
 } from "../api";
 import { formatSize, formatRelativeTime, formatBytes } from "../utils/format";
 import MarkdownMessage from "../components/MarkdownMessage";
+import {
+  IconBucket,
+  IconClose,
+  IconCode,
+  IconDownload,
+  IconEye,
+  IconFile,
+  IconFolder,
+  IconInfo,
+  IconRefresh,
+  IconSearch,
+  IconServer,
+} from "../components/Icons";
+
+type SortKey = "key" | "size" | "modified";
+type SortDir = "asc" | "desc";
+
+/**
+ * A MinIO object key is a path, and the path is long. The file name leads the row and the
+ * folder follows it, so two files with the same name stay tellable apart without either
+ * one pushing the metadata columns onto a second line.
+ */
+function splitKey(key: string): { name: string; folder: string } {
+  const cut = key.lastIndexOf("/");
+  return cut === -1
+    ? { name: key, folder: "" }
+    : { name: key.slice(cut + 1), folder: key.slice(0, cut + 1) };
+}
+
+function compareFiles(a: SourceFileEntry, b: SourceFileEntry, key: SortKey): number {
+  if (key === "size") return (a.size ?? 0) - (b.size ?? 0);
+  if (key === "modified") {
+    // A missing or unparseable timestamp sorts as the epoch rather than breaking the sort.
+    return (Date.parse(a.last_modified) || 0) - (Date.parse(b.last_modified) || 0);
+  }
+  return splitKey(a.key).name.localeCompare(splitKey(b.key).name);
+}
+
+function SortHeader({
+  label,
+  sortKey,
+  sort,
+  onToggle,
+  className,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: { key: SortKey; dir: SortDir };
+  onToggle: (key: SortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      className={className}
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        className="folders-sort"
+        data-dir={active ? sort.dir : undefined}
+        onClick={() => onToggle(sortKey)}
+      >
+        {label}
+        <span className="folders-sort-caret" aria-hidden>
+          {active && sort.dir === "desc" ? "▼" : "▲"}
+        </span>
+      </button>
+    </th>
+  );
+}
 
 export default function BrowsePage() {
   const [sources, setSources] = useState<SourceRecord[]>([]);
@@ -24,10 +95,14 @@ export default function BrowsePage() {
   const [error, setError] = useState<ApiError | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "key", dir: "asc" });
   const [selectedFile, setSelectedFile] = useState<SourceFileEntry | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [viewMode, setViewMode] = useState<"preview" | "raw" | "meta">("preview");
+
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const viewerOpen = selectedFile !== null;
 
   const loadSources = useCallback(async () => {
     try {
@@ -68,6 +143,23 @@ export default function BrowsePage() {
     }
   }, [selectedSourceId, loadFiles]);
 
+  // The viewer owns its own lifetime. Depending on the file object here would re-run the
+  // effect on every unrelated render and pull focus back out of the tab strip.
+  useEffect(() => {
+    if (!viewerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedFile(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    viewerRef.current?.focus();
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [viewerOpen]);
+
   const handleOpenFile = async (file: SourceFileEntry) => {
     setSelectedFile(file);
     setViewMode("preview");
@@ -84,11 +176,20 @@ export default function BrowsePage() {
     }
   };
 
-  const filteredFiles = files.filter((f) =>
-    f.key.toLowerCase().includes(searchTerm.toLowerCase()),
-  );
+  const toggleSort = (key: SortKey) =>
+    setSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
+    );
+
+  const visibleFiles = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    const matched = term ? files.filter((f) => f.key.toLowerCase().includes(term)) : files;
+    const sorted = [...matched].sort((a, b) => compareFiles(a, b, sort.key));
+    return sort.dir === "desc" ? sorted.reverse() : sorted;
+  }, [files, searchTerm, sort]);
 
   const activeSource = sources.find((s) => s.id === selectedSourceId);
+  const connectorCount = activeSource?.connectors?.length ?? 0;
 
   // Helper renderer for CSV files into a table grid
   const renderCsvTable = (text: string) => {
@@ -99,14 +200,12 @@ export default function BrowsePage() {
     const body = rows.slice(1);
 
     return (
-      <div style={{ overflowX: "auto" }}>
-        <table className="table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+      <div className="repo-table-wrap">
+        <table className="repo-table">
           <thead>
             <tr>
               {header.map((h, idx) => (
-                <th key={idx} style={{ padding: "0.5rem", borderBottom: "2px solid var(--border)", textAlign: "left" }}>
-                  {h.trim()}
-                </th>
+                <th key={idx}>{h.trim()}</th>
               ))}
             </tr>
           </thead>
@@ -114,9 +213,7 @@ export default function BrowsePage() {
             {body.map((r, rIdx) => (
               <tr key={rIdx}>
                 {r.map((c, cIdx) => (
-                  <td key={cIdx} style={{ padding: "0.4rem 0.5rem", borderBottom: "1px solid var(--border)" }}>
-                    {c.trim()}
-                  </td>
+                  <td key={cIdx}>{c.trim()}</td>
                 ))}
               </tr>
             ))}
@@ -133,157 +230,250 @@ export default function BrowsePage() {
   return (
     <div className="page">
       <PageHeader
-        title="MinIO Sources & Files Browser"
-        description="Select an existing MinIO source bucket to browse files, open, and visualize content directly."
-        breadcrumbs={[
-          { label: "Overview", to: "/" },
-          { label: "Folders / Sources" },
-        ]}
+        title="Folders"
+        description="Browse the files in a source bucket. Open one to read it, or to see where it lives and when it last changed."
+        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Folders" }]}
         actions={
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button className="btn btn-secondary" onClick={() => selectedSourceId && loadFiles(selectedSourceId)}>
-              Refresh Files
+          <div className="page-actions">
+            <button
+              className="btn btn-secondary"
+              onClick={() => selectedSourceId && loadFiles(selectedSourceId)}
+              disabled={!selectedSourceId || loadingFiles}
+            >
+              <IconRefresh size={15} />
+              Refresh files
             </button>
             <Link to="/sources" className="btn btn-primary">
-              Manage Sources
+              Manage sources
             </Link>
           </div>
         }
       />
 
       {error && (
-        <div className="alert alert-error">
+        <div className="alert alert-error" role="alert">
           <strong>{error.code}</strong>: {error.message}
         </div>
       )}
 
-      {/* MinIO Source Selector Toolbar */}
-      <div className="panel" style={{ marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
-          <div style={{ flex: 1, minWidth: "280px" }}>
-            <label className="field-label" style={{ marginBottom: "0.3rem" }}>
-              Selected MinIO Source
-            </label>
-            {loadingSources ? (
-              <div>Loading sources...</div>
-            ) : sources.length === 0 ? (
-              <div>
-                No sources configured. <Link to="/sources">Create a source first</Link>.
-              </div>
-            ) : (
-              <select
-                className="select-input"
-                style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", border: "1px solid var(--border)" }}
-                value={selectedSourceId}
-                onChange={(e) => setSelectedSourceId(e.target.value)}
-              >
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.minio_bucket}) — {s.connectors?.length || 0} connector(s)
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
+      {/* Which bucket is open, and what is in it */}
+      <div className="panel">
+        <div className="panel-header">
+          <h2 className="panel-title">Source bucket</h2>
           {activeSource && (
-            <div style={{ display: "flex", gap: "1rem", fontSize: "0.9rem", background: "var(--bg-subtle)", padding: "0.6rem 1rem", borderRadius: "6px" }}>
-              <div>
-                <span style={{ color: "var(--muted)" }}>Bucket:</span> <strong className="mono">{bucketName || activeSource.minio_bucket}</strong>
-              </div>
-              <div>
-                <span style={{ color: "var(--muted)" }}>Total Files:</span> <strong>{files.length}</strong>
-              </div>
-              <div>
-                <span style={{ color: "var(--muted)" }}>Connectors:</span> <strong>{activeSource.connectors?.length || 0}</strong>
-              </div>
+            <div className="folders-summary">
+              <span className="folders-summary-item">
+                <IconBucket size={14} />
+                <strong className="mono">{bucketName || activeSource.minio_bucket}</strong>
+              </span>
+              <span className="folders-summary-item">
+                <IconFile size={14} />
+                <strong>{files.length}</strong> file{files.length === 1 ? "" : "s"}
+              </span>
+              <span className="folders-summary-item">
+                <IconServer size={14} />
+                <strong>{connectorCount}</strong> connector{connectorCount === 1 ? "" : "s"}
+              </span>
             </div>
+          )}
+        </div>
+
+        <div style={{ padding: "1rem 1.125rem" }}>
+          <label className="field-label" htmlFor="folders-source">
+            MinIO source
+          </label>
+
+          {loadingSources ? (
+            <p className="muted" style={{ margin: 0, fontSize: "0.875rem" }}>
+              Loading sources…
+            </p>
+          ) : sources.length === 0 ? (
+            <p className="muted" style={{ margin: 0, fontSize: "0.875rem" }}>
+              No sources configured yet.{" "}
+              <Link to="/sources" className="link-like">
+                Create a source first
+              </Link>
+              .
+            </p>
+          ) : (
+            <select
+              id="folders-source"
+              className="input"
+              value={selectedSourceId}
+              onChange={(e) => setSelectedSourceId(e.target.value)}
+            >
+              {sources.map((s) => {
+                const n = s.connectors?.length || 0;
+                return (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.minio_bucket}) — {n} connector{n === 1 ? "" : "s"}
+                  </option>
+                );
+              })}
+            </select>
           )}
         </div>
       </div>
 
-      {/* File Search & Directory Grid */}
-      <div className="panel">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <div style={{ position: "relative", flex: "1", maxWidth: "400px" }}>
-            <input
-              type="text"
-              placeholder="Search files by name or key..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="text-input"
-              style={{ width: "100%", padding: "0.5rem 0.5rem 0.5rem 2.2rem" }}
-            />
-            <span style={{ position: "absolute", left: "0.7rem", top: "0.6rem", color: "var(--muted)" }}>🔍</span>
-          </div>
+      {/* The files themselves */}
+      <div className="panel" style={{ marginTop: "1.5rem" }}>
+        <div className="panel-header">
+          <h2 className="panel-title">Files</h2>
+          {!loadingFiles && files.length > 0 && (
+            <span className="folders-count">
+              Showing {visibleFiles.length} of {files.length}
+            </span>
+          )}
+        </div>
 
-          <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-            Showing {filteredFiles.length} of {files.length} file(s)
-          </span>
+        <div className="panel-toolbar">
+          <div className="folders-toolbar">
+            <div className="folders-search">
+              <span className="folders-search-icon">
+                <IconSearch size={15} />
+              </span>
+              <input
+                id="folders-search"
+                type="search"
+                className="input"
+                placeholder="Search by name or path…"
+                aria-label="Search files by name or path"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  className="folders-search-clear"
+                  aria-label="Clear the search"
+                  onClick={() => setSearchTerm("")}
+                >
+                  <IconClose size={14} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {loadingFiles ? (
-          <div style={{ padding: "2rem", textAlign: "center", color: "var(--muted)" }}>
-            Loading files from MinIO bucket...
+          <div className="repo-table-wrap">
+            <table className="repo-table">
+              <tbody>
+                {[0, 1, 2, 3].map((i) => (
+                  <tr key={i}>
+                    <td>
+                      <div className="folders-skeleton" style={{ width: `${58 - i * 9}%` }} />
+                    </td>
+                    <td>
+                      <div className="folders-skeleton" style={{ width: "46px", marginLeft: "auto" }} />
+                    </td>
+                    <td>
+                      <div className="folders-skeleton" style={{ width: "56px", marginLeft: "auto" }} />
+                    </td>
+                    <td>
+                      <div className="folders-skeleton" style={{ width: "62px", marginLeft: "auto" }} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ) : filteredFiles.length === 0 ? (
-          <div style={{ padding: "2rem", textAlign: "center", color: "var(--muted)" }}>
-            No files found in this MinIO source bucket.
+        ) : visibleFiles.length === 0 ? (
+          <div className="folders-empty">
+            <span className="folders-empty-icon">
+              <IconFolder size={40} />
+            </span>
+            <p className="folders-empty-title">
+              {searchTerm ? "No file matches that search" : "This bucket has no files"}
+            </p>
+            <p style={{ margin: 0, fontSize: "0.8125rem", maxWidth: "46ch" }}>
+              {searchTerm
+                ? "Try a shorter term, or clear the search to see everything."
+                : "Sync the source, or pick a different one above."}
+            </p>
+            {searchTerm && (
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                style={{ marginTop: "0.5rem" }}
+                onClick={() => setSearchTerm("")}
+              >
+                Clear search
+              </button>
+            )}
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
+          <div className="repo-table-wrap">
+            <table className="repo-table">
               <thead>
-                <tr style={{ borderBottom: "2px solid var(--border)", textAlign: "left" }}>
-                  <th style={{ padding: "0.6rem" }}>File Key / Name</th>
-                  <th style={{ padding: "0.6rem" }}>Size</th>
-                  <th style={{ padding: "0.6rem" }}>Last Modified</th>
-                  <th style={{ padding: "0.6rem", textAlign: "right" }}>Actions</th>
+                <tr>
+                  <SortHeader label="File name" sortKey="key" sort={sort} onToggle={toggleSort} />
+                  <SortHeader
+                    label="Size"
+                    sortKey="size"
+                    sort={sort}
+                    onToggle={toggleSort}
+                    className="folders-col-meta"
+                  />
+                  <SortHeader
+                    label="Modified"
+                    sortKey="modified"
+                    sort={sort}
+                    onToggle={toggleSort}
+                    className="folders-col-meta"
+                  />
+                  <th className="folders-col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredFiles.map((file) => (
-                    <tr key={file.key} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "0.6rem" }}>
+                {visibleFiles.map((file) => {
+                  const { name, folder } = splitKey(file.key);
+                  return (
+                    <tr key={file.key}>
+                      <td>
+                        <div className="folders-file-cell">
+                          <span className="folders-file-icon">
+                            <IconFile size={15} />
+                          </span>
+                          <span className="folders-file-text">
+                            <button
+                              type="button"
+                              className="folders-file-name"
+                              title={file.key}
+                              onClick={() => handleOpenFile(file)}
+                            >
+                              {name}
+                            </button>
+                            {folder && <span className="folders-file-path">{folder}</span>}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="folders-col-meta">{formatSize(file.size)}</td>
+                      <td className="folders-col-meta">{formatRelativeTime(file.last_modified)}</td>
+                      <td className="folders-col-actions">
                         <button
-                          className="btn-link"
-                          onClick={() => handleOpenFile(file)}
-                          style={{ fontWeight: 600, background: "none", border: "none", color: "var(--primary)", cursor: "pointer", textDecoration: "underline" }}
-                        >
-                          📄 {file.key}
-                        </button>
-                      </td>
-                      <td style={{ padding: "0.6rem", fontSize: "0.85rem", color: "var(--muted)" }}>
-                        {formatSize(file.size)}
-                      </td>
-                      <td style={{ padding: "0.6rem", fontSize: "0.85rem", color: "var(--muted)" }}>
-                        {formatRelativeTime(file.last_modified)}
-                      </td>
-                      <td style={{ padding: "0.6rem", textAlign: "right" }}>
-                        <button
+                          type="button"
                           className="btn btn-sm btn-secondary"
                           onClick={() => handleOpenFile(file)}
                         >
-                          Open & Visualize
+                          Open
                         </button>
                       </td>
                     </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {/* File Visualizer & Content Viewer Dialog / Modal */}
+      {/* File viewer */}
       {selectedFile && (
         <div
           style={{
             position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
+            inset: 0,
             backgroundColor: "rgba(0,0,0,0.65)",
             zIndex: 1000,
             display: "flex",
@@ -294,9 +484,15 @@ export default function BrowsePage() {
           onClick={() => setSelectedFile(null)}
         >
           <div
+            ref={viewerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`File viewer: ${splitKey(selectedFile.key).name}`}
+            tabIndex={-1}
             style={{
-              backgroundColor: "var(--bg-panel, #fff)",
-              borderRadius: "10px",
+              backgroundColor: "var(--bg-default)",
+              borderRadius: "12px",
+              border: "1px solid var(--border-default)",
               width: "100%",
               maxWidth: "900px",
               maxHeight: "85vh",
@@ -311,82 +507,126 @@ export default function BrowsePage() {
             <div
               style={{
                 padding: "1rem 1.5rem",
-                borderBottom: "1px solid var(--border)",
+                borderBottom: "1px solid var(--border-muted)",
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: "flex-start",
+                gap: "1rem",
                 background: "var(--bg-subtle)",
               }}
             >
-              <div>
-                <h3 style={{ margin: 0, fontSize: "1.1rem" }}>📄 {selectedFile.key}</h3>
-                <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
-                  Bucket: <span className="mono">{bucketName}</span> | Size: {formatBytes(selectedFile.size)}
+              <div style={{ minWidth: 0 }}>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: "1.05rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.45rem",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={selectedFile.key}
+                >
+                  <IconFile size={16} />
+                  {splitKey(selectedFile.key).name}
+                </h3>
+                <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                  <span className="mono">{bucketName}</span> · {formatBytes(selectedFile.size)} ·{" "}
+                  {formatRelativeTime(selectedFile.last_modified)}
                 </span>
               </div>
               <button
+                type="button"
                 className="btn btn-sm btn-ghost"
+                aria-label="Close the file viewer"
                 onClick={() => setSelectedFile(null)}
-                style={{ fontSize: "1.2rem", cursor: "pointer" }}
+                style={{ flexShrink: 0 }}
               >
-                ✕
+                <IconClose size={16} />
               </button>
             </div>
 
-                  Bucket: <span className="mono">{bucketName}</span> | Size: {formatSize(selectedFile.size)}
-            <div style={{ display: "flex", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", padding: "0 1.5rem" }}>
+            {/* View mode */}
+            <div className="folders-viewer-tabs">
               <button
-                className={`btn btn-sm btn-ghost${viewMode === "preview" ? " active" : ""}`}
+                type="button"
+                className="folders-viewer-tab"
+                aria-pressed={viewMode === "preview"}
                 onClick={() => setViewMode("preview")}
-                style={{ borderRadius: 0, borderBottom: viewMode === "preview" ? "2px solid var(--primary)" : "none" }}
               >
-                🎨 Rendered Visualizer
+                <IconEye size={14} />
+                Preview
               </button>
               <button
-                className={`btn btn-sm btn-ghost${viewMode === "raw" ? " active" : ""}`}
+                type="button"
+                className="folders-viewer-tab"
+                aria-pressed={viewMode === "raw"}
                 onClick={() => setViewMode("raw")}
-                style={{ borderRadius: 0, borderBottom: viewMode === "raw" ? "2px solid var(--primary)" : "none" }}
               >
-                📝 Raw Code / Text
+                <IconCode size={14} />
+                Raw text
               </button>
               <button
-                className={`btn btn-sm btn-ghost${viewMode === "meta" ? " active" : ""}`}
+                type="button"
+                className="folders-viewer-tab"
+                aria-pressed={viewMode === "meta"}
                 onClick={() => setViewMode("meta")}
-                style={{ borderRadius: 0, borderBottom: viewMode === "meta" ? "2px solid var(--primary)" : "none" }}
               >
-                ℹ️ Metadata & Links
+                <IconInfo size={14} />
+                Details
               </button>
             </div>
 
-            {/* Body Content */}
+            {/* Body */}
             <div style={{ padding: "1.5rem", overflowY: "auto", flex: 1 }}>
               {loadingContent ? (
-                <div style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>
-                  Fetching file object from MinIO...
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                  {[92, 78, 85, 60].map((w, i) => (
+                    <div key={i} className="folders-skeleton" style={{ width: `${w}%` }} />
+                  ))}
                 </div>
               ) : viewMode === "meta" ? (
-                <div>
-                  <h4 style={{ marginTop: 0 }}>File Details</h4>
-                  <table className="table" style={{ width: "100%", fontSize: "0.9rem" }}>
+                <div className="repo-table-wrap">
+                  <table className="repo-table">
                     <tbody>
                       <tr>
-                        <td><strong>File Key</strong></td>
-                        <td className="mono">{selectedFile.key}</td>
+                        <td>
+                          <strong>File name</strong>
+                        </td>
+                        <td className="mono">{splitKey(selectedFile.key).name}</td>
                       </tr>
                       <tr>
-                        <td><strong>MinIO Bucket</strong></td>
+                        <td>
+                          <strong>Folder</strong>
+                        </td>
+                        <td className="mono">{splitKey(selectedFile.key).folder || "—"}</td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <strong>MinIO bucket</strong>
+                        </td>
                         <td className="mono">{bucketName}</td>
                       </tr>
                       <tr>
-                        <td><strong>File Size</strong></td>
-                        <td>{formatBytes(selectedFile.size)} ({selectedFile.size} bytes)</td>
+                        <td>
+                          <strong>Size</strong>
+                        </td>
+                        <td>
+                          {formatBytes(selectedFile.size)} ({selectedFile.size} bytes)
+                        </td>
                       </tr>
                       <tr>
-                        <td><strong>Last Modified</strong></td>
+                        <td>
+                          <strong>Last modified</strong>
+                        </td>
                         <td>{selectedFile.last_modified}</td>
                       </tr>
                       <tr>
-                        <td><strong>Direct Stream URL</strong></td>
+                        <td>
+                          <strong>Direct link</strong>
+                        </td>
                         <td>
                           <a
                             href={getSourceFileContentUrl(selectedSourceId, selectedFile.key)}
@@ -394,7 +634,7 @@ export default function BrowsePage() {
                             rel="noreferrer"
                             className="link-like"
                           >
-                            Open raw endpoint ↗
+                            Open the raw endpoint
                           </a>
                         </td>
                       </tr>
@@ -402,11 +642,21 @@ export default function BrowsePage() {
                   </table>
                 </div>
               ) : viewMode === "raw" ? (
-                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-all", background: "var(--code-bg, #f4f4f4)", padding: "1rem", borderRadius: "6px", fontSize: "0.85rem" }}>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    background: "var(--bg-inset)",
+                    padding: "1rem",
+                    borderRadius: "8px",
+                    fontSize: "0.85rem",
+                    margin: 0,
+                  }}
+                >
                   {fileContent}
                 </pre>
               ) : (
-                /* Rendered Preview Visualizer */
+                /* Preview */
                 <div>
                   {(() => {
                     const ext = getFileExtension(selectedFile.key);
@@ -417,8 +667,8 @@ export default function BrowsePage() {
                         <div style={{ textAlign: "center" }}>
                           <img
                             src={getSourceFileContentUrl(selectedSourceId, selectedFile.key)}
-                            alt={selectedFile.key}
-                            style={{ maxWidth: "100%", maxHeight: "60vh", borderRadius: "6px" }}
+                            alt={splitKey(selectedFile.key).name}
+                            style={{ maxWidth: "100%", maxHeight: "60vh", borderRadius: "8px" }}
                           />
                         </div>
                       );
@@ -432,7 +682,16 @@ export default function BrowsePage() {
                       try {
                         const parsed = JSON.parse(content);
                         return (
-                          <pre style={{ background: "var(--code-bg, #f4f4f4)", padding: "1rem", borderRadius: "6px", fontSize: "0.85rem", overflowX: "auto" }}>
+                          <pre
+                            style={{
+                              background: "var(--bg-inset)",
+                              padding: "1rem",
+                              borderRadius: "8px",
+                              fontSize: "0.85rem",
+                              overflowX: "auto",
+                              margin: 0,
+                            }}
+                          >
                             {JSON.stringify(parsed, null, 2)}
                           </pre>
                         );
@@ -445,7 +704,7 @@ export default function BrowsePage() {
                       return (
                         <iframe
                           src={getSourceFileContentUrl(selectedSourceId, selectedFile.key)}
-                          title={selectedFile.key}
+                          title={splitKey(selectedFile.key).name}
                           style={{ width: "100%", height: "60vh", border: "none" }}
                         />
                       );
@@ -459,16 +718,28 @@ export default function BrowsePage() {
             </div>
 
             {/* Footer */}
-            <div style={{ padding: "0.8rem 1.5rem", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", background: "var(--bg-subtle)" }}>
+            <div
+              style={{
+                padding: "0.8rem 1.5rem",
+                borderTop: "1px solid var(--border-muted)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "1rem",
+                background: "var(--bg-subtle)",
+              }}
+            >
               <a
                 href={getSourceFileContentUrl(selectedSourceId, selectedFile.key)}
-                download={selectedFile.key.split("/").pop()}
+                download={splitKey(selectedFile.key).name}
                 className="btn btn-sm btn-secondary"
+                style={{ gap: "0.4rem" }}
               >
-                ⬇ Download File
+                <IconDownload size={14} />
+                Download
               </a>
-              <button className="btn btn-sm btn-primary" onClick={() => setSelectedFile(null)}>
-                Close Visualizer
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setSelectedFile(null)}>
+                Close
               </button>
             </div>
           </div>

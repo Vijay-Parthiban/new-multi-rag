@@ -1,6 +1,6 @@
 # 15 — Assistant Session Memory
 
-**Last updated:** 2026-09-22
+**Last updated:** 2026-09-23
 
 **Applies to:** any assistant whose Knowledge Product has the Redis destination enabled.
 **Backend:** `libs/rag-core/src/rag_core/session_memory.py`, `libs/rag-core/src/rag_core/assistant.py`,
@@ -24,6 +24,8 @@ It is **not**:
 - A semantic cache. `cache_redisvl` also stores chunk payloads for retrieval. Session keys are a separate
   namespace, so a cache purge cannot wipe a conversation and an ended session cannot drop a chunk.
 - Durable. The session expires on its own TTL, and ending it is one `DEL`.
+- Self-sufficient. Replaying the turns is only half of it: the system prompt must also **permit** the
+  model to use them, or the grounded answer wins over the remembered one. See section 3.
 
 ## 2. The gate
 
@@ -71,6 +73,33 @@ user:      Context:
 
            Question: <the standalone question>
 ```
+
+### The system message must allow the conversation
+
+Replaying the turns is not enough on its own. Until **2026-09-23** the built-in RAG system prompt said
+*"Answer the user's question using ONLY the numbered context passages provided in the user message"*,
+and *"If no context passages … contain information relevant to the question, respond clearly that you
+could not find relevant sources."*
+
+That rule beat the conversation. The model could see the earlier turns, but the same system message
+forbade using them as a source, so a question **about the conversation** — "what did I just ask?" —
+was answered as a search over the documents, and refused. The retrieval was right, the memory was
+right, and the answer was still wrong.
+
+`build_rag_prompt` now appends a clause to the system message **when and only when history is
+present**: the messages before the final user message are earlier turns, they may be used to understand
+the question and to answer anything asked about the conversation, and the passages remain the only
+source for facts about the documents. A stateless turn gets the system message byte for byte as before.
+
+| Ask | Before | After |
+|---|---|---|
+| "What did I just ask you?" | *"I couldn't find any of the provided passages…"* | *"You just asked "What is the Code of Conduct?"."* |
+| "And what did you answer?" | refused | *"In our previous response I explained that…"* |
+
+Verified on a live session in both trace modes: two turns, then the follow-up recalls the first
+question, and a third turn recalls the first answer.
+
+---
 
 ## 4. Endpoints
 

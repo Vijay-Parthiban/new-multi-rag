@@ -1,6 +1,6 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-23
 
 ## 1. Executive Summary & Page Purpose
 
@@ -66,6 +66,13 @@ Field notes:
   the old strategy may need a store the new product does not have. When the product serves no strategy, the
   select is disabled and the hint reads
   `This product has no enabled retrieval destination. Enable one in the Ingestion Manager.`
+
+  **With no product chosen yet the list is empty by design**, and until 2026-09-23 that was also
+  unexplained: the select was disabled, showed one `Select a strategy…` option, and said nothing further.
+  A user who opened the form and reached for the strategy first saw an empty control and reasonably
+  reported it as a bug. The placeholder now reads **`Choose a Knowledge Product first`**, and the hint
+  explains that the product decides the list and that Hybrid needs both the vector and the keyword store.
+  No strategy was ever lost: each product in the live database yields all four the moment it is selected.
 - **Chat Model.** The list comes from
   `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`.
 - **Prompt Template.** The template is the system message. It is not a text pass-through: the retrieved
@@ -347,6 +354,16 @@ the header alert shows it.
 
 ## 10. Notes and Limits
 
+- **The dialog's first focus is mounted once, not per render.** Until 2026-09-23 the shell had a single
+  effect doing three jobs — the Escape listener, the body scroll lock, and the initial focus — with
+  `[onClose, initialFocus]` as its dependencies. Every caller passes an inline arrow for `onClose`, for
+  example `onClose={() => setShowCreate(false)}`, so its identity changed on every parent render. The
+  effect re-ran on each render and called `.focus()` on the first field again, which threw the cursor out
+  of `Description` and back into `Internal name` on every keystroke. The edit dialog had the same fault
+  through `closeEdit`. The effect is now split: the scroll lock and the first focus depend on
+  `[initialFocus]` alone, a stable ref, and the Escape listener keeps `[onClose]`.
+- **With no Knowledge Product selected the strategy list is empty, and now says why.** The placeholder
+  reads `Choose a Knowledge Product first`. See section 2.
 - **An existing pipeline stays editable.** The modal patches every assistant field, so a user can change the
   product, the strategy, the chat model, the template or the guardrails config later.
 - **Clearing a select detaches it.** The edit submit sends `null` for an empty `Prompt Template` or
