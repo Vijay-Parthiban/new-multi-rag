@@ -1,0 +1,68 @@
+# The build context for both backends is the repository root:
+#
+#     rag-ingestion-manager/docker-compose.yaml   context: ..
+#     rag-retrieval-chat-manager/backend/...      context: ../..
+#
+# Docker sends the whole context to the daemon before it runs a single COPY. With no
+# ignore file that means every node_modules tree, every virtualenv and the whole .git
+# history go over the wire on every build, which is why builds appear to hang.
+#
+# The two Dockerfiles copy only these paths, so nothing below removes what they need:
+#
+#   shared-libs/            shared-contracts/
+#   rag-ingestion-manager/backend/{pyproject.toml,alembic.ini,alembic,apps,src,scripts}
+#   rag-retrieval-chat-manager/backend/{pyproject.toml,uv.lock,libs,apps,scripts}
+#
+# Both projects are kept: one context serves both images, so excluding either backend
+# would break the other's build. Nothing here excludes a source directory.
+
+# Dependencies and environments. The large ones.
+**/node_modules
+**/.venv
+**/venv
+**/site-packages
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python build output
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/dist
+.eggs
+
+# Test and type-checker caches
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.tox
+**/.coverage
+**/htmlcov
+
+# Frontend build output
+**/.vite
+**/.next
+**/.turbo
+
+# Editor and OS noise
+.idea
+.vscode
+*.swp
+.DS_Store
+Thumbs.db
+
+# Runtime data. The databases are mounted volumes, never image content.
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+
+# Documentation. Not read by either image.
+vijay-docs
+
+# The docker meta-files themselves
+.dockerignore
+**/docker-compose*.yaml

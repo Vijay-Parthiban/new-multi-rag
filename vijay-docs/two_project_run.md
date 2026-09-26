@@ -527,6 +527,125 @@ docker compose ps
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8001/chat/stats?limit=1
 ```
 
+### Why the two compose files are not the same size
+
+The ingestion compose declares **15 services** (18 with `extras`); the retrieval compose declares **4**.
+That is not an oversight and not a half-finished migration. The two files answer different questions.
+
+The ingestion project is **the producer and the owner of the data tier**. Its compose bundles four
+separate responsibilities into one file:
+
+| What | Services | Why it is here |
+|---|---|---|
+| The ingestion application | `api`, `worker`, `pathway-worker`, `web`, `migrate` | It is the project's own code |
+| The shared data tier | `postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector` | The data is **born** here: MinIO holds the bytes, Qdrant the dense vectors, OpenSearch the BM25 index, Postgres the metadata, Redis the job queues and session memory |
+| The web scraper, a separate application | `scraper-api`, `scraper-worker`, `scraper-migrate` | It fetches pages **into** the ingestion pipeline, so it sits on the producer side. Its own image, its own `.env.scraper`, its own `crawler-db-migrate` |
+| The guardrails service, a second separate application | `guardrails-service` | Built from `../guardrails-service`, a different folder. Both projects call it over HTTP on 18000 |
+
+The retrieval project is **a pure consumer**. Its compose declares only its own four services and owns
+no infrastructure at all. Its header says so: *"This project has no data tier of its own. It reads the
+stores the ingestion project writes."* It resolves `postgres`, `redis` and `qdrant` by name over the
+`rag-shared` network, and reaches everything else through `host.docker.internal`.
+
+**One owner for the data tier is required, not preferred.** There is one Postgres, one Redis and one
+Qdrant on 6333. If both composes declared them, two servers would race for port 5432 and the data would
+split into two copies that silently disagree. Exactly one project must own them, and the ingestion
+project is the one that writes to them.
+
+The port counts show the same asymmetry:
+
+| | Ingestion | Retrieval |
+|---|---|---|
+| Published host ports | **10** — 8007, 5173, 5432, 6379, 6333, 9000, 9001, 9200, 9600, 4317, 4318, 8000, 18000 | **2** — 8001, 5174 |
+| Docker images built | 3 Dockerfiles (`backend`, `frontend`, `../guardrails-service`) plus 1 pulled (`tharun0511/web-scrapper-wokspace`) | 2 Dockerfiles (`backend`, `frontend`), nothing pulled |
+| Exit-on-complete jobs | `migrate`, `scraper-migrate` | `migrate` |
+
+One line each: the ingestion project is the kitchen and the building's utility room. The retrieval
+project is a dining room that plugs into the utilities.
+
+The whole topology, as declared:
+
+```mermaid
+graph TB
+  subgraph SHARED["rag-shared network"]
+    subgraph ING["project: rag-ingestion-manager"]
+      IAPI["api :8007"]
+      IWK["worker"]
+      IPW["pathway-worker"]
+      IWEB["web :5173"]
+      IMIG["migrate (exits 0)"]
+      SAPI["scraper-api :8000"]
+      SWK["scraper-worker"]
+      SMIG["scraper-migrate (exits 0)"]
+      GRD["guardrails-service :18000"]
+      subgraph TIER["data tier — owned here"]
+        PG["postgres :5432"]
+        RD["redis :6379"]
+        QD["qdrant :6333"]
+        MN["minio :9000"]
+        OS["opensearch :9200"]
+        OT["otel-collector :4318"]
+      end
+    end
+    subgraph RET["project: backend"]
+      RMIG["migrate (exits 0)"]
+      RAPI["rag-api :8001"]
+      EWK["eval-worker"]
+      RWEB["web :5174"]
+    end
+  end
+  subgraph OUT["outside both projects, on the host"]
+    LL["litellm :4000"]
+    LDB["litellm_db :5433"]
+    KQ["qdrant :6335 (knowledge products)"]
+  end
+  RAPI -->|"reads by name"| PG
+  RAPI -->|"reads by name"| RD
+  RAPI -->|"reads by name"| QD
+  RAPI -->|"HTTP, pipeline by slug"| IAPI
+  RAPI -->|"host.docker.internal"| LL
+  RAPI -->|"host.docker.internal"| KQ
+  RAPI -->|"host.docker.internal"| GRD
+  IAPI --> PG
+  IWK --> PG
+  IWK --> QD
+  IWK --> OS
+  IWK --> MN
+  IWK --> RD
+```
+
+Note the one asymmetry in the diagram: **the retrieval API reads the Qdrant on 6335, not the 6333 one
+that the ingestion compose declares.** Two separate Qdrant instances are in play and they are not
+interchangeable:
+
+| Variable | Value | Holds |
+|---|---|---|
+| `QDRANT_URL` | `http://qdrant:6333` | The ingestion project's own store, on the `rag-shared` network |
+| `QDRANT_KP_URL` | `http://host.docker.internal:6335` | The **knowledge-product** vectors, on the host. This is what chat search reads |
+
+`libs/retrieval-core/src/retrieval_core/kp_retriever.py` resolves this as
+`qdrant_kp_url or qdrant_url`. So if `QDRANT_KP_URL` is **empty**, search silently falls back to the
+6333 instance, finds nothing, and the assistant answers with no context and no error. The retrieval
+`.env` sets `QDRANT_KP_URL` correctly, so the fallback never fires — but that is the one variable to
+check first if retrieval returns nothing.
+
+### Verify the cross-project contract
+
+The retrieval service proxies the ingestion service's knowledge-product API, and FastAPI filters that
+response through `shared_contracts.knowledge.KnowledgeProductRead`. **Any field the model does not
+declare is dropped before the frontend sees it, with no warning.** This has already happened once: the
+model declared 19 of the 29 fields the ingestion serializer writes, so the Knowledge Store page showed
+`Linked RAG Pipelines (0)` for every product.
+
+```bash
+cd rag-retrieval-chat-manager/backend
+uv run python scripts/e2e_kp_contract.py
+```
+
+It compares the direct ingestion payload with the proxied one **recursively**, at every nesting level,
+and names every lost field. It asserts nothing by hand, so a field added to either side later is caught
+here instead of in the browser. Run it after any change to the knowledge-product serializer.
+
 ### Verify both projects
 
 ```bash
@@ -616,6 +735,43 @@ workdir is the application directory in both layouts.
 The ingestion Dockerfile uses pip rather than uv, and pip does not read `[tool.uv.sources]` at all —
 that is a uv-only extension. So it installs `platform-common` and `shared-contracts` from source
 **before** the editable install, which then finds both requirements already satisfied.
+
+### The repository root needs a `.dockerignore`
+
+Both backend builds use the repository root as their context (`context: ..` and `context: ../..`).
+Docker sends the **whole context to the daemon before it runs a single `COPY`**, and this repository is
+**1.6 GB** — three `node_modules` trees, several virtualenvs, the whole `.git` history and 168 MB of
+`otel` data. Without an ignore file every build transfers all of it, the build appears to hang, and the
+image never appears.
+
+```
+1.6G   .                        <- the context, before .dockerignore
+ 712M  rag-retrieval-chat-manager
+ 616M  rag-ingestion-manager
+ 168M  otel
+```
+
+The root `.dockerignore` cuts that to the source the two Dockerfiles actually copy. If a build seems to
+hang with no output, check that the file is still present. It excludes `node_modules`, `.venv`, `.git`,
+`__pycache__`, `dist`, caches and `vijay-docs` — and nothing else. It deliberately does **not** exclude
+either backend or anything named `build` or `env`, because one context serves both images and a source
+directory with either name would silently vanish from the build.
+
+### Check the runtime dependencies from inside the container
+
+Settings can look right in the compose file and still be wrong inside the container, because
+`host.docker.internal` resolves differently from the host and a service name is only valid on the shared
+network. This probe reads every URL from the **resolved settings** and connects for real:
+
+```bash
+cd rag-retrieval-chat-manager/backend
+docker cp scripts/check_deps.py backend-rag-api-1:/tmp/check_deps.py
+docker exec backend-rag-api-1 python /tmp/check_deps.py
+```
+
+Expect 8 checks and 0 failures: the ingestion API, the LiteLLM proxy, the guardrails service, OpenSearch
+over HTTP, and a TCP connect to Postgres, Redis, the knowledge-product Qdrant on 6335 and the OTel
+collector. A `401` from LiteLLM is a pass — it proves the proxy is reachable and only wants a key.
 
 ### Which env file is authoritative
 

@@ -78,7 +78,14 @@ def search_lexical_index(
         "size": limit,
         "query": {"multi_match": {"query": query_text, "fields": _SEARCH_FIELDS}},
     }
-    response = httpx.post(url, json=body, auth=_auth(settings), timeout=_TIMEOUT_S)
+    try:
+        response = httpx.post(url, json=body, auth=_auth(settings), timeout=_TIMEOUT_S)
+    except httpx.TimeoutException:
+        # The first query against a cold index can exceed the timeout while the
+        # shard warms up. No hits is the honest answer, and it degrades to the
+        # other retrieval paths instead of failing the whole chat request.
+        logger.warning("lexical_search_timeout index=%s limit=%s", index_name, limit)
+        return []
     if response.status_code == 404:
         logger.info("lexical_index_missing index=%s", index_name)
         return []
