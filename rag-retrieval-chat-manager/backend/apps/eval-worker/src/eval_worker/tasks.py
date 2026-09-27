@@ -213,9 +213,15 @@ def run_evaluation(run_id: str) -> None:
                     expected_sources=item["expected_sources"],
                     label=item["metadata"].get("label"),
                     category=item["metadata"].get("category"),
+                    metadata=item["metadata"],
                 )
                 result = evaluator.evaluate_item(
-                    golden, config, k_values, strategy=kp_strategy, stores=kp_stores
+                    golden,
+                    config,
+                    k_values,
+                    strategy=kp_strategy,
+                    stores=kp_stores,
+                    judge_model=config_data.get("judge_model"),
                 )
 
                 with session_factory() as db:

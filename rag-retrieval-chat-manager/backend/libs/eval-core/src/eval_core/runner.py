@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from generation_core import Generator
@@ -11,6 +11,7 @@ from rag_shared.types import KpStores, RerankedChunk, RetrievedChunk
 from reranker_core import build_reranker
 from retrieval_core import Retriever
 
+from eval_core.custom_metrics import compute_custom_metrics
 from eval_core.ragas_client import compute_generation_ragas_metrics
 from eval_core.rerank_metrics import compute_rerank_metrics
 from eval_core.retrieval_metrics import compute_retrieval_metrics
@@ -24,6 +25,8 @@ class GoldenItem:
     expected_sources: list[Any]
     label: str | None = None
     category: str | None = None
+    # The CSV's extra columns. They drive the custom metrics and the per-category roll-up.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def parsed_sources(self) -> list[ExpectedSource]:
         return parse_expected_sources(self.expected_sources)
@@ -54,6 +57,7 @@ class GoldenItemEvaluator:
         *,
         strategy: str | None = None,
         stores: KpStores | None = None,
+        judge_model: str | None = None,
     ) -> EvalItemResult:
         k_values = k_values or [1, 3, 5, 10]
         expected = item.parsed_sources()
@@ -102,7 +106,15 @@ class GoldenItemEvaluator:
             answer=generation.answer,
             contexts=contexts,
             ground_truth=item.ground_truth_answer,
+            judge_model=judge_model,
         )
+        # The dataset's own checks ride along in the same block, so the aggregate picks them
+        # up with no new column and no new stage. A key is present only when the row carried
+        # the input for it, so each mean covers exactly the rows that asked for it.
+        generation_metrics = {
+            **generation_metrics,
+            **compute_custom_metrics(item.metadata, generation.answer),
+        }
 
         return EvalItemResult(
             retrieved_chunks=retrieved,

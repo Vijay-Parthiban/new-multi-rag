@@ -1,6 +1,6 @@
 # 13 — Golden Dataset Evaluation Requirements
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-27
 
 Implementation contract for offline golden-dataset evaluation in `rag-retrieval-chat-manager`. Every field below is taken from `eval_core/dataset_schema.py`, `routes/evaluate.py`, `eval_core/runner.py` and the evaluation repositories.
 
@@ -58,17 +58,35 @@ Field mapping and `source` normalization:
 * In the legacy form (`question` present, `query` absent), `expected_sources` is passed through but a list of plain strings is still converted to `{name}` objects.
 * An item-level `category` key is **not** a schema field and is not copied anywhere. Category and label must be nested under `metadata` — the runner reads `metadata.label` and `metadata.category`, and the item drill-down API returns `metadata.category` as `category`.
 
-### 1.3 Upload & Import API
+### 1.3 Accepted CSV Format
+
+`POST /evaluate/datasets/upload` accepts a `.csv` file as well as `.json`. The reference file is `rag-retrieval-chat-manager/backend/tcs_policies_golden_dataset.csv` (22 rows).
+
+Column mapping (header lookup is case-insensitive and ignores spaces):
+
+| CSV column | Maps to | Notes |
+|---|---|---|
+| `question` | `question` | required. A file without this column is rejected with `422` |
+| `ground_truth_answer` | `ground_truth_answer` (the RAGAS `reference`) | optional |
+| `source_doc_id` | `expected_sources` | semicolon-separated list. `N/A`, `NONE` or `-` means no source |
+| `reference_context` | the gold context | a value that starts with `NONE` is treated as absent and dropped |
+| every other column (`id`, `question_type`, `expected_behavior`, `keypoints_covered`, `difficulty`, `notes`) | `metadata` | stored under its own key in the item `metadata` JSONB |
+
+Because any unknown column lands in `metadata` JSONB, adding a CSV column needs **no** migration.
+
+A CSV carries no `name` field. The upload uses the filename stem as the dataset name, and the optional `?name=` query parameter overrides it. A JSON upload carries its own name and ignores `?name=`.
+
+### 1.4 Upload & Import API
 
 | Method | Path | Request | Response | Errors |
 |---|---|---|---|---|
 | `POST` | `/evaluate/datasets` | JSON body = dataset payload; query `replace` (bool, default false) | `{dataset_id, name, item_count, replaced}` | `409` duplicate name without replace; `422` schema errors |
-| `POST` | `/evaluate/datasets/upload` | multipart form, field `file`; query `replace` (bool, default false) | same as above | `422 file must be a .json file`; `422 uploaded file is empty`; `422 Invalid dataset JSON: <detail>`; `409` duplicate; `422` JSON body that is not an object |
+| `POST` | `/evaluate/datasets/upload` | multipart form, field `file` (`.json` or `.csv`); query `replace` (bool, default false), `name` (string, CSV only) | same as above | `422 file must be a .json or .csv file`; `422 uploaded file is empty`; `422 Invalid dataset JSON: <detail>`; `422` a CSV with no `question` column; `409` duplicate; `422` JSON body that is not an object |
 | `GET` | `/evaluate/datasets?limit=N` | `limit` 1–100, default 50 | `{limit, count, items[{dataset_id, name, description, item_count, created_at}]}` | `422 limit must be between 1 and 100` |
 | `GET` | `/evaluate/datasets/{dataset_id}` | — | one dataset summary | `404 Dataset not found` |
 | `DELETE` | `/evaluate/datasets/{dataset_id}` | — | `204`, no body | `404 Dataset not found` |
 
-Uploads must end in `.json` (case-insensitive) and decode as UTF-8; the whole dataset is replaced when `replace=true` (existing dataset, its runs and run items are deleted first).
+Uploads must end in `.json` or `.csv` (case-insensitive) and decode as UTF-8; the whole dataset is replaced when `replace=true` (existing dataset, its runs and run items are deleted first).
 
 ---
 
@@ -83,6 +101,10 @@ Uploads must end in `.json` (case-insensitive) and decode as UTF-8; the whole da
   * **`mrr`**: `1 / rank` of the first relevant chunk over the full retrieved list.
 * **Reranking** (`compute_rerank_metrics`, same `k = 5` for NDCG): `mrr_before`, `mrr_after`, `mrr` (alias of `mrr_after`), `mrr_delta`, `kendall_tau` (order agreement between the pre- and post-rerank lists, `None` when fewer than two chunk ids are shared) and `ndcg`.
 * **LLM metrics (Generation)** — RAGAS via the LiteLLM judge: `faithfulness` against the post-rerank contexts, `answer_relevancy` from question + answer, and — when `ground_truth_answer` is non-empty — `answer_correctness` (also stored as `accuracy`, same value).
+* **Custom metrics (Generation)** — two metrics that RAGAS does not provide, computed in-process with no judge model and merged into the same `generation_metrics` block:
+  * **`behavior_match`**: `1.0` when the answer behaves as the row's `expected_behavior` says it should. A `refuse_or_abstain` row wants an abstention; every other row wants a real answer.
+  * **`keypoint_coverage`**: the fraction of `keypoints_covered` present in the answer. The runner matches a `label=value` entry on the value side, and a comma-separated value needs every part. Rows whose keypoints are bare tags (`mode1;mode2`) are not measurable, so the key is **absent** rather than `0.0`. This keeps a row that was never measurable out of the mean.
+* **Judge model** — `EvalRunConfig.judge_model` overrides the RAGAS judge for one run. `null` or empty means the service default `settings.ragas_judge_model`. The run stores the value in `evaluation_runs.config`. The same judge across two runs is what makes their scores comparable.
 * `k_values` is accepted by both metric functions but not used; the `self_corrective_max_loops` / `rag_mode` run settings are not applied by the runner.
 
 ---
@@ -94,7 +116,8 @@ Uploads must end in `.json` (case-insensitive) and decode as UTF-8; the whole da
   * `retrieval`: `mean_precision`, `mean_recall`, `mean_hit`, `mean_mrr`.
   * `reranker`: `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`, `mean_ndcg`, `mean_kendall_tau`.
   * `generation`: `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness`.
-  * Runs without completed items return empty stage blocks with `item_count: 0`. There is no per-category aggregation in the repository.
+  * Runs without completed items return empty stage blocks with `item_count: 0`.
+  * **Per-category breakdown**: the payload also carries a `categories` block keyed by the row's `question_type` from `metadata` (falling back to `metadata.category`). Each entry holds its own `retrieval` / `reranker` / `generation` blocks of `mean_*` values plus `item_count`. One overall mean hides a strategy that is strong on single-hop lookups and weak on multi-hop reasoning.
 * **Pagination helpers**: `count_runs_for_dataset(dataset_id)` and `list_runs_for_dataset(dataset_id, skip, limit)` (newest first); `get_run_progress(run_id)` returns `items_total` (dataset size), `items_completed` and `items_failed`.
 * **Item status flow**: `pending` on creation → `completed` via `save_run_item_result` or `failed` via `fail_run_item` (message stored in `error_message`); the run itself is `queued` → `running` → `completed` (with aggregates) or `failed` (with `aggregate_metrics = {"error": ...}`).
 
@@ -130,6 +153,7 @@ Run/item response keys:
 | `rerank_model` | `null` |
 | `top_k` | `5` |
 | `generation_model` | `null` |
+| `judge_model` | `null` — the RAGAS judge for this run. Empty uses `settings.ragas_judge_model` |
 | `k_values` | `[1, 3, 5, 10]` (accepted; not used by the metric functions) |
 | `collection` | `null` |
 | `embedding_model` | `null` |
@@ -146,13 +170,13 @@ Worker/runner drift in the current tree: `run_evaluation` calls `evaluator.evalu
 
 ## 5. Frontend (`rag-retrieval-chat-manager/frontend`)
 
-* **API client (`api.ts`)**: golden-dataset calls go through `ragFetch` (`RAG_API_URL`, default `http://localhost:8001`). `ragFetch` detects `FormData` and deletes any `Content-Type` header before the request so the browser can set the multipart boundary; `uploadGoldenDataset` appends the file as the `file` form field and only appends `?replace=true` when requested.
+* **API client (`api.ts`)**: golden-dataset calls go through `ragFetch` (`RAG_API_URL`, default `http://localhost:8001`). `ragFetch` detects `FormData` and deletes any `Content-Type` header before the request so the browser can set the multipart boundary; `uploadGoldenDataset` appends the file as the `file` form field and only appends `?replace=true` when requested. The control accepts a `.json` or `.csv` file. For a CSV it can also send `?name=`.
 * **Page**: `GoldenEvaluationsPage.tsx` is mounted in `components/AppLayout.tsx` (persistent page) with the navigation item `Offline Evaluation` at `/golden-evaluations`. `App.tsx` only contains legacy `/directories*` redirects and the catch-all `AppLayout`; no route is registered there for this page.
-* **Dataset panel**: lists datasets with `listGoldenDatasets()` (item counts shown), selects one on click, uploads via `uploadGoldenDataset(file, replace)`, and deletes via `deleteGoldenDataset(id)`.
-* **New Run panel**: loads pipeline configurations with `listPipelines()` and, on submit, maps the selected pipeline's `qdrant_collection` → `collection`, `embedding_model` → `embedding_model`, `sparse_embedding_model` → `sparse_embedding_model`; plus retrieval mode (`dense` / `sparse` / `hybrid`), chunk limit (`retrieve_limit`), a Rerank checkbox (`rerank_enabled`), and the RAG-mode controls: Strategy `Manual Selection` / `Intelligent (Auto)`, RAG Mode (`normal` / `self_corrective`) in manual mode, Classifier (`LLM (small model)` / `Heuristic rules`) in auto mode, and Max Loops (`1`–`5`) whenever auto mode or self-corrective is selected. With Auto mode selected the page forces `rag_mode: "normal"` and sends `router_enabled: true` plus `router_mode`; there is no generation-model or `k_values` control, so the run table only shows a generation model if the config already carries one. The selected pipeline's collection/embedding/sparse values are echoed under the selector.
+* **Dataset panel**: lists datasets with `listGoldenDatasets()` (item counts shown), selects one on click, uploads via `uploadGoldenDataset(file, replace)`, and deletes via `deleteGoldenDataset(id)`. The upload control accepts `.json` and `.csv`.
+* **New Run panel**: loads pipeline configurations with `listPipelines()` and, on submit, maps the selected pipeline's `qdrant_collection` → `collection`, `embedding_model` → `embedding_model`, `sparse_embedding_model` → `sparse_embedding_model`; plus retrieval mode (`dense` / `sparse` / `hybrid`), chunk limit (`retrieve_limit`), a Rerank checkbox (`rerank_enabled`), a judge-model dropdown (`judge_model`) filled from the same LiteLLM catalog the Pipelines page uses, and the RAG-mode controls: Strategy `Manual Selection` / `Intelligent (Auto)`, RAG Mode (`normal` / `self_corrective`) in manual mode, Classifier (`LLM (small model)` / `Heuristic rules`) in auto mode, and Max Loops (`1`–`5`) whenever auto mode or self-corrective is selected. With Auto mode selected the page forces `rag_mode: "normal"` and sends `router_enabled: true` plus `router_mode`; there is no generation-model or `k_values` control, so the run table only shows a generation model if the config already carries one. The selected pipeline's collection/embedding/sparse values are echoed under the selector.
 * **Runs list**: `listDatasetRuns(datasetId, {skip, limit})` with a fixed client page size of 10 and footer `◀` / `▶` buttons driven by the returned `count`; the run table shows each run's config summary (retrieval mode, limit, rerank state, generation model, route).
 * **Results (click a run to open)**: the page keeps the runs list visible and only renders run details for the selected run. Tabs:
-  * `Analytics & Rubric`: overall KPIs per stage (`aggregate_metrics.retrieval/reranker/generation`), a canvas bar chart, an "Evaluation Rubric" table that buckets per-item scores (Reranking from `rerank_metrics.ndcg`; Generation from `generation_metrics.faithfulness` / `accuracy` / `answer_relevancy`), and a "Metrics by Category" panel that reads `aggregate_metrics.categories` — a key the backend never produces, so this panel never renders.
+  * `Analytics & Rubric`: overall KPIs per stage (`aggregate_metrics.retrieval/reranker/generation`), a canvas bar chart, an "Evaluation Rubric" table that buckets per-item scores (Reranking from `rerank_metrics.ndcg`; Generation from `generation_metrics.faithfulness` / `accuracy` / `answer_relevancy`), and a "Metrics by Category" panel that reads `aggregate_metrics.categories` — the per-category block the backend now produces for every run.
   * `Drill-down (Per-question)`: per-item rows from `listEvaluationRunItems(runId)` with a category filter (categories discovered from the returned items) and an expandable per-item metric view.
 
 ---

@@ -7,6 +7,7 @@ import {
   EvalRunItemRow,
   EvalRunResponse,
   getEvaluationRun,
+  getLiteLLMModels,
   GoldenDatasetSummary,
   HF_EVAL_CORPUS,
   HF_EVAL_DATASET,
@@ -16,6 +17,7 @@ import {
   listGoldenDatasets,
   listPipelines,
   PipelineRecord,
+  uploadGoldenDataset,
 } from "../api";
 import { formatRelativeTime } from "../utils/format";
 
@@ -439,6 +441,11 @@ export default function GoldenEvaluationsPage() {
   // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
   const [rowsToTest, setRowsToTest] = useState(5);
   const [hfBusy, setHfBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  // Empty means the service default judge. The dropdown still offers "Service default" so
+  // the choice is visible rather than implicit.
+  const [judgeModel, setJudgeModel] = useState("");
+  const [judgeModels, setJudgeModels] = useState<{ id: string; label: string }[]>([]);
   const [activeTab, setActiveTab] = useState<"analytics" | "drilldown">("analytics");
   const [drilldownCategory, setDrilldownCategory] = useState("all");
   const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
@@ -502,6 +509,22 @@ export default function GoldenEvaluationsPage() {
     void refresh();
   }, [refresh]);
 
+  // The judge list comes from the same proxy catalog the Pipelines page uses. A failure here
+  // leaves the list empty, which means every run uses the service default rather than failing.
+  useEffect(() => {
+    let cancelled = false;
+    void getLiteLLMModels("chat")
+      .then((models) => {
+        if (!cancelled) setJudgeModels(models);
+      })
+      .catch(() => {
+        if (!cancelled) setJudgeModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!selectedDatasetId) {
       setRuns([]);
@@ -562,6 +585,21 @@ export default function GoldenEvaluationsPage() {
     [runItems, drilldownCategory],
   );
 
+  /** Upload a golden dataset file. CSV and JSON both work. */
+  async function onUploadDataset(file: File) {
+    setUploadBusy(true);
+    setError(null);
+    try {
+      const res = await uploadGoldenDataset(file, { replace: true });
+      await loadDatasets();
+      setSelectedDatasetId(res.dataset_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload the dataset");
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
   /** Fetch the built-in evaluation set from the Hub and select it. */
   async function onImportHfDataset() {
     setHfBusy(true);
@@ -620,6 +658,8 @@ export default function GoldenEvaluationsPage() {
         pg_table: stores.pgTable,
         // A random sample, so a run stays cheap. No seed, so each run draws a fresh one.
         sample_size: rowsToTest,
+        // Empty means the service default judge.
+        judge_model: judgeModel || null,
       });
       const run = await getEvaluationRun(created.run_id);
       setSelectedRun(run);
@@ -688,6 +728,24 @@ export default function GoldenEvaluationsPage() {
         <div className="panel">
           <div className="panel-header" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
             <h3 className="panel-title">Evaluation set</h3>
+            <label
+              className="btn btn-sm"
+              style={{ cursor: uploadBusy ? "default" : "pointer", margin: 0 }}
+            >
+              {uploadBusy ? "Uploading…" : "Upload CSV or JSON"}
+              <input
+                type="file"
+                accept=".csv,.json,text/csv,application/json"
+                style={{ display: "none" }}
+                disabled={uploadBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Clear the input so choosing the same file twice fires onChange again.
+                  e.target.value = "";
+                  if (file) void onUploadDataset(file);
+                }}
+              />
+            </label>
             <button
               type="button"
               className="btn btn-sm"
@@ -708,7 +766,9 @@ export default function GoldenEvaluationsPage() {
             {loading ? (
               <p className="muted">Loading datasets…</p>
             ) : datasets.length === 0 ? (
-              <p className="muted">No datasets yet. Upload a golden JSON file.</p>
+              <p className="muted">
+                No datasets yet. Upload a golden dataset as CSV or JSON.
+              </p>
             ) : (
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.35rem" }}>
                 {datasets.map((ds) => (
@@ -829,6 +889,26 @@ export default function GoldenEvaluationsPage() {
                   stage. It has no router and no self-corrective loop, so the Strategy, RAG
                   Mode and Max Loops controls that used to sit here changed nothing. */}
             </div>
+            <label className="muted" style={{ display: "grid", gap: "0.25rem", maxWidth: 320 }}>
+              LLM-as-a-judge (optional)
+              <select
+                className="input"
+                value={judgeModel}
+                onChange={(e) => setJudgeModel(e.target.value)}
+              >
+                <option value="">Service default</option>
+                {judgeModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="muted" style={{ fontSize: "0.75rem", margin: 0 }}>
+              The model that grades faithfulness, answer relevancy, correctness and the
+              retrieval scores. A stronger judge is slower and costs more; the same judge across
+              two runs is what makes their scores comparable.
+            </p>
             <button
               type="button"
               className="btn btn-primary"

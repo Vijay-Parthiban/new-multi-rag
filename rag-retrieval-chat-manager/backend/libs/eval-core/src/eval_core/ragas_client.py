@@ -66,11 +66,12 @@ def build_ragas_openai_client(settings: "Settings"):
     return get_ragas_openai_client(settings)
 
 
-def build_ragas_llm(settings: "Settings"):
+def build_ragas_llm(settings: "Settings", judge_model: str | None = None):
+    """The judge LLM. A run may name its own model; otherwise the service default holds."""
     from ragas.llms import llm_factory
 
     return llm_factory(
-        settings.ragas_judge_model,
+        judge_model or settings.ragas_judge_model,
         client=build_ragas_openai_client(settings),
     )
 
@@ -169,6 +170,7 @@ async def calculate_generation_ragas_async(
     answer: str,
     contexts: list[str],
     ground_truth: str | None = None,
+    judge_model: str | None = None,
 ) -> dict[str, float | None]:
     """RAGAS generation metrics: faithfulness, and accuracy vs expected response."""
     from ragas.metrics.collections import Faithfulness, AnswerRelevancy
@@ -185,7 +187,7 @@ async def calculate_generation_ragas_async(
         logger.warning("Skipping generation metrics — no contexts")
         return {}
 
-    llm = build_ragas_llm(settings)
+    llm = build_ragas_llm(settings, judge_model)
 
     faithfulness_scorer = Faithfulness(llm=llm)
     faith_task = faithfulness_scorer.ascore(
@@ -306,6 +308,7 @@ def compute_generation_ragas_metrics(
     answer: str,
     contexts: list[str],
     ground_truth: str | None = None,
+    judge_model: str | None = None,
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_generation_ragas_async(
@@ -314,6 +317,7 @@ def compute_generation_ragas_metrics(
             answer=answer,
             contexts=contexts,
             ground_truth=ground_truth,
+            judge_model=judge_model,
         )
     )
 

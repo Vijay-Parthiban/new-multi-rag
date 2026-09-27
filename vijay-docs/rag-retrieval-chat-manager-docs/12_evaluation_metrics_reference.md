@@ -1,6 +1,6 @@
 # 12 — RAG Evaluation Metrics Reference Guide
 
-**Last updated:** 2026-09-17
+**Last updated:** 2026-09-27
 
 This document lists every metric the evaluation pipeline actually computes, the exact key it is stored under, how it is computed, its direction, and whether it requires an LLM judge (RAGAS) or is pure computation. It covers both **Live Chat** evaluation and **Offline (Golden Dataset)** evaluation.
 
@@ -13,7 +13,7 @@ Metric sources:
 | Golden-source matching | `backend/libs/eval-core/src/eval_core/source_match.py` |
 | RAGAS (LLM-judge) metrics | `backend/libs/eval-core/src/eval_core/ragas_client.py` (`generation_metrics.py` only re-exports these names) |
 | Live-chat staging | `backend/libs/eval-core/src/eval_core/chat_metrics.py` |
-| Offline per-item runner | `backend/libs/eval-core/src/eval_core/runner.py` |
+| Offline per-item runner | `backend/libs/eval-core/src/eval_core/runner.py` (RAGAS metrics) and `.../eval_core/custom_metrics.py` (the two custom, non-RAGAS metrics) |
 | Run aggregation | `backend/libs/database/src/rag_db/repositories/evaluation_repository.py` |
 | Workers | `backend/apps/eval-worker/src/eval_worker/tasks.py` |
 | Read APIs | `backend/apps/rag-api/src/rag_api/routes/chat.py`, `routes/evaluate.py` |
@@ -79,7 +79,7 @@ Retrieval and rerank metrics are computed on exact source matching, not on LLM j
 
 ## Generation Metrics
 
-All generation metrics are RAGAS LLM-judge metrics and require `ragas_enabled`.
+All generation metrics in this section are RAGAS LLM-judge metrics and require `ragas_enabled`.
 
 | Key | Metric class | Inputs | Notes |
 |---|---|---|---|
@@ -89,6 +89,19 @@ All generation metrics are RAGAS LLM-judge metrics and require `ragas_enabled`.
 | `accuracy` | same value as `answer_correctness` (both keys are written) | — | golden runs only |
 
 `AnswerCorrectness` is imported lazily; if it is unavailable the other two metrics still return. There is no separate "Answer Relevancy vs ground truth" metric and no RAGAS retrieval metric in the golden path.
+
+### Custom generation metrics (NOT RAGAS)
+
+These two metrics are **not RAGAS metrics**. RAGAS does not provide them. The offline runner computes them in-process from the row's own fields, with no judge model and no `ragas_enabled` requirement. Both are merged into the item's `generation_metrics` block, next to the RAGAS keys.
+
+| Key | Definition | Notes |
+|---|---|---|
+| `behavior_match` | `1.0` when the answer behaves as the row's `expected_behavior` says it should, else `0.0` | a `refuse_or_abstain` row wants an abstention. Every other row wants a real answer |
+| `keypoint_coverage` | the fraction of the row's `keypoints_covered` values present in the answer | a `label=value` entry is matched on the value side. A comma-separated value needs every part |
+
+`keypoint_coverage` is **absent**, not `0.0`, for rows whose keypoints are bare tags (`mode1;mode2`). Those rows are not measurable. An absent key stays out of the mean, so a row that was never measurable cannot drag the mean down.
+
+Unlike the RAGAS keys, these two do not need a judge model and their values are identical across two runs that use different judges.
 
 ---
 
@@ -106,12 +119,14 @@ All generation metrics are RAGAS LLM-judge metrics and require `ragas_enabled`.
 | `faithfulness` | 0–1 | yes | generation |
 | `answer_relevancy` | 0–1 | yes | generation |
 | `answer_correctness`, `accuracy` | 0–1 | yes | generation |
+| `behavior_match` | 0 or 1 | yes | generation (custom, not RAGAS) |
+| `keypoint_coverage` | 0–1 | yes (absent when not measurable) | generation (custom, not RAGAS) |
 
 ---
 
 ## Short-Circuit Rules (as implemented)
 
-* `settings.ragas_enabled = false` → all RAGAS calls return `{}`; live-chat staging returns empty `retrieval`/`reranker`/`generation` blocks.
+* `settings.ragas_enabled = false` → all RAGAS calls return `{}`; live-chat staging returns empty `retrieval`/`reranker`/`generation` blocks. The two custom metrics (`behavior_match`, `keypoint_coverage`) are not RAGAS metrics, so they still compute in an offline run.
 * Empty answer → retrieval RAGAS and generation RAGAS are skipped.
 * No (normalized, non-blank) contexts → generation RAGAS is skipped.
 * `_should_skip_precision_recall(label, category)` skips `context_precision`/`context_recall` when `label == "incorrect"` or `category` is `out_of_corpus` / `unanswerable`. It is only reachable through `calculate_eval_metrics_async` / `compute_generation_metrics`; the live-chat and golden-runner paths do not pass `label`/`category`, so it does not fire there.
@@ -160,7 +175,7 @@ Per-loop (CRAG) metrics are **not implemented**: see the note below.
 ## Flow: Offline (Golden Dataset) Evaluation
 
 ```
-Upload golden JSON   { name, items[{ query, source, response, metadata }] }
+Upload golden JSON or CSV   { name, items[{ query, source, response, metadata }] }
        │
        ▼
 POST /evaluate/runs  →  RQ queue (eval_worker.tasks.run_evaluation)
@@ -173,18 +188,20 @@ GoldenItemEvaluator.evaluate_item()  per dataset item
        │                 → mrr_before, mrr_after, mrr, mrr_delta, kendall_tau, ndcg
        └── Generation  : compute_generation_ragas_metrics(..., ground_truth)
                          → faithfulness, answer_relevancy, answer_correctness + accuracy
+                         + custom, no-judge metrics: behavior_match, keypoint_coverage
        │
        ▼
 EvaluationRunItem.retrieval_metrics / rerank_metrics / generation_metrics
        │
        ▼
 EvaluationRepository.aggregate_run_metrics()  → EvaluationRun.aggregate_metrics
+       │                                             (+ per-category `categories` block)
        │
        ▼
 GET /evaluate/datasets/{id}/runs, GET /evaluate/runs/{id}/items
        │
        ▼
-GoldenEvaluationsPage → Overall KPIs / Rubric Table / per-question drill-down
+GoldenEvaluationsPage → Overall KPIs / Rubric Table / Metrics by Category / drill-down
 ```
 
 ### Aggregated metric keys
@@ -195,11 +212,13 @@ GoldenEvaluationsPage → Overall KPIs / Rubric Table / per-question drill-down
 |---|---|
 | `retrieval` (from `retrieval_metrics`) | `mean_precision`, `mean_recall`, `mean_hit`, `mean_mrr` |
 | `reranker` (from `rerank_metrics`) | `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`, `mean_ndcg`, `mean_kendall_tau` |
-| `generation` (from `generation_metrics`) | `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness` |
+| `generation` (from `generation_metrics`) | `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness`, `mean_behavior_match`, `mean_keypoint_coverage` |
 
-The payload also contains `item_count` and `config` (the run configuration). Runs with no completed items return empty stage blocks. `None` values (for example `kendall_tau`) are excluded from the average rather than counted as zero.
+The payload also contains `item_count` and `config` (the run configuration). Runs with no completed items return empty stage blocks. `None` values (for example `kendall_tau`) are excluded from the average rather than counted as zero. An absent `keypoint_coverage` key is likewise excluded from its mean.
 
-There is **no `categories` key** in the aggregate payload; `GoldenEvaluationsPage.tsx` reads `agg.categories`, so its "Metrics by Category" panel never renders. Per-question categories are available per run item (`metadata.category`, exposed as `EvalRunItemResponse.category`) and are used for the drill-down filter.
+### Per-category breakdown
+
+The aggregate payload also carries a `categories` block, keyed by the row's `question_type` (falling back to `category`), each entry holding `retrieval` / `reranker` / `generation` blocks of `mean_*` values plus `item_count`. `GoldenEvaluationsPage.tsx` reads `agg.categories` for its "Metrics by Category" panel. The reason for the block: one overall mean hides a strategy that is strong on single-hop lookups and weak on multi-hop reasoning. Per-question categories stay available per run item (`metadata.category`, exposed as `EvalRunItemResponse.category`) and drive the drill-down filter.
 
 ---
 
@@ -224,6 +243,7 @@ Per-iteration metrics described in earlier revisions of this document are **not 
 | `eval_default_k` setting | `5` (not read by the metric functions) | `rag_shared/config.py` |
 | RRF constant | `k=60`, in the assistant `hybrid` path: `reciprocal_rank_fusion(..., k=60)` fuses the Qdrant dense list with the OpenSearch BM25 list | `libs/vector-core/src/vector_core/relational.py:140`, called from `libs/retrieval-core/src/retrieval_core/kp_retriever.py:67` |
 | RAGAS judge model | `RAGAS_JUDGE_MODEL`, default `llama-3.3-70b-versatile` | `rag_shared/config.py`; `backend/.env.example:68` sets `Gpt-oss-120b` |
+| RAGAS judge model (per run) | `EvalRunConfig.judge_model`, nullable. Empty means `settings.ragas_judge_model`. Stored in `evaluation_runs.config` | `evaluate.py`, `evaluation_repository.py` |
 | RAGAS LLM endpoint | LiteLLM proxy: `LITELLM_PROXY` / `LITELLM_BASE_URL` / `settings.litellm_base_url`, normalized to `.../v1`; key from `LITELLM_API_KEY` / `OPENAI_API_KEY` / `settings.openai_api_key` | `ragas_client.py` |
 | RAGAS embeddings | `settings.embedding_model`, `nvidia-embed-textonly` in the shipped `.env` (2048 dimensions) — used by `AnswerRelevancy` and `AnswerCorrectness` | `ragas_client.py`, `rag_shared/config.py`, `backend/.env.example:40-42` |
 
@@ -233,4 +253,4 @@ CHAT_MODEL=llama-3.3-70b-versatile          # LLM used to generate the final ans
 SC_MODEL=llama-3.1-8b-instant               # CRAG judge/rewriter model — not referenced by any eval_core module
 ```
 
-The RAGAS judge is configured independently of `CHAT_MODEL`, so a more capable model can score evaluations without affecting chat latency.
+The RAGAS judge is configured independently of `CHAT_MODEL`, so a more capable model can score evaluations without affecting chat latency. A run can also override the judge per run with `EvalRunConfig.judge_model`. Keep the same judge across two runs if you compare their scores: the judge is what makes the comparison valid.

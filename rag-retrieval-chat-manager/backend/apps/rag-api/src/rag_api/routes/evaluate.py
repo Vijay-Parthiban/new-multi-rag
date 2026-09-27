@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
 from eval_core.dataset_schema import (
     GoldenDatasetItemPayload,
     GoldenDatasetPayload,
+    parse_golden_dataset_csv,
     parse_golden_dataset_json,
 )
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -45,6 +47,9 @@ class EvalRunConfig(BaseModel):
     rag_mode: str = "normal"  # "normal" | "self_corrective"
     self_corrective_max_loops: int = 3
     router_enabled: bool = False  # False by default for deterministic offline eval
+    # The LLM-as-judge for the RAGAS metrics. Empty means the service default
+    # (`settings.ragas_judge_model`), so an existing caller keeps today's behaviour.
+    judge_model: str | None = None
 
 
 class CreateEvalRunRequest(BaseModel):
@@ -162,22 +167,42 @@ def create_dataset(
 
 @router.post("/datasets/upload", response_model=CreateDatasetResponse)
 async def upload_dataset(
-    file: UploadFile = File(..., description="Golden dataset JSON file"),
+    file: UploadFile = File(..., description="Golden dataset .csv or .json file"),
     replace: bool = Query(False),
+    name: str | None = Query(
+        None,
+        description=(
+            "Dataset name. A JSON file carries its own name; a CSV file has no place to put "
+            "one, so a CSV upload without this falls back to the file's own name."
+        ),
+    ),
     settings: Settings = Depends(get_settings),
 ) -> CreateDatasetResponse:
-    """Upload a golden dataset JSON file (multipart/form-data)."""
-    if not file.filename or not file.filename.lower().endswith(".json"):
-        raise HTTPException(status_code=422, detail="file must be a .json file")
+    """Upload a golden dataset as CSV or JSON (multipart/form-data)."""
+    filename = (file.filename or "").strip()
+    lower = filename.lower()
+    if not lower.endswith((".json", ".csv")):
+        raise HTTPException(status_code=422, detail="file must be a .csv or .json file")
 
     raw = await file.read()
     if not raw.strip():
         raise HTTPException(status_code=422, detail="uploaded file is empty")
 
-    try:
-        payload = parse_golden_dataset_json(raw)
-    except (ValidationError, ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid dataset JSON: {exc}") from exc
+    if lower.endswith(".csv"):
+        # The stem is a usable default: `tcs_policies_golden_dataset.csv` becomes
+        # `tcs_policies_golden_dataset`.
+        dataset_name = (name or "").strip() or Path(filename).stem or "Uploaded CSV"
+        try:
+            payload = parse_golden_dataset_csv(raw, name=dataset_name)
+        except (ValidationError, ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid dataset CSV: {exc}") from exc
+    else:
+        try:
+            payload = parse_golden_dataset_json(raw)
+        except (ValidationError, ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid dataset JSON: {exc}") from exc
+        if name and name.strip():
+            payload = payload.model_copy(update={"name": name.strip()})
 
     return _import_dataset_from_payload(payload, settings=settings, replace=replace)
 

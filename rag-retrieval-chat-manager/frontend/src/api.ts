@@ -1029,13 +1029,22 @@ export async function listGoldenDatasets(limit = 50): Promise<GoldenDatasetSumma
   return res.items || [];
 }
 
+/**
+ * Upload a golden dataset.
+ *
+ * Accepts `.csv` and `.json`. A JSON file carries its own name; a CSV file has nowhere to
+ * put one, so `name` overrides it and the file's stem is the fallback.
+ */
 export async function uploadGoldenDataset(
   file: File,
-  replace = false,
+  opts: { replace?: boolean; name?: string } = {},
 ): Promise<{ dataset_id: string; name: string; item_count: number; replaced: boolean }> {
   const form = new FormData();
   form.append("file", file);
-  const qs = replace ? "?replace=true" : "";
+  const params = new URLSearchParams();
+  if (opts.replace) params.set("replace", "true");
+  if (opts.name?.trim()) params.set("name", opts.name.trim());
+  const qs = params.toString() ? `?${params.toString()}` : "";
   return ragFetch(`/evaluate/datasets/upload${qs}`, {
     method: "POST",
     body: form,
@@ -1136,6 +1145,8 @@ export async function createEvaluationRun(
     self_corrective_max_loops?: number;
     router_enabled?: boolean;
     router_mode?: string | null;
+    /** The LLM-as-judge for RAGAS. Omit to use the service default. */
+    judge_model?: string | null;
   }
 ): Promise<{ run_id: string; status: string }> {
   return ragFetch<{ run_id: string; status: string }>("/evaluate/runs", {

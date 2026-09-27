@@ -246,6 +246,7 @@ class EvaluationRepository:
                 "retrieval": {},
                 "reranker": {},
                 "generation": {},
+                "categories": {},
                 "item_count": 0,
                 "config": (run.config if run else {}) or {},
             }
@@ -275,11 +276,61 @@ class EvaluationRepository:
                 if values:
                     grouped[stage][f"mean_{key}"] = mean(values)
 
+        # A single mean hides the case this breakdown exists for: a strategy that is strong
+        # on single-hop lookups and weak on multi-hop reasoning scores the same overall as
+        # one that is merely mediocre everywhere. Grouping by the dataset's own question_type
+        # shows which kind of question failed. The block shape matches the top-level one, and
+        # matches what the page already reads.
+        category_of = self._category_by_item_id(items)
+        categories: dict[str, dict] = {}
+        for category in sorted(set(category_of.values())):
+            subset = [i for i in items if category_of.get(i.dataset_item_id) == category]
+            block: dict[str, dict] = {"retrieval": {}, "reranker": {}, "generation": {}}
+            for stage, attr in stage_blocks.items():
+                keys: set[str] = set()
+                for item in subset:
+                    keys.update(
+                        k for k, v in (getattr(item, attr) or {}).items()
+                        if isinstance(v, (int, float))
+                    )
+                for key in keys:
+                    values = [
+                        float((getattr(item, attr) or {}).get(key))
+                        for item in subset
+                        if isinstance((getattr(item, attr) or {}).get(key), (int, float))
+                    ]
+                    if values:
+                        block[stage][f"mean_{key}"] = mean(values)
+            block["item_count"] = len(subset)
+            categories[category] = block
+
         return {
             **grouped,
+            "categories": categories,
             "item_count": len(items),
             "config": (run.config if run else {}) or {},
         }
+
+    def _category_by_item_id(self, items: list[EvaluationRunItem]) -> dict[uuid.UUID, str]:
+        """The dataset row's `question_type`, falling back to `category`.
+
+        Rows with neither are left out rather than grouped under a made-up label.
+        """
+        item_ids = [i.dataset_item_id for i in items]
+        if not item_ids:
+            return {}
+        rows = (
+            self._session.query(GoldenDatasetItem.id, GoldenDatasetItem.metadata_)
+            .filter(GoldenDatasetItem.id.in_(item_ids))
+            .all()
+        )
+        out: dict[uuid.UUID, str] = {}
+        for dataset_item_id, metadata in rows:
+            meta = metadata or {}
+            label = str(meta.get("question_type") or meta.get("category") or "").strip()
+            if label:
+                out[dataset_item_id] = label
+        return out
 
     def create_dataset(
         self,
