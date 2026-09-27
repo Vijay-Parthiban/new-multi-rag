@@ -185,7 +185,7 @@ docker exec rag-ingestion-manager-postgres-1 psql -U ingestion -d postgres \
   -c "CREATE DATABASE rag OWNER crawler;"
 ```
 
-The `ingestion` role owns the `kp_*` schemas and is a superuser. The relational reader connects as
+The `ingestion` role owns the `kp_*` schemas and is a superuser. The fanout writes them as
 `ingestion`, not as `crawler`, because `crawler` has no privileges on those schemas. The `crawler` role
 needs no superuser rights: it owns `rag`, and the `rag` schema needs no Postgres extension. Only the
 `ingestion` database carries the `vector` extension, and the fanout creates it itself.
@@ -197,8 +197,9 @@ docker exec rag-ingestion-manager-postgres-1 psql -U ingestion -d ingestion \
   -tAc "select extname from pg_extension"
 ```
 
-A relational destination needs `vector` in that list. The fanout runs `CREATE EXTENSION IF NOT EXISTS
-vector` before its first table, so the list fills in on the first fanout.
+The `relational_pgvector` destination needs `vector` in that list. The fanout runs
+`CREATE EXTENSION IF NOT EXISTS vector` before its first table, so the list fills in on the first
+fanout.
 
 ### 3.4 Models the platform calls
 
@@ -336,7 +337,6 @@ QDRANT_URL="http://localhost:6333" \
 QDRANT_KP_URL="http://localhost:6335" \
 OPENSEARCH_URL="http://localhost:9200" \
 INGESTION_SERVICE_URL="http://localhost:8007" \
-INGESTION_DATABASE_URL="postgresql://ingestion:ingestion@localhost:5432/ingestion" \
 GUARDRAILS_URL="http://localhost:18000" \
 LITELLM_BASE_URL="http://localhost:4000" \
 EMBEDDING_MODEL="nvidia-embed-textonly" \
@@ -357,7 +357,6 @@ The variables, and why each one matters:
 | `QDRANT_KP_URL` | The knowledge product Qdrant on 6335 | **Every assistant returns no chunks** |
 | `OPENSEARCH_URL` | OpenSearch on 9200 | The `lexical` strategy and `hybrid` fail |
 | `INGESTION_SERVICE_URL` | The ingestion API on 8007 | Assistant resolution returns 503 |
-| `INGESTION_DATABASE_URL` | The `ingestion` database as the `ingestion` role | The `relational` strategy fails |
 | `GUARDRAILS_URL` | The guardrails service on 18000 | Guardrails silently pass every request |
 | `LITELLM_BASE_URL` | The LiteLLM proxy on 4000 | No answer, no embedding |
 | `EMBEDDING_MODEL` | A model the proxy serves | Vector search returns nothing, or the fanout fails |
@@ -442,7 +441,6 @@ export QDRANT_URL="http://localhost:6333"
 export QDRANT_KP_URL="http://localhost:6335"
 export OPENSEARCH_URL="http://localhost:9200"
 export INGESTION_SERVICE_URL="http://localhost:8007"
-export INGESTION_DATABASE_URL="postgresql://ingestion:ingestion@localhost:5432/ingestion"
 export GUARDRAILS_URL="http://localhost:18000"
 export LITELLM_BASE_URL="http://localhost:4000"
 export EMBEDDING_MODEL="nvidia-embed-textonly"
@@ -846,9 +844,9 @@ whole platform.
 2. **Create a source.** Go to `Sources`, add a source with a MinIO bucket, and let it sync. The `Folders`
    and `Sources` pages show the files as they arrive.
 3. **Create a Knowledge Product.** Go to `Knowledge Store` and press `Create Knowledge Product`. Give it a
-   name. Enable the destinations you want to read later: `Qdrant` for vector search, `OpenSearch` for
-   keyword search, `PostgreSQL` for SQL search. Enable `Qdrant` and `OpenSearch` together if you want the
-   `Hybrid` strategy.
+   name. Enable the destinations you want to read later: `Qdrant` for vector search and `OpenSearch`
+   for keyword search. Enable both together if you want the `Hybrid` strategy. The `Self-reflective`
+   and `Corrective` strategies read whichever one you enable, and use `Hybrid` when you enable both.
 4. **Attach sources and wait for the fanout.** Add the source to the product. The fanout writes one row
    per chunk to every enabled destination. The Knowledge Store page shows a live timeline and, per
    destination, the store inspector. Confirm the record count is larger than zero in each store you
@@ -922,12 +920,12 @@ uv run python scripts/e2e_chunk_strategies.py       # 19 checks
 ```
 
 **Retrieval assistant suite** (from `rag-retrieval-chat-manager/backend`, with the environment block from
-section 4.4 exported). It creates its own prompt template, guardrails config and pipeline, checks thirty
-things, then deletes every fixture:
+section 4.4 exported). It creates its own prompt template, guardrails config and pipeline, then deletes
+every fixture. It sends one chat per strategy across the five strategies:
 
 ```bash
 cd rag-retrieval-chat-manager/backend
-uv run python scripts/e2e_assistant_pipelines.py    # 30 checks
+uv run python scripts/e2e_assistant_pipelines.py    # one chat per strategy, five strategies
 ```
 
 **Guardrails suite** (same directory). It creates a guardrails config, seeds
@@ -963,11 +961,10 @@ npx vite build
 |---|---|---|
 | An assistant answers, but the source list is empty | The reader used `QDRANT_URL` on 6333 instead of 6335 | Set `QDRANT_KP_URL=http://localhost:6335` |
 | Every assistant request returns 503 | The retrieval API cannot reach the ingestion API | Check `INGESTION_SERVICE_URL` and that `8007` answers |
-| `POST /api/assistants/{slug}/chat` returns 422 `NOT_AN_ASSISTANT` | The pipeline's strategy is a legacy one such as `naive` | Create the pipeline from the `Pipelines` page, or set `rag_strategy` to `vector`, `lexical`, `relational` or `hybrid` |
+| `POST /api/assistants/{slug}/chat` returns 422 `NOT_AN_ASSISTANT` | The pipeline's strategy is a legacy one such as `naive` | Create the pipeline from the `Pipelines` page, or set `rag_strategy` to `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` |
 | 422 `RAG_STRATEGY_UNAVAILABLE` | The product does not have the destination the strategy needs enabled | Enable the destination in the ingestion `Knowledge Store` page, then re-create or patch the pipeline |
 | 422 `CHAT_MODEL_REQUIRED` | No `chat_model` on the pipeline | Set it in the `Pipelines` page or through `PATCH /api/pipelines/{id}` |
 | The `Hybrid` option is missing from the strategy list | Only one of the Qdrant and OpenSearch destinations is enabled | Enable both on the product |
-| The relational strategy fails with a permission error | The reader connected as `crawler`, which cannot see the `kp_*` schemas | Set `INGESTION_DATABASE_URL` to the `ingestion` role |
 | Guardrails never block | `GUARDRAILS_URL` is wrong, or the config selects no validator that can block | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/health-check` |
 | An LLM-backed guard reports `timed out` or `Judge returned no JSON` | Those guards call LiteLLM on the host and need about a second each | Check `LITELLM_BASE_URL`, `LLM_API_KEY` and `GUARDRAIL_LLM_MODEL` in `.env.guardrails`. `Gpt-oss-20b` needs `GUARDRAIL_LLM_MAX_TOKENS=512`: with a smaller budget the reasoning model returns an empty body |
 | A guard is reported as `is not installed` | The service image is older than `guardrails-service/pyproject.toml` | Rebuild it with `docker compose build guardrails-service`, then `up -d` |
@@ -1006,6 +1003,7 @@ npx vite build
 | Strategy resolution | `libs/rag-core/src/rag_core/assistant.py` |
 | Store readers | `libs/vector-core/src/vector_core/lexical.py`, `.../relational.py` |
 | Strategy dispatch | `libs/retrieval-core/src/retrieval_core/kp_retriever.py` |
+| Reasoning patterns | `libs/rag-core/src/rag_core/reflection.py` |
 | Retrieval settings | `libs/shared/src/rag_shared/config.py` |
 | Retrieval migrations | `libs/database/alembic/versions/` |
 | Retrieval frontend | `rag-retrieval-chat-manager/frontend/src/` |

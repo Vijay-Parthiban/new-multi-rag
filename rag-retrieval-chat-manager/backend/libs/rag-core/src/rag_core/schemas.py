@@ -95,7 +95,11 @@ class PipelineRequest(BaseModel):
         default=None, description="Optional system message that replaces the built-in RAG prompt."
     )
     strategy: str | None = Field(
-        default=None, description="Optional knowledge-product strategy: vector, lexical, relational, hybrid."
+        default=None,
+        description=(
+            "Optional knowledge-product strategy: vector, lexical or hybrid to pick "
+            "a store, or self_rag or corrective to grade what that store returns."
+        ),
     )
     stores: KpStores | None = Field(
         default=None, description="Optional knowledge-product store names the strategy reads."

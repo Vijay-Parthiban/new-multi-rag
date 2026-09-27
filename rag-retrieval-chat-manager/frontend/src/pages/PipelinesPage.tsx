@@ -25,7 +25,9 @@ import {
   PipelinePatchRequest,
   PipelineRecord,
   PromptTemplate,
+  RAG_STRATEGY_GROUP_LABELS,
   RAG_STRATEGY_LABELS,
+  STRATEGY_KINDS,
   assistantBaseUrl,
   assistantChatUrl,
   assistantSessionUrl,
@@ -380,25 +382,45 @@ function PipelineFields({
         value={draft.ragStrategy}
         required
         disabled={strategies.length === 0}
+        aria-describedby={`${idPrefix}-strategy-hint`}
         onChange={(e) => setDraft({ ...draft, ragStrategy: e.target.value })}
       >
         <option value="" disabled>
           {draft.knowledgeProductId ? "Select a strategy…" : "Choose a Knowledge Product first"}
         </option>
-        {strategies.map((id) => (
-          <option key={id} value={id}>
-            {RAG_STRATEGY_LABELS[id]?.label ?? id} — {RAG_STRATEGY_LABELS[id]?.description ?? ""}
-          </option>
-        ))}
+        {/* Grouped rather than one flat list: the two kinds behave differently,
+            and the reason to pick one over the other is not obvious from the name. */}
+        {STRATEGY_KINDS.map((kind) => {
+          const inGroup = strategies.filter((id) => RAG_STRATEGY_LABELS[id]?.kind === kind);
+          if (inGroup.length === 0) return null;
+          return (
+            <optgroup key={kind} label={RAG_STRATEGY_GROUP_LABELS[kind]}>
+              {inGroup.map((id) => (
+                <option key={id} value={id}>
+                  {RAG_STRATEGY_LABELS[id]?.label ?? id}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
       </select>
+      {/* The description is persistent helper text rather than part of the option
+          text, so it stays readable after the choice is made. */}
       {strategies.length === 0 ? (
-        <p className="field-hint">
+        <p className="field-hint" id={`${idPrefix}-strategy-hint`}>
           {draft.knowledgeProductId
             ? "This product has no enabled retrieval destination. Enable one in the Ingestion Manager."
             : "A Knowledge Product decides the list: each strategy reads a store that product has enabled. Hybrid needs both the vector and the keyword store."}
         </p>
       ) : (
-        fieldError(strategyError, strategies.length > 0)
+        <>
+          <p className="field-hint" id={`${idPrefix}-strategy-hint`}>
+            {draft.ragStrategy
+              ? RAG_STRATEGY_LABELS[draft.ragStrategy]?.description
+              : "Pick where to search, or a reasoning pattern that grades what it found before answering."}
+          </p>
+          {fieldError(strategyError, strategies.length > 0)}
+        </>
       )}
 
       <label className="field-label" htmlFor={`${idPrefix}-prompt`}>

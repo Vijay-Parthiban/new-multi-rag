@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     reranker_model: str = "nvidia-rerank"
     rerank_top_k: int = 5
 
+    # The score a passage must reach to survive the relevance grader that the
+    # self-reflective and corrective strategies run. Below it a passage is dropped;
+    # when none reach it the corrective pattern abstains rather than answering from
+    # nothing. 0.5 sits at the midpoint of the grader's 0 to 1 scale.
+    relevance_threshold: float = 0.5
+
     chat_model: str = "llama-3.3-70b-versatile"
     vision_model: str = "groq-vision"
     fusion_model: str = "llama-3.3-70b-versatile"

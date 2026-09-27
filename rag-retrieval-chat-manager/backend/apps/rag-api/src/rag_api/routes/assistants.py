@@ -181,7 +181,8 @@ async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
                 "code": "NOT_AN_ASSISTANT",
                 "message": (
                     f"Pipeline '{slug}' is an ingestion pipeline. An assistant reads a "
-                    "Knowledge Product, so its strategy must be vector, lexical, relational or hybrid."
+                    "Knowledge Product, so its strategy must be one of "
+                    f"{', '.join(STRATEGY_LABELS)}."
                 ),
             },
         )

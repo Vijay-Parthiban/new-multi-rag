@@ -35,12 +35,15 @@ STRATEGY_DESTINATION = {
 }
 # Ordered as the create form shows them. "hybrid" needs two stores, so it is
 # handled separately from the single-store strategies above.
-ASSISTANT_STRATEGIES = ("vector", "lexical", "relational", "hybrid")
+ASSISTANT_STRATEGIES = ("vector", "lexical", "hybrid", "self_rag", "corrective")
+# The reasoning patterns run on any retrieval mode, so they only need one store.
+ASSISTANT_PATTERN_STRATEGIES = ("self_rag", "corrective")
 HYBRID_DESTINATIONS = ("vector_qdrant", "lexical_opensearch")
 RETRIEVAL_DESTINATION_TYPES = tuple(STRATEGY_DESTINATION.values())
 
 _STRATEGY_LITERAL = Literal[
-    "naive", "sparse", "hybrid", "multimodal", "metadata", "vector", "lexical", "relational"
+    "naive", "sparse", "hybrid", "multimodal", "metadata", "vector", "lexical",
+    "self_rag", "corrective",
 ]
 
 
@@ -229,11 +232,16 @@ def _validate_assistant_options(
         raise ValidationError(
             "NO_RETRIEVAL_DESTINATION",
             "This Knowledge Product has no enabled retrieval destination. "
-            "Enable Qdrant, OpenSearch or PostgreSQL in the Ingestion Manager.",
+            "Enable Qdrant or OpenSearch in the Ingestion Manager.",
             {"knowledge_product_id": str(product.id)},
         )
     if strategy == "hybrid":
         missing = [d for d in HYBRID_DESTINATIONS if d not in available]
+    elif strategy in ASSISTANT_PATTERN_STRATEGIES:
+        # A reasoning pattern wraps whichever retrieval mode the product can
+        # serve, so any enabled retrieval destination is enough. The check above
+        # already established that there is one.
+        missing = []
     else:
         needed = STRATEGY_DESTINATION[strategy]
         missing = [] if needed in available else [needed]

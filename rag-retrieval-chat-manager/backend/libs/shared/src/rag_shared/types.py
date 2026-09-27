@@ -51,14 +51,27 @@ class KpStores(BaseModel):
 class KpStrategy(StrEnum):
     """The RAG strategy an assistant pipeline runs.
 
-    Each value names the store to read, not the index shape to write, which is
-    why these are separate from the ingestion-side ``RagStrategy``.
+    Two kinds live here. Vector, lexical and hybrid are **retrieval modes**: each
+    names the store to read. Self-reflective and corrective are **generation
+    patterns**: they wrap whichever retrieval mode the product can serve and add a
+    grading step before the answer is written. These are separate from the
+    ingestion-side ``RagStrategy``, which names the index shape to write.
+
+    RELATIONAL is retained for rows written before SQL search was retired. It is no
+    longer offered and no longer reachable.
     """
 
     VECTOR = "vector"
     LEXICAL = "lexical"
     RELATIONAL = "relational"
     HYBRID = "hybrid"
+    SELF_RAG = "self_rag"
+    CORRECTIVE = "corrective"
+
+
+# The generation patterns. Each needs a retrieval mode underneath, so a product
+# serves one only when it serves at least one retrieval mode.
+AGENTIC_STRATEGIES: tuple[str, ...] = (KpStrategy.SELF_RAG, KpStrategy.CORRECTIVE)
 
 
 class KpDestination(StrEnum):

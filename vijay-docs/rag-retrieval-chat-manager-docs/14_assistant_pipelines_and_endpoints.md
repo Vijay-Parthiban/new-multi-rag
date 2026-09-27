@@ -1,6 +1,6 @@
 # 14 — Assistant Pipelines & Callable Endpoints
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-27
 
 ## 1. Executive Summary & What an Assistant Is
 
@@ -14,7 +14,7 @@ One assistant holds:
 | One pipeline record | yes | `pipelines` table, ingestion service |
 | One slug | yes | derived from the name; the external identifier |
 | One Knowledge Product | yes | the stores it reads |
-| One RAG strategy | yes | `vector`, `lexical`, `relational` or `hybrid` |
+| One RAG strategy | yes | `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` |
 | One chat model | yes | the LiteLLM alias that answers |
 | One prompt template | no | becomes the system message |
 | One guardrails config | no | checks the input and the output |
@@ -23,8 +23,8 @@ One assistant holds:
 record's `qdrant_collection` is nullable for this reason. Every chunk it reads comes from the Knowledge
 Product's destination stores.
 
-A pipeline becomes an assistant when its `rag_strategy` is one of `vector`, `lexical`, `relational` or
-`hybrid`. The ingestion payload reports this as `is_assistant`.
+A pipeline becomes an assistant when its `rag_strategy` is one of `vector`, `lexical`, `hybrid`, `self_rag`
+or `corrective`. The ingestion payload reports this as `is_assistant`.
 (`rag-ingestion-manager/backend/apps/api/routes/pipelines.py`)
 
 | Service | Port | Path | Shape |
@@ -86,7 +86,8 @@ strategy. It caches answers, so it holds no searchable copy of the chunks.
 `opensearch_index`, `pg_schema`, `pg_table`. `pg_table` falls back to `chunks`.
 
 Only **enabled** destinations count. A product with a disabled Qdrant destination has no
-`qdrant_collection`, so the `vector` and `hybrid` strategies are unavailable for it.
+`qdrant_collection`, so the `vector` and `hybrid` strategies are unavailable for it. The two generation
+patterns stay available as long as one retrieval destination is enabled.
 
 ---
 
@@ -316,23 +317,30 @@ one question per call. Multi-turn memory through this route needs a `session_id`
 
 ## 5. Strategies
 
-The strategy decides which store the assistant reads. It is set on the pipeline and editable at any
-time. Its allowed values are exactly the strategies the product's enabled destinations can serve
+The strategy decides how the assistant retrieves and answers. It is set on the pipeline and editable at
+any time. Its allowed values are exactly the strategies the product's enabled destinations can serve
 (`strategies_for_product`).
+
+Two kinds of strategy exist. A **retrieval mode** names the store to read. A **generation pattern** wraps
+whichever retrieval mode the product can serve and adds a grading step before the answer is written. The
+frontend picker groups the options under `Retrieval — chooses where to search` and
+`Reasoning — grades what it found` (`frontend/src/api.ts:426-432`).
 
 | Strategy | Store read | Needs enabled | Good for |
 |---|---|---|---|
 | `vector` | Qdrant dense vectors | `vector_qdrant` | Meaning-based questions and paraphrases. |
 | `lexical` | OpenSearch BM25 | `lexical_opensearch` | Exact terms, names, codes and rare words. |
-| `relational` | PostgreSQL pgvector | `relational_pgvector` | Cosine order over rows a SQL store already holds. |
 | `hybrid` | Qdrant dense **and** OpenSearch BM25 | both of the above | The best default when both stores exist. |
+| `self_rag` | `hybrid` when both exist, the single available store otherwise | any retrieval destination | Answers that must stay grounded in the retrieved passages. |
+| `corrective` | `hybrid` when both exist, the single available store otherwise | any retrieval destination | Questions the product may not cover, where an abstention beats a guess. |
 
 | Label in the UI | Description shown |
 |---|---|
 | `Vector search` | Qdrant dense vectors |
 | `Keyword search` | OpenSearch BM25 |
-| `SQL search` | PostgreSQL pgvector |
 | `Hybrid` | Vector and keyword, fused with reciprocal rank fusion |
+| `Self-reflective` | Grades each passage, then checks the answer is grounded and rewrites it once if not |
+| `Corrective` | Grades each passage and answers only from the relevant ones, or says the sources do not cover it |
 
 Reader modules:
 
@@ -340,8 +348,23 @@ Reader modules:
 |---|---|
 | `vector` | `libs/vector-core/src/vector_core/search.py` |
 | `lexical` | `libs/vector-core/src/vector_core/lexical.py` |
-| `relational` | `libs/vector-core/src/vector_core/relational.py` |
+| `self_rag`, `corrective` | `libs/rag-core/src/rag_core/reflection.py` for the grading, then the base mode's reader |
 | dispatch | `libs/retrieval-core/src/retrieval_core/kp_retriever.py` |
+
+### Generation patterns
+
+A pattern is offered when the product has at least one enabled retrieval destination. It retrieves with
+`hybrid` when both the vector and the keyword store exist, and with the single available store otherwise
+(`_base_mode_for`, `libs/retrieval-core/src/retrieval_core/kp_retriever.py`).
+
+Both patterns grade every retrieved passage for relevance and keep only the passages that score at or above
+`relevance_threshold` (default `0.5`, `libs/shared/src/rag_shared/config.py`). Nothing above the threshold
+makes the pattern abstain with a plain message. A grader call that fails or returns something unparseable
+keeps every passage, so a grader outage degrades to plain retrieval.
+
+- `self_rag` answers from the surviving passages, then checks the answer is grounded in them and rewrites it
+  **once** when the verdict is UNGROUNDED. A check that cannot run leaves the answer alone.
+- `corrective` answers only from the surviving passages and runs no second check.
 
 ### Reciprocal rank fusion
 
@@ -402,7 +425,7 @@ The guardrails config and the prompt template are independent. Either, both or n
 ## 7. Worked Example
 
 This path runs live. The check script `rag-retrieval-chat-manager/backend/scripts/e2e_assistant_pipelines.py`
-executes it and passes 30 checks.
+executes it and passes every check.
 
 ### Step 1 — Create the product and ingest
 
@@ -443,7 +466,7 @@ so they must name the same model.
 
 The response carries the `slug`, `chat_model`, `is_assistant: true` and the nested
 `knowledge_product.destinations[]`. With all three retrieval destinations enabled the product can serve
-four strategies: `vector`, `lexical`, `relational` and `hybrid`.
+five strategies: `vector`, `lexical`, `hybrid`, `self_rag` and `corrective`.
 
 Validation codes on this call:
 
@@ -462,7 +485,7 @@ curl -X GET http://localhost:8001/api/assistants/resume-assistant
 ```
 
 The `stores` block reads back the three names from the table above. The `strategies_available` list
-holds the four entries.
+holds the five entries.
 
 ### Step 4 — Ask a question
 
@@ -473,7 +496,7 @@ curl -X POST http://localhost:8001/api/assistants/resume-assistant/chat \
 ```
 
 The stored rows contain `Received employee of the year award in Amazon Prime division`. All three
-stores find it, so every strategy returns a non-empty `sources` list. OpenSearch matches the word
+stores find it, so every retrieval mode returns a non-empty `sources` list. OpenSearch matches the word
 `award` with `_score` 4.23.
 
 ### Step 5 — Read the sources
@@ -489,9 +512,11 @@ Every component stays editable. `PATCH /api/pipelines/{id}` on `8007` accepts `n
 `knowledge_product_id` and `embedding_model`. An explicit `null` for `prompt_template_id` or
 `guardrails_config_id` detaches it. Omitting the key leaves it.
 
-The check script moves the assistant through `vector`, `lexical` and `relational`, calls the chat route
-after each move, and asserts a non-empty `sources` list every time. That is the check that proves the
-strategy choice reaches the read path.
+The check script moves the assistant through `vector`, `lexical`, `hybrid`, `self_rag` and `corrective`,
+calls the chat route after each move, and asserts an answer every time. Each retrieval mode must also
+return a non-empty `sources` list. A generation pattern is judged on answering at all, because the grader
+can reject every passage and abstain. That is the check that proves the strategy choice reaches the read
+path.
 
 ---
 
@@ -509,8 +534,13 @@ strategy choice reaches the read path.
    `llama-3.3-70b-versatile`, which the proxy does not serve. An assistant always carries an explicit
    `chat_model`, so the UI cannot reach that default. A hand-made legacy `/chat` request with no
    `generation_model` gets a `400`.
-5. **The LLM query router and self-corrective RAG are not implemented.** The dead code is gone and the
-   UI no longer offers their controls.
+5. **The LLM query router is not implemented.** The dead code is gone and the UI no longer offers its
+   controls. The old Chat-page "self-corrective" loop was never written either. That loop is not the
+   `corrective` strategy in §5: the loop would iterate, and the strategy grades once.
 6. **The retrieval service must reach port `8007`, `6335`, `9200` and `5432`.** A browser needs only
    `8001`. Defaults live in `libs/shared/src/rag_shared/config.py`: `qdrant_kp_url`, `opensearch_url`,
    `ingestion_service_url`, `ingestion_database_url`, `guardrails_url`.
+7. **The `corrective` pattern does not search the web.** It grades the passages the product holds and
+   abstains when none pass. It never falls back to a web search.
+8. **The `self_rag` pattern does not stream tokens.** The grounding check needs the finished draft, so
+   `POST /api/assistants/{slug}/chat/stream` sends its answer as one token event.

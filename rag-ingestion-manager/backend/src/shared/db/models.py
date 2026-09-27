@@ -53,7 +53,10 @@ class RagStrategy(str, enum.Enum):
     # fanout collection carries sparse vectors, so the legacy meaning is unused.
     VECTOR = "vector"
     LEXICAL = "lexical"
-    RELATIONAL = "relational"
+    # The reasoning patterns wrap whichever retrieval mode the product can serve.
+    # See rag_core.reflection on the retrieval side.
+    SELF_RAG = "self_rag"
+    CORRECTIVE = "corrective"
 
 
 class IndexModality(str, enum.Enum):

@@ -79,7 +79,6 @@ QDRANT_URL="http://localhost:6333" \
 QDRANT_KP_URL="http://localhost:6335" \
 OPENSEARCH_URL="http://localhost:9200" \
 INGESTION_SERVICE_URL="http://localhost:8007" \
-INGESTION_DATABASE_URL="postgresql://ingestion:ingestion@localhost:5432/ingestion" \
 GUARDRAILS_URL="http://localhost:18000" \
 LITELLM_BASE_URL="http://localhost:4000" \
 EMBEDDING_MODEL="nvidia-embed-textonly" \
@@ -106,8 +105,8 @@ Auth: the app registers `dependencies=[Depends(verify_api_key)]` (`apps/rag-api/
 
 | Library | Package | Contents |
 |---|---|---|
-| `libs/rag-core` | `rag_core` | `RAGPipeline` orchestrator (`pipeline.py`: retrieve / rerank / chat / generate / stream_chat / from_request), request + result schemas plus `StreamEvent` (`schemas.py`), knowledge product strategy resolution (`assistant.py`), pipeline prompts (`prompts.py`) |
-| `libs/vector-core` | `vector_core` | Qdrant dense+sparse access (`qdrant_store.py`, `search.py`), LiteLLM embeddings (`embedding_client.py`), sparse BM25 encoder (`sparse_client.py`), vision payload client (`vision_client.py`), payload filters and hit mapping, OpenSearch BM25 reader (`lexical.py`), pgvector reader and reciprocal rank fusion (`relational.py`) |
+| `libs/rag-core` | `rag_core` | `RAGPipeline` orchestrator (`pipeline.py`: retrieve / rerank / chat / generate / stream_chat / from_request), request + result schemas plus `StreamEvent` (`schemas.py`), knowledge product strategy resolution (`assistant.py`), pipeline prompts (`prompts.py`), relevance grading and answer grounding (`reflection.py`) |
+| `libs/vector-core` | `vector_core` | Qdrant dense+sparse access (`qdrant_store.py`, `search.py`), LiteLLM embeddings (`embedding_client.py`), sparse BM25 encoder (`sparse_client.py`), vision payload client (`vision_client.py`), payload filters and hit mapping, OpenSearch BM25 reader (`lexical.py`), reciprocal rank fusion (`relational.py`) |
 | `libs/retrieval-core` | `retrieval_core` | `Retriever` mode/limit resolution and strategy dispatch (`retriever.py`), knowledge product strategy readers (`kp_retriever.py`), `chunk_from_search_hit` (`hit_mapper.py`) |
 | `libs/reranker-core` | `reranker_core` | `Reranker` protocol, `LiteLLMReranker` (LiteLLM `POST /v1/rerank`), `NoopReranker` pass-through, `build_reranker` factory |
 | `libs/generation-core` | `generation_core` | `Generator` (text) + `VisionGenerator` + fusion, token streaming (`generate_stream`), prompt assembly with an optional system-message override (`prompt_builder.py`), prompt loading with overrides (`prompts.py`), `GenerationResult` |
@@ -135,21 +134,23 @@ Two shared packages are consumed from sibling workspaces: `platform_common` (aut
 
 When the request carries a `strategy`, retrieval does not touch the scrape collection. `Retriever.retrieve()`
 hands off to `KpRetriever` (`libs/retrieval-core/src/retrieval_core/kp_retriever.py`), which reads the store
-the strategy names:
+a retrieval mode names, or runs a generation pattern over whichever mode the product can serve:
 
 | Strategy | Reader | Store |
 |---|---|---|
 | `vector` | `search_scrape_chunks(mode="dense")` | Qdrant collection `config.collection_name` on `settings.qdrant_kp_url` |
 | `lexical` | `search_lexical_index()` (`vector_core/lexical.py`) | OpenSearch index `config.index_name`, a `multi_match` on `content` and `text` |
-| `relational` | `search_pgvector_chunks()` (`vector_core/relational.py`) | `<config.schema_name>.config.table_name` in `settings.ingestion_database_url`, cosine distance on `embedding` |
 | `hybrid` | both `vector` and `lexical` | `reciprocal_rank_fusion()`, `k = 60`, fused on `(source_id, file_key, page_index, chunk_index)` |
+| `self_rag` | `grade_relevance()` over the reranked passages, then `answer_is_grounded()` on the answer (`reflection.py`, called from `pipeline.py`) | `hybrid` when both stores exist, else the single store. A passage scoring below `settings.relevance_threshold` (default `0.5`) is dropped; a definite ungrounded verdict rewrites the answer once |
+| `corrective` | `grade_relevance()` over the reranked passages (`reflection.py`, called from `pipeline.py`) | the same base mode. When no passage passes, it abstains with `NO_RELEVANT_PASSAGES_ANSWER` |
 
 Every reader returns the dict shape `chunk_from_search_hit` expects, so the rest of the pipeline —
 rerank, generate, persist — is unchanged. Store resolution lives in
 `libs/rag-core/src/rag_core/assistant.py`: `strategies_for_product()` reports what a product's enabled
 destinations can serve, `stores_for_product()` reads the store names, and `resolve_strategy()` fails when a
-store the strategy needs is absent. `cache_redisvl` serves no strategy, because it caches answers rather
-than holding a searchable copy of the chunks.
+store the strategy needs is absent. A retrieval mode needs its own store. A generation pattern needs any
+enabled retrieval destination, so a vector-only product still offers both patterns. `cache_redisvl` serves
+no strategy, because it caches answers rather than holding a searchable copy of the chunks.
 
 The fanout writes Qdrant **dense only** (`enable_sparse=False` in `universal_fanout.py`), so no product
 collection has sparse vectors and the Qdrant reader always runs `mode="dense"`. BM25 for a product lives
@@ -158,6 +159,9 @@ path, not the named-vector fusion the scrape path uses.
 
 `RAGPipeline.stream_chat()` (`libs/rag-core/src/rag_core/pipeline.py`) yields `StreamEvent` objects for the
 same retrieve → rerank → generate sequence, and `Generator.generate_stream()` yields the answer deltas.
+Two limits are deliberate. The `self_rag` pattern cannot stream tokens: it needs the whole draft before it
+can check and revise it, so it emits the answer in one piece. The `corrective` pattern does not do the
+paper's web-search fallback; it abstains when no passage passes.
 
 ## 6. Guardrails Integration Point
 
@@ -248,11 +252,11 @@ A pipeline whose product has the Redis destination enabled also files each turn 
 | POST | `/v1/assistants/{slug}/chat/completions` | `routes/assistants.py` — the OpenAI chat-completions shape |
 
 ### Assistant endpoints
-A pipeline whose `rag_strategy` is `vector`, `lexical`, `relational` or `hybrid` reads one Knowledge
-Product's stores. These four routes address it by `slug` instead of by UUID, so an external project can
-call it without knowing the pipeline id. The two chat routes resolve the pipeline and the stores, then
-delegate to the existing chat handlers, so guardrails, retrieval, rerank, generation, persistence and
-metrics are not duplicated.
+A pipeline whose `rag_strategy` is `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` reads one
+Knowledge Product's stores. These four routes address it by `slug` instead of by UUID, so an external
+project can call it without knowing the pipeline id. The two chat routes resolve the pipeline and the
+stores, then delegate to the existing chat handlers, so guardrails, retrieval, rerank, generation,
+persistence and metrics are not duplicated.
 
 The copyable base URL is `{RAG_API_URL}/v1/assistants/{slug}`. An OpenAI SDK client sets `base_url` to it
 and the SDK appends `/chat/completions`. The OpenAI route is single-turn: it reads the last `role=user`
@@ -285,7 +289,7 @@ Open:
 - The OpenAI-compatible route ignores conversation history. It reads the last `role=user` message. Multi-turn memory through that route needs a `session_id` extension field.
 - `generate_stream()` cannot stream a vision answer. With image chunks present it makes one blocking call and yields the whole answer as one token event, because the vision and fusion passes report no progress.
 - `Settings.chat_model` is still `llama-3.3-70b-versatile`, which the LiteLLM proxy does not serve. An assistant always carries an explicit `chat_model`, so the assistant path never reaches that default; a hand-made legacy `POST /chat` with no `generation_model` gets a 400.
-- The LLM query router and self-corrective RAG are **not** implemented. The module `rag_core.query_router` never existed, so both are out of scope until someone writes them. The Chat page no longer offers the controls.
+- The LLM query router is **not** implemented: the module `rag_core.query_router` does not exist. The two reasoning patterns are implemented instead as pipeline strategies, `self_rag` and `corrective`, in `libs/rag-core/src/rag_core/reflection.py`. The Chat page no longer offers a RAG Mode control.
 - The knowledge-products proxy router (`routes/knowledge.py`) is still unreachable from the frontend, which calls the ingestion API directly. Removing the router, or repointing the pages at it, is an open choice — see `11_knowledge_store_page.md` §6.
 
 Fixed on 2026-09-21 and no longer open:

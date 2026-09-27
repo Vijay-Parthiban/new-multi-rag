@@ -1,42 +1,56 @@
 """Resolve what a Knowledge Product's enabled destinations can serve.
 
 An assistant pipeline reads a Knowledge Product's stores instead of owning a
-Qdrant collection. Each RAG strategy names the store it reads, so the strategy
-a pipeline may use is exactly the set its product's enabled destinations can
-serve. This module is the one place that decides that, for both the API that
-validates a pipeline and the retrieval path that reads it.
+Qdrant collection. A retrieval strategy names the store it reads, so the
+retrieval strategies a pipeline may use are exactly the set its product's enabled
+destinations can serve. A generation pattern instead wraps whichever retrieval
+mode the product can serve, and adds a grading step. This module is the one place
+that decides both, for the API that validates a pipeline and the retrieval path
+that reads it.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from rag_shared.types import KpDestination, KpStores, KpStrategy
+from rag_shared.types import AGENTIC_STRATEGIES, KpDestination, KpStores, KpStrategy
 
 from rag_core.session_memory import DEFAULT_TTL_S
 
 STRATEGY_VECTOR = KpStrategy.VECTOR
 STRATEGY_LEXICAL = KpStrategy.LEXICAL
-STRATEGY_RELATIONAL = KpStrategy.RELATIONAL
 STRATEGY_HYBRID = KpStrategy.HYBRID
 
 DESTINATION_VECTOR = KpDestination.VECTOR
 DESTINATION_LEXICAL = KpDestination.LEXICAL
-DESTINATION_RELATIONAL = KpDestination.RELATIONAL
 
-# Shown in the pipeline form, in this order.
+# Shown in the pipeline form, in this order. The two kinds are grouped in the UI,
+# so the order here is the order within each group.
 STRATEGY_LABELS: dict[str, tuple[str, str]] = {
     KpStrategy.VECTOR: ("Vector search", "Qdrant dense vectors"),
     KpStrategy.LEXICAL: ("Keyword search", "OpenSearch BM25"),
-    KpStrategy.RELATIONAL: ("SQL search", "PostgreSQL pgvector"),
     KpStrategy.HYBRID: ("Hybrid", "Vector and keyword, fused with reciprocal rank fusion"),
+    KpStrategy.SELF_RAG: (
+        "Self-reflective",
+        "Grades each passage, then checks the answer is grounded and rewrites it once if not",
+    ),
+    KpStrategy.CORRECTIVE: (
+        "Corrective",
+        "Grades each passage and answers only from the relevant ones, or says the sources do not cover it",
+    ),
 }
+
+# Which of the two kinds a strategy belongs to, for the grouped picker.
+RETRIEVAL_STRATEGIES: tuple[str, ...] = (
+    KpStrategy.VECTOR,
+    KpStrategy.LEXICAL,
+    KpStrategy.HYBRID,
+)
 
 # A single-store strategy reads exactly this destination.
 STRATEGY_DESTINATION: dict[str, str] = {
     KpStrategy.VECTOR: KpDestination.VECTOR,
     KpStrategy.LEXICAL: KpDestination.LEXICAL,
-    KpStrategy.RELATIONAL: KpDestination.RELATIONAL,
 }
 
 # cache_redisvl is not here on purpose: it caches answers, it does not hold a
@@ -107,11 +121,12 @@ def strategies_for_product(destinations: list[dict[str, Any]]) -> list[str]:
         strategies.append(KpStrategy.VECTOR)
     if KpDestination.LEXICAL in enabled:
         strategies.append(KpStrategy.LEXICAL)
-    if KpDestination.RELATIONAL in enabled:
-        strategies.append(KpStrategy.RELATIONAL)
     # Hybrid fuses the vector and the keyword ranking, so it needs both.
     if KpDestination.VECTOR in enabled and KpDestination.LEXICAL in enabled:
         strategies.append(KpStrategy.HYBRID)
+    # The generation patterns wrap a retrieval mode, so any store will do.
+    if enabled:
+        strategies.extend(AGENTIC_STRATEGIES)
     return strategies
 
 
@@ -137,7 +152,11 @@ def resolve_strategy(strategy: str, stores: KpStores) -> None:
         missing.append(KpDestination.VECTOR)
     if strategy in (KpStrategy.LEXICAL, KpStrategy.HYBRID) and not stores.opensearch_index:
         missing.append(KpDestination.LEXICAL)
-    if strategy == KpStrategy.RELATIONAL and not (stores.pg_schema and stores.pg_table):
-        missing.append(KpDestination.RELATIONAL)
+    # A generation pattern only needs somewhere to retrieve from; the base mode is
+    # then whatever this product can serve.
+    if strategy in AGENTIC_STRATEGIES and not (
+        stores.qdrant_collection or stores.opensearch_index
+    ):
+        missing.extend([KpDestination.VECTOR, KpDestination.LEXICAL])
     if missing:
         raise StrategyUnavailable(strategy, missing)

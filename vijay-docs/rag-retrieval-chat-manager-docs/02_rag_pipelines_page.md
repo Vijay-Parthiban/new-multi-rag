@@ -1,19 +1,19 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-09-27
 
 ## 1. Executive Summary & Page Purpose
 
 The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects
 assistant records. The **page** keeps the name **Pipelines**. The **record** is a pipeline. The record is an
-**assistant** when its `rag_strategy` is `vector`, `lexical`, `relational` or `hybrid`.
+**assistant** when its `rag_strategy` is `vector`, `lexical`, `hybrid`, `self_rag` or `corrective`.
 
 An assistant holds five parts:
 
 | Part | Required | What it does |
 |---|---|---|
 | One Knowledge Product | yes | The assistant reads the stores of that product. |
-| One RAG strategy | yes | The strategy picks the store the assistant searches. |
+| One RAG strategy | yes | The strategy picks the store to search, or grades what the search found. |
 | One chat model | yes | The model writes the answer. |
 | One prompt template | no | The template becomes the assistant's system message. |
 | One guardrails config | no | The config checks the question and the answer. |
@@ -48,7 +48,7 @@ One renderer, `PipelineFields` (`PipelinesPage.tsx:106`), serves both the create
 | `Internal name` | yes, 2 characters or more | The record name. The API derives the `slug` from it. |
 | `Description` | yes, 8 characters or more | The pipeline description. The form hint reads `Shown as the assistant's name in chat.` |
 | `Knowledge Product` | yes | The product whose stores the assistant reads. |
-| `RAG Strategy` | yes | One strategy from the product's enabled destinations. |
+| `RAG Strategy` | yes | One retrieval mode or generation pattern the product can serve. |
 | `Prompt Template` | no | `None (default RAG prompt)`, or one saved template. |
 | `Guardrails Config` | no | `None`, or one saved config. An inactive config reads `{name} (inactive)`. |
 | `Chat Model` | yes | The generator model, from `getLiteLLMModels("chat")` against port `8007`. |
@@ -58,13 +58,15 @@ Field notes:
 - **Knowledge Product.** The option list holds only products with at least one enabled retrieval destination
   (`vector_qdrant`, `lexical_opensearch` or `relational_pgvector`). Each option reads
   `{name} — {n} destinations`. Below the select the page renders one chip per enabled destination, with the
-  store name from `destinationStoreLabel` (`frontend/src/api.ts:356`). While the list loads, the form is
+  store name from `destinationStoreLabel` (`frontend/src/api.ts:469`). While the list loads, the form is
   disabled and the hint reads `Loading knowledge products…`.
 - **RAG Strategy.** The page rebuilds this select from the selected product's destinations
-  (`frontend/src/api.ts:343-354`). Each option reads `{label} — {description}` from `RAG_STRATEGY_LABELS`
-  (`frontend/src/api.ts:317-322`). A new product resets the strategy to the first available option, because
-  the old strategy may need a store the new product does not have. When the product serves no strategy, the
-  select is disabled and the hint reads
+  (`frontend/src/api.ts:459-466`). Each option reads the label from `RAG_STRATEGY_LABELS`
+  (`frontend/src/api.ts:394-424`), and the options are grouped under `RAG_STRATEGY_GROUP_LABELS`
+  (`frontend/src/api.ts:426-429`): `Retrieval — chooses where to search` and
+  `Reasoning — grades what it found`. The description of the chosen strategy shows below the select. A new
+  product resets the strategy to the first available option, because the old strategy may need a store the
+  new product does not have. When the product serves no strategy, the select is disabled and the hint reads
   `This product has no enabled retrieval destination. Enable one in the Ingestion Manager.`
 
   **With no product chosen yet the list is empty by design**, and until 2026-09-23 that was also
@@ -72,7 +74,7 @@ Field notes:
   A user who opened the form and reached for the strategy first saw an empty control and reasonably
   reported it as a bug. The placeholder now reads **`Choose a Knowledge Product first`**, and the hint
   explains that the product decides the list and that Hybrid needs both the vector and the keyword store.
-  No strategy was ever lost: each product in the live database yields all four the moment it is selected.
+  No strategy was lost: each product in the live database yields every strategy it can serve when selected.
 - **Chat Model.** The list comes from
   `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`.
 - **Prompt Template.** The template is the system message. It is not a text pass-through: the retrieved
@@ -89,25 +91,36 @@ Field errors appear under the field in `.field-hint`. API errors appear in an `.
 
 ## 3. RAG Strategy
 
-| Strategy id | Label in the form | Store it reads | Destination it needs enabled |
+The strategies come in two kinds. A **retrieval mode** names the store to read. A **generation pattern**
+wraps the retrieval mode the product can serve and adds a grading step before the answer is written.
+
+| Strategy id | Label in the form | Store it reads, or the step it adds | Destination it needs enabled |
 |---|---|---|---|
 | `vector` | `Vector search` | Qdrant dense vectors | `vector_qdrant` |
 | `lexical` | `Keyword search` | OpenSearch BM25 | `lexical_opensearch` |
-| `relational` | `SQL search` | PostgreSQL pgvector | `relational_pgvector` |
 | `hybrid` | `Hybrid` | Qdrant dense vectors and OpenSearch BM25, fused by reciprocal rank fusion (k = 60) | `vector_qdrant` **and** `lexical_opensearch` |
+| `self_rag` | `Self-reflective` | Grades each passage, then checks the answer is grounded and rewrites it once if not | any retrieval destination |
+| `corrective` | `Corrective` | Grades each passage and answers only from the relevant ones, or says the sources do not cover it | any retrieval destination |
 
-Three rules decide the option list:
+A pattern reads `hybrid` when both the Qdrant and the OpenSearch store exist, and the single available
+store otherwise. Both patterns drop each passage that scores below `relevance_threshold` (default `0.5`)
+and abstain when nothing passes.
+
+Four rules decide the option list:
 
 1. `Hybrid` appears only when both the Qdrant and the OpenSearch destination are enabled. It reads both
    rankings, so one destination is not enough.
-2. `cache_redisvl` serves no strategy. That store caches answers. It does not hold a searchable copy of the
+2. `Self-reflective` and `Corrective` appear when the product has at least one enabled retrieval
+   destination. Each one wraps a retrieval mode, so one store is enough.
+3. `cache_redisvl` serves no strategy. That store caches answers. It does not hold a searchable copy of the
    chunks.
-3. The store names come from the Knowledge Product's destination config: `collection_name` for
+4. The store names come from the Knowledge Product's destination config: `collection_name` for
    `vector_qdrant`, `index_name` for `lexical_opensearch`, and `schema_name` plus `table_name` for
    `relational_pgvector`. The fanout derives them as `kp_<product-slug>_<id8>`.
 
-On the retrieval side the four strategies live in
-`rag-retrieval-chat-manager/backend/libs/rag-core/src/rag_core/assistant.py`, and the dispatch lives in
+On the retrieval side the strategies live in
+`rag-retrieval-chat-manager/backend/libs/rag-core/src/rag_core/assistant.py`, the two graders live in
+`rag-retrieval-chat-manager/backend/libs/rag-core/src/rag_core/reflection.py`, and the dispatch lives in
 `rag-retrieval-chat-manager/backend/libs/retrieval-core/src/retrieval_core/kp_retriever.py`.
 
 ---

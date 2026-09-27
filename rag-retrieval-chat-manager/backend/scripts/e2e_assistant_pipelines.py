@@ -208,9 +208,10 @@ def main() -> int:
         if status != 200:
             return 1
         strategies = [s["id"] for s in resolved["strategies_available"]]
+        # SQL search is retired; the two reasoning patterns replaced it.
         check(
-            "5 four strategies available",
-            strategies == ["vector", "lexical", "relational", "hybrid"],
+            "5 five strategies available",
+            strategies == ["vector", "lexical", "hybrid", "self_rag", "corrective"],
             str(strategies),
         )
         stores = resolved["stores"]
@@ -311,7 +312,7 @@ def main() -> int:
         )
 
         # ── 11. Every strategy answers ─────────────────────────────────────
-        for strategy in ("vector", "lexical", "relational", "hybrid"):
+        for strategy in ("vector", "lexical", "hybrid", "self_rag", "corrective"):
             status, _ = api.ingestion_call(
                 "PATCH", f"/api/pipelines/{pipeline_id}", {"rag_strategy": strategy}
             )
@@ -321,12 +322,23 @@ def main() -> int:
             status, result = api.retrieval_call(
                 "POST", f"/api/assistants/{slug}/chat", {"query": QUESTION, "retrieve_limit": 10}
             )
-            got = (result.get("sources") or []) if isinstance(result, dict) else []
-            check(
-                f"11 {strategy} returns sources",
-                status == 200 and len(got) > 0,
-                f"HTTP {status}, {len(got)} sources",
-            )
+            if strategy in ("self_rag", "corrective"):
+                # A reasoning pattern may legitimately abstain when the grader
+                # rejects every passage, so it is judged on answering at all
+                # rather than on returning sources.
+                text = (result.get("answer") or "") if isinstance(result, dict) else ""
+                check(
+                    f"11 {strategy} answers",
+                    status == 200 and bool(text.strip()),
+                    f"HTTP {status}, {len(text)} answer chars",
+                )
+            else:
+                got = (result.get("sources") or []) if isinstance(result, dict) else []
+                check(
+                    f"11 {strategy} returns sources",
+                    status == 200 and len(got) > 0,
+                    f"HTTP {status}, {len(got)} sources",
+                )
 
         # ── 12. The prompt template is in force ────────────────────────────
         if short_template_id:

@@ -381,15 +381,60 @@ export interface PipelinePatchRequest {
   model_settings?: ModelSettings | null;
 }
 
-/** The strategies an assistant may run, in the order the form shows them. */
-export const RAG_STRATEGY_LABELS: Record<string, { label: string; description: string }> = {
-  vector: { label: "Vector search", description: "Qdrant dense vectors" },
-  lexical: { label: "Keyword search", description: "OpenSearch BM25" },
-  relational: { label: "SQL search", description: "PostgreSQL pgvector" },
-  hybrid: { label: "Hybrid", description: "Vector and keyword, fused with reciprocal rank fusion" },
+/**
+ * The two kinds of strategy, which the picker groups.
+ *
+ * `retrieval` decides *where* to look: it names a store. `pattern` decides *how*
+ * to reason over what came back: it runs on whichever store the product has and
+ * adds a grading call, so it answers more carefully and more slowly.
+ */
+export type RAGStrategyKind = "retrieval" | "pattern";
+
+/** Labels and descriptions, kept word for word in step with the backend's STRATEGY_LABELS. */
+export const RAG_STRATEGY_LABELS: Record<
+  string,
+  { label: string; description: string; kind: RAGStrategyKind }
+> = {
+  vector: {
+    label: "Vector search",
+    description: "Qdrant dense vectors",
+    kind: "retrieval",
+  },
+  lexical: {
+    label: "Keyword search",
+    description: "OpenSearch BM25",
+    kind: "retrieval",
+  },
+  hybrid: {
+    label: "Hybrid",
+    description: "Vector and keyword, fused with reciprocal rank fusion",
+    kind: "retrieval",
+  },
+  self_rag: {
+    label: "Self-reflective",
+    description: "Grades each passage, then checks the answer is grounded and rewrites it once if not",
+    kind: "pattern",
+  },
+  corrective: {
+    label: "Corrective",
+    description: "Grades each passage and answers only from the relevant ones, or says the sources do not cover it",
+    kind: "pattern",
+  },
 };
 
-const RETRIEVAL_DESTINATIONS = ["vector_qdrant", "lexical_opensearch", "relational_pgvector"];
+/** The heading each group of the picker carries. */
+export const RAG_STRATEGY_GROUP_LABELS: Record<RAGStrategyKind, string> = {
+  retrieval: "Retrieval — chooses where to search",
+  pattern: "Reasoning — grades what it found",
+};
+
+/** The order the groups appear in, which decides the order of the options. */
+export const STRATEGY_KINDS: RAGStrategyKind[] = ["retrieval", "pattern"];
+
+// The destinations a retrieval mode can read. `relational_pgvector` is absent on
+// purpose: the fanout still writes it, but no strategy reads it any more, so a
+// product that enables only that one serves no strategy.
+const RETRIEVAL_DESTINATIONS = ["vector_qdrant", "lexical_opensearch"];
 
 /** The enabled destination types an assistant can read. */
 export function enabledRetrievalDestinations(
@@ -415,8 +460,11 @@ export function strategiesForDestinations(
   const strategies: string[] = [];
   if (enabled.has("vector_qdrant")) strategies.push("vector");
   if (enabled.has("lexical_opensearch")) strategies.push("lexical");
-  if (enabled.has("relational_pgvector")) strategies.push("relational");
   if (enabled.has("vector_qdrant") && enabled.has("lexical_opensearch")) strategies.push("hybrid");
+  // The reasoning patterns wrap whichever store the product has, so any enabled
+  // retrieval destination is enough. Order matches the backend's, which returns
+  // the retrieval modes first and the patterns after.
+  if (enabled.size > 0) strategies.push("self_rag", "corrective");
   return strategies;
 }
 
