@@ -14,7 +14,7 @@ from src.ingestion_service.core.indexer import FileIndexer, IndexContext, valida
 from src.ingestion_service.core.page_yielder import iter_file_pages
 from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
 from src.shared.config.settings import get_settings
-from src.shared.db.models import FileRecord, FileStatus, IndexModality, JobStatus, Pipeline, PipelineRun, IndexedFile
+from src.shared.db.models import FileRecord, FileStatus, IndexModality, JobStatus, Pipeline, PipelineRun, IndexedFile, Source
 
 logger = logging.getLogger(__name__)
 

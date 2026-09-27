@@ -618,16 +618,24 @@ Note the one asymmetry in the diagram: **the retrieval API reads the Qdrant on 6
 that the ingestion compose declares.** Two separate Qdrant instances are in play and they are not
 interchangeable:
 
-| Variable | Value | Holds |
-|---|---|---|
-| `QDRANT_URL` | `http://qdrant:6333` | The ingestion project's own store, on the `rag-shared` network |
-| `QDRANT_KP_URL` | `http://host.docker.internal:6335` | The **knowledge-product** vectors, on the host. This is what chat search reads |
+| Variable | Value | Holds | Who sets it |
+|---|---|---|---|
+| `QDRANT_URL` | `http://qdrant:6333` (container) | The scraper's store: `scrape_embeddings` | Scraper, and the legacy ingestion pipeline path |
+| `QDRANT_KP_URL` | `http://host.docker.internal:6335` | **Every `kp_*` collection** the assistants read | Ingestion fanout **and** retrieval |
 
-`libs/retrieval-core/src/retrieval_core/kp_retriever.py` resolves this as
-`qdrant_kp_url or qdrant_url`. So if `QDRANT_KP_URL` is **empty**, search silently falls back to the
-6333 instance, finds nothing, and the assistant answers with no context and no error. The retrieval
-`.env` sets `QDRANT_KP_URL` correctly, so the fallback never fires — but that is the one variable to
-check first if retrieval returns nothing.
+**Both projects must set `QDRANT_KP_URL`, and they must agree.** The ingestion fanout writes `kp_*`
+through it and the retrieval reads through it. Set it on one side only and the write and the read land on
+different servers: the assistant answers with no context, and the only clue is a Qdrant 404 naming a
+collection that exists on the other instance.
+
+`settings.qdrant_kp_url or settings.qdrant_url` is the resolution on both sides, so **an empty
+`QDRANT_KP_URL` silently falls back to `scrape_embeddings`'s server**. That fallback is what makes this
+mistake quiet. Set the variable explicitly in both `.env` files.
+
+The ingestion writes through this variable in four places: `_write_qdrant` and `_purge_qdrant` in
+`universal_fanout.py`, and the destination connection test and store inspector in
+`apps/api/routes/knowledge_products.py`. The legacy `indexer.py`, `sync_runner.py` and `vector/search.py`
+keep `qdrant_url`, because they write the scraper's `scrape_embeddings` collection.
 
 ### Verify the cross-project contract
 

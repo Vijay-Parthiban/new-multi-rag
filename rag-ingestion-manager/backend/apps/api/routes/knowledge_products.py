@@ -43,6 +43,7 @@ from src.shared.db.models import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_MODALITY_MODE,
+    DEFAULT_TEXT_EMBEDDING_MODEL,
     IngestionProfile,
     KnowledgeProduct,
     KnowledgeProductDestination,
@@ -1082,13 +1083,15 @@ async def test_destination_connection(product_id: uuid.UUID, req: TestConnection
 
     try:
         if dest_type == "vector_qdrant":
-            url = settings.qdrant_url
+            url = settings.qdrant_kp_url or settings.qdrant_url
             api_key = getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
             headers = {"api-key": api_key} if api_key else {}
 
+            # One target, the one the fanout actually writes to. A hardcoded
+            # fallback to localhost:6333 used to sit here, which inside a
+            # container is the container itself and can only report a false
+            # success.
             candidate_urls = [url]
-            if "http://localhost:6333" not in candidate_urls:
-                candidate_urls.append("http://localhost:6333")
 
             for cand_url in candidate_urls:
                 target = cand_url.rstrip("/")
@@ -1200,7 +1203,7 @@ async def inspect_destination_store(
     cfg = (dest_obj.config or {}) if dest_obj else {}
 
     if destination_type == "vector_qdrant":
-        url = settings.qdrant_url
+        url = settings.qdrant_kp_url or settings.qdrant_url
         api_key = getattr(settings, "qdrant_api_key", "qdrant") or "qdrant"
         coll_name = cfg.get("collection_name", "knowledge_qdrant_collection")
         headers = {"api-key": api_key} if api_key else {}

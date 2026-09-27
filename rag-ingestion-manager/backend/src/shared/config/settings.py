@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = "qdrant"
     qdrant_collection: str = "scrape_embeddings"
+    # The knowledge-product fanout writes its `kp_*` collections to a **different**
+    # Qdrant from the scraper's `scrape_embeddings`. `qdrant_url` above is the
+    # scraper's instance; this one holds every collection the assistants read.
+    # Leaving it empty falls back to `qdrant_url`, which is what a single-instance
+    # setup wants.
+    qdrant_kp_url: str = ""
     litellm_base_url: str = "http://host.docker.internal:4000"
     openai_api_key: str = "sk-bot"
     # Served by the LiteLLM proxy. "nvidia-embed-passage" is not, which made every

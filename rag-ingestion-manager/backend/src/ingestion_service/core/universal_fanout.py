@@ -953,7 +953,8 @@ async def purge_file_from_destinations(
 def _purge_qdrant(dest_config: dict[str, Any], source_id: str, file_key: str) -> None:
     settings = get_settings()
     collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
-    url = settings.qdrant_url
+    # Must match `_write_qdrant`, or a purge deletes from a store nothing wrote to.
+    url = settings.qdrant_kp_url or settings.qdrant_url
     api_key = settings.qdrant_api_key
     try:
         from qdrant_client import QdrantClient, models
@@ -1058,7 +1059,9 @@ def _write_qdrant(
 ) -> None:
     settings = get_settings()
     collection_name = dest_config.get("collection_name", "knowledge_qdrant_collection")
-    url = settings.qdrant_url
+    # The `kp_*` collections live on the knowledge-product Qdrant, which is a
+    # different instance from the scraper's `scrape_embeddings` store.
+    url = settings.qdrant_kp_url or settings.qdrant_url
     api_key = settings.qdrant_api_key
 
     points = []

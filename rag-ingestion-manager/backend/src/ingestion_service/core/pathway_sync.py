@@ -337,11 +337,17 @@ def start_local_fs_monitor(source_id: uuid.UUID) -> None:
     task = asyncio.create_task(_monitor_loop())
     _LOCAL_FS_MONITOR_TASKS[source_id] = task
 async def sync_local_dir_to_minio(
+    source_id: uuid.UUID | str,
     connector_id: uuid.UUID | str,
     config: dict[str, Any],
     bucket: str,
 ) -> dict[str, Any]:
-    """Sync a local filesystem directory to a MinIO bucket with full CRUD reflection (Add, Replace, Delete)."""
+    """Sync a local filesystem directory to a MinIO bucket with full CRUD reflection (Add, Replace, Delete).
+
+    The parameter order matches ``NifiSyncService._sync_local_dir_to_minio``, which is
+    the implementation the connector dispatch actually reaches. Both write the source
+    id into the object metadata, so the argument cannot be dropped.
+    """
     import os
     from pathlib import Path
     from src.shared.storage.s3_client import delete_object, head_object, list_objects, put_object, ensure_bucket
