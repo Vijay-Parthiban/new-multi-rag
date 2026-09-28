@@ -299,9 +299,13 @@ export interface KnowledgeDestinationOption {
   fields?: KnowledgeDestinationField[];
 }
 
+export type LiteLLMModelKind = "all" | "embedding" | "rerank" | "chat" | "vision" | "sparse";
+
 export interface LiteLLMModelOption {
   id: string;
-  kind: "embedding" | "chat" | "sparse";
+  // The mode LiteLLM reports for the model, never "all": that value only asks for
+  // every kind at once.
+  kind: Exclude<LiteLLMModelKind, "all">;
 }
 
 export interface LiteLLMModelsResponse {
@@ -482,7 +486,7 @@ export async function getDestinationOptions(): Promise<KnowledgeDestinationOptio
   return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-products/destinations/options");
 }
 
-export async function getLiteLLMModels(modelKind: "all" | "embedding" | "chat" | "sparse" = "all"): Promise<LiteLLMModelsResponse> {
+export async function getLiteLLMModels(modelKind: LiteLLMModelKind = "all"): Promise<LiteLLMModelsResponse> {
   return apiFetch<LiteLLMModelsResponse>(`/api/knowledge-products/config/litellm-models?model_kind=${modelKind}`);
 }
 

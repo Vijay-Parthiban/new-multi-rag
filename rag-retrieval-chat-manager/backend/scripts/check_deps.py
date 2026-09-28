@@ -79,8 +79,9 @@ print(f"  {'OTEL_EXPORTER_OTLP_ENDPOINT':32} {os.environ.get('OTEL_EXPORTER_OTLP
 
 print("\ndependencies:")
 http("ingestion API", f"{settings.ingestion_service_url.rstrip('/')}/api/knowledge-products")
-# The proxy answers 401 without a key, which still proves it is reachable.
-http("litellm proxy", f"{settings.litellm_base_url.rstrip('/')}/v1/models", expect=(200, 401))
+# The proxy answers 401 without a key, which still proves it is reachable. The model
+# list itself comes from here: the mode each model reports is what classifies it.
+http("litellm proxy", f"{settings.litellm_base_url.rstrip('/')}/v1/model/info", expect=(200, 401))
 http("guardrails service", f"{settings.guardrails_url.rstrip('/')}/health-check")
 http("opensearch", settings.opensearch_url)
 tcp("postgres", settings.database_url)

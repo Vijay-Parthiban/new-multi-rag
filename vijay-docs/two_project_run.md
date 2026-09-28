@@ -206,7 +206,7 @@ fanout.
 List what the proxy actually serves before you set anything:
 
 ```bash
-curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/models | head -60
+curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/model/info | head -60
 ```
 
 The proxy requires the key. It is the same value the backends send as `OPENAI_API_KEY`.
@@ -916,7 +916,7 @@ Run these after the platform is up. Each one proves a layer.
 | Qdrant 6333 | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | The scraper's collections, or empty. Without the header the answer is `401` |
 | OpenSearch | `curl -s "http://localhost:9200/_cat/indices?h=index"` | The `kp_*` indexes |
 | Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 16 installed validators |
-| LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/models` | The served models, 18 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
+| LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/model/info` | The served models with the `model_info.mode` each one reports, 21 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
 | Ingestion API | `curl -s http://localhost:8007/api/pipelines` | A JSON array |
 | Retrieval API | `curl -s http://localhost:8001/prompt-templates` | `{"count": N, "items": [...]}` |
 

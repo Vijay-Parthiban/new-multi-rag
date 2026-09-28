@@ -72,8 +72,10 @@ export default function DestinationConfigFields({
 
   const modelsForField = (field: KnowledgeDestinationField): LiteLLMModelOption[] => {
     if (!field.model_kind) return litellmModels
-    const filtered = litellmModels.filter((model) => model.kind === field.model_kind)
-    return filtered.length > 0 ? filtered : litellmModels
+    // Strict. Showing the whole list when nothing matched is how a rerank and an
+    // embedding model reached chat dropdowns: the field asked for a kind the
+    // backend never produced, so it silently offered every model instead.
+    return litellmModels.filter((model) => model.kind === field.model_kind)
   }
 
   const handleFieldChange = (field: KnowledgeDestinationField, raw: string) => {

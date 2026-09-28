@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import traceback
 import uuid
 from datetime import UTC, datetime
@@ -527,79 +528,129 @@ async def get_destination_options():
     return _destination_types()
 
 
+# LiteLLM reports every model's own mode at /v1/model/info. That is the only
+# reliable classification. Guessing from the name put All-MiniLM-L6-v2 and
+# nvidia-rerank in the chat list, because neither name carries a token the old
+# filter looked for, and both then appeared in chat model dropdowns.
+_MODE_TO_KIND = {
+    "embedding": "embedding",
+    "rerank": "rerank",
+    "chat": "chat",
+    "completion": "chat",
+    "vision": "vision",
+}
+
+# The sparse model is a fastembed model the proxy does not serve, so it can only
+# come from settings.
+_SPARSE_KIND = "sparse"
+
+# One proxy call serves every caller for a minute. The Ingestion Profiles editor
+# renders one model field per destination, so a single page mount asks several
+# times and each ask would otherwise be a fresh 45 KB round trip.
+_MODEL_INFO_TTL_S = 60.0
+_model_info_cache: tuple[float, list[dict[str, str]]] | None = None
+
+
+def _dedupe_models(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    """One entry per model id. The first classification of an id wins."""
+    seen: dict[str, dict[str, str]] = {}
+    for group in groups:
+        for model in group:
+            if model["id"] and model["id"] not in seen:
+                seen[model["id"]] = model
+    return list(seen.values())
+
+
+def _models_from_model_info(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Classify every entry of a `/v1/model/info` body by the mode it reports.
+
+    A model with no mode is left out. The point of this call is to classify, and
+    an unclassified entry would only reach a dropdown that cannot place it.
+    """
+    models: list[dict[str, str]] = []
+    for item in payload.get("data") or payload.get("models") or []:
+        if not isinstance(item, dict):
+            logger.info("litellm_model_skipped entry=%r", item)
+            continue
+        model_id = item.get("model_name") or item.get("id") or ""
+        mode = (item.get("model_info") or {}).get("mode")
+        kind = _MODE_TO_KIND.get(str(mode).strip().lower()) if mode else None
+        if not model_id or kind is None:
+            logger.info("litellm_model_skipped model=%s mode=%s", model_id, mode)
+            continue
+        models.append({"id": model_id, "kind": kind})
+    return models
+
+
+async def _fetch_model_info() -> list[dict[str, str]]:
+    """Every proxy model, tagged with the mode the proxy reports. Raises on failure."""
+    base = settings.litellm_base_url.rstrip("/")
+    headers = (
+        {"Authorization": f"Bearer {settings.openai_api_key}"} if settings.openai_api_key else {}
+    )
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{base}/v1/model/info", headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+    return _models_from_model_info(payload)
+
+
+async def _proxy_models() -> list[dict[str, str]]:
+    global _model_info_cache
+    if _model_info_cache and time.monotonic() - _model_info_cache[0] < _MODEL_INFO_TTL_S:
+        return _model_info_cache[1]
+    models = await _fetch_model_info()
+    _model_info_cache = (time.monotonic(), models)
+    return models
+
+
 @router.get("/config/litellm-models")
 async def list_litellm_models(
-    model_kind: Literal["all", "embedding", "chat", "sparse"] = Query("all"),
+    model_kind: Literal["all", "embedding", "rerank", "chat", "vision", "sparse"] = Query("all"),
 ):
-    """List models from the LiteLLM proxy (/v1/models) with env-based fallback."""
-    fallback_embedding = settings.unique_embedding_models
-    # Only models this deployment serves. The previous list offered gpt-4o-mini
-    # and gpt-4o, which the proxy here does not serve, so a user who hit the
-    # fallback picked a name that would fail at ingest time.
-    fallback_chat = [settings.summary_model, settings.caption_model]
-    fallback_sparse = [settings.sparse_embedding_model]
+    """Every model the proxy serves, grouped by the mode it reports about itself.
 
-    def _classify_model(model_id: str) -> str:
-        lowered = model_id.lower()
-        if any(token in lowered for token in ("embed", "embedding", "nvidia-embed", "bge", "e5")):
-            return "embedding"
-        if any(token in lowered for token in ("bm25", "sparse", "splade")):
-            return "sparse"
-        return "chat"
+    The mode comes from the proxy's `/v1/model/info`, so a model is listed under
+    the job it can do rather than under a guess made from its name.
+    """
+    sparse = (
+        [{"id": settings.sparse_embedding_model, "kind": _SPARSE_KIND}]
+        if settings.sparse_embedding_model
+        else []
+    )
 
     try:
-        base = settings.litellm_base_url.rstrip("/")
-        headers = {}
-        if settings.openai_api_key:
-            headers["Authorization"] = f"Bearer {settings.openai_api_key}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{base}/v1/models", headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        raw_models = payload.get("data") or payload.get("models") or []
-        models: list[dict[str, str]] = []
-        for item in raw_models:
-            if isinstance(item, str):
-                model_id = item
-            else:
-                model_id = item.get("id") or item.get("model_name") or ""
-            if not model_id:
-                continue
-            kind = _classify_model(model_id)
-            if model_kind != "all" and kind != model_kind:
-                continue
-            models.append({"id": model_id, "kind": kind})
-        if models:
-            return {
-                "source": "litellm",
-                "litellm_base_url": settings.litellm_base_url,
-                "models": models,
-                # The deployment's own choice. The proxy list order is not a
-                # preference, and its first embedding model may be one this
-                # deployment cannot use.
-                "default_embedding_model": settings.embedding_model,
-                "default_caption_model": settings.caption_model,
-            }
+        models = _dedupe_models(await _proxy_models(), sparse)
     except Exception as exc:
         logger.warning("litellm_models_fetch_failed error=%s", exc)
+        # Only models this deployment serves. The previous list offered gpt-4o-mini
+        # and gpt-4o, which the proxy here does not serve, so a user who hit the
+        # fallback picked a name that would fail at ingest time.
+        models = _dedupe_models(
+            [{"id": mid, "kind": "embedding"} for mid in settings.unique_embedding_models],
+            [{"id": settings.summary_model, "kind": "chat"}],
+            [{"id": settings.caption_model, "kind": "vision"}],
+            sparse,
+        )
+        return {
+            "source": "fallback",
+            "litellm_base_url": settings.litellm_base_url,
+            "models": [m for m in models if model_kind in ("all", m["kind"])],
+            "default_embedding_model": settings.embedding_model,
+            "default_caption_model": settings.caption_model,
+            "warning": "Could not reach the LiteLLM proxy; showing the models the environment names.",
+        }
 
-    fallback_map = {
-        "embedding": fallback_embedding,
-        "chat": fallback_chat,
-        "sparse": fallback_sparse,
-        "all": fallback_embedding + fallback_chat + fallback_sparse,
-    }
-    models = [
-        {"id": model_id, "kind": _classify_model(model_id)}
-        for model_id in dict.fromkeys(fallback_map[model_kind])
-    ]
+    if model_kind != "all":
+        models = [m for m in models if m["kind"] == model_kind]
     return {
-        "source": "fallback",
+        "source": "litellm",
         "litellm_base_url": settings.litellm_base_url,
         "models": models,
+        # The deployment's own choice. The proxy list order is not a preference,
+        # and its first embedding model may be one this deployment cannot use.
         "default_embedding_model": settings.embedding_model,
         "default_caption_model": settings.caption_model,
-        "warning": "Could not reach LiteLLM proxy; showing environment defaults.",
     }
 
 

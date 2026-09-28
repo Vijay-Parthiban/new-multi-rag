@@ -242,7 +242,7 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/sources` | `POST` | `/{source_id}/sync` | 200 | trigger sync for all connectors |
 | `/api/sources` | `POST` | `/{source_id}/events` | 200 | MinIO event webhook receiver |
 | `/api/knowledge-products` | `GET` | `/destinations/options` | 200 | destination types with the 15 typed field schemas, defaults and `namespace_fields` |
-| `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/models` listing, `model_kind` in `all\|embedding\|chat\|sparse`, `default_embedding_model`, `default_caption_model`, env fallback |
+| `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/model/info` listing classified by `model_info.mode`, `model_kind` in `all\|embedding\|rerank\|chat\|vision\|sparse`, `default_embedding_model`, `default_caption_model`, env fallback |
 | `/api/knowledge-products` | `GET` | `` | 200 | list products with sources and destinations, newest first |
 | `/api/knowledge-products` | `POST` | `` | 201 | create product (400 on duplicate name); an optional `ingestion_profile_id` copies that profile's destinations; registers the poller and starts ingestion |
 | `/api/knowledge-products` | `GET` | `/{product_id}/files` | 200 | ingested-file ledger, `?status=&limit=50&offset=0` -> `{"files": [...], "total": n}` |

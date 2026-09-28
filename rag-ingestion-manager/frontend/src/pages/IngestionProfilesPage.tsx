@@ -260,7 +260,10 @@ export default function IngestionProfilesPage() {
     profile.destinations.filter((d) => d.enabled).length;
 
   const embeddingModels = litellmModels.filter((m) => m.kind === "embedding");
-  const chatModels = litellmModels.filter((m) => m.kind === "chat");
+  // The caption model reads a figure and writes text, so it is a vision model.
+  // It used to be picked from the chat list, which offered models that cannot
+  // accept an image.
+  const visionModels = litellmModels.filter((m) => m.kind === "vision");
 
   const totalProfiles = profiles.length;
 
@@ -953,12 +956,12 @@ export default function IngestionProfilesPage() {
                             }}
                           >
                             <option value="">Select a model</option>
-                            {chatModels.map((m) => (
+                            {visionModels.map((m) => (
                               <option key={m.id} value={m.id}>
                                 {m.id}
                               </option>
                             ))}
-                            {formCaptionModel && !chatModels.some((m) => m.id === formCaptionModel) && (
+                            {formCaptionModel && !visionModels.some((m) => m.id === formCaptionModel) && (
                               <option value={formCaptionModel}>{formCaptionModel}</option>
                             )}
                           </select>
@@ -1018,7 +1021,8 @@ export default function IngestionProfilesPage() {
                 )}
                 {litellmModels.length > 0 && (
                   <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
-                    LiteLLM models loaded: {litellmModels.length} available for embedding, chat, and sparse fields.
+                    LiteLLM models loaded: {litellmModels.length} available for embedding, chat,
+                    vision, rerank and sparse fields.
                   </div>
                 )}
 

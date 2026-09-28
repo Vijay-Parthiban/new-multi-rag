@@ -382,14 +382,45 @@ integer-only, because the API declares them as integers.
 
 ### LiteLLM model picker
 
-`GET /api/knowledge-products/config/litellm-models?model_kind=<all|embedding|chat|sparse>` calls the LiteLLM proxy
-`/v1/models` path at the configured base URL, with a 10 s timeout and `Authorization: Bearer <openai_api_key>`
-when set. Models are classified by substring: `embed`/`embedding`/`nvidia-embed`/`bge`/`e5` → `embedding`;
-`bm25`/`sparse`/`splade` → `sparse`; otherwise `chat`. When the proxy is unreachable the endpoint answers
-`source: "fallback"` with the environment lists and a warning the Ingestion Profiles editor shows in amber.
+`GET /api/knowledge-products/config/litellm-models?model_kind=<all|embedding|rerank|chat|vision|sparse>` calls
+the LiteLLM proxy's **`/v1/model/info`** path at the configured base URL, with a 10 s timeout and
+`Authorization: Bearer <openai_api_key>` when set. Each entry carries `model_info.mode`, and that mode is what
+classifies the model:
+
+| `model_info.mode` | `kind` in the response |
+|---|---|
+| `embedding` | `embedding` |
+| `rerank` | `rerank` |
+| `chat` | `chat` |
+| `completion` | `chat` |
+| `vision` | `vision` |
+
+An entry with no mode, or a mode outside this table, is skipped and logged. The endpoint exists to classify, so
+an unclassified entry would only reach a dropdown that cannot place it.
+
+**The name is not consulted.** The previous version read `/v1/models` and guessed from substrings:
+`embed`/`embedding`/`nvidia-embed`/`bge`/`e5` → `embedding`; `bm25`/`sparse`/`splade` → `sparse`; otherwise
+`chat`. That put `All-MiniLM-L6-v2` and `nvidia-rerank` in the chat list, because neither name carries a token
+the filter looked for, and a user could then pick a model that cannot answer. The proxy states the mode, so
+there is nothing left to guess.
+
+`sparse` is the one kind the proxy cannot report. The sparse model is a fastembed model (`Qdrant/bm25`), not a
+proxy entry, so it always comes from `SPARSE_EMBEDDING_MODEL` and is merged into every response.
+
+The proxy result is cached for 60 s. The Ingestion Profiles editor renders one model field per destination, so a
+single page mount asks several times and each ask would otherwise be a fresh 45 KB round trip.
+
+When the proxy is unreachable the endpoint answers `source: "fallback"` with the models the environment names
+(`EMBEDDING_MODEL`, `SUMMARY_MODEL`, `CAPTION_MODEL`, `SPARSE_EMBEDDING_MODEL`) and a warning the Ingestion
+Profiles editor shows in amber. Those entries are classified by the kind each setting implies, not by inspecting
+the name.
 
 The response also carries `default_embedding_model` and `default_caption_model`. The Ingestion Profile editor
 uses them to preselect the deployment's models instead of the first proxy entry.
+
+**A caller that asks for one kind gets only that kind.** When a kind matches nothing the list is empty. It used
+to fall back to the whole list, which is how rerank and embedding models reached chat dropdowns in the first
+place.
 
 ---
 
