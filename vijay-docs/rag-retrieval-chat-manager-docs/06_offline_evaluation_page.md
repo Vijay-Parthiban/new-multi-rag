@@ -27,28 +27,83 @@ All requests go to the RAG API (`VITE_RAG_API_URL`, default `http://localhost:80
 
 ## 2. Evaluation Metrics
 
-Metrics are produced per stage by `eval_core`, stored per run item as `retrieval_metrics`, `rerank_metrics`, `generation_metrics` (`rag_db/models/evaluation.py:56-71`), and averaged at run level.
+### The RAG triad names the stage
+
+Three scores carry the headline, because each one reads a different pair of the three inputs a
+turn produces. That is what lets the numbers say *which* part of the pipeline failed instead of
+only *that* it failed.
+
+| Metric | Reads | A low score points at | Needs a reference? |
+|---|---|---|---|
+| `context_relevance` | question + retrieved passages | Retrieval | no |
+| `response_groundedness` | answer + those passages | Generation — invented | no |
+| `answer_relevancy` | answer + question | Generation — off the question | no |
+
+**None of the three needs a ground-truth answer**, so every row scores, including the
+`unanswerable` and `out_of_corpus` rows that a reference-based metric cannot cover. The
+reference-based numbers (`context_precision`, `context_recall`, `answer_correctness`) still
+compute when a reference exists, and sit beside the triad rather than in front of it.
+
+Sources: `eval_core/ragas_client.py` (`TRIAD_METRICS`, `calculate_triad_async`). RAGAS 0.4.3
+exposes `ContextRelevance`, `ResponseGroundedness` and `AnswerRelevancy` under
+`ragas.metrics.collections`, each taking exactly the fields above.
+
+### Attribution: reading the triad
+
+`eval_core/attribution.py` turns the three scores into one named stage. The rules, in order:
+
+```
+context_relevance below PASS_MARK            -> retrieval, or rerank when the reranked MRR
+                                                fell more than RERANK_LOSS_MARGIN below the
+                                                retrieved MRR (the evidence arrived and the
+                                                reranker buried it)
+otherwise response_groundedness below        -> generation_grounding
+otherwise answer_relevancy below             -> generation_relevance
+otherwise                                    -> healthy
+no score at all                              -> unknown
+```
+
+`PASS_MARK` is 0.7 and `RERANK_LOSS_MARGIN` is 0.05. Both are named constants, because they are
+the entire judgement.
+
+**A missing score is not a zero.** When one judge call fails, that metric is absent and the
+reading falls through to the metrics that did answer: two scores still separate the stages, and a
+fabricated zero would name a stage that never ran.
+
+**The reading is computed when a report is read**, not stored on the row. The raw numbers are
+enough to reproduce it, so the rules can change without re-running anything, and a run recorded
+before the triad still gets a reading for the rows that carry the needed keys. `GET /runs/{id}`
+carries the means, the per-stage counts and the dominant stage; `GET /runs/{id}/items` carries the
+per-row reading with its reason and evidence.
+
+### Every metric actually produced
+
+Metrics are produced per stage by `eval_core`, stored per run item as `retrieval_metrics`,
+`rerank_metrics`, `generation_metrics` (`rag_db/models/evaluation.py:56-71`), and averaged at run
+level.
 
 ```
 +--------------------+-----------------------------------------------------------------------+
 | Stage              | Metric keys actually produced                                         |
 +--------------------+-----------------------------------------------------------------------+
 | 1. Retrieval       | precision, recall, hit, mrr                                           |
-|    (formula-based) | Computed at k = 5; the k_values argument is accepted but not used.    |
+|    (formula-based) | Computed at k = 5.                                                    |
 | 2. Reranking       | mrr_before, mrr_after, mrr (= mrr_after), mrr_delta, kendall_tau,     |
 |                    | ndcg (k = 5)                                                          |
-| 3. Generation      | faithfulness, answer_relevancy (RAGAS); accuracy and                  |
-|    (RAGAS judge +  | answer_correctness only when the item has a ground_truth_answer.      |
-|     custom)        | behavior_match and keypoint_coverage (custom, no judge model)         |
+| 3. Generation      | context_relevance, response_groundedness, answer_relevancy (the       |
+|    (RAGAS judge +  | triad, no reference needed); faithfulness; accuracy,                  |
+|     custom)        | answer_correctness only when the item has a ground_truth_answer;      |
+|                    | behavior_match and keypoint_coverage (custom, no judge model)         |
 +--------------------+-----------------------------------------------------------------------+
 ```
 
-Sources: `eval_core/retrieval_metrics.py:50-60`, `eval_core/rerank_metrics.py:65-90`, `eval_core/ragas_client.py:165-241`.
+Sources: `eval_core/retrieval_metrics.py:50-60`, `eval_core/rerank_metrics.py:65-90`,
+`eval_core/ragas_client.py` (`calculate_generation_ragas_async`, `calculate_triad_async`).
 
 - **Source matching** is name-substring based after normalization (file basename, or URL netloc + path) plus an optional exact `page` comparison: `eval_core/source_match.py:17-27, 29-57, 98-121`.
-- `context_precision` / `context_recall` exist in `calculate_retrieval_ragas_async` (`ragas_client.py:117-163`) but the offline runner never calls it — `GoldenItemEvaluator.evaluate_item` only calls `compute_generation_ragas_metrics` (`eval_core/runner.py:90-95`). Offline run items therefore contain no context precision/recall values.
-- Generation metrics are skipped (empty dict) when `ragas_enabled` is false, the answer is blank, there are no contexts, or the item is excluded by the skip rule `label == "incorrect"` or `category in {"out_of_corpus", "unanswerable"}` (`ragas_client.py:15-16, 107-111, 130-133, 176-186`). The two custom metrics are not RAGAS metrics, so they still compute.
-- Judge model and transport: `settings.ragas_judge_model` (default `llama-3.3-70b-versatile`) through the LiteLLM proxy (`LITELLM_PROXY` / `LITELLM_BASE_URL` env, else `settings.litellm_base_url`, `/v1` appended) — `ragas_client.py:21-58`. A run can override the judge with `EvalRunConfig.judge_model`; the value is stored in the run `config`.
+- `context_precision` / `context_recall` exist in `calculate_retrieval_ragas_async` (`ragas_client.py:117-163`) but the offline runner never calls it — `GoldenItemEvaluator.evaluate_item` only calls `compute_generation_ragas_metrics` (`eval_core/runner.py:90-140`). Offline run items therefore contain no context precision/recall values.
+- Generation metrics are skipped (empty dict) when `ragas_enabled` is false, the answer is blank, or there are no contexts (`ragas_client.py`). The triad follows the same gate, since all three metrics read the answer or the contexts. The two custom metrics are not RAGAS metrics, so they still compute.
+- Judge model and transport: `settings.ragas_judge_model` through the LiteLLM proxy (`LITELLM_PROXY` / `LITELLM_BASE_URL` env, else `settings.litellm_base_url`, `/v1` appended). A run can override the judge with `EvalRunConfig.judge_model`; the value is stored in the run `config`.
 - **Custom generation metrics (not RAGAS)**: `behavior_match` is `1.0` when the answer behaves as the row's `expected_behavior` says it should (a `refuse_or_abstain` row wants an abstention, every other row wants a real answer). `keypoint_coverage` is the fraction of the row's `keypoints_covered` present in the answer, matched on the value side for a `label=value` entry. Rows whose keypoints are bare tags are not measurable, so the key is absent rather than `0.0`.
 
 **Aggregate metrics** (`rag_db/repositories/evaluation_repository.py:236-282`) average every numeric key of every *completed* item and prefix it with `mean_`:
@@ -58,20 +113,21 @@ Sources: `eval_core/retrieval_metrics.py:50-60`, `eval_core/rerank_metrics.py:65
   "retrieval":  { "mean_precision": 0.71, "mean_recall": 0.68, "mean_hit": 0.84, "mean_mrr": 0.63 },
   "reranker":   { "mean_mrr_before": 0.63, "mean_mrr_after": 0.79, "mean_mrr": 0.79,
                   "mean_mrr_delta": 0.16, "mean_kendall_tau": 0.41, "mean_ndcg": 0.81 },
-  "generation": { "mean_faithfulness": 0.92, "mean_answer_relevancy": 0.88,
+  "generation": { "mean_context_relevance": 0.79, "mean_response_groundedness": 0.93,
+                  "mean_answer_relevancy": 0.83, "mean_faithfulness": 0.92,
                   "mean_behavior_match": 0.95, "mean_keypoint_coverage": 0.77 },
   "categories": {
     "single_hop": { "retrieval": { "mean_recall": 0.91 }, "reranker": { "mean_ndcg": 0.88 },
-                    "generation": { "mean_faithfulness": 0.95 }, "item_count": 12 },
+                    "generation": { "mean_context_relevance": 0.88 }, "item_count": 12 },
     "multi_hop":  { "retrieval": { "mean_recall": 0.44 }, "reranker": { "mean_ndcg": 0.62 },
-                    "generation": { "mean_faithfulness": 0.81 }, "item_count": 9 }
+                    "generation": { "mean_context_relevance": 0.51 }, "item_count": 9 }
   },
   "item_count": 32,
   "config": { "retrieval_mode": "hybrid", "retrieve_limit": 20, "rerank_enabled": true, "...": "..." }
 }
 ```
 
-The exact key set follows what the items contain, so `mean_accuracy` / `mean_answer_correctness` appear only for items that had a ground-truth answer, and `mean_keypoint_coverage` is absent when no item is measurable. The `categories` block groups the same `mean_*` values by the row's `question_type` (falling back to `category`) and carries an `item_count` per group. The UI renders whatever numeric keys the selected stage block holds (`GoldenEvaluationsPage.tsx:176-256`).
+The exact key set follows what the items contain, so `mean_accuracy` / `mean_answer_correctness` appear only for items that had a ground-truth answer, and `mean_keypoint_coverage` is absent when no item is measurable. The `categories` block groups the same `mean_*` values by the row's `question_type` (falling back to `category`) and carries an `item_count` per group.
 
 ---
 
@@ -235,12 +291,49 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 |  Drill-down: question, category, route badge, expected sources, P/R/MRR, delta/NDCG/tau,      |
 |              Faith/Relev/Acc                                                                  |
 |  Metrics by Category: one row per question_type, stage means + item_count                     |
+|                                                                                               |
+|  RAG TRIAD: three bars — context relevance, groundedness, answer relevance                    |
+|             "13 of 19 scored rows pass. The weakest stage is Generation — off the question,    |
+|              which owns 4 of the failing rows."                                               |
+|             stage chips: Sound 13 · Generation — off the question 4 · Not scored 2            |
+|  [ Open full run details ]  -> /golden-evaluations/runs/<run_id>                              |
 +-----------------------------------------------------------------------------------------------+
 ```
 
-Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the evaluation-set panel (upload control for `.json` or `.csv`), the run panel (including the judge-model dropdown), the runs table and paging, the stage tabs and rubric table, the "Metrics by Category" panel, and the drill-down table. Rubric thresholds are 0.85 / 0.65. The "Metrics by Category" panel renders only if `aggregate_metrics.categories` exists, which the aggregation code now produces for every run.
+Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the evaluation-set panel (upload
+control for `.json` or `.csv`), the run panel (including the judge-model dropdown), the runs table
+and paging, the triad panel, the detail link, the rubric table and the "Metrics by Category" panel.
+Rubric thresholds are 0.85 / 0.65.
+
+**The triad panel** (`components/TriadPanel.tsx`) draws the three scores with a bar each, the
+threshold colouring (>=0.70 pass, 0.50-0.70 warn, below that fail), the run's reading sentence, and
+one chip per stage that has rows. It shows `not scored` for a metric the judge did not answer, which
+is deliberately different from `0.000`.
+
+**The run detail page** (`pages/EvalRunDetailPage.tsx`) serves `/golden-evaluations/runs/:runId`.
+It carries the run's configuration and timing, the same triad panel, and one expandable row per
+question. A row shows its own three scores, its stage badge with the reason, and, when opened, the
+answer beside the expected answer and both chunk lists: what the retriever returned and what
+survived the reranker. Seeing the two lists side by side is what makes a reranker fault visible,
+because the passage the answer needed is in the first list and not the second. A checkbox filters to
+the rows that have a problem.
+
+**Live view.** While a selected run is `queued` or `running` the page polls every 2.5 s and rebuilds
+both the run response and the row list, so the triad, the stage chips and the row count fill in as
+the worker writes each row. The detail page polls on the same interval. The timer stops as soon as
+the run reads `completed` or `failed`.
 
 The Strategy, Classifier, RAG Mode and Max Loops controls are gone: the offline evaluator runs `retrieve → rerank → generate` and has no router and no self-corrective loop, so they changed nothing.
+
+### What the 2026-09-28 refactor moved
+
+| Before | After |
+|---|---|
+| `Analytics & Rubric` and `Drill-down (Per-question)` tabs | The drill-down is its own page; the tabs are gone |
+| Stage means with no stage named | The triad, then a named failing stage with its reason |
+| Per-question table with P/R/MRR, delta/NDCG/tau, Faith/Relev/Acc | Per-question triad, stage badge, and both chunk lists |
+| Rows loaded only when a run finished | Rows and the reading refresh live while it runs |
+| `GoldenEvaluationsPage.tsx` 1331 lines | 1103 lines, plus `TriadPanel.tsx` and `EvalRunDetailPage.tsx` |
 
 ---
 

@@ -171,9 +171,15 @@ async def calculate_generation_ragas_async(
     contexts: list[str],
     ground_truth: str | None = None,
     judge_model: str | None = None,
+    include_answer_relevancy: bool = True,
 ) -> dict[str, float | None]:
-    """RAGAS generation metrics: faithfulness, and accuracy vs expected response."""
-    from ragas.metrics.collections import Faithfulness, AnswerRelevancy
+    """RAGAS generation metrics: faithfulness, and accuracy vs expected response.
+
+    `include_answer_relevancy=False` skips AnswerRelevancy. The triad already scores it from
+    the same question and answer, and scoring it twice is one extra judge call plus one extra
+    embedding call per row for a value the caller overwrites.
+    """
+    from ragas.metrics.collections import Faithfulness
 
     if not settings.ragas_enabled:
         return {}
@@ -196,14 +202,19 @@ async def calculate_generation_ragas_async(
         retrieved_contexts=contexts,
     )
 
-    relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=build_ragas_embeddings(settings))
-    # AnswerRelevancy.ascore only accepts user_input + response in ragas 0.4
-    rel_task = relevancy_scorer.ascore(
-        user_input=question,
-        response=answer,
-    )
+    tasks = [faith_task]
+    if include_answer_relevancy:
+        from ragas.metrics.collections import AnswerRelevancy
 
-    tasks = [faith_task, rel_task]
+        relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=build_ragas_embeddings(settings))
+        # AnswerRelevancy.ascore only accepts user_input + response in ragas 0.4
+        tasks.append(
+            relevancy_scorer.ascore(
+                user_input=question,
+                response=answer,
+            )
+        )
+
     correctness_task = None
     reference = (ground_truth or "").strip()
     if reference:
@@ -225,21 +236,128 @@ async def calculate_generation_ragas_async(
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     output: dict[str, float | None] = {}
-    f_val = _score_value(results[0], metric_name="faithfulness")
+    index = 0
+
+    f_val = _score_value(results[index], metric_name="faithfulness")
     if f_val is not None:
         output["faithfulness"] = f_val
+    index += 1
 
-    r_val = _score_value(results[1], metric_name="answer_relevancy")
-    if r_val is not None:
-        output["answer_relevancy"] = r_val
+    if include_answer_relevancy:
+        r_val = _score_value(results[index], metric_name="answer_relevancy")
+        if r_val is not None:
+            output["answer_relevancy"] = r_val
+        index += 1
 
-    if correctness_task is not None and len(results) > 2:
-        a_val = _score_value(results[2], metric_name="answer_correctness")
+    if correctness_task is not None and len(results) > index:
+        a_val = _score_value(results[index], metric_name="answer_correctness")
         if a_val is not None:
             output["accuracy"] = a_val
             output["answer_correctness"] = a_val
 
     return output
+
+
+# The RAG triad. Each metric reads a different pair of the three inputs a turn
+# produces, and that is what makes the three scores name a stage.
+TRIAD_METRICS = ("context_relevance", "response_groundedness", "answer_relevancy")
+
+
+async def calculate_triad_async(
+    settings: "Settings",
+    *,
+    question: str,
+    answer: str,
+    contexts: list[str],
+    judge_model: str | None = None,
+) -> dict[str, float | None]:
+    """The RAG triad: context relevance, response groundedness, answer relevancy.
+
+    Each metric reads a different pair of the three inputs, so the scores locate the
+    stage that failed:
+
+        context_relevance      question + contexts   reads the retrieval result alone
+        response_groundedness  answer   + contexts   reads the answer against its evidence
+        answer_relevancy       question + answer     reads the answer against the question
+
+    High context relevance with low groundedness means the right passages arrived and
+    the model invented anyway. Both high with low answer relevancy means the answer is
+    supported but does not address what was asked.
+
+    None of the three needs a reference answer, so every row scores, including the
+    unanswerable rows that ground truth cannot cover.
+
+    RAGAS's own context_precision and context_recall need a reference and so do not
+    run on those rows. The triad is the part that works on all of them, and the
+    retrieval_metrics block carries the reference-based numbers beside it.
+    """
+    from ragas.metrics.collections import (
+        AnswerRelevancy,
+        ContextRelevance,
+        ResponseGroundedness,
+    )
+
+    if not settings.ragas_enabled:
+        return {}
+
+    contexts = _normalize_contexts(contexts)
+    answer_text = (answer or "").strip()
+    if not answer_text:
+        logger.warning("Skipping the triad — answer is empty")
+        return {}
+    if not contexts:
+        logger.warning("Skipping the triad — no contexts")
+        return {}
+
+    llm = build_ragas_llm(settings, judge_model)
+
+    # Each call is independent: one judge failure must not erase the other two, because
+    # two scores with a gap are still a diagnosis and three blanks are not.
+    calls = {
+        "context_relevance": ContextRelevance(llm=llm).ascore(
+            user_input=question,
+            retrieved_contexts=contexts,
+        ),
+        "response_groundedness": ResponseGroundedness(llm=llm).ascore(
+            response=answer_text,
+            retrieved_contexts=contexts,
+        ),
+        "answer_relevancy": AnswerRelevancy(
+            llm=llm, embeddings=build_ragas_embeddings(settings)
+        ).ascore(
+            user_input=question,
+            response=answer_text,
+        ),
+    }
+
+    names = list(calls)
+    results = await asyncio.gather(*calls.values(), return_exceptions=True)
+
+    output: dict[str, float | None] = {}
+    for name, result in zip(names, results, strict=True):
+        value = _score_value(result, metric_name=name)
+        if value is not None:
+            output[name] = value
+    return output
+
+
+def compute_triad_metrics(
+    settings: "Settings",
+    *,
+    question: str,
+    answer: str,
+    contexts: list[str],
+    judge_model: str | None = None,
+) -> dict[str, float | None]:
+    return asyncio.run(
+        calculate_triad_async(
+            settings,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            judge_model=judge_model,
+        )
+    )
 
 
 async def calculate_eval_metrics_async(
@@ -309,6 +427,7 @@ def compute_generation_ragas_metrics(
     contexts: list[str],
     ground_truth: str | None = None,
     judge_model: str | None = None,
+    include_answer_relevancy: bool = True,
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_generation_ragas_async(
@@ -318,6 +437,7 @@ def compute_generation_ragas_metrics(
             contexts=contexts,
             ground_truth=ground_truth,
             judge_model=judge_model,
+            include_answer_relevancy=include_answer_relevancy,
         )
     )
 

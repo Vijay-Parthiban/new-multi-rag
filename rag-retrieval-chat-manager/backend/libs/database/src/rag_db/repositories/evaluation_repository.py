@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from statistics import mean
+from types import SimpleNamespace
 
 from sqlalchemy.orm import Session
 
@@ -109,6 +110,34 @@ class EvaluationRepository:
             .order_by(EvaluationRunItem.created_at.asc())
             .all()
         )
+
+    def list_run_item_metrics(self, run_id: uuid.UUID) -> list[SimpleNamespace]:
+        """The three metric blocks of every row, without the chunk payloads.
+
+        `list_run_items` returns whole rows, and `retrieved_chunks` / `reranked_chunks` hold
+        the full text of every passage the retrieval returned. The stage reading needs three
+        metric columns and nothing else, and the run route is polled every few seconds while
+        a run works, so reading the chunks there is a large payload per poll for data the
+        caller discards.
+        """
+        rows = (
+            self._session.query(
+                EvaluationRunItem.retrieval_metrics,
+                EvaluationRunItem.rerank_metrics,
+                EvaluationRunItem.generation_metrics,
+            )
+            .filter(EvaluationRunItem.run_id == run_id)
+            .order_by(EvaluationRunItem.created_at.asc())
+            .all()
+        )
+        return [
+            SimpleNamespace(
+                retrieval_metrics=row[0],
+                rerank_metrics=row[1],
+                generation_metrics=row[2],
+            )
+            for row in rows
+        ]
 
     def import_dataset(
         self,

@@ -850,6 +850,44 @@ export interface GoldenDatasetSummary {
   created_at: string | null;
 }
 
+/**
+ * The three scores that name a stage.
+ *
+ * Each reads a different pair of the inputs a turn produces: context relevance reads the
+ * question against the retrieved passages, groundedness reads the answer against those
+ * passages, and answer relevance reads the answer against the question. A missing key
+ * means the judge did not answer for that row, which is not the same as a zero.
+ */
+export type TriadScores = {
+  context_relevance?: number | null;
+  response_groundedness?: number | null;
+  answer_relevancy?: number | null;
+};
+
+/** The stage a row's or a run's scores point at. */
+export type DiagnosisStage =
+  | "healthy"
+  | "retrieval"
+  | "rerank"
+  | "generation_grounding"
+  | "generation_relevance"
+  | "unknown";
+
+export interface ItemDiagnosis {
+  stage: DiagnosisStage;
+  reason: string;
+  evidence: Record<string, any>;
+}
+
+export interface RunDiagnosis {
+  triad: TriadScores;
+  stage_counts: Record<DiagnosisStage, number>;
+  dominant_stage: DiagnosisStage | null;
+  dominant_label: string | null;
+  summary: string;
+  scored_items: number;
+}
+
 export interface EvalRunResponse {
   run_id: string;
   dataset_id: string;
@@ -865,6 +903,8 @@ export interface EvalRunResponse {
   created_at: string | null;
   started_at: string | null;
   completed_at: string | null;
+  /** Empty until at least one row has been scored. */
+  diagnosis?: RunDiagnosis | Record<string, never>;
 }
 
 export async function listChatSessions(limit = 50): Promise<ChatSession[]> {
@@ -1112,6 +1152,11 @@ export interface EvalRunItemRow {
   generation_metrics: Record<string, any> | null;
   category: string | null;
   error_message: string | null;
+  triad?: TriadScores;
+  diagnosis?: ItemDiagnosis;
+  /** What the retriever returned, and what survived the reranker. */
+  retrieved_chunks?: Array<Record<string, any>>;
+  reranked_chunks?: Array<Record<string, any>>;
 }
 
 export async function listEvaluationRunItems(runId: string): Promise<EvalRunItemRow[]> {

@@ -9,6 +9,7 @@ import FileViewerPage from "../pages/FileViewerPage";
 import PipelinesPage from "../pages/PipelinesPage";
 import ChatPage from "../pages/ChatPage";
 import EvaluationsPage from "../pages/EvaluationsPage";
+import EvalRunDetailPage from "../pages/EvalRunDetailPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
 import PromptsPage from "../pages/PromptsPage";
 import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
@@ -122,6 +123,9 @@ export default function AppLayout() {
   const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
   const isGoldenEvaluations = path === "/golden-evaluations";
+  // The run detail page lives under the evaluation page, so it must be matched before the
+  // exact comparison below and must not also switch the evaluation page on.
+  const isEvalRunDetail = /^\/golden-evaluations\/runs\/[^/]+/.test(path);
   const isGuardrailsConfig = path === "/guardrails/config";
   const isGuardrailsTraces = path === "/guardrails/traces";
   const isGuardrailsEvaluation = path === "/guardrails/evaluation";
@@ -201,6 +205,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isGoldenEvaluations}>
           <GoldenEvaluationsPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isEvalRunDetail}>
+          <EvalRunDetailPage />
         </PersistentPage>
 
         <PersistentPage visible={isGuardrailsConfig}>

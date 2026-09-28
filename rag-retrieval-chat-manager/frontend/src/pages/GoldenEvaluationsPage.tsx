@@ -1,11 +1,15 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
 import PageHeader from "../components/PageHeader";
+import TriadPanel from "../components/TriadPanel";
 import {
   createEvaluationRun,
   deleteGoldenDataset,
   destinationStoreLabel,
   EvalRunItemRow,
   EvalRunResponse,
+  RunDiagnosis,
   getEvaluationRun,
   getLiteLLMModels,
   GoldenDatasetSummary,
@@ -26,11 +30,6 @@ const PAGE_SIZE = 10;
 function formatMetric(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
   return value.toFixed(3);
-}
-
-function sourceLabel(src: string | { name: string; page?: number }): string {
-  if (typeof src === "string") return src;
-  return src.page != null ? `${src.name} (p.${src.page})` : src.name;
 }
 
 // MeanBarChart removed per request
@@ -434,6 +433,16 @@ export default function GoldenEvaluationsPage() {
   const [runsCount, setRunsCount] = useState(0);
   const [page, setPage] = useState(0);
   const [selectedRun, setSelectedRun] = useState<EvalRunResponse | null>(null);
+
+  const navigate = useNavigate();
+
+  // The backend reads the stage breakdown from the stored row metrics when it builds the run
+  // response, so this follows the current attribution rules rather than a value frozen at
+  // write time. Empty until at least one row scores.
+  const runDiagnosis = useMemo<RunDiagnosis | null>(() => {
+    const d = selectedRun?.diagnosis as RunDiagnosis | undefined;
+    return d && "stage_counts" in d ? d : null;
+  }, [selectedRun]);
   const [runItems, setRunItems] = useState<EvalRunItemRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -446,18 +455,6 @@ export default function GoldenEvaluationsPage() {
   // the choice is visible rather than implicit.
   const [judgeModel, setJudgeModel] = useState("");
   const [judgeModels, setJudgeModels] = useState<{ id: string; label: string }[]>([]);
-  const [activeTab, setActiveTab] = useState<"analytics" | "drilldown">("analytics");
-  const [drilldownCategory, setDrilldownCategory] = useState("all");
-  const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
-
-  function toggleItemExpanded(itemId: string) {
-    setExpandedItemIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
-      return next;
-    });
-  }
 
   const selectedPipeline = useMemo(
     () => pipelines.find((p) => p.id === pipelineId) || null,
@@ -548,42 +545,36 @@ export default function GoldenEvaluationsPage() {
     );
   }, [page, selectedDatasetId, loadRuns]);
 
-  // Poll active run
+  // The id, not the run object. The tick is what replaces the object, so depending on the
+  // object would tear the interval down and rebuild it on every tick, and a slow reply could
+  // land after the user picked another run and put the old one back.
+  const activeRunId =
+    selectedRun && selectedRun.status !== "completed" && selectedRun.status !== "failed"
+      ? selectedRun.run_id
+      : null;
+
+  // Follow a run while it works. The worker writes one row at a time and the run response
+  // carries a stage breakdown read from those rows, so refreshing both here is what makes
+  // the triad fill in as the run progresses rather than only at the end.
   useEffect(() => {
-    if (!selectedRun) return;
-    if (selectedRun.status === "completed" || selectedRun.status === "failed") return;
+    if (!activeRunId) return;
     const id = window.setInterval(async () => {
       try {
-        const updated = await getEvaluationRun(selectedRun.run_id);
+        const updated = await getEvaluationRun(activeRunId);
         setSelectedRun(updated);
         if (selectedDatasetId) await loadRuns(selectedDatasetId, page);
-        if (updated.status === "completed") {
-          const items = await listEvaluationRunItems(updated.run_id);
-          setRunItems(items);
-        }
+        const items = await listEvaluationRunItems(updated.run_id);
+        setRunItems(items);
       } catch {
         /* ignore transient poll errors */
       }
     }, 2500);
     return () => window.clearInterval(id);
-  }, [selectedRun, selectedDatasetId, page, loadRuns]);
+  }, [activeRunId, selectedDatasetId, page, loadRuns]);
 
   const totalPages = Math.max(1, Math.ceil(runsCount / PAGE_SIZE));
 
 
-
-  // All unique categories from run items (for drilldown filter)
-  const drilldownCategories = useMemo(() => {
-    const cats = Array.from(new Set(runItems.map(i => i.category || "Uncategorized")));
-    return ["all", ...cats.sort()];
-  }, [runItems]);
-
-  const filteredRunItems = useMemo(() =>
-    drilldownCategory === "all"
-      ? runItems
-      : runItems.filter(i => (i.category || "Uncategorized") === drilldownCategory),
-    [runItems, drilldownCategory],
-  );
 
   /** Upload a golden dataset file. CSV and JSON both work. */
   async function onUploadDataset(file: File) {
@@ -685,7 +676,6 @@ export default function GoldenEvaluationsPage() {
         setError(err instanceof Error ? err.message : "Failed to load run items");
       }
     }
-    setActiveTab("analytics"); // Open analytics by default on new run
   }
 
   const agg = (selectedRun?.aggregate_metrics || {}) as {
@@ -1025,23 +1015,34 @@ export default function GoldenEvaluationsPage() {
 
       {selectedRun && (
         <>
-          <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
-            <button
-              className={`btn btn-sm ${activeTab === "analytics" ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setActiveTab("analytics")}
-            >
-              Analytics & Rubric
-            </button>
-            <button
-              className={`btn btn-sm ${activeTab === "drilldown" ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setActiveTab("drilldown")}
-            >
-              Drill-down (Per-question)
-            </button>
+          {/* The triad leads. It is the part that names a stage, so everything below it
+              is the evidence for that reading rather than the headline. */}
+          <div style={{ marginBottom: "1rem" }}>
+            <TriadPanel triad={runDiagnosis?.triad ?? {}} diagnosis={runDiagnosis} />
           </div>
 
-          {activeTab === "analytics" && (
-            <>
+          <div
+            style={{
+              display: "flex",
+              gap: "0.75rem",
+              alignItems: "center",
+              marginBottom: "1rem",
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => navigate(`/golden-evaluations/runs/${selectedRun.run_id}`)}
+            >
+              Open full run details
+            </button>
+            <span className="muted" style={{ fontSize: "0.78rem" }}>
+              Per-question triad, the passages the model actually read, and the stage each row
+              points at.
+            </span>
+          </div>
+
               {/* ── Overall KPIs with stage tabs + chart ────────────────── */}
               <OverallKpis agg={agg} />
 
@@ -1095,234 +1096,6 @@ export default function GoldenEvaluationsPage() {
                 </div>
                 <RubricTable items={runItems} status={selectedRun.status} />
               </div>
-            </>
-          )}
-
-          {activeTab === "drilldown" && (
-            <div className="panel">
-              <div className="panel-header">
-                <h3 className="panel-title">Per-question drill-down</h3>
-              </div>
-              {runItems.length === 0 ? (
-                <p className="panel-empty">
-                  {selectedRun.status === "completed"
-                    ? "No item rows returned."
-                    : "Item metrics appear when the run completes."}
-                </p>
-              ) : (
-                <>
-                  {/* Category filter */}
-                  <div style={{ padding: "0.75rem 1rem", display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                    <label className="muted" style={{ fontSize: "0.85rem" }}>Filter by category:</label>
-                    <select
-                      className="input"
-                      style={{ width: "auto", minWidth: 200 }}
-                      value={drilldownCategory}
-                      onChange={(e) => setDrilldownCategory(e.target.value)}
-                    >
-                      {drilldownCategories.map(c => (
-                        <option key={c} value={c}>{c === "all" ? "All Categories" : c}</option>
-                      ))}
-                    </select>
-                    <span className="muted" style={{ fontSize: "0.8rem" }}>
-                      {filteredRunItems.length} of {runItems.length} items
-                    </span>
-                  </div>
-                  <div className="repo-table-wrap">
-                    <table className="repo-table">
-                      <thead>
-                        <tr>
-                          <th>Question</th>
-                          <th>Category</th>
-                          <th>Route</th>
-                          <th>Expected sources</th>
-                          <th>Retrieval</th>
-                          <th>Rerank</th>
-                          <th>Generation</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredRunItems.map((item) => {
-                          const scIters = Array.isArray(item.generation_metrics?.sc_iterations)
-                            ? (item.generation_metrics.sc_iterations as Array<Record<string, any>>)
-                            : [];
-                          const hasLoops = scIters.length > 0;
-                          const isExpanded = expandedItemIds.has(item.item_id);
-                          // Parent row: final/latest metrics only (top-level payload = last CRAG loop)
-                          const latestIter = hasLoops ? scIters[scIters.length - 1] : null;
-                          const parentRet = item.retrieval_metrics || latestIter?.retrieval;
-                          const parentRnk = item.rerank_metrics || latestIter?.rerank;
-                          const parentGen = item.generation_metrics;
-
-                          return (
-                            <Fragment key={item.item_id}>
-                              <tr>
-                                <td>
-                                  <div style={{ display: "flex", gap: "0.35rem", alignItems: "flex-start" }}>
-                                    {hasLoops && (
-                                      <button
-                                        type="button"
-                                        className="btn btn-sm btn-ghost"
-                                        aria-expanded={isExpanded}
-                                        title={isExpanded ? "Hide CRAG loops" : "Show CRAG loops"}
-                                        onClick={() => toggleItemExpanded(item.item_id)}
-                                        style={{
-                                          padding: "0 0.35rem",
-                                          minWidth: 28,
-                                          fontSize: "0.7rem",
-                                          lineHeight: 1.4,
-                                          flexShrink: 0,
-                                        }}
-                                      >
-                                        {isExpanded ? "▼" : "▶"}
-                                      </button>
-                                    )}
-                                    <div>
-                                      <div style={{ maxWidth: 260 }}>{item.question || "—"}</div>
-                                      <div className="muted" style={{ fontSize: "0.75rem" }}>
-                                        {item.status}
-                                        {hasLoops && (
-                                          <span style={{ marginLeft: "0.35rem", color: "var(--accent, #3b82f6)" }}>
-                                            · {scIters.length} loop{scIters.length !== 1 ? "s" : ""}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td>
-                                  {item.category ? (
-                                    <span
-                                      style={{
-                                        background: "var(--surface-2, rgba(255,255,255,0.06))",
-                                        border: "1px solid var(--border)",
-                                        borderRadius: 4,
-                                        padding: "0.15rem 0.45rem",
-                                        fontSize: "0.72rem",
-                                        fontFamily: "monospace",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {item.category}
-                                    </span>
-                                  ) : (
-                                    <span className="muted">—</span>
-                                  )}
-                                </td>
-                                <td>
-                                  {(() => {
-                                    const actualRoute: string | undefined =
-                                      item.generation_metrics?.route as string | undefined;
-                                    const routerOn = selectedRun?.config?.router_enabled;
-                                    const mode = selectedRun?.config?.rag_mode || "normal";
-                                    const derivedKey = actualRoute || (routerOn ? "unknown" : mode);
-                                    const routeMap: Record<string, { icon: string; label: string; bg: string }> = {
-                                      greeting: { icon: "💬", label: "Greeting", bg: "rgba(59,130,246,.15)" },
-                                      normal: { icon: "🔍", label: "Normal RAG", bg: "rgba(34,197,94,.15)" },
-                                      simple_rag_auto: { icon: "🔍", label: "Simple RAG (Auto)", bg: "rgba(34,197,94,.15)" },
-                                      self_corrective: { icon: "🔄", label: "Self-Corrective", bg: "rgba(139,92,246,.15)" },
-                                      self_corrective_auto: { icon: "⚡", label: "CRAG (Auto)", bg: "rgba(245,158,11,.15)" },
-                                      unknown: { icon: "⚡", label: "Intelligent (Auto)", bg: "rgba(245,158,11,.15)" },
-                                    };
-                                    const rt = routeMap[derivedKey] || routeMap["normal"];
-                                    return (
-                                      <span title={actualRoute ? `Actual route: ${actualRoute}` : "Derived from run config"} style={{
-                                        fontSize: "0.72rem",
-                                        background: rt.bg,
-                                        borderRadius: 10,
-                                        padding: "1px 7px",
-                                        fontWeight: 600,
-                                        whiteSpace: "nowrap",
-                                        border: "1px solid rgba(255,255,255,0.08)",
-                                      }}>
-                                        {rt.icon} {rt.label}
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                                <td style={{ fontSize: "0.8rem" }}>
-                                  {(item.expected_sources || []).map(sourceLabel).join(", ") || "—"}
-                                </td>
-                                <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                  {parentRet
-                                    ? <>P {formatMetric(parentRet.precision)} · R{" "}
-                                      {formatMetric(parentRet.recall)} · MRR{" "}
-                                      {formatMetric(parentRet.mrr)}</>
-                                    : <span className="muted">—</span>}
-                                </td>
-                                <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                  {parentRnk
-                                    ? <>Δ {formatMetric(parentRnk.mrr_delta)} · NDCG{" "}
-                                      {formatMetric(parentRnk.ndcg)} · τ{" "}
-                                      {formatMetric(parentRnk.kendall_tau)}</>
-                                    : <span className="muted">—</span>}
-                                </td>
-                                <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                  Faith {formatMetric(parentGen?.faithfulness)} · Relev{" "}
-                                  {formatMetric(parentGen?.answer_relevancy)} · Acc{" "}
-                                  {formatMetric(parentGen?.accuracy || parentGen?.answer_correctness)}
-                                </td>
-                              </tr>
-                              {isExpanded && scIters.map((iter, idx) => {
-                                const loop = iter.loop ?? idx + 1;
-                                const rRet = iter.retrieval || {};
-                                const rRnk = iter.rerank || {};
-                                const rGen = iter.generation || {};
-                                const isLatest = idx === scIters.length - 1;
-                                return (
-                                  <tr
-                                    key={`${item.item_id}-loop-${loop}`}
-                                    style={{ background: "var(--surface-2, rgba(255,255,255,0.02))" }}
-                                  >
-                                    <td colSpan={4} style={{ paddingLeft: "2.25rem", fontSize: "0.75rem" }}>
-                                      <span style={{ fontWeight: 700, color: "var(--accent, #3b82f6)" }}>
-                                        Loop {loop}
-                                      </span>
-                                      {isLatest && (
-                                        <span className="muted" style={{ marginLeft: "0.4rem", fontSize: "0.68rem" }}>
-                                          (latest)
-                                        </span>
-                                      )}
-                                      {iter.query && (
-                                        <div className="muted" style={{ marginTop: "0.15rem", fontSize: "0.7rem", maxWidth: 420 }}>
-                                          Query: {String(iter.query)}
-                                        </div>
-                                      )}
-                                    </td>
-                                    <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                      {Object.keys(rRet).length > 0
-                                        ? <>P {formatMetric(rRet.precision)} · R{" "}
-                                          {formatMetric(rRet.recall)} · MRR{" "}
-                                          {formatMetric(rRet.mrr)}</>
-                                        : <span className="muted">—</span>}
-                                    </td>
-                                    <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                      {Object.keys(rRnk).length > 0
-                                        ? <>Δ {formatMetric(rRnk.mrr_delta)} · NDCG{" "}
-                                          {formatMetric(rRnk.ndcg)} · τ{" "}
-                                          {formatMetric(rRnk.kendall_tau)}</>
-                                        : <span className="muted">—</span>}
-                                    </td>
-                                    <td className="mono" style={{ fontSize: "0.75rem" }}>
-                                      {Object.keys(rGen).length > 0
-                                        ? <>Faith {formatMetric(rGen.faithfulness)} · Relev{" "}
-                                          {formatMetric(rGen.answer_relevancy)} · Acc{" "}
-                                          {formatMetric(rGen.accuracy ?? rGen.answer_correctness)}</>
-                                        : <span className="muted">—</span>}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
         </>
       )
       }

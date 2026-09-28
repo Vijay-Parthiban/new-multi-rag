@@ -76,6 +76,12 @@ def compute_rerank_metrics(
         "mrr_after": mrr_after,
         "mrr": mrr_after,
         "mrr_delta": mrr_after - mrr_before,
+        # `before` holds every retrieved chunk and `after` holds the top-k that reached the
+        # model, so mrr_before and mrr_after are taken over different depths. The difference
+        # then includes the plain truncation, and reading it as a reranker fault blames the
+        # reranker for the retriever's low rank. This is the same measurement at the same
+        # depth, which is the only pair a stage reading can compare.
+        "mrr_before_at_k": mrr(before[: len(after)] or before, expected_sources),
         "kendall_tau": kendall_tau_rank_correlation(before, after),
         "ndcg": ndcg_at_k(after, expected_sources, k),
     }

@@ -5,12 +5,20 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from eval_core.attribution import (
+    STAGE_LABELS,
+    Diagnosis,
+    diagnose,
+    dominant_stage,
+    stage_counts,
+)
 from eval_core.dataset_schema import (
     GoldenDatasetItemPayload,
     GoldenDatasetPayload,
     parse_golden_dataset_csv,
     parse_golden_dataset_json,
 )
+from eval_core.ragas_client import TRIAD_METRICS
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
@@ -79,6 +87,9 @@ class EvalRunResponse(BaseModel):
     created_at: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+    # The triad means and the stage breakdown, read from the stored per-row metrics when
+    # this response is built. Empty while no row has been scored yet.
+    diagnosis: dict = Field(default_factory=dict)
 
 
 class EvaluationRunStatItem(BaseModel):
@@ -413,6 +424,17 @@ class EvalRunItemResponse(BaseModel):
     generation_metrics: dict | None = None
     category: str | None = None
     error_message: str | None = None
+    # The three triad scores on their own, so a reader does not have to know which key in
+    # generation_metrics holds which. Absent keys mean the judge did not answer for that row.
+    triad: dict = Field(default_factory=dict)
+    # The stage this row's scores point at, with the reason and the numbers behind it.
+    # Computed when the report is read, from the metrics above, so the rules can change
+    # without re-running the evaluation.
+    diagnosis: dict = Field(default_factory=dict)
+    # What the retriever returned, and what survived the reranker. The detail page shows
+    # both so a reader can see the passage the answer should have used.
+    retrieved_chunks: list = Field(default_factory=list)
+    reranked_chunks: list = Field(default_factory=list)
 
 
 class EvalRunItemsResponse(BaseModel):
@@ -461,6 +483,8 @@ def list_eval_run_items(
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         run_items = repo.list_run_items(run_id)
+        # The reranker can only be blamed when the run had it on.
+        run_rerank_enabled = (run.config or {}).get("rerank_enabled")
         items: list[EvalRunItemResponse] = []
         for ri in run_items:
             di = ri.dataset_item
@@ -479,6 +503,15 @@ def list_eval_run_items(
                     generation_metrics=ri.generation_metrics,
                     category=meta.get("category"),
                     error_message=ri.error_message,
+                    triad=_item_triad(ri.generation_metrics),
+                    diagnosis=_item_diagnosis(
+                        ri.retrieval_metrics,
+                        ri.rerank_metrics,
+                        ri.generation_metrics,
+                        rerank_enabled=run_rerank_enabled,
+                    ).as_dict(),
+                    retrieved_chunks=ri.retrieved_chunks or [],
+                    reranked_chunks=ri.reranked_chunks or [],
                 )
             )
     return EvalRunItemsResponse(run_id=run_id, count=len(items), items=items)
@@ -519,11 +552,125 @@ def get_eval_run(run_id: uuid.UUID, request: Request) -> EvalRunResponse:
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         progress = repo.get_run_progress(run.id)
-        return _build_run_response(run, progress)
+        # The stage breakdown needs every row's metrics and nothing else. Reading the whole
+        # rows here would pull every chunk's text on a route the page polls every 2.5 s.
+        items = repo.list_run_item_metrics(run.id)
+        return _build_run_response(run, progress, items)
 
 
 def _dt_iso(value) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _item_triad(generation_metrics: dict | None) -> dict[str, float]:
+    """The three triad scores from a row's stored metrics.
+
+    A metric the judge did not answer for is absent rather than zero, so the means
+    below cover exactly the rows that were scored for it.
+    """
+    metrics = generation_metrics or {}
+    return {
+        name: float(metrics[name])
+        for name in TRIAD_METRICS
+        if isinstance(metrics.get(name), (int, float))
+    }
+
+
+def _item_diagnosis(
+    retrieval_metrics: dict | None,
+    rerank_metrics: dict | None,
+    generation_metrics: dict | None,
+    *,
+    rerank_enabled: bool | None = True,
+) -> Diagnosis:
+    rerank = rerank_metrics or {}
+    return diagnose(
+        _item_triad(generation_metrics),
+        # `mrr_before_at_k` is the retrieved ranking cut to the depth the reranker produced,
+        # which is the only pair that isolates the reranker's own effect. It is absent on runs
+        # recorded before it existed, so the score over every retrieved chunk is the fallback.
+        retrieval_mrr=_as_float(rerank.get("mrr_before_at_k"))
+        if _as_float(rerank.get("mrr_before_at_k")) is not None
+        else _as_float((retrieval_metrics or {}).get("mrr")),
+        rerank_mrr=_as_float(rerank.get("mrr_after")),
+        rerank_enabled=rerank_enabled,
+    )
+
+
+def _as_float(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _mean_triad(triads: list[dict[str, float]]) -> dict[str, float | None]:
+    """The mean of each triad metric, over the rows that scored it."""
+    return {
+        name: (
+            round(sum(t[name] for t in triads if name in t) / scored, 4)
+            if (scored := sum(1 for t in triads if name in t))
+            else None
+        )
+        for name in TRIAD_METRICS
+    }
+
+
+def _diagnosis_summary(counts: dict[str, int], dominant: str | None) -> str:
+    # `unknown` means the row produced no reading at all, so it can neither pass nor fail.
+    # Counting it as scored is how a run that read nothing printed "All 65 scored rows pass".
+    scored = sum(n for stage, n in counts.items() if stage != "unknown")
+    unscored = counts.get("unknown", 0)
+    if not scored:
+        if unscored:
+            return (
+                f"No row produced a readable score ({unscored} unscored). That is a run problem, "
+                "not a pipeline verdict: check the row errors and the worker log."
+            )
+        return "No row has been scored yet."
+    healthy = counts.get("healthy", 0)
+    tail = f" {unscored} row(s) produced no score and are not counted." if unscored else ""
+    if dominant is None:
+        return (
+            f"All {scored} scored rows pass the triad. The retriever found relevant passages, "
+            f"the answers stay inside them, and they address the questions.{tail}"
+        )
+    label = STAGE_LABELS.get(dominant, dominant)
+    return (
+        f"{healthy} of {scored} scored rows pass. The weakest stage is {label}, which owns "
+        f"{counts.get(dominant, 0)} of the failing rows. Fix that stage first: the others "
+        f"cannot compensate for it.{tail}"
+    )
+
+
+def _run_diagnosis(items: list, config: dict | None = None) -> dict:
+    """The triad means and the stage breakdown for a whole run.
+
+    Read from the stored per-row metrics rather than from the run's aggregate, so the
+    breakdown follows the current rules and also works on runs that predate them.
+    """
+    # The reranker can only be blamed when it ran, and that is a property of the run, not of a
+    # row. `None` keeps the historical reading for a config that does not say.
+    rerank_enabled = (config or {}).get("rerank_enabled")
+    diagnoses = [
+        _item_diagnosis(
+            i.retrieval_metrics,
+            i.rerank_metrics,
+            i.generation_metrics,
+            rerank_enabled=rerank_enabled,
+        )
+        for i in items
+    ]
+    counts = stage_counts(diagnoses)
+    dominant = dominant_stage(counts)
+    return {
+        "triad": _mean_triad([_item_triad(i.generation_metrics) for i in items]),
+        "stage_counts": counts,
+        "dominant_stage": dominant,
+        "dominant_label": STAGE_LABELS.get(dominant) if dominant else None,
+        "summary": _diagnosis_summary(counts, dominant),
+        # Rows that produced no reading are counted in stage_counts but not here, so this
+        # number always equals the rows the summary reasons about.
+        "scored_items": sum(n for stage, n in counts.items() if stage != "unknown"),
+        "unscored_items": counts.get("unknown", 0),
+    }
 
 
 def _run_error_message(status: str, aggregate_metrics: dict | None) -> str | None:
@@ -533,7 +680,7 @@ def _run_error_message(status: str, aggregate_metrics: dict | None) -> str | Non
     return str(error) if error else None
 
 
-def _build_run_response(run, progress: dict) -> EvalRunResponse:
+def _build_run_response(run, progress: dict, items: list | None = None) -> EvalRunResponse:
     return EvalRunResponse(
         run_id=run.id,
         dataset_id=run.dataset_id,
@@ -545,6 +692,7 @@ def _build_run_response(run, progress: dict) -> EvalRunResponse:
         created_at=_dt_iso(run.created_at),
         started_at=_dt_iso(run.started_at),
         completed_at=_dt_iso(run.completed_at),
+        diagnosis=_run_diagnosis(items, run.config) if items else {},
     )
 
 

@@ -12,7 +12,7 @@ from reranker_core import build_reranker
 from retrieval_core import Retriever
 
 from eval_core.custom_metrics import compute_custom_metrics
-from eval_core.ragas_client import compute_generation_ragas_metrics
+from eval_core.ragas_client import compute_generation_ragas_metrics, compute_triad_metrics
 from eval_core.rerank_metrics import compute_rerank_metrics
 from eval_core.retrieval_metrics import compute_retrieval_metrics
 from eval_core.source_match import ExpectedSource, parse_expected_sources
@@ -107,7 +107,23 @@ class GoldenItemEvaluator:
             contexts=contexts,
             ground_truth=item.ground_truth_answer,
             judge_model=judge_model,
+            # The triad scores answer_relevancy from the same question and answer below, so
+            # scoring it here too would be a second judge call for a value that is overwritten.
+            include_answer_relevancy=False,
         )
+        # The triad reads the retrieved contexts and the answer, so it belongs beside the
+        # other generation metrics. It runs even when the dataset carries no ground truth,
+        # which is what lets an unanswerable row still name a failing stage. The stage
+        # reading itself is computed when a report is read, from these stored numbers, so
+        # the rules can change without re-running a run.
+        triad = compute_triad_metrics(
+            self._settings,
+            question=item.question,
+            answer=generation.answer,
+            contexts=contexts,
+            judge_model=judge_model,
+        )
+        generation_metrics = {**generation_metrics, **triad}
         # The dataset's own checks ride along in the same block, so the aggregate picks them
         # up with no new column and no new stage. A key is present only when the row carried
         # the input for it, so each mean covers exactly the rows that asked for it.
