@@ -241,26 +241,43 @@ workspace members.
 The backend reads `backend/.env`:
 
 ```ini
-DATABASE_URL=sqlite+aiosqlite:///storage/ingestion.db
+DATABASE_URL=postgresql://ingestion:ingestion@localhost:5432/ingestion
 STORAGE_PATH=storage
 REDIS_URL=redis://localhost:6379/0
-QDRANT_URL=http://localhost:6335
+QDRANT_URL=http://localhost:6333
+QDRANT_KP_URL=http://localhost:6335
 MINIO_ENDPOINT=localhost:9000
 OPENSEARCH_URL=http://localhost:9200
 ```
 
-Two notes on `DATABASE_URL`:
+**PostgreSQL is the only database.** This file used to set
+`DATABASE_URL=sqlite+aiosqlite:///storage/ingestion.db`, and `init_db` in
+`src/shared/db/session.py` used to catch a failed Postgres connection and switch the whole process
+to that SQLite file. The service then served whatever stale rows the file held, for as long as it
+stayed up, after printing one line to stdout.
 
-- **SQLite**, as above, keeps the ingestion metadata in `backend/storage/ingestion.db`. The service
-  creates the file, adds missing columns and renames legacy tables on start. This is the setting the
-  platform runs on today.
-- **PostgreSQL** is the other option, for example
-  `postgresql://ingestion:ingestion@localhost:5432/ingestion`. The service then creates its tables in
-  that database. If PostgreSQL is unreachable it falls back to the SQLite file, so set this value
-  deliberately rather than by accident.
+That is not theoretical. It broke chat on 2026-09-28: a host run had written SQLite while every
+container read Postgres, so `GET /api/pipelines` returned a pipeline linked to a deleted knowledge
+product. The chat page read that pipeline and asked Qdrant for a collection built with a 384-dimension
+embedding model while the query embedded at 2048, and the answer was
+`Wrong input: Vector dimension error: expected dim: 384, got 2048` — an error that names Qdrant and
+hides the database behind it.
 
-`QDRANT_URL` points at **6335** on purpose. The ingestion fanout writes the knowledge product
-collections to that server.
+The fallback is gone. An unreachable database now stops the service:
+
+```
+ERROR:    Application startup failed. Exiting.
+```
+
+A stale `ingestion.db` may still sit in the `rag-ingestion-manager_file_storage` volume. Nothing
+reads it now. Rename or delete it when you are sure no old run needs it.
+
+The two Qdrant variables name two different servers, and both are deliberate:
+
+- `QDRANT_URL` is the legacy scrape store (`scrape_embeddings`) used by the scraper pipeline.
+- `QDRANT_KP_URL` is where the ingestion fanout writes knowledge-product collections, and where the
+  retrieval service reads them through `KpRetriever`. Leave it unset and the reader silently uses the
+  legacy server, finds no product collection, and answers "no relevant sources".
 
 Run the migration, then the API:
 
@@ -786,7 +803,7 @@ More than one file exists and they disagree. Know which one your compose reads.
 | File | Used by | Values |
 |---|---|---|
 | `rag-ingestion-manager/.env` | The ingestion compose's app services | **Postgres**, container hostnames |
-| `rag-ingestion-manager/backend/.env` | The host run in section 4.1 | **SQLite**, localhost |
+| `rag-ingestion-manager/backend/.env` | The host run in section 4.1 | **Postgres on localhost**, same database |
 | `rag-retrieval-chat-manager/backend/.env` | The retrieval compose | The `rag` database, container hostnames, `host.docker.internal` for the rest |
 
 Two things to know:
@@ -798,28 +815,26 @@ Two things to know:
   `postgresql+psycopg://crawler:crawler@postgres:5432/rag`. Pointing it at `ingestion` makes
   `rag-db-migrate` create a second copy of the schema inside the ingestion database, silently split
   from the host run's data.
+- **The host run and the containers read the same database.** Both `.env` files used to differ here,
+  and the host one named SQLite. They agree now, so a host run and a container run cannot disagree
+  about which pipelines exist.
 
-### The database question: SQLite or Postgres
+### The database question: Postgres only
 
-The host run uses a SQLite file; the container uses Postgres. **They are not the same data.** Moving a
-host setup to containers therefore needs a one-time metadata copy:
+**There is one database.** The host run and the containers both read
+`postgresql://ingestion:ingestion@postgres:5432/ingestion`, so there is nothing to copy any more.
+This section used to describe a one-time SQLite-to-Postgres metadata migration, because the host run
+defaulted to `backend/storage/ingestion.db` while the containers used Postgres and the two held
+different rows.
 
-1. `DATABASE_URL="postgresql://ingestion:ingestion@localhost:5432/ingestion" uv run ingestion-db-migrate`
-   from `rag-ingestion-manager/backend`, to create the schema in Postgres.
-2. Start the API once against Postgres, then stop it. That creates the two tables alembic does not:
-   `ingestion_profiles` and `ingestion_profile_destinations`, which the app makes at startup.
-3. Copy the rows, parents before children:
-   `sources` → `source_connectors` → `ingestion_profiles` → `ingestion_profile_destinations` →
-   `knowledge_products` → `knowledge_product_destinations` → `knowledge_product_sources` →
-   `knowledge_product_files` → `pipelines`.
+That split is what caused the chat failure on 2026-09-28. Postgres held the current pipeline linked to
+`tcs-my-kp`; the SQLite file held an older pipeline linked to a deleted product, and the API served
+the SQLite copy. Commit for that fix: the SQLite fallback in `init_db` is removed and
+`backend/.env` names Postgres.
 
-Only metadata moves. The document bytes live in MinIO and the four stores, and the Knowledge Product
-keeps its id, so every derived store name (`kp_<slug>_<id8>`) stays valid and **nothing needs
-re-ingesting**.
-
-Do this on 2026-09-24: 18 rows across 9 tables. Row counts matched exactly afterwards, every apparent
-difference was formatting (UUID hyphenation, `1` versus `True`, JSON text versus jsonb), and the four
-store names were identical.
+No document bytes ever lived in either database. They are in MinIO and the four stores, and every
+derived store name (`kp_<slug>_<id8>`) depends only on the Knowledge Product id, so moving metadata
+never forces a re-ingest.
 
 ### Two known gaps in the container path
 

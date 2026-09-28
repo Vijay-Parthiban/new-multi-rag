@@ -66,25 +66,15 @@ async def init_db() -> None:
         _ensure_sqlite_columns(db_path)
         return
 
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    except Exception as e:
-        print(f"PostgreSQL connection failed ({e}). Falling back to SQLite database...")
-        global _engine, _session_factory
-        if _engine is not None:
-            await _engine.dispose()
-        db_dir = Path(settings.storage_path)
-        db_dir.mkdir(parents=True, exist_ok=True)
-        sqlite_path = db_dir / "ingestion.db"
-        sqlite_url = f"sqlite+aiosqlite:///{sqlite_path.as_posix()}"
-        _engine = create_async_engine(sqlite_url, pool_pre_ping=True)
-        _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
-        _ensure_sqlite_renames(sqlite_path)
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        _ensure_sqlite_columns(sqlite_path)
-        return
+    # No SQLite fallback. This block used to catch a failed Postgres connection and
+    # silently switch the whole app to storage/ingestion.db, printing one line to
+    # stdout. The app then served month-old rows for as long as it stayed up: the
+    # pipeline it returned named a Qdrant collection written by a different embedding
+    # model, so every chat query failed on vector dimensions and the error pointed at
+    # Qdrant rather than at the database. A configured database that cannot be reached
+    # is a startup failure, not a mode to invent.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 def _ensure_sqlite_renames(sqlite_path) -> None:
