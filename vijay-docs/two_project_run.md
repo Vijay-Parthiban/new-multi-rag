@@ -1,6 +1,6 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-29
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
@@ -477,6 +477,87 @@ cd rag-retrieval-chat-manager/frontend && node node_modules/vite/bin/vite.js --h
 Sections 4 and 5 start nine processes by hand. The container path is shorter and is the one to prefer:
 **one command per project**, with no shell profile, no `uv` and no Node on the host.
 
+### The two commands
+
+This is the whole thing on a machine that ran the platform before. Run the ingestion project first,
+then the retrieval project. Both read their own `.env` file, so there is nothing to export.
+
+```bash
+cd rag-ingestion-manager && docker compose up -d
+```
+
+```bash
+cd rag-retrieval-chat-manager/backend && docker compose up -d
+```
+
+Then open <http://127.0.0.1:5173> for ingestion and <http://127.0.0.1:5174> for retrieval.
+
+Each project builds what is missing, runs its own migration first and waits for that migration to
+finish before it starts the API. `depends_on` uses `service_completed_successfully` for `migrate` in
+both files, so the API never races the schema.
+
+Order matters, and only in one direction: the retrieval project reads the ingestion project's Postgres,
+Redis and Qdrant, and it resolves a pipeline by slug through the ingestion API. Started alone it answers
+503 on every assistant route.
+
+### What "running" looks like
+
+```bash
+cd rag-ingestion-manager && docker compose ps -a     # 13 Up, 2 Exited (0)
+cd rag-retrieval-chat-manager/backend && docker compose ps -a   # 3 Up, 1 Exited (0)
+```
+
+The exited ones are the one-shot jobs `migrate` and `scraper-migrate` on the ingestion side, and
+`migrate` on the retrieval side. **`Exited (0)` is success.** Any other exit code on a `migrate`
+service stops that stack, because the API waits for it.
+
+Every other service must read `Up`. A service that reads `Exited (255)` was stopped from outside, not
+by its own command. Start it again with `docker compose up -d <service>`.
+
+### Rebuild only what changed
+
+Compose reuses the built image when the source has not changed, so a plain `up -d` is correct after an
+edit to an `.env` file. After an edit to **backend source**, rebuild that one service:
+
+```bash
+cd rag-retrieval-chat-manager/backend
+docker compose up -d --build rag-api
+```
+
+The frontends bake their source into the image, so a change to either `frontend/src` needs
+`--build web` for that project. A running container does not see a host edit.
+
+### A new migration needs a rebuild, not just a restart
+
+The migration files live **inside the backend image**. They are not mounted from the host. So a
+migration written after the last build is invisible to the container, and the stack fails like this:
+
+```
+Database migrations failed after 30 attempts:
+Can't locate revision identified by '014_missing_model_columns'
+```
+
+That message means one thing: the database records a revision the image does not contain. It happens
+when you run a migration **from the host** (`uv run ingestion-db-migrate`) and then start the container
+stack, because the host run advanced the version and the stale image cannot find it.
+
+**Compose builds one image per service, not one per Dockerfile.** `api`, `migrate`, `worker` and
+`pathway-worker` all build from `rag-ingestion-manager/backend/Dockerfile`, and they become four
+separate images: `rag-ingestion-manager-api`, `rag-ingestion-manager-migrate` and so on. Building
+`api` alone therefore leaves `migrate` stale, and the failure above persists. Build every service that
+shares the file:
+
+```bash
+cd rag-ingestion-manager && docker compose build migrate api worker pathway-worker && docker compose up -d
+cd rag-retrieval-chat-manager/backend && docker compose build migrate rag-api eval-worker && docker compose up -d
+```
+
+A plain `docker compose build` with no service name also works and is the safer habit.
+
+Keep the two run paths apart. Either do the migration from the host **or** let the container do it —
+not both. The container path needs no host command at all: `docker compose up -d` runs `migrate`
+itself and waits for it.
+
 ### One-time setup, per machine
 
 Do this once. Nothing here repeats on a normal start.
@@ -571,7 +652,7 @@ The port counts show the same asymmetry:
 
 | | Ingestion | Retrieval |
 |---|---|---|
-| Published host ports | **10** — 8007, 5173, 5432, 6379, 6333, 9000, 9001, 9200, 9600, 4317, 4318, 8000, 18000 | **2** — 8001, 5174 |
+| Published host ports | **13** — 8007, 5173, 5432, 6379, 6333, 9000, 9001, 9200, 9600, 4317, 4318, 8000, 18000 | **2** — 8001, 5174 |
 | Docker images built | 3 Dockerfiles (`backend`, `frontend`, `../guardrails-service`) plus 1 pulled (`tharun0511/web-scrapper-wokspace`) | 2 Dockerfiles (`backend`, `frontend`), nothing pulled |
 | Exit-on-complete jobs | `migrate`, `scraper-migrate` | `migrate` |
 
@@ -836,16 +917,42 @@ No document bytes ever lived in either database. They are in MinIO and the four 
 derived store name (`kp_<slug>_<id8>`) depends only on the Knowledge Product id, so moving metadata
 never forces a re-ingest.
 
-### Two known gaps in the container path
+### The model columns are now migrated
 
-- **The alembic chain is behind the models.** Six columns exist in the models and in no migration:
-  `knowledge_products.ingestion_profile_id`, `knowledge_products.pipeline_fingerprint`,
-  `sources.total_files`, `sources.total_size_bytes`, `sources.connector_sync_interval_seconds` and
-  `source_connectors.sync_interval_seconds`. `Base.metadata.create_all` never alters an existing table,
-  and the patch routine in `src/shared/db/session.py` (`_ensure_sqlite_columns`) runs **only for
-  SQLite**. So a Postgres database created from the migrations alone **lacks those six columns** and the
-  app fails on any query that selects them. Add them by hand, or write the missing migration. This is
-  also why the platform has been running on SQLite.
+Six columns existed in the models and in **no migration**, and this was a real fault in the container
+path. `Base.metadata.create_all` never adds a column to a table that already exists, and
+`_ensure_sqlite_columns` in `src/shared/db/session.py` runs **only for SQLite**. So a PostgreSQL
+database built from the migration chain alone lacked them, and the API failed on the first query that
+selected one:
+
+```
+ProgrammingError: column sources.connector_sync_interval_seconds does not exist
+```
+
+The six are `knowledge_products.ingestion_profile_id`, `knowledge_products.pipeline_fingerprint`,
+`sources.total_files`, `sources.total_size_bytes`, `sources.connector_sync_interval_seconds` and
+`source_connectors.sync_interval_seconds`.
+
+**Migration `014_missing_model_columns` closes this.** It uses `ADD COLUMN IF NOT EXISTS`, so it is
+safe on a database that already has the columns. A database that `create_all` built already has all
+six, and takes `014` with no change.
+
+Verify it on any database:
+
+```bash
+docker exec rag-ingestion-manager-postgres-1 psql -U ingestion -d ingestion -tAc \
+  "select column_name from information_schema.columns
+   where table_name='sources' and column_name like 'total_%'"
+```
+
+Expect `total_files` and `total_size_bytes`. An empty result means the migrations did not reach `014`.
+
+One claim that used to sit here was wrong: this gap was **not** why the platform ran on SQLite. The
+SQLite fallback was a separate defect, and it is gone (section 4.1). The live database is PostgreSQL
+and its version is `014_missing_model_columns`.
+
+The other known gap stands:
+
 - **`nifi`, `neo4j` and `opensearch-dashboards` are declared but unused.** They sit behind `extras`.
 
 ---
@@ -926,7 +1033,7 @@ Then run the two check suites.
 
 ```bash
 cd rag-ingestion-manager/backend
-uv run pytest tests -q                       # 59 unit tests
+uv run pytest tests -q                       # 71 unit tests
 uv run python scripts/e2e_knowledge_fanout.py       # 21 checks
 uv run python scripts/e2e_knowledge_pause.py        # 14 checks
 uv run python scripts/e2e_ingestion_profiles.py     # 50 checks
@@ -965,7 +1072,7 @@ npx tsc --noEmit
 npx vite build
 ```
 
-**Schema heads.** Ingestion: `011_assistant_pipeline`. Retrieval: `003_prompt_templates`. Confirm with
+**Schema heads.** Ingestion: `014_missing_model_columns`. Retrieval: `005_soft_delete`. Confirm with
 `uv run alembic current` from the matching `backend` directory, or read the `alembic_version` table.
 
 ---
