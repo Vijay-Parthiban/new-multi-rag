@@ -26,8 +26,8 @@ pipeline by slug.
 
 ## 1. Port and service map
 
-Know this table before you start. Two rows surprise people: the knowledge product Qdrant is on **6335**
-and not on the scraping Qdrant at 6333, and LiteLLM is **not** in this repository.
+Know this table before you start. One row surprises people: **one Qdrant serves everything**, on
+`6333`, and LiteLLM is **not** in this repository.
 
 | Service | Host port | Inside compose | Source | Needed for |
 |---|---|---|---|---|
@@ -40,8 +40,7 @@ and not on the scraping Qdrant at 6333, and LiteLLM is **not** in this repositor
 | Retrieval evaluation worker | — | — | this repo | RAGAS metrics jobs |
 | PostgreSQL | 5432 | 5432 | `rag-ingestion-manager/docker-compose.yaml` | `rag`, `ingestion` and `crawler` databases |
 | Redis | 6379 | 6379 | `rag-ingestion-manager/docker-compose.yaml` | Ingestion queue, RQ evaluation queue |
-| Qdrant (scraper) | 6333 | 6333 | `rag-ingestion-manager/docker-compose.yaml` | `scrape_embeddings`, written by the web scraper |
-| Qdrant (knowledge products) | **6335** | 6333 | **external** container | Every `kp_*` collection the assistants read |
+| Qdrant | 6333 | 6333 | `rag-ingestion-manager/docker-compose.yaml` | **Everything:** the scraper's `scrape_embeddings` and every `kp_*` knowledge product collection the assistants read |
 | MinIO | 9000, 9001 | 9000, 9001 | `rag-ingestion-manager/docker-compose.yaml` | Source document buckets |
 | OpenSearch | 9200, 9600 | 9200, 9600 | `rag-ingestion-manager/docker-compose.yaml` | `kp_*` lexical indexes, BM25 |
 | Web scraper API | 8000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | `scrape_embeddings`, the ingestion scraper path |
@@ -80,37 +79,36 @@ lists the model names the platform expects.
 
 Run this section once per machine. It does not change when the application code changes.
 
-### 3.1 The three external containers
+### 3.1 The two external containers
 
-Three services the platform calls are **not declared in this repository**. Start them first, from their
+Two services the platform calls are **not declared in this repository**. Start them first, from their
 own directories, or provide equivalents and update the environment variables in section 4.
 
 | Container | Host port | Why it is external |
 |---|---|---|
-| `qdrant` | 6335 | Holds every `kp_*` knowledge product collection. The compose Qdrant on 6333 is a different server. |
 | `litellm` | 4000 | The model gateway for chat, embeddings, rerank and image captions |
 | `litellm_db` | 5433 | LiteLLM's PostgreSQL |
 
-If you keep them in a separate services repository, start that stack before the one below. Each one has
+**Qdrant is no longer external.** One Qdrant, declared by the ingestion compose and published on
+**6333**, holds the scraper's `scrape_embeddings` collection and every `kp_*` knowledge product
+collection. Both projects point `QDRANT_URL` and `QDRANT_KP_URL` at it.
+
+If you keep these in a separate services repository, start that stack before the one below. Each one has
 its own compose file, so start it from its own directory. This machine keeps them under
 `~/CursorProjects/docker-services/`:
 
 ```bash
-cd ~/CursorProjects/docker-services/qdrant  && docker compose up -d   # qdrant:6335, and 6336 for gRPC
 cd ~/CursorProjects/docker-services/litellm && docker compose up -d   # litellm:4000, litellm_db:5433
 ```
 
-All three carry `restart: unless-stopped`, so they come back after a reboot but **not** after a
-`docker compose down`. Check them, because a missing knowledge-product Qdrant makes chat fail with
-`[Errno 101] Network is unreachable` while every other page still works:
+Both carry `restart: unless-stopped`, so they come back after a reboot but **not** after a
+`docker compose down`. Check them:
 
 ```bash
-docker ps --filter name=^qdrant$ --format "{{.Names}}\t{{.State}}\t{{.Ports}}"
 docker ps --filter name=^litellm --format "{{.Names}}\t{{.State}}\t{{.Ports}}"
 ```
 
-If you do not have them, run one Qdrant and one LiteLLM yourself and set `QDRANT_KP_URL` and
-`LITELLM_BASE_URL` accordingly.
+If you do not have them, run one LiteLLM yourself and set `LITELLM_BASE_URL` accordingly.
 
 ### 3.2 The repository stack
 
@@ -262,7 +260,7 @@ DATABASE_URL=postgresql://ingestion:ingestion@localhost:5432/ingestion
 STORAGE_PATH=storage
 REDIS_URL=redis://localhost:6379/0
 QDRANT_URL=http://localhost:6333
-QDRANT_KP_URL=http://localhost:6335
+QDRANT_KP_URL=http://localhost:6333
 MINIO_ENDPOINT=localhost:9000
 OPENSEARCH_URL=http://localhost:9200
 ```
@@ -368,7 +366,7 @@ cd rag-retrieval-chat-manager/backend
 DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" \
 REDIS_URL="redis://localhost:6379/0" \
 QDRANT_URL="http://localhost:6333" \
-QDRANT_KP_URL="http://localhost:6335" \
+QDRANT_KP_URL="http://localhost:6333" \
 OPENSEARCH_URL="http://localhost:9200" \
 INGESTION_SERVICE_URL="http://localhost:8007" \
 GUARDRAILS_URL="http://localhost:18000" \
@@ -387,8 +385,8 @@ The variables, and why each one matters:
 |---|---|---|
 | `DATABASE_URL` | The `rag` database, through `psycopg` | Chat sessions, guardrails and prompt templates fail |
 | `REDIS_URL` | Redis on 6379 | Metrics jobs never queue |
-| `QDRANT_URL` | The scraping Qdrant on 6333 | The legacy `scrape_embeddings` chat path fails |
-| `QDRANT_KP_URL` | The knowledge product Qdrant on 6335 | **Every assistant returns no chunks** |
+| `QDRANT_URL` | The shared Qdrant on 6333 | Both the `scrape_embeddings` path and the `kp_*` reader fail |
+| `QDRANT_KP_URL` | The same Qdrant on 6333 | **Every assistant returns no chunks** |
 | `OPENSEARCH_URL` | OpenSearch on 9200 | The `lexical` strategy and `hybrid` fail |
 | `INGESTION_SERVICE_URL` | The ingestion API on 8007 | Assistant resolution returns 503 |
 | `GUARDRAILS_URL` | The guardrails service on 18000 | Guardrails silently pass every request |
@@ -396,9 +394,10 @@ The variables, and why each one matters:
 | `EMBEDDING_MODEL` | A model the proxy serves | Vector search returns nothing, or the fanout fails |
 | `OTEL_TRACING_ENABLED` | `false` on a host run | Export errors when no collector answers on 4318 |
 
-`QDRANT_KP_URL` is the one omission that looks like a code bug. An assistant reads the product's
-collection, and those collections live on 6335. Leave the variable unset and the reader falls back to
-`QDRANT_URL` on 6333, finds zero points, and answers "I could not find any relevant sources".
+`QDRANT_KP_URL` must name the same server as `QDRANT_URL`. One Qdrant holds the `kp_*` collections
+**and** `scrape_embeddings`. Set it explicitly anyway: the reader resolves
+`settings.qdrant_kp_url or settings.qdrant_url`, so an empty value silently falls back and hides a
+typo instead of failing.
 
 Run the migration first, then the API:
 
@@ -443,8 +442,8 @@ those defaults, and no frontend `.env` is needed. To point the UI at other hosts
 
 Start in this order. Each step depends on the one before it.
 
-1. The external Qdrant on 6335, LiteLLM on 4000, and the LiteLLM database on 5433.
-2. The repository infrastructure: PostgreSQL, Redis, Qdrant on 6333, MinIO, OpenSearch, the OTel
+1. LiteLLM on 4000 and the LiteLLM database on 5433.
+2. The repository infrastructure: PostgreSQL, Redis, **Qdrant on 6333**, MinIO, OpenSearch, the OTel
    collector.
 3. The web scraper and the guardrails service.
 4. The databases and roles, then the migrations for both backends.
@@ -455,7 +454,7 @@ The whole sequence, for a machine that already has the images and the dependenci
 
 ```bash
 # 1. External containers, from their own directories.
-cd <external-services-dir> && docker compose up -d    # qdrant:6335, litellm:4000, postgres:5433
+cd <external-services-dir> && docker compose up -d    # litellm:4000, postgres:5433
 
 # 2. Repository infrastructure.
 cd rag-ingestion-manager && docker compose up -d postgres redis qdrant minio opensearch otel-collector
@@ -472,7 +471,7 @@ cd rag-ingestion-manager/frontend && node node_modules/vite/bin/vite.js --host 0
 export DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag"
 export REDIS_URL="redis://localhost:6379/0"
 export QDRANT_URL="http://localhost:6333"
-export QDRANT_KP_URL="http://localhost:6335"
+export QDRANT_KP_URL="http://localhost:6333"
 export OPENSEARCH_URL="http://localhost:9200"
 export INGESTION_SERVICE_URL="http://localhost:8007"
 export GUARDRAILS_URL="http://localhost:18000"
@@ -586,7 +585,7 @@ Do this once. Nothing here repeats on a normal start.
 docker network create rag-shared
 
 # 2. The three external containers, from their own directories (section 3.1).
-#    qdrant:6335, litellm:4000, litellm_db:5433.
+#    qdrant:6333, litellm:4000, litellm_db:5433.
 ```
 
 ### Run the ingestion project
@@ -710,14 +709,12 @@ graph TB
   subgraph OUT["outside both projects, on the host"]
     LL["litellm :4000"]
     LDB["litellm_db :5433"]
-    KQ["qdrant :6335 (knowledge products)"]
   end
   RAPI -->|"reads by name"| PG
   RAPI -->|"reads by name"| RD
   RAPI -->|"reads by name"| QD
   RAPI -->|"HTTP, pipeline by slug"| IAPI
   RAPI -->|"host.docker.internal"| LL
-  RAPI -->|"host.docker.internal"| KQ
   RAPI -->|"host.docker.internal"| GRD
   IAPI --> PG
   IWK --> PG
@@ -727,23 +724,22 @@ graph TB
   IWK --> RD
 ```
 
-Note the one asymmetry in the diagram: **the retrieval API reads the Qdrant on 6335, not the 6333 one
-that the ingestion compose declares.** Two separate Qdrant instances are in play and they are not
-interchangeable:
+**One Qdrant serves both projects.** `QD['qdrant :6333']` in the data tier holds the scraper's
+`scrape_embeddings` collection and every `kp_*` knowledge product collection. Both projects reach it by
+the container name `qdrant` over `rag-shared`:
 
 | Variable | Value | Holds | Who sets it |
 |---|---|---|---|
-| `QDRANT_URL` | `http://qdrant:6333` (container) | The scraper's store: `scrape_embeddings` | Scraper, and the legacy ingestion pipeline path |
-| `QDRANT_KP_URL` | `http://host.docker.internal:6335` | **Every `kp_*` collection** the assistants read | Ingestion fanout **and** retrieval |
+| `QDRANT_URL` | `http://qdrant:6333` | The scraper's store: `scrape_embeddings` | Scraper, and the legacy ingestion pipeline path |
+| `QDRANT_KP_URL` | `http://qdrant:6333` | **Every `kp_*` collection** the assistants read | Ingestion fanout **and** retrieval |
 
-**Both projects must set `QDRANT_KP_URL`, and they must agree.** The ingestion fanout writes `kp_*`
-through it and the retrieval reads through it. Set it on one side only and the write and the read land on
-different servers: the assistant answers with no context, and the only clue is a Qdrant 404 naming a
-collection that exists on the other instance.
+**Both projects set `QDRANT_KP_URL`, and both name the same server.** The ingestion fanout writes
+`kp_*` through it and the retrieval reads through it.
 
 `settings.qdrant_kp_url or settings.qdrant_url` is the resolution on both sides, so **an empty
-`QDRANT_KP_URL` silently falls back to `scrape_embeddings`'s server**. That fallback is what makes this
-mistake quiet. Set the variable explicitly in both `.env` files.
+`QDRANT_KP_URL` silently falls back to `QDRANT_URL`**. On one server that fallback is harmless, which is
+exactly why the variable is still set explicitly in both `.env` files: a fallback that always succeeds
+would hide a typo rather than fail.
 
 The ingestion writes through this variable in four places: `_write_qdrant` and `_purge_qdrant` in
 `universal_fanout.py`, and the destination connection test and store inspector in
@@ -815,7 +811,7 @@ The retrieval project has one hard dependency on the ingestion project at runtim
 pipeline by slug through the ingestion API. With that API down, the assistant routes return an error.
 
 Anything outside both projects is reached through `host.docker.internal`: the LiteLLM proxy on 4000,
-the knowledge-product Qdrant on **6335**, the guardrails service, and the ingestion API. Both composes
+the guardrails service, and the ingestion API. Both composes
 set `extra_hosts: host.docker.internal:host-gateway` for that.
 
 ### Frontend variables, and why they are not interchangeable
@@ -891,7 +887,7 @@ docker exec backend-rag-api-1 python /tmp/check_deps.py
 ```
 
 Expect 8 checks and 0 failures: the ingestion API, the LiteLLM proxy, the guardrails service, OpenSearch
-over HTTP, and a TCP connect to Postgres, Redis, the knowledge-product Qdrant on 6335 and the OTel
+over HTTP, and a TCP connect to Postgres, Redis, the shared Qdrant and the OTel
 collector. A `401` from LiteLLM is a pass — it proves the proxy is reachable and only wants a key.
 
 ### Which env file is authoritative
@@ -1036,8 +1032,7 @@ Run these after the platform is up. Each one proves a layer.
 | Layer | Command | Expected |
 |---|---|---|
 | Infrastructure | `docker ps --format "table {{.Names}}\t{{.Status}}"` | All containers `Up` |
-| Qdrant 6335 | `curl -s -H 'api-key: qdrant' http://localhost:6335/collections` | A JSON list of `kp_*` collections. Without the header the answer is `401` |
-| Qdrant 6333 | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | The scraper's collections, or empty. Without the header the answer is `401` |
+| Qdrant | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | Every `kp_*` collection, plus `scrape_embeddings` once the scraper has run. Without the header the answer is `401` |
 | OpenSearch | `curl -s "http://localhost:9200/_cat/indices?h=index"` | The `kp_*` indexes |
 | Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 16 installed validators |
 | LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/model/info` | The served models with the `model_info.mode` each one reports, 21 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
@@ -1098,8 +1093,8 @@ npx vite build
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| An assistant answers, but the source list is empty | The reader used `QDRANT_URL` on 6333 instead of 6335 | Set `QDRANT_KP_URL=http://localhost:6335` |
-| Chat answers `Error occurred: [Errno 101] Network is unreachable` | **The knowledge-product Qdrant on 6335 is not running.** Nothing listens on that port, so the reader cannot open the collection | Start it: `cd <external-services-dir>/qdrant && docker compose up -d`. Confirm with `docker ps --filter name=^qdrant$`. Run the probe below to be sure |
+| An assistant answers, but the source list is empty | The knowledge product has no `kp_*` collection, or its fanout never ran | Check the product on the ingestion `Knowledge Store` page, then re-sync. Confirm the collection exists on 6333 |
+| Chat answers `Error occurred: [Errno 101] Network is unreachable` | **The Qdrant container is not running.** Nothing listens on 6333, so the reader cannot open the collection | Start it: `cd rag-ingestion-manager && docker compose up -d qdrant`. Confirm with `docker ps --filter name=qdrant` |
 | Chat answers `Error occurred: ...` on any address in `.env` | One of the four `host.docker.internal` services is down. `Errno 101` names the reach, not the service | Run the probe: `cd rag-retrieval-chat-manager/backend && docker cp scripts/check_deps.py backend-rag-api-1:/tmp/check_deps.py && docker exec backend-rag-api-1 python /tmp/check_deps.py`. It prints one line per dependency and names the one that failed |
 | Every assistant request returns 503 | The retrieval API cannot reach the ingestion API | Check `INGESTION_SERVICE_URL` and that `8007` answers |
 | `POST /api/assistants/{slug}/chat` returns 422 `NOT_AN_ASSISTANT` | The pipeline's strategy is a legacy one such as `naive` | Create the pipeline from the `Pipelines` page, or set `rag_strategy` to `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` |

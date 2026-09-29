@@ -54,8 +54,7 @@ Repository layout:
 | frontend (dev) | `vite --force` | 5174 | `frontend/vite.config.ts`. No dev proxy: the browser calls 8001 and 8007 directly, so those APIs must send CORS headers |
 | Postgres (rag DB) | container `postgres` | 5432 | database `rag`, role `crawler` |
 | Redis | container `redis` | 6379 | RQ queue `eval` only; db 0 |
-| Qdrant | container | 6333 | `qdrant_url`; holds `scrape_embeddings`, written by the scraper |
-| Qdrant (knowledge products) | container | **6335** | `qdrant_kp_url`; holds every `kp_*` collection the assistants and the KP readers use. A separate server from the 6333 instance. |
+| Qdrant | container `qdrant` | 6333 | `qdrant_url` **and** `qdrant_kp_url`. One server holds the scraper's `scrape_embeddings` and every `kp_*` collection the assistants and the KP readers use |
 | LiteLLM proxy | host process | 4000 | `litellm_base_url` — embeddings, rerank, chat, vision |
 | guardrails-service | `guardrails-service/server.py` | 18000 → 8000 | compose maps `18000:8000`. `settings.guardrails_url` defaults to `http://localhost:18000`, so a host run needs no override |
 | web-scrapper API | `web-scrapper-workspace` | 8000 | `SCRAPER_URL`; source of the crawl and scrape jobs the ingestion side lists |
@@ -76,7 +75,7 @@ DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" uv run ra
 DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" \
 REDIS_URL="redis://localhost:6379/0" \
 QDRANT_URL="http://localhost:6333" \
-QDRANT_KP_URL="http://localhost:6335" \
+QDRANT_KP_URL="http://localhost:6333" \
 OPENSEARCH_URL="http://localhost:9200" \
 INGESTION_SERVICE_URL="http://localhost:8007" \
 GUARDRAILS_URL="http://localhost:18000" \
@@ -93,9 +92,9 @@ uv run rq worker eval --url redis://localhost:6379/0 --worker-class rq.worker.Si
 cd ../frontend && node node_modules/vite/bin/vite.js --force --host 0.0.0.0 --port 5174
 ```
 
-`QDRANT_KP_URL` is the one omission that reads as a code bug. The knowledge product collections live on
-6335, not on `qdrant_url` (6333). Leave it unset and the readers fall back to 6333, find zero points, and
-every assistant answers "I could not find any relevant sources".
+`QDRANT_KP_URL` must name the same server as `QDRANT_URL`. One Qdrant holds the `kp_*` collections and
+`scrape_embeddings`. Set it explicitly anyway: the reader resolves
+`settings.qdrant_kp_url or settings.qdrant_url`, so an empty value falls back silently and hides a typo.
 
 `npx vite` cannot spawn on Windows (`os error 193`), so call the vite entry script through `node` directly.
 
@@ -279,7 +278,7 @@ client snippets.
 5. **Async quality scoring**: chat-level Ragas metrics are computed by the `eval-worker` process, not in the request path; the response carries `metrics_status` (`pending` when a metrics job was enqueued, `skipped` when metrics are disabled or the turn was blocked) for the client to poll.
 6. **A Knowledge Product is the only retrieval source for an assistant**: an assistant owns no collection and no documents. It reads the stores of the product it names, and only the strategies that product's enabled destinations can serve.
 7. **The store names come from the fanout**: `kp_<product-slug>_<id8>`. A caller never supplies them by hand, and the fanout rejects a clash on a store name.
-8. **One store server per purpose**: `qdrant_url` points at the scraper's Qdrant (6333) and `qdrant_kp_url` at the knowledge product Qdrant (6335). A reader that uses the wrong one returns zero points without an error.
+8. **One store server for everything**: `qdrant_url` and `qdrant_kp_url` both point at the Qdrant on 6333, which holds the scraper's collection and every `kp_*` collection. They stay separate keys because the reader resolves `qdrant_kp_url or qdrant_url`, so an empty value falls back silently.
 
 ## 11. Known Gaps in the Working Tree
 

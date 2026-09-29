@@ -697,7 +697,7 @@ The four destinations need reachable stores. `backend/.env` points at the host-m
 
 ```
 REDIS_URL=redis://localhost:6379/0
-QDRANT_URL=http://localhost:6335
+QDRANT_URL=http://localhost:6333
 MINIO_ENDPOINT=localhost:9000
 OPENSEARCH_URL=http://localhost:9200
 ```

@@ -86,7 +86,21 @@ http("guardrails service", f"{settings.guardrails_url.rstrip('/')}/health-check"
 http("opensearch", settings.opensearch_url)
 tcp("postgres", settings.database_url)
 tcp("redis", settings.redis_url)
-tcp("qdrant (kp, 6335)", settings.qdrant_kp_url or "")
+
+
+def _qp_label() -> str:
+    """Name the knowledge-product Qdrant with the port it is actually on.
+
+    A literal port here went stale the moment the two Qdrant servers were merged
+    into one, so read it from the resolved URL instead.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(settings.qdrant_kp_url or settings.qdrant_url)
+    return f"qdrant (kp, {parsed.port or 6333})"
+
+
+tcp(_qp_label(), settings.qdrant_kp_url or "")
 tcp("otel collector", os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", ""))
 
 print(f"\n{checks} checks, {len(failures)} failure(s)")

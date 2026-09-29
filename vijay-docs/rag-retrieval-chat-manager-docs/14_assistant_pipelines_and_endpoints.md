@@ -537,7 +537,7 @@ path.
 5. **The LLM query router is not implemented.** The dead code is gone and the UI no longer offers its
    controls. The old Chat-page "self-corrective" loop was never written either. That loop is not the
    `corrective` strategy in §5: the loop would iterate, and the strategy grades once.
-6. **The retrieval service must reach port `8007`, `6335`, `9200` and `5432`.** A browser needs only
+6. **The retrieval service must reach port `8007`, `6333`, `9200` and `5432`.** A browser needs only
    `8001`. Defaults live in `libs/shared/src/rag_shared/config.py`: `qdrant_kp_url`, `opensearch_url`,
    `ingestion_service_url`, `ingestion_database_url`, `guardrails_url`.
 7. **The `corrective` pattern does not search the web.** It grades the passages the product holds and
