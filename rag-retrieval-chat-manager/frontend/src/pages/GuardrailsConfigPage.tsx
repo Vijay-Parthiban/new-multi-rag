@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { IconGuardrails, IconPlus } from "../components/Icons";
 import {
     GuardrailsConfig,
     GuardrailsSettings,
@@ -439,6 +440,10 @@ export default function GuardrailsConfigPage() {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [formError, setFormError] = useState<string | null>(null);
+    // The config awaiting a delete confirmation. A native confirm() cannot be styled, reads
+    // as a browser dialog rather than part of the page, and blocks the whole tab.
+    const [pendingDelete, setPendingDelete] = useState<GuardrailsConfig | null>(null);
+    const [deleting, setDeleting] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -589,13 +594,17 @@ export default function GuardrailsConfigPage() {
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if (!confirm("Delete this guardrails config?")) return;
+    const runDelete = async () => {
+        if (!pendingDelete) return;
+        setDeleting(true);
         try {
-            await deleteGuardrailsConfig(id);
+            await deleteGuardrailsConfig(pendingDelete.id);
+            setPendingDelete(null);
             await load();
         } catch (e) {
             console.error("Delete failed", e);
+        } finally {
+            setDeleting(false);
         }
     };
 
@@ -630,12 +639,24 @@ export default function GuardrailsConfigPage() {
     return (
         <div className="page-container guardrails-page">
             <div className="page-header">
-                <h1>⛨ Guard Configuration</h1>
+                <div className="gr-page-head">
+                    <span className="gr-page-icon" aria-hidden>
+                        <IconGuardrails size={18} />
+                    </span>
+                    <div>
+                        <h1 className="gr-page-title">Guard Configuration</h1>
+                        <p className="gr-page-sub">
+                            Choose the checks that run on every chat turn, and set what happens
+                            when a check fails.
+                        </p>
+                    </div>
+                </div>
                 <button
                     className="btn btn-primary"
                     onClick={() => { resetForm(); setShowForm(true); }}
                 >
-                    + New Config
+                    <IconPlus size={14} />
+                    New Config
                 </button>
             </div>
 
@@ -694,11 +715,14 @@ export default function GuardrailsConfigPage() {
                                     {items.map((g) => {
                                         const selected = formGuards.includes(g.id);
                                         const disabled = g.available === false;
+                                        const note = disabled
+                                            ? (g.unavailable_reason || "Not installed in the service.")
+                                            : g.description;
                                         return (
                                             <label
                                                 key={g.id}
                                                 className={`gr-picker-chip ${selected ? "selected" : ""} ${disabled ? "gr-picker-chip--unavailable" : ""}`}
-                                                title={disabled ? (g.unavailable_reason || "Not installed in the service.") : g.description}
+                                                title={note || undefined}
                                             >
                                                 <input
                                                     type="checkbox"
@@ -706,8 +730,13 @@ export default function GuardrailsConfigPage() {
                                                     disabled={disabled}
                                                     onChange={() => toggleGuard(g.id)}
                                                 />
-                                                <span className="gr-picker-name">{g.label}</span>
-                                                <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.kind || "local"}</span>
+                                                <span className="gr-picker-text">
+                                                    <span className="gr-picker-head">
+                                                        <span className="gr-picker-name">{g.label}</span>
+                                                        <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.kind || "local"}</span>
+                                                    </span>
+                                                    {note && <span className="gr-picker-desc">{note}</span>}
+                                                </span>
                                             </label>
                                         );
                                     })}
@@ -875,10 +904,55 @@ export default function GuardrailsConfigPage() {
                                     {c.is_active ? "Disable" : "Enable"}
                                 </button>
                                 <button className="btn btn-sm" onClick={() => openEdit(c)}>Edit</button>
-                                <button className="btn btn-sm btn-danger" onClick={() => handleDelete(c.id)}>Delete</button>
+                                <button className="btn btn-sm btn-danger" onClick={() => setPendingDelete(c)}>Delete</button>
                             </div>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {pendingDelete && (
+                <div
+                    className="modal-overlay"
+                    role="presentation"
+                    onClick={() => { if (!deleting) setPendingDelete(null); }}
+                    onKeyDown={(e) => { if (e.key === "Escape" && !deleting) setPendingDelete(null); }}
+                >
+                    <div
+                        className="modal-panel modal-panel--sm"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="gr-delete-title"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="modal-header">
+                            <h3 className="modal-title" id="gr-delete-title">Delete this configuration?</h3>
+                        </div>
+                        <div className="modal-body">
+                            <p className="gr-modal-body">
+                                <strong>{pendingDelete.name}</strong> stops applying to every chat
+                                that uses it. This cannot be undone.
+                            </p>
+                        </div>
+                        <div className="modal-footer">
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => setPendingDelete(null)}
+                                disabled={deleting}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                onClick={() => void runDelete()}
+                                disabled={deleting}
+                            >
+                                {deleting ? "Deleting…" : "Delete"}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

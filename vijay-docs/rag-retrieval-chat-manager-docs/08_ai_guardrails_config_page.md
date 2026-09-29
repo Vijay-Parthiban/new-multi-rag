@@ -9,7 +9,7 @@
 ## 1. Executive Summary & Page Purpose
 The **Guard Config Page** creates, edits, enables/disables and deletes `GuardrailsConfig` rows (table `guardrails_configs`, `rag_db/models/guardrails.py:13-26`). Each row selects a subset of the validators that `guardrails-service` exposes, the chat phases it applies to (`input`, `output`, `both`), and the parameters of every selected validator. The same rows are what Chat applies when a request carries `guardrails_config_id` (`routes/chat.py:24,379,431,528,612`) and what the Guard Evaluation page scores against (`routes/guardrails_evaluate.py:253-375`).
 
-The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **16 validators** today. Only `guardrails-service/config.py:167-549` defines that list, so there is no second copy of it in the repository.
+The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **3 validators**. Only `guardrails-service/config.py` (`_VALIDATORS`) defines that list, so there is no second copy of it in the repository.
 
 A failing validator **blocks** the turn: the answer is replaced with fixed copy from `GUARD_BLOCK_COPY` (`routes/chat.py:118-139`) rather than being redacted. A transport or configuration problem does **not** block. The client reports such a problem as `validation_passed: true` plus an `error`, and the trace records it (`rag_shared/guardrails_client.py:62-121`).
 
@@ -36,27 +36,33 @@ A failing validator **blocks** the turn: the answer is replaced with fixed copy 
 +----------------------------------------------------------------------------------+
 |  results keyed by validator id: {"validation_passed": bool,                      |
 |                                  "error": str|null, "detail": str|null}           |
-|                                    (guardrails-service/config.py:762-793)         |
+|                                    (guardrails-service/config.py)         |
 |  any validation_passed == false -> turn is blocked (guardrails_client.py:123-128) |
 |  a guardrails_traces row is written for every phase run (routes/chat.py:335-345)  |
 +----------------------------------------------------------------------------------+
 ```
 
 ### Validator catalog (`GET /guardrails/guards`)
-The catalog comes from `guardrails-service/config.py:167-549` (`_VALIDATORS`) and is served by `guardrails-service/server.py:50-53`. Every entry carries `category`, `phase`, `kind`, the parameter schema and an `available` flag with `unavailable_reason` when a validator package is missing from the installation (`config.py:598-608`).
+The catalog comes from `guardrails-service/config.py` (`_VALIDATORS`) and is served by
+`guardrails-service/server.py` (`GET /catalog`). Every entry carries `category`, `phase`,
+`kind`, the parameter schema and an `available` flag with `unavailable_reason` when a
+validator package is missing from the installation.
+
+**The catalog holds exactly three validators.** The Guard Config page renders whatever the
+catalog serves, so it shows three with no frontend change. Adding a fourth entry to
+`_VALIDATORS` makes it appear on the page.
 
 `kind` has three values:
 - `local` — a packaged validator from public PyPI. It runs inside the container with no downloaded model.
 - `model` — a packaged validator that loads a model. `detect_pii` runs Presidio with a spaCy pipeline.
-- `llm` — one of the three judges that call the LiteLLM proxy. They need no package of their own.
+- `llm` — a judge that calls the LiteLLM proxy. It needs no package of its own.
 
 **Content Safety**
 
 | id | Label | kind | phase | Parameters | Source |
 |---|---|---|---|---|---|
 | `ban_list` | Ban List | `local` | both | `banned_words` (string_list, required, free text), `max_l_dist` (integer, default `0`, range 0–5) | `guardrails-ai-ban-list` |
-| `toxic_language` | Toxic Language | `llm` | both | `threshold` (number, default `0.5`, range 0–1), `model` (string, default empty) | `local/toxic_language` (`config.py:110-119,240-270`) |
-| `mentions_drugs` | Mentions Drugs | `local` | both | none | `guardrails-ai-mentions-drugs` |
+| `toxic_language` | Toxic Language | `llm` | both | `threshold` (number, default `0.5`, range 0–1), `model` (string, default empty) | `local/toxic_language` |
 
 **Privacy**
 
@@ -64,46 +70,42 @@ The catalog comes from `guardrails-service/config.py:167-549` (`_VALIDATORS`) an
 |---|---|---|---|---|---|
 | `detect_pii` | PII Detection | `model` | both | `pii_entities` (string_list, required, 18 options, default `EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD, US_SSN, IP_ADDRESS`) | `guardrails-ai-detect-pii` |
 
-The `pii_entities` parameter carries 18 options (`config.py:217-236`): `EMAIL_ADDRESS` (Email Address), `PHONE_NUMBER` (Phone Number), `CREDIT_CARD` (Credit Card), `US_SSN` (US SSN), `IP_ADDRESS` (IP Address), `PERSON` (Person Name), `LOCATION` (Location), `DATE_TIME` (Date / Time), `URL` (URL), `DOMAIN_NAME` (Domain Name), `US_PASSPORT` (US Passport), `US_DRIVER_LICENSE` (US Driver License), `US_BANK_NUMBER` (US Bank Number), `US_ITIN` (US ITIN), `IBAN_CODE` (IBAN Code), `CRYPTO` (Crypto Wallet), `MEDICAL_LICENSE` (Medical License), `NRP` (Nationality / Religion / Political group).
+The `pii_entities` parameter carries 18 options: `EMAIL_ADDRESS` (Email Address),
+`PHONE_NUMBER` (Phone Number), `CREDIT_CARD` (Credit Card), `US_SSN` (US SSN),
+`IP_ADDRESS` (IP Address), `PERSON` (Person Name), `LOCATION` (Location), `DATE_TIME`
+(Date / Time), `URL` (URL), `DOMAIN_NAME` (Domain Name), `US_PASSPORT` (US Passport),
+`US_DRIVER_LICENSE` (US Driver License), `US_BANK_NUMBER` (US Bank Number), `US_ITIN`
+(US ITIN), `IBAN_CODE` (IBAN Code), `CRYPTO` (Crypto Wallet), `MEDICAL_LICENSE`
+(Medical License), `NRP` (Nationality / Religion / Political group).
 
-**Scope**
+`toxic_language` is a local implementation of the Guardrails `Validator` interface and has
+no package. It sends the text to the LiteLLM proxy with `max_tokens` from
+`GUARDRAIL_LLM_MAX_TOKENS`. The upstream package needs PyTorch and several gigabytes of
+CUDA libraries, so it is deliberately not installed.
 
-| id | Label | kind | phase | Parameters | Source |
-|---|---|---|---|---|---|
-| `restrict_to_topic` | Restrict To Topic | `llm` | output | `valid_topics` (string_list, required), `invalid_topics` (string_list, optional), `threshold` (number, default `0.5`), `model` (string, default empty) | `local/restrict_to_topic` (`config.py:121-150,271-317`) |
+### What the catalog used to hold, and why it was cut
 
-**Security**
+The catalog held 16 validators. It now holds these three. The cut removed `mentions_drugs`,
+`restrict_to_topic`, `prompt_injection`, `secrets_present`, `regex_match`, `valid_length`,
+`ends_with`, `valid_json`, `one_line`, `lowercase`, `uppercase`, `reading_time` and
+`exclude_sql_predicates`, together with the `LlmRestrictToTopic` and `LlmPromptInjection`
+judge classes.
 
-| id | Label | kind | phase | Parameters | Source |
-|---|---|---|---|---|---|
-| `prompt_injection` | Prompt Injection | `llm` | input | `threshold` (number, default `0.5`, range 0–1), `model` (string, default empty) | `local/prompt_injection` (`config.py:152-165,318-348`) |
-| `secrets_present` | Secrets Present | `local` | both | none | `guardrails-ai-secrets-present` |
+Two of the 16 carried a real cost. `restrict_to_topic` and `prompt_injection` were
+judge-backed, so a config that selected them paid one extra LLM call per chat turn per
+validator. The other 11 were cheap, but they were never the point of the page: the
+platform's stated checks are toxic language, personal data and a banned-word list.
 
-**Format**
+`LEGACY_GUARD_IDS` and `_LEGACY_SETTING_KEYS` in `rag_shared/guardrails_client.py` still map
+`pii_check` to `detect_pii` and the flat `banned_words` / `pii_entities` settings keys to
+their owners. Both mapped validators survive the cut, so the upgrade path for old rows is
+unchanged.
 
-| id | Label | kind | phase | Parameters | Source |
-|---|---|---|---|---|---|
-| `regex_match` | Regex Match | `local` | both | `regex` (string, required), `match_type` (select: `search` default, `fullmatch`) | `guardrails-ai-regex-match` |
-| `valid_length` | Valid Length | `local` | both | `min` (integer, optional), `max` (integer, optional) | `guardrails-ai-valid-length` |
-| `ends_with` | Ends With | `local` | both | `end` (string, required) | `guardrails-ai-ends-with` |
-| `valid_json` | Valid JSON | `local` | output | none | `guardrails-ai-valid-json` |
-| `one_line` | One Line | `local` | output | none | `guardrails-ai-one-line` |
-| `lowercase` | Lower Case | `local` | output | none | `guardrails-ai-lowercase` |
-| `uppercase` | Upper Case | `local` | output | none | `guardrails-ai-uppercase` |
-| `reading_time` | Reading Time | `local` | output | `reading_time` (number, required, default `5.0`, min `0.1`) | `guardrails-ai-reading-time` |
-
-**Database**
-
-| id | Label | kind | phase | Parameters | Source |
-|---|---|---|---|---|---|
-| `exclude_sql_predicates` | Exclude SQL Predicates | `local` | output | `predicates` (string_list, required, default `DROP, DELETE`) | `guardrails-ai-exclude-sql-predicates` |
-
-Sources for the entries without an explicit line range: `config.py:168-198` (`ban_list`), `:199-239` (`detect_pii`), `:349-360` (`secrets_present`), `:361-393` (`regex_match`), `:394-424` (`valid_length`), `:425-445` (`ends_with`), `:446-457` (`valid_json`), `:458-469` (`one_line`), `:470-481` (`lowercase`), `:482-493` (`uppercase`), `:494-515` (`reading_time`), `:516-536` (`exclude_sql_predicates`), `:537-548` (`mentions_drugs`).
-
-Three validators are local implementations of the Guardrails `Validator` interface and have no package (`config.py:75-165`). They send the text to the LiteLLM proxy with `max_tokens` from `GUARDRAIL_LLM_MAX_TOKENS` (`config.py:33-40,46-73`). The upstream packages for these three need PyTorch and several gigabytes of CUDA libraries, so they are deliberately not installed.
+A saved config may still name a removed validator. The page renders such an id as a bare
+tag with the note "Not in the catalog", so a stale row is visible rather than blank.
 
 ### `on_fail` options (`GET /guardrails/on-fail-options`)
-Exactly three options exist (`config.py:551-570`). `on_fail` sits beside the parameters of each selected validator.
+Exactly three options exist (`config.py`). `on_fail` sits beside the parameters of each selected validator.
 
 | id | Label | `fixes_text` | Meaning |
 |---|---|---|---|
@@ -117,13 +119,13 @@ Exactly three options exist (`config.py:551-570`). `on_fail` sits beside the par
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
 | `GET` | `/health-check` | Liveness | `{"status": "ok"}` (`server.py:45-47`) |
-| `GET` | `/catalog` | The validator catalog and the failure-action options | `{"version": 1, "validators": [...], "on_fail_options": [...]}` (`server.py:50-53`, `config.py:598-608`) |
+| `GET` | `/catalog` | The validator catalog and the failure-action options | `{"version": 1, "validators": [...], "on_fail_options": [...]}` (`server.py`) |
 | `POST` | `/validate-config` | Check that a validator list and its parameters can be built. Runs nothing | `{"validators": [{id, params, on_fail}]}` -> `{"valid": bool, "errors": [str]}` (`server.py:56-66`) |
 | `POST` | `/validate` | Run every configured validator over one text | `{"text", "phase", "validators": [...]}` -> the per-validator result map (`server.py:69-90`) |
 
-These four endpoints are the whole surface of the service. `guardrails-service/pyproject.toml:6-27` lists `guardrails-ai` and the 13 validator packages.
+These four endpoints are the whole surface of the service. `guardrails-service/pyproject.toml:6-27` lists `guardrails-ai` and the validator packages.
 
-`POST /validate` rejects an empty validator list and a bad parameter with HTTP 422 and a readable message (`server.py:77-87`). A parameter error comes from `coerce_params` (`config.py:661-685`), for example `Ban List: 'Keywords' is required` (`config.py:674-676`). The reply is keyed by validator id and also carries `blocked`, `blocked_by` and `phase` (`config.py:762-793`).
+`POST /validate` rejects an empty validator list and a bad parameter with HTTP 422 and a readable message (`server.py:77-87`). A parameter error comes from `coerce_params` (`config.py`), for example `Ban List: 'Keywords' is required` (`config.py`). The reply is keyed by validator id and also carries `blocked`, `blocked_by` and `phase` (`config.py`).
 
 ### Why the validators are real packages now
 The old `config.py` imported `BanList`, `DetectPII` and `ToxicLanguage` from `guardrails.hub` inside a `try` / `except ImportError`, with hand-written fallbacks. No Hub validator was ever installed, so the fallbacks always ran. Two of them were wrong:
@@ -131,15 +133,15 @@ The old `config.py` imported `BanList`, `DetectPII` and `ToxicLanguage` from `gu
 - The fallback `ToxicLanguage.validate` always returned `PassResult()`. The toxic-language guard could never block anything. A live check before the fix proved it: the old service reported `validation_passed: true` for the sentence "You are an idiot and I hope you fail completely."
 - The fallback `DetectPII` was four regular expressions (email, phone, US SSN, IPv4). It missed `4111 1111 1111 1111`, a card number with spaces, and it never found names or locations.
 
-The service now installs 13 real validators from public PyPI as `guardrails-ai-<name>`. The `guardrails hub install` CLI and its private registry are deprecated, and the `from guardrails.hub import X` shim is scheduled for removal (`config.py:1-10`, `pyproject.toml:13-27`).
+The service now installs the two packaged validators from public PyPI as `guardrails-ai-<name>`. The `guardrails hub install` CLI and its private registry are deprecated, and the `from guardrails.hub import X` shim is scheduled for removal (`config.py`, `pyproject.toml`).
 
 ### Deployment
 - `guardrails-service/Dockerfile:25-36` downloads the spaCy model `en_core_web_sm` (12 MB) and rewrites Presidio's `conf/default.yaml` from `en_core_web_lg` (590 MB) to the small model. The build fails if Presidio stops pinning the large model.
 - `guardrails-service/Dockerfile:41-43` writes `/root/.guardrailsrc`. A missing file makes every `Validator` constructor raise.
-- `rag-ingestion-manager/docker-compose.yaml:306-317` builds the service from `../guardrails-service`, maps port `18000` to `8000`, reads `rag-ingestion-manager/.env.guardrails`, and sets `extra_hosts: host.docker.internal:host-gateway` so the three judges reach LiteLLM on the host.
+- `rag-ingestion-manager/docker-compose.yaml:306-317` builds the service from `../guardrails-service`, maps port `18000` to `8000`, reads `rag-ingestion-manager/.env.guardrails`, and sets `extra_hosts: host.docker.internal:host-gateway` so the judge reaches LiteLLM on the host.
 - `rag-ingestion-manager/.env.guardrails:7-12` sets `LITELLM_BASE_URL`, `LLM_API_KEY`, `GUARDRAIL_LLM_MODEL=Gpt-oss-20b` and `GUARDRAIL_LLM_MAX_TOKENS=512`.
 
-The judge models are reasoning models. At `max_tokens=160` they return an empty body and the judge fails. At 512 they answer correctly in 1–3 s. `Gpt-oss-20b` measured 18/18 correct across six texts. `Gpt-oss-120b` measured 8–105 s and timed out, so do not select it. The code default is `Gpt-oss-120b` (`config.py:35`) and the deployment overrides it to `Gpt-oss-20b` (`.env.guardrails:9`).
+The judge models are reasoning models. At `max_tokens=160` they return an empty body and the judge fails. At 512 they answer correctly in 1–3 s. `Gpt-oss-20b` measured 18/18 correct across six texts. `Gpt-oss-120b` measured 8–105 s and timed out, so do not select it. The code default is `Gpt-oss-120b` (`config.py`) and the deployment overrides it to `Gpt-oss-20b` (`.env.guardrails:9`).
 
 ---
 
@@ -147,30 +149,26 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 
 ```
 +----------------------------------------------------------------------------------+
-|  ⛨ Guard Configuration                                        [ + New Config ]   |
+|  [icon] Guard Configuration                                   [ + New Config ]   |
+|         Choose the checks that run on every chat turn, and set what happens       |
+|         when a check fails.                                                       |
 +----------------------------------------------------------------------------------+
 |  Create / Edit Config form (shown after + New Config or Edit):                   |
 |  Name [__________________]   Description (optional) [__________________]         |
 |  The picker and the settings are two panes. Only a selected validator gets a      |
 |  settings panel, so the form stays one screen high.                               |
 |  +--------------------------+  +----------------------------------------------+  |
-|  | Validators           16  |  | Settings                          2          |  |
+|  | Validators            3  |  | Settings                          2          |  |
 |  |                          |  |                                              |  |
-|  | Content Safety       3   |  | Ban List                [both]     Remove    |  |
-|  |  [x] Ban List    [local] |  |  desc: Reject text that contains any of these |  |
-|  |  [ ] Toxic Lang    [llm] |  |  Keywords *        (chip picker, free text)   |  |
-|  |  [ ] Mentions D  [local] |  |  Fuzzy distance    [ 0 ]                      |  |
-|  | Privacy              1   |  |  Action when the text fails [ Block req. v ]  |  |
-|  |  [x] PII Detect  [model] |  |                                              |  |
-|  | Scope                1   |  | PII Detection           [both]     Remove    |  |
-|  |  [ ] Restrict To   [llm] |  |  PII types *   (chip picker, 18 options)      |  |
-|  | Security             2   |  |  Action when the text fails [ Block req. v ]  |  |
-|  |  [ ] Prompt Inj    [llm] |  |                                              |  |
-|  |  [ ] Secrets P   [local] |  |                                              |  |
-|  | Format               8   |  |                                              |  |
-|  |  ...                     |  |                                              |  |
-|  | Database             1   |  |                                              |  |
-|  |  [ ] Exclude SQL [local] |  |                                              |  |
+|  | Content Safety       2   |  | Ban List                [both]     Remove    |  |
+|  |  [x] Ban List    [local] |  |  desc: Block a list of words or phrases.      |  |
+|  |      Block a list of w…  |  |  Banned words *    (chip picker, free text)   |  |
+|  |  [x] Toxic Lang    [llm] |  |  Fuzzy distance    [ 0 ]                      |  |
+|  |      Flag abusive, har…  |  |  Action when the text fails [ Block req. v ]  |  |
+|  | Privacy              1   |  |                                              |  |
+|  |  [x] PII Detect  [model] |  | PII Detection           [both]     Remove    |  |
+|  |      Detect personal d…  |  |  PII types *   (chip picker, 18 options)      |  |
+|  |                          |  |  Action when the text fails [ Block req. v ]  |  |
 |  +--------------------------+  +----------------------------------------------+  |
 |  Mode:   ( ) Input Only   ( ) Output Only   (o) Both                              |
 |                                          [ Cancel ]  [ Create / Update ]         |
@@ -190,7 +188,7 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 - The page loads `listAvailableGuards()`, `listGuardrailsConfigs()` and `listGuardOnFailOptions()` in parallel with `Promise.allSettled` (`GuardrailsConfigPage.tsx:443-477`). There is no `active_only` filter in the UI. A catalog failure shows a "Could not load the validator catalog." panel with a Retry button (`GuardrailsConfigPage.tsx:642-653`).
 - The form is **progressive disclosure**. It splits into a validator picker on the left (`gr-form-split` / `gr-form-picker`, `GuardrailsConfigPage.tsx:676-717`) and a settings pane on the right (`gr-form-settings`, `GuardrailsConfigPage.tsx:718-780`). Only a **selected** validator gets a settings panel, so a config with two guards shows two panels, not sixteen. The section headers carry live counts: total validators (`:680-681`) and selected validators (`:720-721`).
 - Validators are grouped by `category` in the order the catalog returns them (`GuardrailsConfigPage.tsx:611-621,684-716`). Each category header carries its own count (`:686-689`).
-- A picker row is a **checkbox chip**: label, a `kind` tag (`local`, `model` or `llm`) and the validator description in the `title` tooltip (`GuardrailsConfigPage.tsx:695-715`). A validator the service reports as unavailable renders with `gr-picker-chip--unavailable`, is disabled, and its tooltip carries `unavailable_reason` (`:697-711`). The picker shows no `phase` tag — the phase appears in the settings panel that the validator opens.
+- A picker row is a **two-line checkbox chip** (`gr-picker-chip`): the label and a `kind` tag (`local`, `model` or `llm`) on the first line, the validator's own `description` from the catalog on the second (`GuardrailsConfigPage.tsx`). The description used to be a `title` tooltip only, which hid the one line that says what the check does; it is now always visible, and it joins the checkbox's accessible name so a screen reader reads it too. A validator the service reports as unavailable renders with `gr-picker-chip--unavailable`, is disabled, and its description line carries `unavailable_reason` instead. The picker shows no `phase` tag — the phase appears in the settings panel that the validator opens.
 - The settings pane lists one `gr-setting-card` per selected validator (`GuardrailsConfigPage.tsx:733-779`). The card head carries the label, the `phase` tag and a `Remove` button (`:735-750`), which is the same toggle as deselecting the chip.
 - With nothing selected the pane shows an empty state that points at the picker ("Pick one on the left. Its options appear here.") rather than rendering a blank column (`GuardrailsConfigPage.tsx:725-731`).
 - One `ParamField` component renders every parameter. It switches on `param.type` and supports `string`, `text`, `integer`, `number`, `boolean`, `string_list` and `select` (`GuardrailsConfigPage.tsx:318-424`). No code in the form checks a validator id.
@@ -198,10 +196,35 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 - One `on_fail` select sits in every settings panel, labelled "Action when the text fails", filled from `GET /guardrails/on-fail-options` (`GuardrailsConfigPage.tsx:760-775`). Three options are in the list, so the control is a select, not a slider. A `FALLBACK_ON_FAIL` list keeps the form usable when that endpoint is down (`:218-237`).
 - Client-side save rules: a name is required, at least one guard must be selected, and every `required` parameter must have a value (`GuardrailsConfigPage.tsx:258-264,533-551`). The Create/Update button stays disabled otherwise (`GuardrailsConfigPage.tsx:804-813`). A missing required parameter shows `Give "<label>" a value (<guard label>).` (`GuardrailsConfigPage.tsx:548-550`).
 - Selecting a guard seeds its parameters from the catalog defaults and `on_fail: "noop"` (`seedParams`, `GuardrailsConfigPage.tsx:252-256`). Deselecting removes the entry, so `buildSettings()` never sends stale values (`GuardrailsConfigPage.tsx:270-287,492-506`).
-- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx:602-609,873-881`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx:516-532`), `Delete` confirms then `DELETE /configs/{id}` (`GuardrailsConfigPage.tsx:592-600,882`).
+- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx:602-609,873-881`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx:516-532`), `Delete` opens a confirmation dialog then issues `DELETE /configs/{id}`. The dialog reuses the app's shared modal shell (`.modal-overlay` / `.modal-panel` / `.modal-header` / `.modal-body` / `.modal-footer`) with `role="alertdialog"`, names the config being removed, and focuses nothing else. A native `confirm()` came before it: it cannot be themed, it reads as a browser dialog rather than part of the page, and it blocks the whole tab.
 - A card shows a parameter row only when the value differs from the catalog default. A guard with all defaults shows "Default settings", and a guard id that is not in the catalog shows "Not in the catalog" (`GuardrailsConfigPage.tsx:288-316,854-871`).
 - The config grid uses **bounded** tracks, `repeat(auto-fill, minmax(340px, 460px))` with `justify-content: start` (`index.css` `.gr-config-grid`). Unbounded `1fr` tracks stretched a short summary into a sparse full-width card; plain `auto-fill` reserved empty tracks and left half the row blank when only one or two configs exist.
 - There is no "Save Policy", no default-policy selector and no threshold sliders.
+
+### Polish applied on 2026-09-29
+
+Three defects were fixed on this page.
+
+**A symbol stood in for an icon.** The heading was `<h1>⛨ Guard Configuration</h1>`. A text
+glyph depends on the font, cannot be themed or sized with the rest of the icon set, and is
+read aloud by some screen readers. It is now `IconGuardrails`, an SVG that already existed in
+`components/Icons.tsx` and that the sidebar uses for this page. The icon sits **outside** the
+`h1`: `.guardrails-page h1` paints its text with `background-clip: text` and a transparent
+fill, which would erase an inline SVG.
+
+**A base button fell back to the browser's own colours.** `.btn` set no `background`, so every
+bare `.btn.btn-sm` computed `background: rgb(240, 240, 240)` with `color: rgb(0, 0, 0)` — black
+on near-white in a dark theme. This affected `Disable`, `Edit` and the picker's `+ Add items`
+on this page, and every bare `.btn` in the application. The `.btn` rule now sets
+`background: var(--bg-glass)` with `color: var(--text-primary)` and
+`border-color: var(--border-default)`, so it paints itself. `.btn-secondary` is kept as an
+explicit alias of the same surface. Measured before and after with `getComputedStyle`.
+
+**A description was reachable only by hover.** The validator description lived in a `title`
+attribute. It is now the chip's second line, as described above.
+
+The page also gained a subtitle under the title, and the validator count in the picker header
+now reads 3.
 
 ---
 

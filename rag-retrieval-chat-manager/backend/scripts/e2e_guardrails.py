@@ -60,23 +60,30 @@ def main() -> int:
     api = Api(settings)
 
     # ── The service catalog drives the Guard Config page ─────────────
+    # The catalog holds exactly these three. The page shows what the service serves, so a
+    # validator added here appears there with no frontend change, and one removed here
+    # disappears. An exact set fails loudly on either.
+    EXPECTED_VALIDATORS = {"ban_list", "detect_pii", "toxic_language"}
+
     status, catalog = api.request("GET", f"{api.guardrails}/catalog")
     check("catalog is served", status == 200, f"HTTP {status}")
     validators = catalog.get("validators", []) if isinstance(catalog, dict) else []
-    check("catalog lists validators", len(validators) >= 10, f"{len(validators)} validators")
+    ids_served = {v["id"] for v in validators}
+    check(
+        "the catalog serves exactly the three supported validators",
+        ids_served == EXPECTED_VALIDATORS,
+        f"served: {sorted(ids_served)}",
+    )
 
     unavailable = [v["id"] for v in validators if not v.get("available")]
     check("every catalog validator is installed", not unavailable, ", ".join(unavailable))
 
-    ids = {v["id"] for v in validators}
-    check(
-        "the real validators are present",
-        {"ban_list", "detect_pii", "toxic_language"} <= ids,
-        f"missing: {sorted({'ban_list', 'detect_pii', 'toxic_language'} - ids)}",
-    )
-
     with_params = [v for v in validators if v.get("params")]
-    check("validators expose parameters", len(with_params) >= 8, f"{len(with_params)} with params")
+    check(
+        "every validator exposes its parameters",
+        {v["id"] for v in with_params} == EXPECTED_VALIDATORS,
+        f"{len(with_params)} with params",
+    )
 
     tox = next((v for v in validators if v["id"] == "toxic_language"), {})
     check(

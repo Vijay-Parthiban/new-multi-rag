@@ -885,6 +885,22 @@ a:hover {
   text-decoration: none;
   font-family: inherit;
   transition: all 0.2s ease;
+  /* The base button paints itself. Without this it falls back to the browser's own
+     ButtonFace, which is near-white with black text in a dark theme. A variant class
+     overrides these three. */
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+  backdrop-filter: blur(8px);
+}
+
+/* The base button and the secondary variant are now the same surface. Kept as an explicit
+   alias so existing markup keeps working. */
+.btn-secondary {
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+  backdrop-filter: blur(8px);
 }
 
 .btn:disabled {
@@ -915,13 +931,6 @@ a:hover {
 .btn-primary:active:not(:disabled) {
   transform: translateY(0);
   box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3);
-}
-
-.btn-secondary {
-  background: var(--bg-glass);
-  color: var(--text-primary);
-  border-color: var(--border-default);
-  backdrop-filter: blur(8px);
 }
 
 .btn-secondary:hover:not(:disabled) {
@@ -3732,6 +3741,56 @@ select.input option {
   background-clip: text;
 }
 
+/* The title and its subtitle. The icon sits outside the h1, because the h1 paints its text
+   with `background-clip: text` and a transparent fill, which would erase an inline SVG. */
+.gr-page-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.gr-page-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  color: var(--accent-emphasis);
+  background: var(--accent-subtle);
+  border: 1px solid var(--border-glow);
+}
+
+.gr-page-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  max-width: 62ch;
+}
+
+/* One line of body copy inside the shared modal shell. */
+.gr-modal-body {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.gr-modal-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .guardrails-page .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+}
+
 /* ── Form Card ── */
 
 .gr-form-card {
@@ -6442,9 +6501,9 @@ select.input option {
 
 .gr-picker-chip {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.3rem 0.45rem;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -6454,6 +6513,34 @@ select.input option {
 .gr-picker-chip:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-default);
+}
+
+/* The checkbox sits on the first line of the label, not centred against the description. */
+.gr-picker-chip input[type="checkbox"] {
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.gr-picker-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.gr-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* The validator's own words from the catalog, always visible. A hover-only `title` hid the
+   one line that says what the check actually does. */
+.gr-picker-desc {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .gr-picker-chip.selected {
