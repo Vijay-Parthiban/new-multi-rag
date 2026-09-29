@@ -34,6 +34,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# Host-run env overrides. Both backends read `.env.local` after `.env`, so this file is
+# machine-specific and must never be committed. The tracked `.env` files stay tracked:
+# one holds the container hostnames, the other the host values.
+.env.local
+**/.env.local
+
 # Tool & Temp
 .omc/
 .pi/

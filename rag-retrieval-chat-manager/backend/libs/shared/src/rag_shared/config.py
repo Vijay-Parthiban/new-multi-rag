@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from rag_shared.types import SearchMode
 
+# The env files are resolved against the backend directory, not the working directory.
+# `env_file=".env"` is a relative path, so it only worked when the process happened to
+# start in `backend/`. `rag-db-migrate` runs alembic with cwd=libs/database, where no
+# `.env` exists, so it fell back to the container hostname and failed to resolve
+# `postgres` on a host run. A container never showed this because compose injects the
+# values as real environment variables.
+_BACKEND_DIR = Path(__file__).resolve().parents[4]
+_ENV_FILES = (str(_BACKEND_DIR / ".env"), str(_BACKEND_DIR / ".env.local"))
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # `.env` holds the container hostnames and is what the retrieval compose reads.
+    # `.env.local` is an optional host-run override and is gitignored. pydantic-settings
+    # gives the later file precedence, so a key in `.env.local` wins over the same key in
+    # `.env`. A real environment variable still beats both.
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILES,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     docker_network: str = "rag-shared"
 
@@ -72,6 +90,16 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8001
     api_key: str = ""
+
+    # OpenTelemetry. These live here rather than only in the process environment because
+    # pydantic-settings loads `.env` into this object and does **not** populate
+    # `os.environ`. `init_tracing` read them from `os.getenv`, so a value in `.env` or
+    # `.env.local` never reached it and the host run kept exporting to the container
+    # hostname `otel` on every request.
+    otel_tracing_enabled: bool = True
+    otel_service_name: str = "rag-platform"
+    otel_exporter_otlp_endpoint: str = "http://otel:4318"
+    otel_console_export: bool = False
 
 
 @lru_cache

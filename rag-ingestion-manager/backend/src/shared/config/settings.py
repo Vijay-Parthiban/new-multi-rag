@@ -1,10 +1,20 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolved against the backend directory, not the working directory. `env_file=".env"` is
+# relative, so it only applied when the process started in `backend/`. A container is
+# unaffected because compose injects the same values as real environment variables.
+_BACKEND_DIR = Path(__file__).resolve().parents[3]
+_ENV_FILES = (str(_BACKEND_DIR / ".env"), str(_BACKEND_DIR / ".env.local"))
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # `.env` holds the deployed values and is read by the containers. `.env.local` is an
+    # optional host-run override and is gitignored. pydantic-settings gives the later file
+    # precedence, so a key in `.env.local` wins over the same key in `.env`.
+    model_config = SettingsConfigDict(env_file=_ENV_FILES, extra="ignore")
 
     database_url: str = "postgresql://ingestion:ingestion@localhost:5432/ingestion"
     redis_url: str = "redis://localhost:6379/0"

@@ -178,6 +178,28 @@ def current_span_ids() -> tuple[str, str] | None:
     return format(ctx.trace_id, "032x"), format(ctx.span_id, "016x")
 
 
+def _otel(settings_attr: str, env_key: str, default: str) -> str:
+    """Resolve one OpenTelemetry value: process environment, then `.env`, then default.
+
+    The process environment wins, so a shell or compose override still works. Falling back
+    to Settings is what makes `.env` and `.env.local` apply at all: pydantic-settings loads
+    those files into the Settings object and does not put them in `os.environ`, so reading
+    `os.getenv` alone ignored both files and a host run kept exporting to `otel:4318`.
+    """
+    raw = os.getenv(env_key)
+    if raw is not None:
+        return raw.lower() if raw.lower() in ("true", "false") else raw
+    try:
+        from rag_shared.config import get_settings
+
+        value = getattr(get_settings(), settings_attr, None)
+        if value is not None:
+            return str(value).lower() if isinstance(value, bool) else str(value)
+    except Exception:  # noqa: BLE001 - tracing must never stop an app from starting
+        pass
+    return default
+
+
 def init_tracing() -> None:
     """Configure the global TracerProvider and OTLP HTTP exporter → collector."""
     global _tracer, _provider, _initialized
@@ -188,8 +210,8 @@ def init_tracing() -> None:
         _initialized = True
         return
 
-    enabled = os.getenv("OTEL_TRACING_ENABLED", "true").lower() == "true"
-    service_name = os.getenv("OTEL_SERVICE_NAME", "rag-platform")
+    enabled = _otel("otel_tracing_enabled", "OTEL_TRACING_ENABLED", "true") == "true"
+    service_name = _otel("otel_service_name", "OTEL_SERVICE_NAME", "rag-platform")
 
     if not enabled:
         logger.info("OpenTelemetry tracing is disabled")
@@ -198,7 +220,7 @@ def init_tracing() -> None:
         _initialized = True
         return
 
-    console_enabled = os.getenv("OTEL_CONSOLE_EXPORT", "false").lower() == "true"
+    console_enabled = _otel("otel_console_export", "OTEL_CONSOLE_EXPORT", "false") == "true"
 
     resource_attrs = _parse_resource_attributes(os.getenv("OTEL_RESOURCE_ATTRIBUTES", ""))
     resource_attrs.setdefault("service.name", service_name)
@@ -207,7 +229,7 @@ def init_tracing() -> None:
     provider = TracerProvider(resource=resource)
 
     # Apps export to the collector; collector fans out to Langfuse / Arize / Grafana
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318").strip()
+    endpoint = _otel("otel_exporter_otlp_endpoint", "OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318").strip()
     traces_url = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
     raw_headers = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "").strip()
 

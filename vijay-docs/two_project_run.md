@@ -238,10 +238,56 @@ falls back to a local model whose vector size does not match the collection.
 
 ---
 
-## 4. The four application processes and their dependencies
+## 4. Run the four apps on the host, their dependencies in Docker
 
-Install dependencies once per project. Run the migration before the backend that owns it. Then start the
-processes. Every command block below is complete; none of them depends on a shell profile.
+**This is the mode to use while you change code.** The four processes run from source with hot reload,
+so an edit takes effect on save and nothing is rebuilt. Postgres, Redis, Qdrant, MinIO, OpenSearch, the
+scraper and the guardrails service stay in containers, because those are not files you edit.
+
+Use one terminal per process. Each command below runs in the foreground, so its log stays readable and
+Ctrl-C stops only that one.
+
+```bash
+sh scripts/dev.sh deps              # start every dependency container
+sh scripts/dev.sh ingestion-api     # :8007, with --reload
+sh scripts/dev.sh ingestion-worker
+sh scripts/dev.sh ingestion-web     # :5173
+sh scripts/dev.sh retrieval-api     # :8001, with --reload
+sh scripts/dev.sh retrieval-worker
+sh scripts/dev.sh retrieval-web     # :5174
+
+sh scripts/dev.sh status            # containers, ports, and which apps are up
+sh scripts/dev.sh deps-stop         # stop the dependencies
+```
+
+**On Windows use `sh scripts/dev.sh`, not `bash scripts/dev.sh`.** `bash` on the PATH resolves to the
+WSL launcher, which has no Docker and no `uv`. `sh` runs the file in the same shell you are already in.
+
+The `--reload` flag is on both APIs, so a change to a Python file in either backend applies without a
+restart. The two queue workers have no such flag: they are long-lived consumers, so a change there needs
+Ctrl-C and the subcommand again. Neither frontend needs a flag; Vite hot-reloads on save.
+
+### How the host processes get their settings
+
+Neither backend needs an exported variable. Each reads its own `.env`, then an optional **`.env.local`**
+on top, and the later file wins:
+
+| File | Holds | Tracked? |
+|---|---|---|
+| `rag-ingestion-manager/backend/.env` | The host values: `localhost` on every port | yes |
+| `rag-ingestion-manager/backend/.env.local` | Optional host override | no |
+| `rag-retrieval-chat-manager/backend/.env` | The **container** names: `postgres`, `redis`, `qdrant`, `host.docker.internal` | no (gitignored) |
+| `rag-retrieval-chat-manager/backend/.env.local` | The host values: `localhost` on every port | no |
+
+`.env.local` is gitignored at the repository root, so it never travels. An unset key falls through to
+`.env`, and a real environment variable still beats both.
+
+The retrieval `.env` is written for the containers, so **it is the file that needs a `.env.local`**.
+Delete that file and the same backend runs against the containers again with no edit.
+
+Both `Settings` classes resolve the pair **against the backend directory, not the working directory.**
+That matters: `rag-db-migrate` runs alembic with `cwd=libs/database`, where a relative `.env` does not
+exist, so the migration would fall back to the container hostname `postgres` and fail to resolve it.
 
 ### 4.1 Ingestion Manager backend
 
@@ -351,33 +397,34 @@ falls back to a source build that needs the Microsoft C++ build tools. The lockf
 and that version needs `ragas.metrics.collections`, which does not exist in the 0.3 line.
 
 Its `backend/.env` holds **Docker service hostnames** such as `postgres`, `redis` and `qdrant`. Those do
-not resolve from the host. Two ways to run it:
-
-**Option A — pass the host values as process environment.** A real environment variable wins over the
-`.env` file, so this overrides cleanly. This is the recommended host path:
+not resolve from the host, so the host run needs the `backend/.env.local` described at the top of this
+section. That file already lists every override, so **no variable is exported and no prefix is typed**:
 
 ```bash
 cd rag-retrieval-chat-manager/backend
-uv run rag-db-migrate    # with DATABASE_URL below set
+uv run rag-db-migrate
+uv run uvicorn rag_api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-```bash
-cd rag-retrieval-chat-manager/backend
-DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag" \
-REDIS_URL="redis://localhost:6379/0" \
-QDRANT_URL="http://localhost:6333" \
-QDRANT_KP_URL="http://localhost:6333" \
-OPENSEARCH_URL="http://localhost:9200" \
-INGESTION_SERVICE_URL="http://localhost:8007" \
-GUARDRAILS_URL="http://localhost:18000" \
-LITELLM_BASE_URL="http://localhost:4000" \
-EMBEDDING_MODEL="nvidia-embed-textonly" \
-OTEL_TRACING_ENABLED=false \
-  uv run uvicorn rag_api.main:app --host 0.0.0.0 --port 8001
-```
+If you prefer process environment anyway, it still wins over both files. `scripts/dev.sh retrieval-api`
+does the same thing in one word.
 
-**Option B — run it inside the compose network.** Then the `.env` hostnames resolve, and
-`scripts/run-api.sh` works unchanged. Use the ingestion compose file, which declares a `rag-api` service.
+The keys that must differ between the two modes:
+
+| Variable | Containers | Host |
+|---|---|---|
+| `DATABASE_URL` | `...@postgres:5432/rag` | `...@localhost:5432/rag` |
+| `REDIS_URL` | `redis://redis:6379/0` | `redis://localhost:6379/0` |
+| `QDRANT_URL` / `QDRANT_KP_URL` | `http://qdrant:6333` | `http://localhost:6333` |
+| `OPENSEARCH_URL` | `http://host.docker.internal:9200` | `http://localhost:9200` |
+| `INGESTION_SERVICE_URL` | `http://host.docker.internal:8007` | `http://localhost:8007` |
+| `GUARDRAILS_URL` | `http://host.docker.internal:18000` | `http://localhost:18000` |
+| `LITELLM_BASE_URL` | `http://host.docker.internal:4000` | `http://localhost:4000` |
+| `OTEL_TRACING_ENABLED` | `true` | `false` |
+
+`OTEL_TRACING_ENABLED=false` matters more than it looks. With it on, every request tries to export spans
+to the collector's **container** hostname, which does not resolve from the host, so each request is slow
+and logs an error.
 
 The variables, and why each one matters:
 
