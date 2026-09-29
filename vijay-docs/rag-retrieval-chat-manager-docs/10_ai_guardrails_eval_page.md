@@ -290,6 +290,21 @@ The page's five fields — upload, replace, dataset, config, category — wrappe
 `label`, which does associate, but none carried an `id`. DevTools flagged all five. Each now has
 an `id` and the label's `htmlFor` points at it.
 
+### A stale dataset id 404d, with no way back
+
+Found while testing. A dataset can disappear under this page: another tab, or a seed or upload
+with `replace` on the same name, deletes the row and re-creates it under a **new** id. The page
+kept the old id, so every run returned `404 Dataset not found` and the only feedback was the
+error string.
+
+`onStartRun` now treats a 404 as a signal. It re-reads the dataset list and, when the selected
+id is gone, selects the first dataset and clears the run in view. The error stays on screen; the
+page is usable again without a manual reload.
+
+This is worth knowing because the e2e does exactly this: `scripts/e2e_guardrails.py` seeds the
+bundled dataset with `replace: true`, which mints a new id each run. Any browser tab left open
+on this page goes stale the moment the e2e finishes.
+
 ### Two smaller things
 
 `GuardrailsEvalRunResponse["aggregate_metrics"]` in `guardrailsEvalApi.ts` never declared

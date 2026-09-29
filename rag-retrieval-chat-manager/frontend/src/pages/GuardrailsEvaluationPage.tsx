@@ -268,7 +268,26 @@ export default function GuardrailsEvaluationPage() {
       setCategoryFilter("");
       await loadRuns(selectedDatasetId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start evaluation");
+      const message = err instanceof Error ? err.message : "Failed to start evaluation";
+      setError(message);
+      // The dataset can disappear under this page: another tab, or a seed/upload with
+      // `replace` on the same name, deletes the row and gives the name a new id. The page
+      // would then hold an id that no longer exists and every run would 404. Re-read the
+      // list, and drop the selection when the id is gone.
+      if (message.includes("404")) {
+        try {
+          const fresh = await listGuardrailsGoldenDatasets();
+          setDatasets(fresh.items);
+          const stillThere = fresh.items.some((d) => d.dataset_id === selectedDatasetId);
+          if (!stillThere) {
+            setSelectedDatasetId(fresh.items[0]?.dataset_id ?? null);
+            setSelectedRun(null);
+            setRunItems([]);
+          }
+        } catch {
+          // The reload failed too. The original error is the useful one.
+        }
+      }
     } finally {
       setBusy(false);
       setRunning(false);
