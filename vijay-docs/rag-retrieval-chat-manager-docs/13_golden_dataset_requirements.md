@@ -74,6 +74,47 @@ Column mapping (header lookup is case-insensitive and ignores spaces):
 
 Because any unknown column lands in `metadata` JSONB, adding a CSV column needs **no** migration.
 
+### The `source_doc_id` convention — read this before authoring a dataset
+
+This column is the only reference the retrieval and reranking metrics have. **A value that
+does not match an ingested file name makes every reference-based metric read zero**, with
+no error: `hit`, `recall`, `precision`, `mrr` and `ndcg` all come back `0.0` while the
+`generation` block still scores normally.
+
+Three rules:
+
+1. **Name the ingested file, not a label of your own.** The matcher compares the value
+   against the chunk's `source_locator`, `title`, `metadata.file_name`, `metadata.url` and
+   `metadata.source_locator`, reduced to a basename, by bidirectional substring. So
+   `TCS-Global-Whistle-Blower-Policy.pdf` matches; a shorthand such as `WB` does not, and
+   never can, because nothing in the corpus carries that string.
+2. **Add the page as a `_p<page>` suffix.** `TCS-Global-Whistle-Blower-Policy.pdf_p3`
+   becomes `{name: "...pdf", page: 3}`. This suffix is the **only** way a CSV can express a
+   page: `source_doc_id` maps to plain strings, so the `{name, page}` object the JSON form
+   accepts is unreachable from a CSV.
+3. **The suffix is 1-based against `metadata.page_index`.** A chunk at `page_index: 2` is
+   page `3`, so it matches `_p3` and not `_p2`.
+
+Separate multiple sources with a semicolon. `N/A`, `NONE` or `-` means no source and is
+left alone.
+
+```
+Q003,procedural_howto,...,TCS-Global-Whistle-Blower-Policy.pdf_p3,...
+Q019,comparative_cross_document,...,TCS-Global-Whistle-Blower-Policy.pdf_p1;TCS-Global-Policy-Corporate-Social-Responsibility.pdf_p7,...
+```
+
+**Check the column before running anything.** Each distinct value must appear in the
+corpus, or the run will report a zero retrieval block:
+
+```bash
+docker exec rag-ingestion-manager-qdrant-1 sh -c \
+  'curl -s -H "api-key: qdrant" -X POST http://localhost:6333/collections/<collection>/points/scroll \
+   -H "Content-Type: application/json" -d "{\"limit\":100,\"with_payload\":[\"file_name\"]}"' \
+  | grep -o '"file_name":"[^"]*"' | sort -u
+```
+
+Compare that list with `cut -d, -f6 file.csv`.
+
 A CSV carries no `name` field. The upload uses the filename stem as the dataset name, and the optional `?name=` query parameter overrides it. A JSON upload carries its own name and ignores `?name=`.
 
 ### 1.4 Upload & Import API
@@ -93,7 +134,7 @@ Uploads must end in `.json` or `.csv` (case-insensitive) and decode as UTF-8; th
 ## 2. Evaluation Core (`eval-core`)
 
 * **Formula-based metrics (Retrieval & Reranking)** — no LLM-as-a-judge is used for the retrieval/rerank stages. `GoldenItemEvaluator.evaluate_item` computes them directly from chunk metadata.
-* **Match base**: a retrieved chunk matches a golden source when one of `source_locator`, `title`, `metadata.file_name`, `metadata.url`, `metadata.source_locator` matches the source `name` (URL normalized to netloc + path with `www.` stripped and trailing `/` trimmed; non-URL values reduced to their basename; bidirectional substring match), and — when the source carries a page — the chunk page (`metadata.page_index` + 1, else `page_number`, `page`, `page_num`, `page_label`) equals it.
+* **Match base**: a retrieved chunk matches a golden source when one of `source_locator`, `title`, `metadata.file_name`, `metadata.url`, `metadata.source_locator` matches the source `name` (URL normalized to netloc + path with `www.` stripped and trailing `/` trimmed; non-URL values reduced to their basename; bidirectional substring match), and — when the source carries a page — the chunk page (`metadata.page_index` + 1, else `page_number`, `page`, `page_num`, `page_label`) equals it. A source **string** ending in `_p<digits>` is split into `{name, page}` at parse time, which is how a CSV expresses a page. **A name that matches nothing makes every metric in this block `0.0` with no error** — see §1.3.
 * **Calculation logic** (`compute_retrieval_metrics`, fixed `k = 5`):
   * **`precision`**: relevant chunks within the top 5 divided by the number of chunks in the top 5.
   * **`recall`**: expected sources matched within the top 5 divided by the total number of expected sources.

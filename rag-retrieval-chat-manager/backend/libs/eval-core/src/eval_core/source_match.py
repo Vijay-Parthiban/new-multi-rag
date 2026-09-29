@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 from rag_shared.types import RetrievedChunk
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,8 +30,20 @@ def normalize_source(value: str) -> str:
     return text
 
 
+_PAGE_SUFFIX = re.compile(r"^(?P<name>.+?)_p(?P<page>\d+)$")
+
+
 def parse_expected_sources(raw: list[Any] | None) -> list[ExpectedSource]:
-    """Normalize golden-dataset sources into name + optional page objects."""
+    """Normalize golden-dataset sources into name + optional page objects.
+
+    A CSV cannot carry a page: `source_doc_id` maps to plain strings, so `{name, page}`
+    objects — which the JSON form supports — were unreachable from an uploaded CSV. A
+    string ending in `_p<digits>` therefore splits into a name and a page:
+
+        TCS-Global-Whistle-Blower-Policy.pdf_p3  ->  {name: "...pdf", page: 3}
+
+    Keep this in step with `_chunk_page`, which reads `metadata.page_index` and adds one.
+    """
     if not raw:
         return []
     out: list[ExpectedSource] = []
@@ -38,7 +54,12 @@ def parse_expected_sources(raw: list[Any] | None) -> list[ExpectedSource]:
             continue
         if isinstance(entry, str):
             name = entry.strip()
-            if name:
+            if not name:
+                continue
+            match = _PAGE_SUFFIX.match(name)
+            if match:
+                out.append(ExpectedSource(name=match.group("name"), page=int(match.group("page"))))
+            else:
                 out.append(ExpectedSource(name=name))
             continue
         if isinstance(entry, dict):
@@ -91,36 +112,26 @@ def _name_matches(candidate: str, expected_name: str) -> bool:
     return norm_c in norm_e or norm_e in norm_c
 
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 def matches_expected_source(chunk: RetrievedChunk, expected: ExpectedSource) -> bool:
     """True when chunk source locator/name matches and page matches when required."""
     candidates = _chunk_source_candidates(chunk)
     chunk_page = _chunk_page(chunk)
-    
-    name_match = False
-    matched_c = None
-    for c in candidates:
-        if _name_matches(c, expected.name):
-            name_match = True
-            matched_c = c
-            break
-            
-    print(f"[SOURCE_MATCH DEBUG] Expected: file='{expected.name}', page={expected.page}", flush=True)
-    print(f"  -> Chunk Candidates: {candidates}", flush=True)
-    print(f"  -> Chunk Page Found: {chunk_page}", flush=True)
-    print(f"  -> Name Match Result: {name_match} {f'(on {matched_c})' if name_match else ''}", flush=True)
 
+    name_match = any(_name_matches(c, expected.name) for c in candidates)
     if not name_match:
+        # Worth one debug line, not one per chunk per source: an all-zero retrieval block
+        # means no expected name matched anything, and this is the line that shows why.
+        logger.debug(
+            "no source match: expected name=%r page=%r, candidates=%r",
+            expected.name,
+            expected.page,
+            candidates,
+        )
         return False
     if expected.page is None:
         return True
-    
-    page_match = (chunk_page is not None and chunk_page == expected.page)
-    print(f"  -> Page Match Result: {page_match}", flush=True)
-    return page_match
+
+    return chunk_page is not None and chunk_page == expected.page
 
 
 def is_relevant_chunk(

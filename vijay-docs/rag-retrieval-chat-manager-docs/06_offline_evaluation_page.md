@@ -337,7 +337,58 @@ The Strategy, Classifier, RAG Mode and Max Loops controls are gone: the offline 
 
 ---
 
-## 8. Defects found and fixed on 2026-09-23
+## 9. A run whose retrieval and reranking blocks are all zero
+
+**Symptom.** Overall KPIs shows `0` for every retrieval and reranking number, and Metrics by
+Category shows `hit=0 recall=0 mrr=0` per category — while the generation block scores
+normally.
+
+**Cause: the golden dataset's `source_doc_id` values do not name the ingested files.** Nothing
+errors. The matcher compares each value against the chunk's file name, finds no match, and the
+metrics are computed from zero relevant chunks, which is a legitimate `0.0`.
+
+This happened on 2026-09-29. The dataset carried shorthand:
+
+```
+WB_p4    CSR_p5;CSR_p6    WB_p1;CSR_p1;CSR_p7
+```
+
+The corpus holds `TCS-Global-Whistle-Blower-Policy.pdf` and
+`TCS-Global-Policy-Corporate-Social-Responsibility.pdf`. `CSR` and `WB` appear nowhere in the
+corpus, so no rule could match them — the shorthand only makes sense to the person who wrote
+it. Both blocks read zero on every run of that dataset.
+
+**Two things were wrong, and both needed fixing:**
+
+| Fault | Fix |
+|---|---|
+| A CSV could not express a page at all, so `CSR_p5` was compared as the literal name `csr_p5` | `parse_expected_sources` splits a trailing `_p<digits>` into `{name, page}` |
+| The dataset's names did not match the corpus | Its `source_doc_id` column now names the ingested files |
+
+Debug `print()` calls also sat in `matches_expected_source`, one per chunk per expected source.
+They are now a single `logger.debug`.
+
+**How to tell this apart from a stale worker.** Both make the same block read zero, so check both:
+
+```bash
+# 1. Do the dataset's source names exist in the corpus?
+docker exec rag-ingestion-manager-qdrant-1 sh -c \
+  'curl -s -H "api-key: qdrant" -X POST http://localhost:6333/collections/<collection>/points/scroll \
+   -H "Content-Type: application/json" -d "{\"limit\":100,\"with_payload\":[\"file_name\"]}"' \
+  | grep -o '"file_name":"[^"]*"' | sort -u
+
+# 2. Is the worker running the current code?
+docker image inspect backend-eval-worker:latest --format '{{.Created}}'
+```
+
+If the names are absent from that list, the dataset is at fault. If they are present and the
+block is still zero, the worker is running older code — see `two_project_run.md`, section 5b.
+
+`kendall_tau` is the tell that separates the two stages: it needs no expected source, so **it
+stays non-zero while `mrr`, `ndcg` and `recall` are zero.** A reranker that genuinely scored
+nothing would report `kendall_tau` as `None` instead.
+
+## 10. Defects found and fixed on 2026-09-23
 
 The page could not produce a result before this date. Every one of these fails **every** item, and the first two were already recorded in this section before the fix.
 
