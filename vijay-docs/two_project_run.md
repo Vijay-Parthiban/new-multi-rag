@@ -80,7 +80,7 @@ lists the model names the platform expects.
 
 Run this section once per machine. It does not change when the application code changes.
 
-### 3.1 The four external containers
+### 3.1 The three external containers
 
 Three services the platform calls are **not declared in this repository**. Start them first, from their
 own directories, or provide equivalents and update the environment variables in section 4.
@@ -91,9 +91,26 @@ own directories, or provide equivalents and update the environment variables in 
 | `litellm` | 4000 | The model gateway for chat, embeddings, rerank and image captions |
 | `litellm_db` | 5433 | LiteLLM's PostgreSQL |
 
-If you keep them in a separate services repository, start that stack before the one below. If you do not
-have them, run one Qdrant and one LiteLLM yourself and set `QDRANT_KP_URL` and `LITELLM_BASE_URL`
-accordingly.
+If you keep them in a separate services repository, start that stack before the one below. Each one has
+its own compose file, so start it from its own directory. This machine keeps them under
+`~/CursorProjects/docker-services/`:
+
+```bash
+cd ~/CursorProjects/docker-services/qdrant  && docker compose up -d   # qdrant:6335, and 6336 for gRPC
+cd ~/CursorProjects/docker-services/litellm && docker compose up -d   # litellm:4000, litellm_db:5433
+```
+
+All three carry `restart: unless-stopped`, so they come back after a reboot but **not** after a
+`docker compose down`. Check them, because a missing knowledge-product Qdrant makes chat fail with
+`[Errno 101] Network is unreachable` while every other page still works:
+
+```bash
+docker ps --filter name=^qdrant$ --format "{{.Names}}\t{{.State}}\t{{.Ports}}"
+docker ps --filter name=^litellm --format "{{.Names}}\t{{.State}}\t{{.Ports}}"
+```
+
+If you do not have them, run one Qdrant and one LiteLLM yourself and set `QDRANT_KP_URL` and
+`LITELLM_BASE_URL` accordingly.
 
 ### 3.2 The repository stack
 
@@ -568,7 +585,7 @@ Do this once. Nothing here repeats on a normal start.
 #    they own: compose rejects a network that carries another project's label.
 docker network create rag-shared
 
-# 2. The four external containers, from their own directories (section 3.1).
+# 2. The three external containers, from their own directories (section 3.1).
 #    qdrant:6335, litellm:4000, litellm_db:5433.
 ```
 
@@ -1082,6 +1099,8 @@ npx vite build
 | Symptom | Cause | Fix |
 |---|---|---|
 | An assistant answers, but the source list is empty | The reader used `QDRANT_URL` on 6333 instead of 6335 | Set `QDRANT_KP_URL=http://localhost:6335` |
+| Chat answers `Error occurred: [Errno 101] Network is unreachable` | **The knowledge-product Qdrant on 6335 is not running.** Nothing listens on that port, so the reader cannot open the collection | Start it: `cd <external-services-dir>/qdrant && docker compose up -d`. Confirm with `docker ps --filter name=^qdrant$`. Run the probe below to be sure |
+| Chat answers `Error occurred: ...` on any address in `.env` | One of the four `host.docker.internal` services is down. `Errno 101` names the reach, not the service | Run the probe: `cd rag-retrieval-chat-manager/backend && docker cp scripts/check_deps.py backend-rag-api-1:/tmp/check_deps.py && docker exec backend-rag-api-1 python /tmp/check_deps.py`. It prints one line per dependency and names the one that failed |
 | Every assistant request returns 503 | The retrieval API cannot reach the ingestion API | Check `INGESTION_SERVICE_URL` and that `8007` answers |
 | `POST /api/assistants/{slug}/chat` returns 422 `NOT_AN_ASSISTANT` | The pipeline's strategy is a legacy one such as `naive` | Create the pipeline from the `Pipelines` page, or set `rag_strategy` to `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` |
 | 422 `RAG_STRATEGY_UNAVAILABLE` | The product does not have the destination the strategy needs enabled | Enable the destination in the ingestion `Knowledge Store` page, then re-create or patch the pipeline |
