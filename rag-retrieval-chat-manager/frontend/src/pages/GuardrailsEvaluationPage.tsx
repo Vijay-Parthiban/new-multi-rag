@@ -79,17 +79,30 @@ function verdictOf(row: GuardrailsEvalRunItemRow): ItemVerdict {
   return "ok";
 }
 
+/**
+ * One KPI: a label, the value, and a bar. `role="img"` was wrong here — it announces the bar as
+ * a picture. `progressbar` with the three aria values is what a screen reader can act on.
+ */
 function ScoreBar({ label, value }: { label: string; value: number | null | undefined }) {
   const ratio = typeof value === "number" && !Number.isNaN(value) ? value : null;
   const width = ratio === null ? 0 : Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  const text = percent(ratio);
   return (
     <div className="gr-score">
       <div className="gr-score-head">
         <span className="gr-score-label">{label}</span>
-        <span className="gr-score-value">{percent(ratio)}</span>
+        <span className="gr-score-value">{text}</span>
       </div>
-      <div className="gr-bar-track" role="img" aria-label={`${label}: ${percent(ratio)}`}>
-        <span className="gr-bar-fill" style={{ width: `${width}%` }} />
+      <div
+        className="gr-bar-track"
+        role="progressbar"
+        aria-label={label}
+        aria-valuenow={ratio === null ? undefined : Math.round(ratio * 100)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuetext={text}
+      >
+        <span className={`gr-bar-fill${ratio !== null && ratio < 0.5 ? " gr-bar-fill--low" : ""}`} style={{ width: `${width}%` }} />
       </div>
     </div>
   );
@@ -108,6 +121,26 @@ export default function GuardrailsEvaluationPage() {
   const [error, setError] = useState<string | null>(null);
   const [replaceOnUpload, setReplaceOnUpload] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState("");
+  // The dataset awaiting a delete confirmation. A native confirm() cannot be themed, reads as
+  // a browser dialog rather than part of the page, and blocks the whole tab.
+  const [pendingDelete, setPendingDelete] = useState<GuardrailsGoldenDatasetSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  // Seconds since Start was pressed. The run endpoint is synchronous and has no progress to
+  // poll, so this is the only signal that the request is still alive.
+  const [elapsed, setElapsed] = useState(0);
+  const [running, setRunning] = useState(false);
+
+  // One interval for the whole run. A synchronous request cannot report progress, so the page
+  // shows a moving indeterminate bar and a live second count instead of a frozen button.
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [running]);
 
   const selectedConfig = useMemo(
     () => configs.find((c) => c.id === selectedConfigId) || null,
@@ -195,11 +228,14 @@ export default function GuardrailsEvaluationPage() {
     }
   }
 
-  async function onDeleteDataset(datasetId: string) {
-    if (!window.confirm("Delete this guardrails golden dataset and all related runs?")) return;
+  async function runDelete() {
+    if (!pendingDelete) return;
+    const datasetId = pendingDelete.dataset_id;
+    setDeleting(true);
     setBusy(true);
     try {
       await deleteGuardrailsGoldenDataset(datasetId);
+      setPendingDelete(null);
       if (selectedDatasetId === datasetId) {
         setSelectedDatasetId(null);
         setSelectedRun(null);
@@ -209,6 +245,7 @@ export default function GuardrailsEvaluationPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
+      setDeleting(false);
       setBusy(false);
     }
   }
@@ -219,7 +256,9 @@ export default function GuardrailsEvaluationPage() {
       return;
     }
     setBusy(true);
+    setRunning(true);
     setError(null);
+    setElapsed(0);
     try {
       const created = await createGuardrailsEvalRun(selectedDatasetId, selectedConfigId);
       const run = await getGuardrailsEvalRun(created.run_id);
@@ -232,6 +271,7 @@ export default function GuardrailsEvaluationPage() {
       setError(err instanceof Error ? err.message : "Failed to start evaluation");
     } finally {
       setBusy(false);
+      setRunning(false);
     }
   }
 
@@ -268,11 +308,24 @@ export default function GuardrailsEvaluationPage() {
   const failureMessage =
     runItems.find((row) => row.error_message)?.error_message || selectedRun?.error_message || null;
 
+  // The tone follows the value, not the metric. A red tile reading "FP 0" says there is a
+  // problem while the number says there is none. Zero false positives is the goal, so it
+  // reads as clean; a non-zero count is what earns the warning colour.
   const confusion = [
     { key: "TP", label: "True positives", value: agg?.true_positives, tone: "good" },
     { key: "TN", label: "True negatives", value: agg?.true_negatives, tone: "good" },
-    { key: "FP", label: "False positives", value: agg?.false_positives, tone: "bad" },
-    { key: "FN", label: "False negatives", value: agg?.false_negatives, tone: "bad" },
+    {
+      key: "FP",
+      label: "False positives",
+      value: agg?.false_positives,
+      tone: (agg?.false_positives ?? 0) > 0 ? "bad" : "clean",
+    },
+    {
+      key: "FN",
+      label: "False negatives",
+      value: agg?.false_negatives,
+      tone: (agg?.false_negatives ?? 0) > 0 ? "bad" : "clean",
+    },
   ];
 
   return (
@@ -305,7 +358,7 @@ export default function GuardrailsEvaluationPage() {
       />
 
       {error && (
-        <div className="alert alert-error" style={{ marginBottom: "1rem" }}>
+        <div className="alert alert-error gr-eval-alert">
           {error}
         </div>
       )}
@@ -336,18 +389,20 @@ export default function GuardrailsEvaluationPage() {
           <div className="panel-header">
             <h3 className="panel-title">Golden dataset</h3>
           </div>
-          <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
-            <label className="field">
+          <div className="gr-eval-panel-body">
+            <label className="field" htmlFor="gr-eval-upload">
               <span className="field-label">Upload JSON</span>
               <input
+                id="gr-eval-upload"
                 type="file"
                 accept="application/json,.json"
                 disabled={busy}
                 onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
               />
             </label>
-            <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: "0.5rem" }}>
+            <label className="field gr-eval-check-field" htmlFor="gr-eval-replace">
               <input
+                id="gr-eval-replace"
                 type="checkbox"
                 checked={replaceOnUpload}
                 onChange={(e) => setReplaceOnUpload(e.target.checked)}
@@ -355,9 +410,10 @@ export default function GuardrailsEvaluationPage() {
               <span className="muted">Replace if name already exists</span>
             </label>
 
-            <label className="field">
+            <label className="field" htmlFor="gr-eval-dataset">
               <span className="field-label">Dataset</span>
               <select
+                id="gr-eval-dataset"
                 value={selectedDatasetId || ""}
                 onChange={(e) => {
                   setSelectedDatasetId(e.target.value || null);
@@ -377,9 +433,12 @@ export default function GuardrailsEvaluationPage() {
             {selectedDatasetId && (
               <button
                 type="button"
-                className="btn btn-ghost"
+                className="btn btn-sm btn-ghost gr-eval-delete"
                 disabled={busy}
-                onClick={() => void onDeleteDataset(selectedDatasetId)}
+                onClick={() => {
+                  const ds = datasets.find((d) => d.dataset_id === selectedDatasetId);
+                  if (ds) setPendingDelete(ds);
+                }}
               >
                 Delete dataset
               </button>
@@ -391,10 +450,11 @@ export default function GuardrailsEvaluationPage() {
           <div className="panel-header">
             <h3 className="panel-title">Chat guardrails config</h3>
           </div>
-          <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
-            <label className="field">
+          <div className="gr-eval-panel-body">
+            <label className="field" htmlFor="gr-eval-config">
               <span className="field-label">Saved config from database</span>
               <select
+                id="gr-eval-config"
                 value={selectedConfigId}
                 onChange={(e) => setSelectedConfigId(e.target.value)}
               >
@@ -408,7 +468,7 @@ export default function GuardrailsEvaluationPage() {
             </label>
 
             {configs.length === 0 && (
-              <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+              <p className="gr-eval-hint">
                 No configs yet. Create one under Guard Config — the same list Chat uses.
               </p>
             )}
@@ -430,20 +490,36 @@ export default function GuardrailsEvaluationPage() {
 
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary gr-eval-run-btn"
               disabled={busy || !selectedDatasetId || !selectedConfigId}
               onClick={() => void onStartRun()}
             >
-              {busy ? "Running…" : "Start guardrails evaluation"}
+              {running && <span className="gr-spinner" aria-hidden />}
+              {running ? `Running… ${elapsed}s` : "Start guardrails evaluation"}
             </button>
+
+            {/* The run endpoint is synchronous and returns only when every row is scored, so
+                there is no progress to read. An indeterminate bar plus a live second count is
+                what tells the operator the request is alive rather than hung. */}
+            {running && (
+              <div className="gr-eval-progress" role="status" aria-live="polite">
+                <div className="gr-progress-track">
+                  <span className="gr-progress-bar" />
+                </div>
+                <p className="gr-eval-hint" style={{ margin: 0 }}>
+                  Scoring every row against the config. The judge rows take the longest — a
+                  12-row set usually finishes in about twenty seconds.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      <div className="panel" style={{ marginBottom: "1rem" }}>
+      <div className="panel gr-eval-panel">
         <div className="panel-header">
           <h3 className="panel-title">Runs</h3>
-          <span className="muted" style={{ fontSize: "0.75rem" }}>
+          <span className="gr-eval-count">
             {runsCount === 1 ? "1 run" : `${runsCount} runs`}
           </span>
         </div>
@@ -515,13 +591,36 @@ export default function GuardrailsEvaluationPage() {
             <div className="panel gr-score-panel">
               <div className="panel-header">
                 <h3 className="panel-title">Scores</h3>
-                <span className="muted" style={{ fontSize: "0.75rem" }}>
-                  {agg?.items_total ?? runItems.length} items · {agg?.items_evaluated ?? "—"} evaluated ·{" "}
-                  {agg?.items_skipped ?? "—"} skipped
-                </span>
+                {selectedRun.config_snapshot?.name && (
+                  <span className="gr-eval-count">config: {selectedRun.config_snapshot.name}</span>
+                )}
+              </div>
+              <div className="gr-score-hero">
+                <div className="gr-hero-figure">
+                  <span className="gr-hero-value">{percent(agg?.accuracy)}</span>
+                  <span className="gr-hero-label">Accuracy</span>
+                </div>
+                <div className="gr-hero-aside">
+                  <div className="gr-hero-stat">
+                    <span className="gr-hero-stat-value">
+                      {agg?.items_evaluated ?? "—"}
+                      <span className="gr-hero-stat-of">
+                        /{agg?.items_total ?? runItems.length}
+                      </span>
+                    </span>
+                    <span className="gr-hero-stat-label">evaluated</span>
+                  </div>
+                  <div className="gr-hero-stat">
+                    <span className="gr-hero-stat-value">{agg?.items_skipped ?? "—"}</span>
+                    <span className="gr-hero-stat-label">skipped</span>
+                  </div>
+                  <div className="gr-hero-stat">
+                    <span className="gr-hero-stat-value">{agg?.items_failed ?? "—"}</span>
+                    <span className="gr-hero-stat-label">errored</span>
+                  </div>
+                </div>
               </div>
               <div className="gr-score-grid">
-                <ScoreBar label="Accuracy" value={agg?.accuracy} />
                 <ScoreBar label="Precision" value={agg?.precision} />
                 <ScoreBar label="Recall" value={agg?.recall} />
                 <ScoreBar label="F1" value={agg?.f1} />
@@ -542,7 +641,7 @@ export default function GuardrailsEvaluationPage() {
           )}
 
           {agg?.categories && Object.keys(agg.categories).length > 0 && (
-            <div className="panel" style={{ marginBottom: "1rem" }}>
+            <div className="panel gr-eval-panel">
               <div className="panel-header">
                 <h3 className="panel-title">By category</h3>
               </div>
@@ -575,16 +674,20 @@ export default function GuardrailsEvaluationPage() {
             <div className="panel-header">
               <h3 className="panel-title">Item results</h3>
               <div className="gr-item-filters">
-                <label className="field gr-inline-field">
+                <label className="field gr-inline-field" htmlFor="gr-eval-category">
                   <span className="field-label">Category</span>
-                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                  <select
+                    id="gr-eval-category"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                  >
                     <option value="">All categories</option>
                     {categories.map((name) => (
                       <option key={name} value={name}>{formatCategory(name)}</option>
                     ))}
                   </select>
                 </label>
-                <span className="muted" style={{ fontSize: "0.75rem" }}>
+                <span className="gr-eval-count">
                   {visibleItems.length} of {runItems.length} rows · config=
                   {selectedRun.config_snapshot?.name || "—"}
                 </span>
@@ -615,7 +718,7 @@ export default function GuardrailsEvaluationPage() {
                       const verdict = verdictOf(row);
                       return (
                         <tr key={row.run_item_id} className={`gr-item-row--${verdict}`}>
-                          <td style={{ maxWidth: 360 }} title={row.text}>
+                          <td className="gr-eval-text-cell" title={row.text}>
                             {row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text}
                           </td>
                           <td>{row.phase}</td>
@@ -653,6 +756,51 @@ export default function GuardrailsEvaluationPage() {
             </div>
           </div>
         </>
+      )}
+
+      {pendingDelete && (
+        <div
+          className="modal-overlay"
+          role="presentation"
+          onClick={() => { if (!deleting) setPendingDelete(null); }}
+          onKeyDown={(e) => { if (e.key === "Escape" && !deleting) setPendingDelete(null); }}
+        >
+          <div
+            className="modal-panel modal-panel--sm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="gr-eval-delete-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 className="modal-title" id="gr-eval-delete-title">Delete this golden dataset?</h3>
+            </div>
+            <div className="modal-body">
+              <p className="gr-modal-body">
+                <strong>{pendingDelete.name}</strong> and every run recorded against it are
+                removed. This cannot be undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => setPendingDelete(null)}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                onClick={() => void runDelete()}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

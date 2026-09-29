@@ -49,6 +49,9 @@ export interface GuardrailsEvalRunResponse {
     items_total?: number;
     items_evaluated?: number;
     items_skipped?: number;
+    // The runner has always returned this (guardrails_runner.py). The type omitted it, so the
+    // page could not read the count of rows that raised.
+    items_failed?: number;
     accuracy?: number | null;
     precision?: number | null;
     recall?: number | null;

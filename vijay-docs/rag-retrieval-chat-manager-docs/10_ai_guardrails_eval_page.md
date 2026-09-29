@@ -92,12 +92,12 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 |                             |         | Check  | 0 missed · 0    |                |
 |                             |         |        | false           |                |
 +----------------------------------------------------------------------------------+
-|  Scores:  12 items · 12 evaluated · 0 skipped                                    |
-|    Accuracy   [====================] 100%    Precision [===========] 100%         |
-|    Recall     [====================] 100%    F1        [===========] 100%         |
-|    Guard match[====================] 100%                                        |
+|  Scores:                                    config: Golden Check                 |
+|    100% ACCURACY        12/12 EVALUATED   0 SKIPPED   0 ERRORED                  |
+|    Precision [=========] 100%   Recall [=========] 100%                          |
+|    F1        [=========] 100%   Guard match [====] 100%                          |
 |  TP 7 (True positives)   TN 5 (True negatives)                                   |
-|  FP 0 (False positives)  FN 0 (False negatives)                                  |
+|  FP 0 (False positives)  FN 0 (False negatives)  <- both neutral at zero          |
 |  By category:  Category | Items | Correct | Accuracy                             |
 |  Item results: Text | Phase | Category | Expected | Actual | Result | Note       |
 |    Category filter [ All categories v ]                                          |
@@ -115,10 +115,11 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 - Runs table: Created (relative time), Status, Config (`config_snapshot.name`, falling back to the first 8 chars of `config_id`), Accuracy and an `Open` action that reloads the run and its items (`GuardrailsEvaluationPage.tsx:238-250,451-497`).
 - The **Accuracy cell** shows the percentage and, beneath it, the two counts that explain it: `<n> missed · <n> false`, from `false_negatives` and `false_positives` (`GuardrailsEvaluationPage.tsx:479-486`). A run can now be judged without opening it.
 - The empty Runs row states the next step and the cost: "Pick a config above and select Start guardrails evaluation. Each run takes about twenty seconds, because three rows call the LLM judge." (`GuardrailsEvaluationPage.tsx:463-472`).
-- The two-column layout uses `.gr-eval-grid` (`GuardrailsEvaluationPage.tsx:334`, `index.css` `.gr-eval-grid`). It collapses to one column on a narrow viewport instead of holding a fixed `1fr 1fr`.
-- **Score bars**: five `ScoreBar` rows read `accuracy`, `precision`, `recall`, `f1` and `guard_match_rate` from `aggregate_metrics` (`GuardrailsEvaluationPage.tsx:82-96,523-528`). Each bar is a percentage, and a missing key renders as an empty bar with `—` (`percent()`, `GuardrailsEvaluationPage.tsx:48-51`).
-- **Confusion tiles**: TP / TN / FP / FN tiles read `true_positives`, `true_negatives`, `false_positives` and `false_negatives`; FP and FN carry the "bad" tone (`GuardrailsEvaluationPage.tsx:530-541`).
-- The Scores header line shows `items_total`, `items_evaluated` and `items_skipped` (`GuardrailsEvaluationPage.tsx:517-521`).
+- The two-column layout uses `.gr-eval-grid` (`index.css`). A `max-width: 720px` query collapses it to one column, and the hero tightens with it.
+- **Score hierarchy**: accuracy leads as a hero figure rather than one bar among five. `gr-score-hero` pairs a 2.75rem gradient-filled `gr-hero-value` with `gr-hero-aside`, which states `evaluated / total`, `skipped` and `errored`. Four `ScoreBar` rows then carry `precision`, `recall`, `f1` and `guard_match_rate`. Each bar is a percentage, and a missing key renders as an empty bar with `—` (`percent()`, `GuardrailsEvaluationPage.tsx`).
+- **Confusion tiles**: TP / TN / FP / FN tiles read `true_positives`, `true_negatives`, `false_positives` and `false_negatives`. The tone follows the **value**, not the metric: FP and FN take `--bad` only when their count is above zero, and `--clean` at zero. Tinting them unconditionally put a red border on a tile reading `FP 0`.
+- **A bar below half** takes `gr-bar-fill--low` and turns red. The percentage beside it states the same thing, so colour is never the only signal.
+- The Scores header states the config instead of repeating the counts, which the hero already carries.
 - When **every** item failed, the page hides the zeroed score bars and shows the item error instead, so a total failure is not read as a score of zero (`hideScores`, `GuardrailsEvaluationPage.tsx:267,504-514`).
 - **By category** renders `aggregate_metrics.categories` as `Category | Items | Correct | Accuracy` when the key exists (`GuardrailsEvaluationPage.tsx:544-573`). Category names are prettified for display only (`formatCategory`, `GuardrailsEvaluationPage.tsx:53-56`).
 - The item table has a **Category filter** built from the categories in the loaded rows (`GuardrailsEvaluationPage.tsx:110,254-263,579-586`).
@@ -232,3 +233,69 @@ The page never produced a real score before these four backend fixes. Each one i
 - The metric keys are produced by the backend now. The client type for `aggregate_metrics` lists the same names, each optional (`guardrailsEvalApi.ts:48-62`).
 - The page uses the shared `guardMeta()` / `guardTitle()` helper from `frontend/src/utils/guardLabels.ts` for validator names, the same one the Guard Traces page uses. A validator the map does not know renders as a readable slug rather than a raw id.
 - The seed call is a local `seedGuardrailsGoldenDataset()` wrapper in the page, because `guardrailsEvalApi.ts` does not expose the seed route (`GuardrailsEvaluationPage.tsx:19-46`).
+
+
+---
+
+## UI upgrade, 2026-09-29
+
+Five changes. The first is a correctness fix, the rest are clarity and accessibility.
+
+### A red tile that read zero
+
+The confusion grid tinted `FP` and `FN` red by **metric**, not by value. With a clean run that
+produced a red-bordered tile reading `FP 0` — the colour said there was a problem while the
+number said there was none.
+
+The tone now follows the value: zero false positives and zero false negatives take
+`gr-confusion-tile--clean`, a neutral surface. A count above zero takes `--bad`. `TP` and `TN`
+keep `--good`.
+
+### The scores had no hierarchy
+
+Five equal bars gave accuracy the same visual weight as guard match. Accuracy is the number the
+run exists to produce, so it now leads as a hero figure — 2.75rem, gradient-filled, tabular
+figures — with `evaluated / total`, `skipped` and `errored` beside it. Precision, recall, F1 and
+guard match support it as bars.
+
+The panel header carried a fourth copy of those counts. It now states the config instead, so
+each number appears once.
+
+### The run is synchronous, and the page did not say so
+
+`POST /guardrails-evaluate/runs` scores every row before it returns. There is no `running`
+status and nothing to poll. The button used to read "Running…" for the whole request, so a slow
+run and a hung one looked identical.
+
+The button now carries a spinner and a live second count, and an indeterminate bar sits below
+it with a line explaining that the judge rows are the slow ones. The bar animates `left` on a
+3px track, and both animations are switched off under `prefers-reduced-motion` — the value is
+still stated in text.
+
+### A native confirm()
+
+`Delete dataset` called `window.confirm`. It cannot be themed, it reads as a browser dialog
+rather than part of the page, and it blocks the whole tab. It now opens a dialog on the app's
+shared modal shell (`.modal-overlay` / `.modal-panel` / `.modal-header` / `.modal-body` /
+`.modal-footer`) with `role="alertdialog"`, naming the dataset and warning that its runs go with
+it.
+
+### Two accessibility gaps
+
+`ScoreBar` used `role="img"` with the value folded into `aria-label`. That announces a bar as a
+picture. It is now `role="progressbar"` with `aria-valuenow`, `aria-valuemin`, `aria-valuemax`
+and `aria-valuetext`.
+
+The page's five fields — upload, replace, dataset, config, category — wrapped their input in a
+`label`, which does associate, but none carried an `id`. DevTools flagged all five. Each now has
+an `id` and the label's `htmlFor` points at it.
+
+### Two smaller things
+
+`GuardrailsEvalRunResponse["aggregate_metrics"]` in `guardrailsEvalApi.ts` never declared
+`items_failed`, though `guardrails_runner.py` has always returned it. The type now has it.
+
+Twelve inline `style={{…}}` objects moved into `gr-eval-panel-body`, `gr-eval-count`,
+`gr-eval-hint`, `gr-eval-check-field`, `gr-eval-panel`, `gr-eval-alert` and
+`gr-eval-text-cell`. One inline style remains, and it has to: the bar width is a per-render
+value.

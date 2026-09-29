@@ -6312,6 +6312,13 @@ select.input option {
   border-color: rgba(34, 197, 94, 0.25);
 }
 
+/* A false count of zero. It is the outcome you want, so it must not carry the warning tint
+   that the same tile takes when the count is above zero. */
+.gr-confusion-tile--clean {
+  border-color: var(--border-default);
+  background: var(--bg-inset);
+}
+
 .gr-confusion-key {
   font-size: 0.625rem;
   font-weight: 700;
@@ -6947,6 +6954,211 @@ select.input option {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+/* The two config panels and the runs panel shared three copies of the same inline style.
+   These classes replace them, so the spacing is one declaration per intent. */
+.gr-eval-panel-body {
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.gr-eval-panel {
+  margin-bottom: 1rem;
+}
+
+.gr-eval-alert {
+  margin-bottom: 1rem;
+}
+
+.gr-eval-check-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* A hint or a count beside a panel title. Both were a `muted` span carrying its own size. */
+.gr-eval-hint,
+.gr-eval-count {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.gr-eval-delete {
+  justify-self: start;
+  color: var(--danger);
+}
+
+.gr-eval-delete:hover:not(:disabled) {
+  background: var(--danger-subtle);
+}
+
+.gr-eval-text-cell {
+  max-width: 360px;
+}
+
+/* ── The running state ──
+   POST /runs is synchronous: it returns only after every row is scored, so there is no
+   progress to poll. The button carries a live second count and the bar below is
+   indeterminate, which is what separates a slow run from a hung one. */
+
+.gr-eval-run-btn {
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.gr-eval-progress {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.gr-progress-track {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+
+.gr-progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--gradient-accent);
+  animation: gr-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes gr-progress {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.gr-spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: gr-spin 0.7s linear infinite;
+}
+
+@keyframes gr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Both animations are decoration around a value the page already states in text. Someone who
+   asked for reduced motion loses the movement, not the information. */
+@media (prefers-reduced-motion: reduce) {
+  .gr-progress-bar,
+  .gr-spinner {
+    animation: none;
+  }
+  .gr-progress-bar {
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+/* ── The score hero ──
+   Five equal bars gave accuracy the same weight as guard match. Accuracy leads; the rest
+   support it. */
+
+.gr-score-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding: 1.25rem 1rem 0.25rem;
+}
+
+.gr-hero-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.gr-hero-value {
+  font-size: 2.75rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-emphasis) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-variant-numeric: tabular-nums;
+}
+
+.gr-hero-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.gr-hero-aside {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.gr-hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.gr-hero-stat-value {
+  font-size: 1.15rem;
+  font-weight: 650;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.gr-hero-stat-of {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.gr-hero-stat-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* A bar below half reads as a problem, and colour alone must not carry that. The number
+   beside it states the same thing. */
+.gr-bar-fill--low {
+  background: var(--danger);
+}
+
+@media (max-width: 720px) {
+  .gr-eval-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .gr-score-hero {
+    gap: 1rem;
+  }
+  .gr-hero-value {
+    font-size: 2.25rem;
+  }
+  .gr-hero-aside {
+    gap: 1rem;
+  }
 }
 
 @media (max-width: 900px) {
