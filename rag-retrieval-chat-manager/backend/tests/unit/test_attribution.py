@@ -109,8 +109,35 @@ def test_retrieval_is_reported_before_grounding():
 
 
 def test_a_failed_judge_call_is_absent_not_zero():
-    """One missing score must not fabricate a failure for the stage it covers."""
+    """One missing score must not fabricate a failure for the stage it covers.
+
+    It must not certify the turn either. A row that scored one of three is incomplete, and
+    saying "healthy" over it is how a stale worker reported a sound pipeline while two
+    metrics were never computed.
+    """
     result = diagnose(_triad(context_relevance=None, response_groundedness=0.9, answer_relevancy=0.9))
+
+    assert result.stage == "unknown"
+    assert "context_relevance" in result.reason
+
+
+def test_a_partial_triad_names_every_metric_that_did_not_score():
+    result = diagnose(_triad(context_relevance=None, response_groundedness=None, answer_relevancy=0.9))
+
+    assert result.stage == "unknown"
+    assert "context_relevance" in result.reason
+    assert "response_groundedness" in result.reason
+
+
+def test_a_present_failure_still_wins_over_a_missing_score():
+    """A real fault outranks an incomplete reading: name the stage, do not just say unknown."""
+    result = diagnose(_triad(0.1, None, 0.9))
+
+    assert result.stage == "retrieval"
+
+
+def test_healthy_requires_all_three_scores():
+    result = diagnose(_triad(0.9, 0.9, 0.9))
 
     assert result.stage == "healthy"
 

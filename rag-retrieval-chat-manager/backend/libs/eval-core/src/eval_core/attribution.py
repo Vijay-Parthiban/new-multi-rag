@@ -164,6 +164,26 @@ def diagnose(
             evidence,
         )
 
+    # A partial triad cannot certify a turn. Without this the reading above falls through to
+    # "healthy" and prints "all three pass" over a row that scored one of them, which is how a
+    # stale worker build reported a sound pipeline while two metrics were never computed.
+    missing = [
+        name
+        for name, value in (
+            ("context_relevance", relevance),
+            ("response_groundedness", groundedness),
+            ("answer_relevancy", answer_relevancy),
+        )
+        if value is None
+    ]
+    if missing:
+        return Diagnosis(
+            "unknown",
+            f"The triad is incomplete: {', '.join(missing)} did not score, so no stage can be "
+            "cleared. The judge call failed for those metrics; read the worker log.",
+            evidence,
+        )
+
     return Diagnosis(
         "healthy",
         "All three triad scores pass: the retriever found relevant passages, the answer "

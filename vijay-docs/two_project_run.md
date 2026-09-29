@@ -570,6 +570,25 @@ cd rag-retrieval-chat-manager/backend && docker compose build migrate rag-api ev
 
 A plain `docker compose build` with no service name also works and is the safer habit.
 
+**The retrieval project has hit this twice, and the second time it did not crash.** On 2026-09-29 the
+offline evaluation scored only one of the three triad metrics. The `rag-api` image had been built after
+the triad landed and the `eval-worker` image the day before, so the API displayed a `triad` block while
+the worker computed the old metrics. Nothing failed. The report simply carried two nulls and, until the
+guard below was added, called the run **healthy**.
+
+**Stale code is worse than broken code, because a partial result looks like a real one.** After any
+change to a backend library, build **every** service that shares the Dockerfile, and check the image age
+before trusting a run:
+
+```bash
+docker image inspect backend-eval-worker:latest --format '{{.Created}}'
+docker image inspect backend-rag-api:latest   --format '{{.Created}}'
+git log -1 --format=%ad --date=iso            # the images must be newer than the code
+```
+
+If a report shows `null` for one triad score, the triad is incomplete. The API now labels that row
+`Not scored` and names the metric that did not score, rather than reporting `Sound`.
+
 Keep the two run paths apart. Either do the migration from the host **or** let the container do it —
 not both. The container path needs no host command at all: `docker compose up -d` runs `migrate`
 itself and waits for it.
