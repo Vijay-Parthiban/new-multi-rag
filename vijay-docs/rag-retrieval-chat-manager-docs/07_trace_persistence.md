@@ -1,6 +1,6 @@
 # 07 — Trace Persistence and OTLP Export
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-10-02
 
 ## 1. What this document covers
 
@@ -23,7 +23,7 @@ side is export-only. Those two halves are what this document describes.
 
 Traces are stored as rows, not as an OpenTelemetry span tree.
 
-**Model** — `ChatPipelineTrace`, table `chat_pipeline_traces` (`libs/database/src/rag_db/models/chat.py:39-61`). One row per assistant message (`chat_message_id` is unique):
+**Model** — `ChatPipelineTrace`, table `chat_pipeline_traces` (`libs/database/src/rag_db/models/chat.py:45-72`). One row per assistant message (`chat_message_id` is unique):
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -36,38 +36,41 @@ Traces are stored as rows, not as an OpenTelemetry span tree.
 | `retrieved_chunks` | JSONB list | pre-rerank chunks |
 | `reranked_chunks` | JSONB list | post-rerank chunks |
 | `latency_ms` | JSONB dict | per-stage timings and route flags |
+| `trace_mode` | String | `test` or `prod` (server default `prod`) |
+| `otel_trace_id` | String(32), nullable | OTEL trace id of the turn span |
+| `otel_span_id` | String(16), nullable | OTEL span id of the turn span |
 | `created_at` | timestamp | row creation |
 
-**Write path** — `ChatRepository.save_pipeline_trace` (`libs/database/src/rag_db/repositories/chat_repository.py:42-70`), called from `_persist_chat_turn` (`rag_api/routes/chat.py:231-290`, call site `:270`) for both `/chat` and `/chat/stream`. Normal turns and guardrail-blocked turns (persisted with a `route: "blocked"` latency payload, `chat.py:403-404, 554-555`) both get a trace row; the streaming greeting shortcut passes `save_trace=False` and therefore stores no trace (`chat.py:611`).
+**Write path** — `ChatRepository.save_pipeline_trace` (`libs/database/src/rag_db/repositories/chat_repository.py:44`), called from `_persist_chat_turn` (`rag_api/routes/chat.py:272-345`) for both `/chat` and `/chat/stream`. Normal turns and guardrail-blocked turns (persisted with a `route: "blocked"` latency payload, `chat.py:183-187`) both get a trace row. The two block paths pass `save_trace=True` explicitly (`chat.py:489, 668`); the parameter defaults to `True` (`chat.py:290`), so all four call sites (`chat.py:475, 539, 654, 755`) persist a trace.
 
-**Read path** — `get_trace_for_message`, `list_session_messages` (outer-joins trace and metrics), `list_recent_metrics_stats` (`chat_repository.py:110-115, 157-179`).
+**Read path** — `get_trace_for_message` (`chat_repository.py:118`), `list_session_messages` (outer-joins trace and metrics, `chat_repository.py:230`), `list_recent_metrics_stats` (`chat_repository.py:242`).
 
 **HTTP exposure** (read-only, no span hierarchy, no raw payload dump):
 
 | Method | Endpoint | Returns | Evidence |
 |---|---|---|---|
-| `GET` | `/chat/sessions/{session_id}/messages` | per message: `trace {retrieval_mode, rerank_enabled, generation_model, route}`, `sources [{source_locator, chunk_index, rerank_score}]` derived from `reranked_chunks`, `metrics_status`, `blocked` / `blocked_by_guard` / `blocked_on` | `chat.py:848-886` |
-| `GET` | `/chat/messages/{message_id}/metrics` | staged metrics (`retrieval` / `reranker` / `generation`) plus flat `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `kendall_tau`, `mrr`, `ndcg` | `chat.py:764-800` |
-| `GET` | `/chat/stats` | recent assistant messages with metrics and trace config (incl. `latency_ms`) | `chat.py:802-820` |
-| `GET` | `/chat/sessions` | session list with message counts and preview | `chat.py:822-846` |
+| `GET` | `/chat/sessions/{session_id}/messages` | per message: `trace {retrieval_mode, rerank_enabled, generation_model, route}`, `sources [{source_locator, chunk_index, rerank_score}]` derived from `reranked_chunks`, `metrics_status`, `blocked` / `blocked_by_guard` / `blocked_on` | `chat.py:909` |
+| `GET` | `/chat/messages/{message_id}/metrics` | staged metrics (`retrieval` / `reranker` / `generation`) plus flat `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `kendall_tau`, `mrr`, `ndcg` | `chat.py:823` |
+| `GET` | `/chat/stats` | recent assistant messages with metrics and trace config (incl. `latency_ms`) | `chat.py:863` |
+| `GET` | `/chat/sessions` | session list with message counts and preview | `chat.py:883` |
 
-`route` is read out of `latency_ms["route"]` (`chat.py:680, 862-864`); its documented values are `normal`, `self_corrective`, `self_corrective_auto`, `greeting`, `blocked` (`chat.py:102`).
+`route` is read out of `latency_ms["route"]` (`chat.py:924, 935`). The code writes only two values: `normal` (`chat.py:678`) and `blocked` (`chat.py:185, 209`). The stream `session` event reports `blocked` or `normal` (`chat.py:674, 790`).
 
-**`latency_ms` keys actually written**: `retrieve`, `rerank` (`libs/rag-core/src/rag_core/pipeline.py:66-72, 102-107`), `generate_text` / `generate_vision` / `generate_fusion`, `generate_total` (`libs/generation-core/src/generation_core/generator.py:112-143`), `generate` and `total` (`pipeline.py:118-119`), plus `route` (`chat.py:680`) and `blocked`, `blocked_by_guard`, `blocked_on` (`chat.py:142-150`). No first-token / TTFT key and no per-stage span hierarchy are recorded anywhere.
+**`latency_ms` keys actually written**: `retrieve` and `rerank` (`libs/rag-core/src/rag_core/pipeline.py:110, 115`), `total` (`pipeline.py:116`), `grade`, `grounding` and `revise` for the agentic strategies (`pipeline.py:156, 181, 195`), `generate_text` / `generate_vision` / `generate_fusion` / `generate_total` (`libs/generation-core/src/generation_core/generator.py:281, 292, 306, 314`), `generate` (`pipeline.py:253`), plus `route` (`chat.py:185, 693, 728`) and `blocked`, `blocked_by_guard`, `blocked_on` (`chat.py:183-187`). No first-token / TTFT key and no per-stage span hierarchy are recorded anywhere.
 
 ---
 
 ## 3. OpenTelemetry Export Configuration
 
-Traces are emitted by the backend process and shipped over OTLP/HTTP to the collector; the collector fans out to **Phoenix and Langfuse**. The application picks no backend: it exports once and the collector copies the span to each. Configuration is env-driven in `libs/shared/src/rag_shared/tracing.py:77-137`:
+Traces are emitted by the backend process and shipped over OTLP/HTTP to the collector; the collector fans out to **Phoenix and Langfuse**. The application picks no backend: it exports once and the collector copies the span to each. Configuration is env-driven in `libs/shared/src/rag_shared/tracing.py`:
 
 | Env var | Default | Effect |
 |---|---|---|
 | `OTEL_TRACING_ENABLED` | `"true"` | `"false"` disables the provider; a plain tracer is still returned |
 | `OTEL_SERVICE_NAME` | `"rag-platform"` | tracer name and `service.name` resource attribute |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `"http://otel:4318"` | OTLP HTTP base; `/v1/traces` is appended unless already present (`tracing.py:69-74`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `"http://otel:4318"` | OTLP HTTP base; `/v1/traces` is appended unless already present (`tracing.py`) |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | overrides the base endpoint verbatim |
-| `OTEL_EXPORTER_OTLP_HEADERS` | unset | comma-separated `key=value` pairs; values are URL-decoded (`tracing.py:57-66`) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | unset | comma-separated `key=value` pairs; values are URL-decoded (`tracing.py`) |
 | `OTEL_CONSOLE_EXPORT` | `"false"` | adds a `SimpleSpanProcessor(ConsoleSpanExporter())` |
 | `OTEL_RESOURCE_ATTRIBUTES` | unset | comma-separated resource attributes; when empty, `deployment.environment` and `service.namespace` defaults are applied |
 | `OTEL_DEPLOYMENT_ENVIRONMENT` | `"production"` | resource attribute default |
@@ -75,28 +78,30 @@ Traces are emitted by the backend process and shipped over OTLP/HTTP to the coll
 
 Backend credentials for a backend are **not** read here. They live in `otel/.env`, which the collector reads. See Section 4.
 
-- Exporter: `OTLPSpanExporter` from `opentelemetry.exporter.otlp.proto.http.trace_exporter`, batched via `BatchSpanProcessor` (`tracing.py:106-116`).
-- Outbound HTTP is auto-instrumented with `HTTPXClientInstrumentor().instrument()` when the package is installed, so LiteLLM/Qdrant calls appear as child spans only when a parent span is active (`tracing.py:126-127`).
-- `force_flush(timeout_millis=10_000)` is called at the end of chat turns and by `emit_rag_pipeline_trace(..., flush=True)` so RQ workers push spans before moving on (`tracing.py:142-151, 206-266`).
+`rag_shared/config.py` reads `backend/.env` and then the optional, gitignored `backend/.env.local`, so a key in `.env.local` wins (`rag_shared/config.py:17,20-27`). The retrieval backend ships `OTEL_TRACING_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` there for a host run (`rag-retrieval-chat-manager/backend/.env.local:30-31`). Because `.env.local` wins, a `false` in that file switches tracing off for both test and prod turns.
+
+- Exporter: `OTLPSpanExporter` from `opentelemetry.exporter.otlp.proto.http.trace_exporter`, batched via `BatchSpanProcessor` (`tracing.py:240`).
+- Outbound HTTP is auto-instrumented with `HTTPXClientInstrumentor().instrument()` when the package is installed, so LiteLLM/Qdrant calls appear as child spans only when a parent span is active (`tracing.py:253`).
+- `force_flush(timeout_millis=10_000)` is called at the end of chat turns and by `emit_rag_pipeline_trace(..., flush=True)` so RQ workers push spans before moving on (`tracing.py:268`).
 - **No sampler is configured**: there is no `OTEL_TRACES_SAMPLER` handling in `tracing.py`, so the SDK default parent-based always-on sampler applies and every created span is exported.
 
 **Spans actually emitted by application code:**
 
 | Span name | Where | Notes |
 |---|---|---|
-| `rag.chat` | `rag_api/routes/chat.py:425` | wraps retrieve → rerank → generate for `POST /chat` and for the assistant routes that delegate to it |
-| `rag.chat.stream` | `chat.py:602` region (greeting shortcut and the main stream path) | wraps the SSE generation path |
-| `rag.pipeline.metrics` | `tracing.py:382` via `emit_rag_pipeline_trace` | emitted by the eval worker after metrics. It is **parented under the turn's own span**, so one question stays one trace |
+| `rag.chat` | `rag_api/routes/chat.py:446` | wraps retrieve → rerank → generate for `POST /chat` and for the assistant routes that delegate to it |
+| `rag.chat.stream` | `chat.py:685` (the main stream path) | wraps the SSE generation path |
+| `rag.pipeline.metrics` | `tracing.py:461` via `emit_rag_pipeline_trace` | emitted by the eval worker after metrics. It is **parented under the turn's own span**, so one question stays one trace |
 
 ### Session traces
 
-A pipeline whose product has the Redis destination enabled files each turn into a **second** trace holding every Q/A of the session. The trace id is derived from the session UUID, so it is stable across processes without shared state (`session_trace_ids`, `tracing.py:91`). A turn that joins a session trace also carries `rag.session_trace: true`. A pipeline without Redis gets one trace per turn. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
+A pipeline whose product has the Redis destination enabled files each turn into a **second** trace holding every Q/A of the session. The trace id is derived from the session UUID, so it is stable across processes without shared state (`session_trace_ids`, `tracing.py:140`). A turn that joins a session trace also carries `rag.session_trace: true`. A pipeline without Redis gets one trace per turn. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
 ### Test and production turns
 
-Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header (`TRACE_MODE_HEADER`, `tracing.py:81`). Only the exact value `test`, ignoring case and surrounding space, sets a test turn; **a request without the header is production**, which is the safe default. The mode is written to the span as `deployment.environment` and `rag.trace_mode`, and to the `chat_pipeline_traces.trace_mode` column that the Real Time Monitoring page tags each log with.
+Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header (`TRACE_MODE_HEADER`, `tracing.py:83`). Only the exact value `test`, ignoring case and surrounding space, sets a test turn; **a request without the header is production**, which is the safe default. The mode is written to the span as `deployment.environment` and `rag.trace_mode`, and to the `chat_pipeline_traces.trace_mode` column that the Real Time Monitoring page tags each log with.
 
-Attributes set on these spans (`tracing.py:218-258, 393-413`): Langfuse-recognized keys `langfuse.observation.type`, `langfuse.session.id`, `langfuse.observation.metadata.message_id`, `langfuse.trace.input` / `langfuse.observation.input` / `input.value`, `langfuse.trace.output` / `langfuse.observation.output` / `output.value`, `langfuse.observation.model.name`, `gen_ai.request.model`, `langfuse.observation.metadata.<key>`; the OpenInference keys Phoenix reads, `openinference.span.kind` (`CHAIN`) and `input.value` / `output.value`; plus `deployment.environment`, `rag.trace_mode`, `rag.session_trace`, `session.id`, `rag.message_id`, `rag.query_length`, `rag.output_length`, `rag.chunks_used`, `rag.retrieval_mode`, `rag.rerank_enabled`, `rag.generation_model`, `latency.<key>` and `eval.<metric>`. There are no application spans for individual retrieval, rerank, prompt-assembly, guardrail or token-streaming stages. Outbound HTTP calls to LiteLLM, Qdrant and OpenSearch do nest under the turn automatically, through the httpx instrumentation.
+Attributes set on these spans (`tracing.py`): Langfuse-recognized keys `langfuse.observation.type`, `langfuse.session.id`, `langfuse.observation.metadata.message_id`, `langfuse.trace.input` / `langfuse.observation.input` / `input.value`, `langfuse.trace.output` / `langfuse.observation.output` / `output.value`, `langfuse.observation.model.name`, `gen_ai.request.model`, `langfuse.observation.metadata.<key>`; the OpenInference keys Phoenix reads, `openinference.span.kind` (`CHAIN`) and `input.value` / `output.value`; plus `deployment.environment`, `rag.trace_mode`, `rag.session_trace`, `session.id`, `rag.message_id`, `rag.query_length`, `rag.output_length`, `rag.chunks_used`, `rag.retrieval_mode`, `rag.rerank_enabled`, `rag.generation_model`, `latency.<key>` and `eval.<metric>`. There are no application spans for individual retrieval, rerank, prompt-assembly, guardrail or token-streaming stages. Outbound HTTP calls to LiteLLM, Qdrant and OpenSearch do nest under the turn automatically, through the httpx instrumentation.
 
 ---
 

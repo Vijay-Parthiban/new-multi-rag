@@ -1,6 +1,6 @@
 # 11 — Knowledge Store (view only)
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
@@ -19,10 +19,12 @@ Two routes:
 | `/knowledge-store` | `pages/KnowledgeStorePage.tsx` | List every product; `Refresh`; `View` one |
 | `/knowledge-store/:id` | `pages/KnowledgeProductPage.tsx` | Read-only configuration view for one product |
 
-Both are view-only ports of the ingestion manager's own Knowledge Store pages, so the two
-apps render the same UI. The ingestion equivalents are documented in
-`../rag-ingestion-manager-docs/04_knowledge_store_page.md`, which remains the authority for
-destination configuration semantics, defaults, store namespacing and the fanout engine.
+Both are view-only ports of the ingestion manager's own Knowledge Hub pages. This app keeps
+the older page name (Knowledge Store) on its copy; the ingestion app renamed the same pages
+to Knowledge Hub. The ingestion equivalents are documented in
+`../rag-ingestion-manager-docs/04_knowledge_store_page.md` (now titled Knowledge Hub Page),
+which remains the authority for destination configuration semantics, defaults, store
+namespacing and the fanout engine.
 
 ### 1.1 The read-only contract
 
@@ -49,14 +51,14 @@ page reports state, it does not set it.
 ## 2. Routing & Data Path
 
 Both pages call the ingestion backend **directly**. `frontend/src/api.ts` builds every
-knowledge call on `apiFetch`, whose base is `API_URL = VITE_API_URL ?? "http://localhost:8007"`.
+knowledge call on `apiFetch`, whose base is `API_URL = VITE_API_URL ?? "http://127.0.0.1:8007"`.
 
 ```
 +---------------------------------------------------------------------------------+
 |  Retrieval frontend (Vite dev port 5174)                                        |
 |  /knowledge-store          KnowledgeStorePage.tsx                               |
 |  /knowledge-store/:id      KnowledgeProductPage.tsx                             |
-|  client: apiFetch -> API_URL = VITE_API_URL ?? http://localhost:8007             |
+|  client: apiFetch -> API_URL = VITE_API_URL ?? http://127.0.0.1:8007             |
 |  no dev proxy in frontend/vite.config.ts                                        |
 +------------------------------------------------+--------------------------------+
                                                  |
@@ -77,7 +79,7 @@ Mounts but is NOT used by either page:
 
 +---------------------------------------------------------------------------------+
 |  Retrieval backend (port 8001) — routes/knowledge.py, prefix /api/knowledge-products |
-|  httpx -> (settings.ingestion_service_url or http://localhost:8007)              |
+|  httpx -> settings.ingestion_service_url (see section 6)                         |
 |  6 proxy routes; see section 6                                                   |
 +---------------------------------------------------------------------------------+
 ```
@@ -124,7 +126,7 @@ visibility, so a `useEffect(..., [])` runs once per session. The page watches
 |  "View only — the Knowledge Products configured in the Ingestion Manager."       |
 |                                                              [ Refresh ]         |
 +---------------------------------------------------------------------------------+
-| Total Products | Connected MinIO Buckets | Active RAG Sinks | Fanout Engine      |
+| Total Products | Connected MinIO Buckets | Active RAG Sinks | Fanout Engine Architecture |
 | products.length| distinct minio_bucket   | enabled dests    | "4 Parallel Sinks" |
 +---------------------------------------------------------------------------------+
 | Product card                                                                    |
@@ -178,8 +180,10 @@ Qdrant, renders a clickable UMAP/PCA scatter of the stored vectors.
 
 ### 4.3 Components ported from the ingestion manager
 
-These files were copied byte-identical so the two apps render the same UI. They are the reason
-this page needed no new visualization code.
+These files were copied from the ingestion manager, so this page needed no new visualization
+code. The ingestion copies have since renamed their inspector tabs (Dense Vector Store, Sparse
+Vector Store, Relational Chunk Store, Cache Store); this app's copy still reads Vector Search,
+Lexical BM25, Relational Chunks and Semantic Cache.
 
 | File | Role |
 |---|---|
@@ -255,8 +259,9 @@ functional — it answers 200 — but it is a parallel path that nothing takes.
 Its request/response models come from `shared_contracts.knowledge` (`KnowledgeProductRead`,
 `KnowledgeProductCreate`, `KnowledgeProductUpdate`, plus `KnowledgeProductSourceRead`,
 `KnowledgeDestinationConfigRead`, `DestinationConfigInput`). The target base is
-`getattr(settings, "ingestion_service_url", None) or "http://localhost:8007"`, and `Settings`
-declares no `ingestion_service_url`, so the hard-coded fallback always applies. Every call
+`getattr(settings, "ingestion_service_url", None) or "http://localhost:8007"`. `Settings`
+declares `ingestion_service_url` (default `http://localhost:8007`), so the resolved setting
+applies and the literal is only a fallback for an empty value. Every call
 uses a 15 s timeout, and any `httpx.RequestError` becomes
 `503 {"detail": "Ingestion service unavailable: ..."}`.
 
@@ -271,8 +276,8 @@ it. Neither is done here.
   stays behind with the controls it guarded.
 * `product.sources[].file_count` and per-destination `status` / `error_message` / `last_sync_at`
   are returned by the API. The list card renders the destination error only on the detail page.
-* `Settings` has no `guardrails_url` or `ingestion_service_url` field, so both effective values
-  are code defaults.
+* `Settings` declares `ingestion_service_url` (default `http://localhost:8007`) and
+  `guardrails_url` (default `http://localhost:18000`).
 
 ## 8. Verification (2026-09-20)
 

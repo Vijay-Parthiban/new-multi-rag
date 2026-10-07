@@ -24,6 +24,7 @@ from crawler_shared.config import get_settings
 from platform_common.ssrf import UnsafeURLError, validate_public_http_url
 
 from web_scrapper.vector.search import search_scrape_chunks
+from web_scrapper.storage.artifacts import PAGES_MANIFEST_FILE
 
 from api.router import router
 
@@ -117,9 +118,9 @@ class CrawlJobResponse(BaseModel):
 
 class ScrapeCreateRequest(BaseModel):
     crawl_job_id: UUID
-    embedding_source: Literal["markdown", "image"] = Field(
+    embedding_source: Literal["markdown", "image", "none"] = Field(
         default="markdown",
-        description="Embed markdown text or screenshot image (base64 stored in job folder when image).",
+        description="Embed markdown text or screenshot image (base64 stored in job folder when image). 'none' writes the page artifacts only.",
     )
 
 
@@ -145,14 +146,34 @@ class ScrapeJobResponse(BaseModel):
         )
 
 
+class ScrapePageArtifact(BaseModel):
+    """One crawled page, as recorded in `pages_manifest.json`."""
+
+    index: int
+    url: str
+    depth: int
+    title: str | None = None
+    markdown_uri: str
+    screenshot_uri: str
+
+
+class ScrapePagesResponse(BaseModel):
+    """The page list of a finished scrape job."""
+
+    scrape_job_id: UUID
+    status: str
+    page_count: int
+    pages: list[ScrapePageArtifact]
+
+
 class CrawlScrapePipelineRequest(BaseModel):
     seed_url: str
     max_depth: int = Field(default=2, ge=0)
     max_pages: int = Field(default=50, ge=1)
     mode: Literal["httpx", "playwright", "auto"] = "httpx"
-    embedding_source: Literal["markdown", "image"] = Field(
+    embedding_source: Literal["markdown", "image", "none"] = Field(
         default="markdown",
-        description="Embed markdown text or screenshot image after crawl completes.",
+        description="Embed markdown text or screenshot image after crawl completes. 'none' writes the page artifacts only.",
     )
     qdrant_collection: str | None = Field(
         default=None,
@@ -545,6 +566,82 @@ def get_scrape(job_id: UUID, db: Session = Depends(get_db)) -> ScrapeJobResponse
     if job is None:
         raise HTTPException(status_code=404, detail="Scrape job not found")
     return ScrapeJobResponse.from_model(job)
+
+
+def _load_scrape_manifest(db: Session, job_id: UUID) -> tuple[ScrapeJob, dict]:
+    """Load a scrape job and its on-disk pages manifest."""
+    job = scrape_service.get_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scrape job not found")
+    if not job.output_dir:
+        raise HTTPException(status_code=404, detail="Scrape job has no artifacts")
+    manifest_path = Path(job.output_dir) / PAGES_MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="Pages manifest not found")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.error("pages_manifest_unreadable path=%s error=%s", manifest_path, str(exc))
+        raise HTTPException(status_code=500, detail=f"Pages manifest unreadable: {exc}") from exc
+    return job, manifest
+
+
+def _resolve_page_file(job: ScrapeJob, manifest: dict, index: int, field: str) -> Path:
+    """Resolve one manifest path inside the job output root and reject an escape."""
+    pages = manifest.get("pages") or []
+    match = next((page for page in pages if int(page.get("index", -1)) == index), None)
+    relative = (match or {}).get(field)
+    if not relative:
+        raise HTTPException(status_code=404, detail="Page index not found")
+    root = Path(job.output_dir or "").resolve()
+    path = (root / str(relative)).resolve()
+    if not path.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file missing on disk")
+    return path
+
+
+@app.get("/scrapes/{job_id}/pages", response_model=ScrapePagesResponse)
+def get_scrape_pages(job_id: UUID, db: Session = Depends(get_db)) -> ScrapePagesResponse:
+    """List the crawled pages of a scrape job, from its pages manifest."""
+    job, manifest = _load_scrape_manifest(db, job_id)
+    pages = manifest.get("pages") or []
+    return ScrapePagesResponse(
+        scrape_job_id=job.id,
+        status=job.status.value,
+        page_count=int(manifest.get("page_count") or len(pages)),
+        pages=[
+            ScrapePageArtifact(
+                index=int(page["index"]),
+                url=str(page.get("url") or ""),
+                depth=int(page.get("depth") or 0),
+                title=page.get("title"),
+                markdown_uri=str(page["markdown_uri"]),
+                screenshot_uri=str(page["screenshot_uri"]),
+            )
+            for page in pages
+            if page.get("markdown_uri") and page.get("screenshot_uri")
+        ],
+    )
+
+
+@app.get("/scrapes/{job_id}/pages/{index}/markdown")
+def get_scrape_page_markdown(job_id: UUID, index: int, db: Session = Depends(get_db)) -> FileResponse:
+    """Download one crawled page as Markdown text."""
+    job, manifest = _load_scrape_manifest(db, job_id)
+    path = _resolve_page_file(job, manifest, index, "markdown_uri")
+    return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=path.name)
+
+
+@app.get("/scrapes/{job_id}/pages/{index}/screenshot")
+def get_scrape_page_screenshot(
+    job_id: UUID, index: int, db: Session = Depends(get_db)
+) -> FileResponse:
+    """Download the full-page screenshot of one crawled page."""
+    job, manifest = _load_scrape_manifest(db, job_id)
+    path = _resolve_page_file(job, manifest, index, "screenshot_uri")
+    return FileResponse(path, media_type="image/png", filename=path.name)
 
 
 # --- NEW ENDPOINT 2: RETRIEVE CROSS-MODAL CHUNKS FROM QDRANT ---

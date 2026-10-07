@@ -1,11 +1,15 @@
 # 15 — Assistant Session Memory
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-10-02
 
 **Applies to:** any assistant whose Knowledge Product has the Redis destination enabled.
 **Backend:** `libs/rag-core/src/rag_core/session_memory.py`, `libs/rag-core/src/rag_core/assistant.py`,
 `apps/rag-api/src/rag_api/routes/chat.py`, `apps/rag-api/src/rag_api/routes/assistants.py`.
-**Frontend:** the session section of the pipeline view dialog, and the `Memory` chip on a pipeline card.
+**Frontend:** the session section of the pipeline view dialog, the `Memory` chip on a pipeline card, and the
+Chat page. The Chat page renders a `Memory:` chip from `sessionMemoryFor()` that reads `available · <N>h TTL`
+when the product keeps memory and `not available` when it does not, and one control that reads `End Session`
+when the pipeline keeps memory and `End Chat` when it does not (`ChatPage.tsx:741`, `:883`). Both call
+`closeChatSession()`.
 
 ## 1. What it is, and what it is not
 
@@ -103,7 +107,7 @@ question, and a third turn recalls the first answer.
 
 ## 4. Endpoints
 
-All three require the global API key (`X-API-Key` header, or `api_key` query parameter).
+All of these require the global API key (`X-API-Key` header, or `api_key` query parameter).
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -111,7 +115,13 @@ All three require the global API key (`X-API-Key` header, or `api_key` query par
 | `POST` | `/api/assistants/{slug}/chat/stream` | The same, streamed |
 | `POST` | `/v1/assistants/{slug}/chat/completions` | OpenAI shape. Add the `session_id` extension field |
 | `GET` | `/api/assistants/{slug}/sessions/{session_id}` | Read what the assistant remembers |
-| `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | **End the session.** Clears the memory |
+| `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | **End the session.** Clears the memory, exports nothing |
+| `POST` | `/api/assistants/{slug}/sessions/{session_id}/close` | **End the conversation.** Exports the session trace, then clears the memory |
+| `POST` | `/chat/sessions/{session_id}/close` | The native equivalent, which the Chat page calls. It takes the pipeline id in the body |
+
+The Chat page offers one control, and it calls the native `POST /chat/sessions/{session_id}/close`
+route (`ChatPage.tsx:406`). The assistant `.../close` route does the same work addressed by slug, for an
+external caller. See [16 — Observability and Tracing](./16_observability_tracing.md) §4 for the export.
 
 ### 4.1 `session_id` is a UUID
 
@@ -133,7 +143,7 @@ of the session endpoints answers `422` from the router.
 ```bash
 SESSION=$(python -c "import uuid; print(uuid.uuid4())")
 
-curl -s -X POST http://localhost:8001/api/assistants/tcs-chat/chat \
+curl -s -X POST http://127.0.0.1:8001/api/assistants/tcs-chat/chat \
   -H "Content-Type: application/json" -H "X-API-Key: sk-bot" \
   -d "{\"query\": \"What is this document about?\", \"session_id\": \"$SESSION\"}"
 ```
@@ -154,18 +164,20 @@ The answer carries the session and whether the question was rewritten:
 Now the follow-up, on the **same** session:
 
 ```bash
-curl -s -X POST http://localhost:8001/api/assistants/tcs-chat/chat \
+curl -s -X POST http://127.0.0.1:8001/api/assistants/tcs-chat/chat \
   -H "Content-Type: application/json" -H "X-API-Key: sk-bot" \
   -d "{\"query\": \"Tell me more about that.\", \"session_id\": \"$SESSION\"}"
 ```
 
 `effective_query` now reads `"What is the TCS onboarding handbook about?"` or similar. That is what
 retrieval actually searched for. It is `null` on a first turn, because there was nothing to resolve.
+The backend declares the field on `ChatResponse` (`routes/chat.py:74`). The frontend type
+`RAGChatResponse` (`frontend/src/api.ts:779-790`) does not declare it, so the UI never reads it.
 
 ### 4.3 Read a session
 
 ```bash
-curl -s http://localhost:8001/api/assistants/tcs-chat/sessions/$SESSION -H "X-API-Key: sk-bot"
+curl -s http://127.0.0.1:8001/api/assistants/tcs-chat/sessions/$SESSION -H "X-API-Key: sk-bot"
 ```
 
 ```json
@@ -188,7 +200,7 @@ never fails on an unknown session.
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE \
-  http://localhost:8001/api/assistants/tcs-chat/sessions/$SESSION -H "X-API-Key: sk-bot"
+  http://127.0.0.1:8001/api/assistants/tcs-chat/sessions/$SESSION -H "X-API-Key: sk-bot"
 ```
 
 `204`, always. **End it twice, or end one that already expired, and it is still 204**, so a client can
@@ -214,7 +226,7 @@ handle, because the memory is then still there.
 import uuid
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8001/v1/assistants/tcs-chat", api_key="unused")
+client = OpenAI(base_url="http://127.0.0.1:8001/v1/assistants/tcs-chat", api_key="unused")
 session_id = str(uuid.uuid4())
 
 def ask(question: str) -> str:
@@ -232,7 +244,7 @@ finally:
     # End conversation
     import httpx
     httpx.delete(
-        f"http://localhost:8001/api/assistants/tcs-chat/sessions/{session_id}",
+        f"http://127.0.0.1:8001/api/assistants/tcs-chat/sessions/{session_id}",
         headers={"X-API-Key": "sk-bot"},
     )
 ```
@@ -245,7 +257,7 @@ can adopt the minted one.
 
 ```js
 const sessionId = crypto.randomUUID();
-const url = "http://localhost:8001/v1/assistants/tcs-chat/chat/completions";
+const url = "http://127.0.0.1:8001/v1/assistants/tcs-chat/chat/completions";
 
 async function ask(question) {
   const res = await fetch(url, {
@@ -261,7 +273,7 @@ async function ask(question) {
 }
 
 async function endConversation() {
-  await fetch(`http://localhost:8001/api/assistants/tcs-chat/sessions/${sessionId}`, {
+  await fetch(`http://127.0.0.1:8001/api/assistants/tcs-chat/sessions/${sessionId}`, {
     method: "DELETE",
     headers: { "X-API-Key": "sk-bot" },
   });

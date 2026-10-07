@@ -15,83 +15,63 @@ type Message = { role: "user" | "assistant"; content: string; sources?: number }
 
 const POLICIES = [
   {
-    title: "Code of Conduct",
-    summary: "The standard every employee, contractor and partner is held to.",
+    title: "Home Insurance",
+    summary: "Cover for the home building and the contents in it against the insured events.",
     points: [
-      "Act with integrity in every client, vendor and colleague interaction.",
-      "Declare a conflict of interest to your reporting manager within five working days.",
-      "Do not accept gifts or hospitality that could influence a business decision.",
-      "Report a suspected breach through the Ethics Helpline without fear of retaliation.",
+      "The building is covered on a market value basis and the contents for the sum insured shown in the schedule.",
+      "The sum insured rises by 10% on each policy anniversary without extra premium, up to 100% of the base sum insured.",
+      "Burglary and theft of contents is an add-on, with a cap on items bought after the policy began.",
+      "Equipment and appliances are settled after depreciation from the age-wise table in the wording.",
     ],
   },
   {
-    title: "Prevention of Sexual Harassment (POSH)",
-    summary: "Zero tolerance, and a redressal path independent of your reporting line.",
+    title: "Health Insurance",
+    summary: "Hospitalization cover, with optional benefits you may add to it.",
     points: [
-      "Every location has a constituted Internal Committee (IC) under the POSH Act, 2013.",
-      "A complaint may be filed in writing to any IC member within three months of the incident.",
-      "The IC completes an inquiry within 90 days and the report is confidential.",
-      "Interim relief, including transfer or leave, may be granted while the inquiry runs.",
+      "Treatment of an illness in the first 30 days is excluded, except for a claim arising from an accident.",
+      "Maternity and child care claims carry a waiting period of 24 months.",
+      "AYUSH treatment is covered up to the limit in the schedule, in an AYUSH hospital or day care centre.",
+      "A co-payment is the share of the admissible claim the insured bears; it does not reduce the sum insured.",
     ],
   },
   {
-    title: "Leave and Attendance",
-    summary: "How leave is earned, applied for and approved.",
+    title: "Motor Insurance (Own Damage)",
+    summary: "Cover for the insured vehicle against the perils the wording lists.",
     points: [
-      "Leave is applied for through Ultimatix at least three working days in advance.",
-      "Sick leave beyond two days requires a medical certificate from a registered practitioner.",
-      "Earned leave lapses at the end of the leave year unless carried forward with approval.",
-      "Attendance is recorded daily. A missed entry is regularised by your reporting manager.",
+      "The IDV is fixed at each renewal from the manufacturer's listed selling price, less depreciation.",
+      "A repair that costs more than 75% of the IDV makes the vehicle a constructive total loss.",
+      "A full year with no claim earns a 20% discount on the own damage premium.",
+      "Organised racing, pace making and speed testing are not covered.",
     ],
   },
   {
-    title: "Hybrid Working",
-    summary: "The default pattern and what a team may change about it.",
+    title: "Claims",
+    summary: "How a claim is reported, assessed and settled.",
     points: [
-      "The standard week is three days on campus and two days remote.",
-      "An associate must be on campus on any day a client visit is scheduled.",
-      "Remote work is from the registered base location only, in a secure network.",
-      "A change to the team pattern needs approval from the delivery head, not the manager alone.",
+      "Report an accidental loss to the insurer in writing as soon as it happens.",
+      "A motor claim is settled within 7 days of the intimation or of the final survey report.",
+      "A health claim needs the claim form, the discharge summary and the hospital bills.",
+      "A grievance is acknowledged within 7 days of registration.",
     ],
   },
   {
-    title: "Travel and Expense",
-    summary: "Booking, entitlements and reimbursement.",
+    title: "Waiting Periods and Exclusions",
+    summary: "What is not payable in the first months of a policy, and what is never payable.",
     points: [
-      "All travel is booked through the approved travel desk. Self-booking needs prior approval.",
-      "Entitlement depends on grade for both air class and hotel category.",
-      "Submit claims within 30 days of completing the trip, with original invoices attached.",
-      "A claim without a receipt is reimbursed only with a written exception from the unit head.",
+      "A pre-existing disease is one diagnosed, or treated, in the 24 months before the policy began.",
+      "The 30 day waiting period applies again to any later increase in the sum insured.",
+      "A specific waiting period of up to 24 months applies to the listed diseases and treatments.",
+      "A subsidence loss excludes the normal settlement of new structures and coastal or river erosion.",
     ],
   },
   {
-    title: "Data Privacy and Security",
-    summary: "How client and employee data must be handled.",
+    title: "Renewal and Servicing",
+    summary: "Keeping a policy in force, and moving it between insurers.",
     points: [
-      "Client data stays on approved systems. Personal email and consumer storage are prohibited.",
-      "Use the corporate VPN for any access from outside an office network.",
-      "Report a suspected breach to the Security Operations Centre within one hour.",
-      "A security incident is reviewed after resolution to find the root cause.",
-    ],
-  },
-  {
-    title: "Resource Management",
-    summary: "How associates move between projects.",
-    points: [
-      "Resource Management Group tags availability and proposes a match to the requesting project.",
-      "An associate on the bench is expected to complete the assigned certification track.",
-      "A release from a project needs a written handover accepted by the delivery manager.",
-      "Interview readiness for an internal position is confirmed by the current reporting manager.",
-    ],
-  },
-  {
-    title: "Whistleblower Protection",
-    summary: "A protected channel for reporting serious wrongdoing.",
-    points: [
-      "Reports may be made anonymously through the independent Ethics Helpline.",
-      "Retaliation against a reporter is itself a breach of the Code of Conduct.",
-      "The Ethics Office acknowledges every report and reports outcomes to the Audit Committee.",
-      "Records are retained for the period required by the applicable law.",
+      "The grace period is 15 days for a monthly premium mode and 30 days in all other cases.",
+      "A no claim bonus is allowed only if the policy is renewed within 90 days of the previous expiry.",
+      "Portability transfers the credit gained for pre-existing diseases and specific waiting periods.",
+      "The cumulative bonus adds to the base sum insured without an increase in premium.",
     ],
   },
 ];
@@ -115,11 +95,17 @@ function ttlLabel(seconds: number | null | undefined): string {
 function closeSummary(result: CloseSessionResponse): string {
   const parts = [`${result.turns} turn${result.turns === 1 ? "" : "s"}`];
   parts.push(result.memory.cleared ? "session memory removed" : "no memory to remove");
-  parts.push(
-    result.trace.emitted
-      ? `whole session exported as one trace ${shortId(result.trace.trace_id)}`
-      : "no session trace, each turn was traced on its own",
-  );
+  // The trace id is absent when the exporter is off, which is not a failure: the trace was
+  // still written. Report the id only when there is one.
+  if (result.trace.emitted) {
+    parts.push(
+      result.trace.trace_id
+        ? `whole session exported as one trace ${shortId(result.trace.trace_id)}`
+        : "whole session exported as one trace",
+    );
+  } else {
+    parts.push("no session trace, each turn was traced on its own");
+  }
   if (result.trace.tags.length) parts.push(`tagged ${result.trace.tags.join(", ")}`);
   return parts.join(" · ");
 }
@@ -298,8 +284,8 @@ export default function App() {
       <header className="site-header">
         <div className="shell header-inner">
           <div className="brand">
-            <span className="brand-mark">TCS</span>
-            <span className="brand-name">Tata Consultancy Services</span>
+            <span className="brand-mark">ABC</span>
+            <span className="brand-name">ABC Insurance</span>
           </div>
           <nav className="site-nav">
             <a href="#policies">Policies</a>
@@ -311,11 +297,11 @@ export default function App() {
 
       <section className="hero">
         <div className="shell">
-          <p className="eyebrow">Corporate Governance</p>
-          <h1>Corporate Policies</h1>
+          <p className="eyebrow">Insurance Policy Wordings</p>
+          <h1>Policy Wordings</h1>
           <p className="lede">
-            The policies below govern how we work with each other, with our clients and with
-            their data. Read the policy, then ask the assistant on this page about it.
+            The wordings below cover the home, health and motor policies. Read a wording, then
+            ask the assistant on this page about the cover, the waiting periods or a claim.
           </p>
         </div>
       </section>
@@ -522,8 +508,8 @@ export default function App() {
           <h2>About this page</h2>
           <p>
             This is a demonstration site, and it calls the pipeline&rsquo;s own endpoint, so
-            everything it sends is production traffic. The policy text is illustrative sample
-            content and is not an official TCS publication. The assistant answers from the
+            everything it sends is production traffic. The wording on this page is illustrative
+            sample content, not a policy document of any insurer. The assistant answers from the
             knowledge base named on its panel, not from the text above.
           </p>
         </section>

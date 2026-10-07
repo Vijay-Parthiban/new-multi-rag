@@ -40,11 +40,18 @@ export const DestinationVisualizerModal: React.FC<DestinationVisualizerModalProp
     }
   };
 
+  // `product` is a fresh object on every poll of the page behind this modal, so depending on
+  // it here refetched the store every few seconds and the view never stood still. Read the
+  // store once when the modal opens or the tab changes; the Refresh Live Data button is the
+  // only other read. `productId` is the stable part of the prop.
+  const productId = product?.id ?? null;
+
   useEffect(() => {
-    if (isOpen && product) {
-      loadData(activeTab);
+    if (isOpen && productId) {
+      void loadData(activeTab);
     }
-  }, [isOpen, product, activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, productId, activeTab]);
 
   if (!isOpen || !product) return null;
 

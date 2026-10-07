@@ -95,12 +95,6 @@ async def process_scrape_page(
         include_image_base64 = embedding_source == "image"
         record = build_page_record(in_memory, include_image_base64=include_image_base64)
 
-        embedder = EmbeddingClient(
-            base_url=settings.litellm_base_url,
-            api_key=settings.openai_api_key,
-            model=resolved.embedding_model,
-        )
-
         base_payload = {
             "source_type": WEB_SCRAPE_SOURCE_TYPE,
             "source_id": scrape_job_id,
@@ -119,11 +113,14 @@ async def process_scrape_page(
         if resolved.pipeline_description:
             base_payload["pipeline_description"] = resolved.pipeline_description
 
-        collection = resolved.qdrant_collection
-        qdrant = QdrantVectorStore(url=settings.qdrant_url, collection=collection)
         points_to_upsert: list[PointStruct] = []
 
         if embedding_source == "markdown":
+            embedder = EmbeddingClient(
+                base_url=settings.litellm_base_url,
+                api_key=settings.openai_api_key,
+                model=resolved.embedding_model,
+            )
             chunks = chunk_markdown(page.markdown, chunk_size=1000, chunk_overlap=120)
             sparse_embedder = None
             if resolved.use_sparse:
@@ -159,7 +156,12 @@ async def process_scrape_page(
                         payload=chunk_payload,
                     )
                 )
-        else:
+        elif embedding_source == "image":
+            embedder = EmbeddingClient(
+                base_url=settings.litellm_base_url,
+                api_key=settings.openai_api_key,
+                model=resolved.embedding_model,
+            )
             vector = embedder.embed_image_png(page.screenshot_bytes)
 
             raw_id = f"{scrape_job_id}:{page.url}:image"
@@ -178,7 +180,10 @@ async def process_scrape_page(
                 )
             )
 
+        # "none" skips embeddings and Qdrant entirely: the page artifacts are the product.
         if points_to_upsert:
+            collection = resolved.qdrant_collection
+            qdrant = QdrantVectorStore(url=settings.qdrant_url, collection=collection)
             dense_size = len(points_to_upsert[0].vector["dense"])  # type: ignore[index]
             qdrant.ensure_collection(dense_size, enable_sparse=resolved.use_sparse)
             qdrant.client.upsert(
@@ -192,7 +197,7 @@ async def process_scrape_page(
             index,
             page.url,
             embedding_source,
-            collection,
+            resolved.qdrant_collection,
             len(points_to_upsert),
         )
 

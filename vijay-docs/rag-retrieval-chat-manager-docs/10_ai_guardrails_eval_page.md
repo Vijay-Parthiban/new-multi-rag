@@ -1,10 +1,10 @@
 # 10 — Guard Evaluation Page
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-10-02
 
 **Sidebar label:** Guard Evaluation · **Route:** `/guardrails/evaluation` · **Component:** `frontend/src/pages/GuardrailsEvaluationPage.tsx` · **In-page header:** "Guardrails Offline Evaluation"
 
-(There is no `/guardrails/eval` route. The sidebar entry and route are `/guardrails/evaluation` — `components/AppLayout.tsx:35,130,221`, header title `GuardrailsEvaluationPage.tsx:280`.)
+(There is no `/guardrails/eval` route. The sidebar entry and route are `/guardrails/evaluation` — `components/AppLayout.tsx:34,131,223`, header title `GuardrailsEvaluationPage.tsx:353`.)
 
 ## 1. Executive Summary & Page Purpose
 The **Guard Evaluation Page** scores a saved `GuardrailsConfig` against a golden dataset of texts with expected block behaviour. It loads the bundled dataset or uploads a JSON file, lists the configs that Chat itself uses (`guardrails_configs`), starts a run and shows accuracy/precision/recall/F1 plus every item's expected vs actual verdict.
@@ -105,7 +105,7 @@ One row is deliberately labelled `expected_blocked: false`: `My SSN is 123-45-67
 ```
 
 - **One primary action.** `Start guardrails evaluation` is the only `btn-primary` on the page. The header carries two **secondary** controls, `Re-load bundled dataset` and `Refresh` (`GuardrailsEvaluationPage.tsx:288-302`), and the seed button is `btn-primary` only inside the empty state (`:322-330`). The header copy is "Re-load bundled dataset" rather than "Load bundled golden dataset" because it appears only when a dataset already exists. Three competing primaries — a header seed, an empty-state seed and a Refresh — made the page's purpose unclear.
-- **"Load bundled golden dataset"** calls `POST /guardrails-evaluate/datasets/seed` through a local wrapper (`seedGuardrailsGoldenDataset`, `GuardrailsEvaluationPage.tsx:19-46`; handler `:169-181`). After the seed it reloads the dataset list and selects the new dataset.
+- **"Load bundled golden dataset"** calls `POST /guardrails-evaluate/datasets/seed` through a local wrapper (`seedGuardrailsGoldenDataset`, `GuardrailsEvaluationPage.tsx:23`; handler `onSeedDataset`, `:202`). After the seed it reloads the dataset list and selects the new dataset.
 - Upload calls `uploadGuardrailsGoldenDataset(file, replaceOnUpload)`; the "Replace if name already exists" checkbox is **checked by default** (`GuardrailsEvaluationPage.tsx:108,183-196,336-352`).
 - The dataset panel lists dataset names with item counts, offers `Delete dataset`, and holds the file input (`GuardrailsEvaluationPage.tsx:333-383`).
 - The config dropdown is filled from `listGuardrailsConfigs(false)` — the same `guardrails_configs` rows Chat applies (`GuardrailsEvaluationPage.tsx:125-131,392-412`).
@@ -143,7 +143,7 @@ The false-negative and false-positive rows are the rows that need a config chang
 
 ## 4. Backend APIs & Contracts
 
-Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:8`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required.
+Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required. The catalogue holds three validators: `ban_list`, `detect_pii` and `local/toxic_language`.
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
@@ -160,7 +160,7 @@ Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api
 Route definitions: `routes/guardrails_evaluate.py:141,155,188,217,240,253,376,401,434`. Schemas: `:36-107`.
 
 ### `POST /guardrails-evaluate/datasets/seed` (new)
-Imports the bundled `golden/guardrails-dataset.json`. The body is optional (`SeedDatasetRequest`, `routes/guardrails_evaluate.py:164-169`): `path` overrides the file location and `replace` defaults to `true`. Location resolution tries the override, then `settings.guardrails_golden_dataset_path` (default `../../golden/guardrails-dataset.json`), then `./golden/...`, `../golden/...` and `../../golden/...` relative to the process working directory (`routes/guardrails_evaluate.py:171-185`, `rag_shared/config.py:37-39`). A missing file returns `404` with the exact list of paths it tried (`routes/guardrails_evaluate.py:201-206`). The index (`GET /datasets`) is not part of this call.
+Imports the bundled `golden/guardrails-dataset.json`. The body is optional (`SeedDatasetRequest`, `routes/guardrails_evaluate.py:164-169`): `path` overrides the file location and `replace` defaults to `true`. Location resolution tries the override, then `settings.guardrails_golden_dataset_path` (default `../../golden/guardrails-dataset.json`), then `./golden/...`, `../golden/...`, `../../golden/...` and `../../../golden/...` relative to the process working directory (`routes/guardrails_evaluate.py:171-185`, `rag_shared/config.py:57`). A missing file returns `404` with the exact list of paths it tried (`routes/guardrails_evaluate.py:201-206`). The index (`GET /datasets`) is not part of this call.
 
 ### `CreateDatasetResponse`
 `dataset_id`, `name`, `item_count`, `replaced` (`routes/guardrails_evaluate.py:44-49`).
@@ -204,8 +204,8 @@ Imports the bundled `golden/guardrails-dataset.json`. The body is optional (`See
 | `categories` | per category: `item_count`, `correct`, `accuracy` |
 
 Rules:
-- **Skipped rows are excluded from every score.** They are counted in `items_skipped` and appear in no denominator (`eval_core/guardrails_runner.py:106-108`).
-- Correctness is derived from `expected_blocked == actual_blocked`, not from the stored `correct_block` flag, because that flag defaults to `False` (`eval_core/guardrails_runner.py:110-113`).
+- **Skipped rows are excluded from every score.** They are counted in `items_skipped` and appear in no denominator (`eval_core/guardrails_runner.py:107-109`).
+- Correctness is derived from `expected_blocked == actual_blocked`, not from the stored `correct_block` flag, because that flag defaults to `False` (`eval_core/guardrails_runner.py:110-115`).
 - `tp` = expected and actually blocked, `tn` = not expected and not blocked, `fp` = blocked but not expected, `fn` = expected but not blocked (`eval_core/guardrails_runner.py:136-139`).
 - Every score is rounded to 4 decimals in the final update (`eval_core/guardrails_runner.py:160-173`). `categories` accuracy is rounded the same way (`:157-158`). With no evaluated rows the function returns the same keys with zero counts and `0.0` scores (`eval_core/guardrails_runner.py:117-134`).
 - `guard_match_rate` only counts rows where both guards are known, so a row with no expected guard does not drag the rate down (`eval_core/guardrails_runner.py:146-149`).
@@ -218,21 +218,21 @@ The page never produced a real score before these four backend fixes. Each one i
 3. `list_guardrails_datasets` did `for ds, count in rows`, but `list_datasets()` returns dataset rows, not pairs. That call returned HTTP 500. It now uses `len(ds.items)` (`routes/guardrails_evaluate.py:231-238`).
 4. `repo.list_run_items()` did not exist at all. It was added, so `GET /runs/{run_id}/items` works (`guardrails_evaluation_repository.py:165-172`).
 
-### Verified results
-- `scripts/e2e_guardrails.py` (new) runs the whole surface against the live stack and prints its own tally. The measured result is **34/34 checks pass** (`scripts/e2e_guardrails.py:268`).
-- `tests/unit/test_guardrails_runner.py` (new) holds **15 tests**: 9 functions plus 6 parametrized cases of the mode/phase matrix. They cover the confusion matrix, the skipped-row rule, the phase/mode rule and the category buckets (`tests/unit/test_guardrails_runner.py:33-150`).
-- The retrieved golden evaluation scores **accuracy 1.0, precision 1.0, recall 1.0, f1 1.0, guard_match_rate 1.0, 7 true positives, 5 true negatives, 0 false positives, 0 false negatives**.
-- The full retrieval unit suite is unchanged at **7 failed / 60 passed**. The 7 failures are pre-existing and unrelated to guardrails.
+### Verification assets
+- `scripts/e2e_guardrails.py` (new) runs the whole surface against the live stack and prints its own tally (`scripts/e2e_guardrails.py`).
+- `tests/unit/test_guardrails_runner.py` (new) covers the confusion matrix, the skipped-row rule, the phase/mode rule and the category buckets (`tests/unit/test_guardrails_runner.py`).
+- On the bundled golden dataset (12 items) the sync run returns accuracy, precision, recall, f1 and guard_match_rate of `1.0`, with 7 true positives and 5 true negatives.
+- The retrieval unit suite exists and is not re-run by this document. This document does not state its pass or fail counts.
 
 ---
 
 ## 5. Implementation notes (verified in the working tree)
 - `GuardrailsEvalItem` and `GuardrailsGoldenItem` carry the same field names: `text`, `phase`, `expected_blocked`, `expected_guard`, `category`, `metadata` (`eval_core/guardrails_runner.py:10-18`, `eval_core/guardrails_dataset_schema.py:8-16`).
-- The run route passes `settings.guardrails_url` and `settings.guardrails_timeout_s` to the runner (`routes/guardrails_evaluate.py:309-311`). Both are real fields of `rag_shared.config.Settings` (`rag_shared/config.py:33-36`).
-- The TypeScript type for `guard_results` in `guardrailsEvalApi.ts:83` still declares the old `passed` key. The runtime object carries `validation_passed`, `error` and `detail`, and the page does not read that type field.
-- The metric keys are produced by the backend now. The client type for `aggregate_metrics` lists the same names, each optional (`guardrailsEvalApi.ts:48-62`).
+- The run route passes `settings.guardrails_url` and `settings.guardrails_timeout_s` to the runner (`routes/guardrails_evaluate.py:309-311`). Both are real fields of `rag_shared.config.Settings` (`rag_shared/config.py:51,54`).
+- `guardrailsEvalApi.ts` declares `guard_results: Record<string, GuardResult>` (`guardrailsEvalApi.ts:87`). `GuardResult` is `{validation_passed, error, detail}` (`frontend/src/api.ts:1469-1473`). The runtime object matches that shape.
+- The metric keys are produced by the backend now. The client type for `aggregate_metrics` lists the same names, each optional (`guardrailsEvalApi.ts:48-69`).
 - The page uses the shared `guardMeta()` / `guardTitle()` helper from `frontend/src/utils/guardLabels.ts` for validator names, the same one the Guard Traces page uses. A validator the map does not know renders as a readable slug rather than a raw id.
-- The seed call is a local `seedGuardrailsGoldenDataset()` wrapper in the page, because `guardrailsEvalApi.ts` does not expose the seed route (`GuardrailsEvaluationPage.tsx:19-46`).
+- The seed call is a local `seedGuardrailsGoldenDataset()` wrapper in the page, because `guardrailsEvalApi.ts` does not expose the seed route (`GuardrailsEvaluationPage.tsx:23`).
 
 
 ---

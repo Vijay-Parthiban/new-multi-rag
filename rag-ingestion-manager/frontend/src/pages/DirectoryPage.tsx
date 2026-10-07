@@ -73,7 +73,7 @@ export default function DirectoryPage({ routeName, routeNavigate }: DirectoryPag
         description="Files with syncing status update automatically in the background."
         breadcrumbs={[
           { label: "Overview", to: "/" },
-          { label: "Folders", to: "/browse" },
+          { label: "Fabric Viewer", to: "/browse" },
           { label: name ?? "" },
         ]}
         actions={
@@ -87,7 +87,7 @@ export default function DirectoryPage({ routeName, routeNavigate }: DirectoryPag
               </Link>
             )}
             <Link to="/sources" className="btn btn-primary">
-              Manage Sources
+              Manage Knowledge Fabric
             </Link>
           </div>
         }

@@ -206,6 +206,13 @@ async def _run_airbyte_connector(config: dict) -> dict:
 
 async def _trigger_pipeline_syncs(db: AsyncSession, source: "Source") -> None:
     """Wake the Knowledge Product pollers and enqueue pipeline re-indexing."""
+    if getattr(source, "webscrape_enabled", False):
+        # Local import: `webscrape` imports this module's caller, so a module-level
+        # import would be circular.
+        from src.ingestion_service.core.webscrape import scan_source_manifests_by_id
+
+        asyncio.create_task(scan_source_manifests_by_id(source.id))
+
     try:
         # The Knowledge Product poller owns the fanout. Kick it so a source
         # change reaches the destinations now instead of at the next interval.

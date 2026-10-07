@@ -9,6 +9,17 @@
 # Start them with:
 #
 #     docker compose --profile extras up -d
+#
+# The scraper (`scraper-api`, `scraper-worker`, `scraper-migrate`) also sits behind a
+# profile. It runs as host processes from `web-scrapper-workspace` instead, which keeps
+# its code hot-reloadable and drops one image build:
+#
+#     ./scripts/dev.sh scraper-api        # runs crawler-db-migrate first
+#     ./scripts/dev.sh scraper-worker
+#
+# Its container form stays available for a deployment that has no host checkout:
+#
+#     docker compose --profile scraper up -d scraper-api scraper-worker
 services:
   migrate:
     build:
@@ -45,8 +56,6 @@ services:
         condition: service_started
       migrate:
         condition: service_completed_successfully
-      scraper-api:
-        condition: service_started
       minio:
         condition: service_started
     extra_hosts:
@@ -73,8 +82,6 @@ services:
         condition: service_started
       migrate:
         condition: service_completed_successfully
-      scraper-api:
-        condition: service_started
       minio:
         condition: service_started
     extra_hosts:
@@ -147,7 +154,15 @@ services:
     depends_on:
       - api
   scraper-api:
-    image: tharun0511/web-scrapper-wokspace:latest
+    # Container form of the scraper. Prefer `./scripts/dev.sh scraper-api` on the host.
+    profiles:
+      - scraper
+    image: rag-web-scrapper:local
+    build:
+      # The scraper Dockerfile wants the repo root as its context so it can copy
+      # `shared-libs/platform-common` and `web-scrapper-workspace/*`.
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     command:
       - sh
       - /app/scripts/run-api.sh
@@ -170,7 +185,12 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
   scraper-worker:
-    image: tharun0511/web-scrapper-wokspace:latest
+    profiles:
+      - scraper
+    image: rag-web-scrapper:local
+    build:
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     command:
       - sh
       - /app/scripts/run-worker.sh
@@ -194,7 +214,12 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
   scraper-migrate:
-    image: tharun0511/web-scrapper-wokspace:latest
+    profiles:
+      - scraper
+    image: rag-web-scrapper:local
+    build:
+      context: ..
+      dockerfile: web-scrapper-workspace/Dockerfile
     command:
       - crawler-db-migrate
     env_file:

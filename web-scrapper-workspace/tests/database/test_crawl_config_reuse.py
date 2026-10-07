@@ -48,6 +48,9 @@ def test_is_embedding_source_indexed_uses_crawl_job_flags() -> None:
 
     assert service.is_embedding_source_indexed(crawl_job, "markdown") is True
     assert service.is_embedding_source_indexed(crawl_job, "image") is False
+    # "none" writes page artifacts only, so it is never "already indexed";
+    # a repeat scrape must always create a new job.
+    assert service.is_embedding_source_indexed(crawl_job, "none") is False
 
 
 def test_find_completed_scrape_for_crawl_delegates_to_repo() -> None:

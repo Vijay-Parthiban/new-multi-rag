@@ -1,9 +1,9 @@
-# 03 — Data Sources & Connectors Page
+# 03 — Knowledge Fabric Page (Data Sources & Connectors)
 
-**Last updated:** 2026-09-20 (pause/resume revision)
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
-The **Data Sources Page** manages the ingestion perimeter. Two files implement it:
+The **Knowledge Fabric page** manages the ingestion perimeter. Two files implement it:
 
 - `SourcesPage.tsx` (route `/sources`) — source list, creation, sync, delete, file management drawer.
 - `SourceDetailPage.tsx` (route `/sources/:id`) — one source: connectors, NiFi connector catalogue, files.
@@ -29,11 +29,12 @@ Two monitoring modes exist at two independent points:
 
 ```
 +--------------------------------------------------------------------------------+
-|  Data Sources                                             [ + New Source ]      |
+|  Knowledge Fabric  [2026 Engine]              [ + New Source ]                |
 |  Create a NiFi connector source or a manual upload source. Each source gets    |
 |  its own isolated MinIO bucket.                                                |
 +--------------------------------------------------------------------------------+
-|  Stats cards: Total Sources | Attached Connectors | Syncing | Buckets (filter)  |
+|  Stats cards: Total Data Sources | Attached Connectors | Syncing Sources |     |
+|               Isolated MinIO Buckets (filter)                                    |
 +--------------------------------------------------------------------------------+
 |  [ search sources or buckets ]        [ grid | table ]                          |
 +--------------------------------------------------------------------------------+
@@ -45,7 +46,7 @@ Two monitoring modes exist at two independent points:
 |  | [Pause All] [Files] [Trash] [Manage] |  | [Upload Files] [Trash] [Manage]      |
 |  +--------------------------------------+  +--------------------------------------+
 +--------------------------------------------------------------------------------+
-|  Detail page: Back to Sources | Pause All Connectors                           |
+|  Detail page: ← Back to Knowledge Fabric | Pause All Connectors              |
 |  Stats: Source Status | Attached Connectors | Total Synced Files (+ size)        |
 |  Tabs: Connectors Catalogue | Source Files  (tabs hidden for manual/local)      |
 |  Active Attached Connectors + NiFi Connector Catalogue grid (3 tiles)            |
@@ -55,11 +56,11 @@ Two monitoring modes exist at two independent points:
 List page behaviour:
 - Grid view cards and table view columns: Source Name, Storage Location, Status, Connectors, Last Updated, Actions.
 - Cards show the connector count (manual sources show a `MinIO / MANUAL UPLOAD` stat and local sources a filesystem marker instead), the bucket name with a copy-to-clipboard button, and up to 4 connector type badges with a vector icon per connector type. Cards do **not** show a file count or last-sync time.
-- The source list re-fetches every 30 s while `/sources` is the active route (`SourcesPage.tsx:527`); the detail page re-fetches source + files every 20 s (`SourceDetailPage.tsx:154-157`).
+- The source list re-fetches every 30 s while `/sources` is the active route (`SourcesPage.tsx:604`); the detail page re-fetches source + files every 20 s (`SourceDetailPage.tsx:238-241`).
 - Actions: grid cards and table rows both offer a pause toggle, a file action and `Manage` (navigates to `/sources/:id`), plus a delete button. The file action reads **Upload Files** for manual sources and **Files** for connector sources; both open the same file drawer modal.
 - **There is no manual sync trigger.** Polling is automatic: it starts the moment a connector is saved and stops only when every connector is paused. The pause toggle reads **Pause All** / **Resume All** on a card and **Pause** / **Resume** in a table row, and it is only shown when the source has connector rows. A manual-upload bucket has nothing to poll, so it shows no pause button. The card subtitle switches to "Paused — polling stopped" when every connector is disabled.
 - Pausing flips `SourceConnector.enabled` for every connector of the source, one sequential `PATCH /api/sources/{id}/connectors/{cid}` at a time. The calls are sequential on purpose: each one re-registers the source poller, and parallel calls would race on the poller task registry.
-- **New Source** modal: name input, two mutually exclusive radio tiles, a live bucket-name preview and a submit button whose label depends on the choice (`SourcesPage.tsx:913-1013`):
+- **New Source** modal: name input, two mutually exclusive radio tiles, a live bucket-name preview and a submit button whose label depends on the choice (`SourcesPage.tsx`, New Source dialog):
   - **Apache NiFi Connector Source** (`source_type: minio`) — "Pull files in through NiFi connectors: Google Drive, Amazon S3, Azure Blob Storage." Submitting navigates to the detail page so connectors can be attached.
   - **Manual Upload Source** (`source_type: minio_manual`) — "Pick files in the browser. Files are stored straight in the MinIO bucket." Submitting opens the file drawer immediately.
   - There is no local-filesystem option.
@@ -75,7 +76,8 @@ Detail page behaviour:
   - Connector bucket → the file table has **no** Actions column at all: no "Open & Visualize" and no "Delete".
   - Manual / legacy local bucket → Delete stays, "Open & Visualize" is gone.
   - The drawer on `/sources` follows the same rule through `canManageFiles`, which is `isManualSource(x) || isLocalSource(x)`.
-- Tab navigation is hidden entirely for manual and local sources; the source-files view is shown directly for them (`SourceDetailPage.tsx:141`, `:515`).
+- Tab navigation is hidden entirely for manual and local sources; the source-files view is shown directly for them (`SourceDetailPage.tsx:642`, `:1025`).
+- **Web scraping panel**, on every source except a legacy local one. It sits between the tab bar and Tab 1, so both tabs show it. It holds a switch, a `Max depth (0-5)` input, a `Max pages per URL (1-500)` input, `Save` and `Rescan now`. The depth hint reads `0 = the linked page only. 1 or more also follows subpages to that depth.` Under the buttons a status line reads `<n> manifest(s) · <m> page(s) generated`, then one row per manifest: its key, a `StatusBadge`, the seed count and the page count, and the last error in red when the run failed. `Rescan now` is disabled while the switch is off. The form holds the user's edits; the 20 s poll refreshes the manifest rows but never overwrites unsaved input.
 - The connector modal hosts `ConnectorConfigForm`, a monitor-mode radio pair ("Immediate live polling" / "Scheduled polling"), and — when Scheduled is selected — a numeric interval input plus a unit `<select>` with `Seconds (minimum 5)` and `Minutes`. A helper line under the pair states the unit semantics. On edit, a connector stores only one of the two interval columns, and the modal picks the unit from whichever is set (seconds win).
 - Deleting a connector uses the same in-app `ConfirmDialog` and notes that files the connector already copied stay in the bucket.
 
@@ -83,7 +85,7 @@ Detail page behaviour:
 
 ## 3. Connector Types Actually Available
 
-`GET /api/sources/connectors` returns the static `CONNECTOR_OPTIONS` list (`routes/sources.py:35-41`). Any create/attach request whose `connector_type` is not in this list is rejected with `INVALID_CONNECTOR` (422) (`routes/sources.py:43`, `:333`, `:513`).
+`GET /api/sources/connectors` returns the static `CONNECTOR_OPTIONS` list (`routes/sources.py:45-50`). Any create/attach request whose `connector_type` is not in this list is rejected with `INVALID_CONNECTOR` (422) (`routes/sources.py:51`, `:363`, `:617`).
 
 The catalogue is deliberately NiFi-only — three connectors, each with a working sync path into the source bucket:
 
@@ -95,7 +97,7 @@ The catalogue is deliberately NiFi-only — three connectors, each with a workin
 
 `manual_upload` is **not** a connector id and is **not** in `CONNECTOR_OPTIONS`. It is only a source-level marker written by `create_source` for a Manual Upload Source; no `SourceConnector` row is ever created for it.
 
-The connector dispatch switch is `nifi_sync.py:61-112`. The engine still carries branches for `amazon_s3`, `azure`, `sftp`/`ftp`, `web_scraper`/`web`, `confluence`, `local_folder`/`local_dir`, plus `web_scraper`, and `pathway_sync.sync_local_dir_to_minio` remains. None of them can be selected any more because `VALID_CONNECTOR_IDS` gates every create/attach request. `ConnectorConfigForm` also keeps its typed forms for those legacy ids so a connector row created before the catalogue was narrowed can still be edited.
+The connector dispatch switch lives in `nifi_sync.py`. The engine still carries branches for `amazon_s3`, `azure`, `sftp`/`ftp`, `web_scraper`/`web`, `confluence`, `local_folder`/`local_dir`, plus `web_scraper`, and `pathway_sync.sync_local_dir_to_minio` remains. None of them can be selected any more because `VALID_CONNECTOR_IDS` gates every create/attach request. `ConnectorConfigForm` also keeps its typed forms for those legacy ids so a connector row created before the catalogue was narrowed can still be edited.
 
 Notes:
 - There is no `minio` connector id. `connector_type: "minio"` is accepted by `create_source` only as the sentinel that means "no auto-created connector", and it is never written as a `SourceConnector`. `sync_source_from_pathway` explicitly skips synthesising a connector from the marker types `minio`, `minio_manual`, `manual_upload` and `local_filesystem`.
@@ -106,15 +108,15 @@ Notes:
 
 ## 4. Connector Configuration Fields
 
-Defaults come from `defaultConfigFor()` (`ConnectorConfigForm.tsx:9-46`); "read by engine" lists the keys the NiFi sync functions actually consume.
+Defaults come from `defaultConfigFor()` (`ConnectorConfigForm.tsx:10-46`); "read by engine" lists the keys the NiFi sync functions actually consume.
 
 Only three ids can be attached to a new source:
 
 | Connector | Default config (created by the form) | Keys read by the sync engine |
 |---|---|---|
-| `google_drive` | `folder_url: ""`, `service_account_json: null` | `folder_url` \| `folder_id`, else a hardcoded demo folder id; `service_account_json` \| `credentials_json` \| `credentials` \| `service_account_file`, else a bundled default key path (`gdrive_sync.py:168-174`, `:208-209`) |
-| `s3` | `bucket`, `access_key_id`, `secret_access_key`, `region: "us-east-1"`, `prefix: ""` | `bucket_name`\|`s3_bucket`\|`bucket`, `aws_access_key_id`\|`access_key_id`, `aws_secret_access_key`\|`secret_access_key`, `region_name`\|`region` (`us-east-1`), `prefix` (`nifi_sync.py:125-129`) |
-| `azure_blob` | `container_name`, `connection_string`, `prefix: ""` | `container_name`\|`azure_container`\|`container`, `connection_string`, `account_name`, `account_key`, `prefix` (`nifi_sync.py:247-251`) |
+| `google_drive` | `folder_url: ""`, `service_account_json: null` | `folder_url` \| `folder_id`, else a hardcoded demo folder id; `service_account_json` \| `credentials_json` \| `credentials` \| `service_account_file`, else a bundled default key path (`gdrive_sync.py`) |
+| `s3` | `bucket`, `access_key_id`, `secret_access_key`, `region: "us-east-1"`, `prefix: ""` | `bucket_name`\|`s3_bucket`\|`bucket`, `aws_access_key_id`\|`access_key_id`, `aws_secret_access_key`\|`secret_access_key`, `region_name`\|`region` (`us-east-1`), `prefix` (`nifi_sync.py`) |
+| `azure_blob` | `container_name`, `connection_string`, `prefix: ""` | `container_name`\|`azure_container`\|`container`, `connection_string`, `account_name`, `account_key`, `prefix` (`nifi_sync.py`) |
 
 `defaultConfigFor` still returns defaults for the legacy ids (`google_sheets`, `onedrive`, `sharepoint`, `postgres`/`postgres_db`, `mysql`/`mysql_db`, `mongodb`/`mongodb_db`, `web_scraper`/`web_crawler`, `confluence`, `sftp`, `http_api`), and `ConnectorConfigForm` still renders their typed forms. That is intentional: connector rows created before the catalogue was narrowed can still be opened, edited and deleted from the detail page, even though they return `{"files_synced": 0, "status": "unsupported"}` from the sync engine. The backend rejects any *new* attach request for those ids.
 
@@ -124,7 +126,7 @@ Form coverage (`ConnectorConfigForm.tsx`):
 - Any connector can also be edited as raw JSON via the "Advanced: Edit Raw JSON" toggle, with a Prettify button.
 - Secret fields (`AWS Secret Access Key`, Azure connection string, DB password) have a text `Show`/`Hide` toggle with `aria-label` and `aria-pressed`; there are no emoji icons in the form.
 - For `google_drive` a service-account JSON can be uploaded or drag-dropped; it is stored in the config as both `service_account_json` and `credentials_json`, with `_filename` kept for display only.
-- `defaultConfigFor` seeds the modal when a catalogue tile is clicked; when editing an existing connector the stored `config` is used as-is (`SourceDetailPage.tsx:207`, `:217`).
+- `defaultConfigFor` seeds the modal when a catalogue tile is clicked; when editing an existing connector the stored `config` is used as-is (`SourceDetailPage.tsx:286`, `:300`).
 - `getConnectorSchema()` in the same module returns `{}`; it is not used for validation.
 
 Server-side validation runs before every sync, not at attach time: `validate_airbyte_connector_config(connector_type, config)` (`core/airbyte_connector.py:413`) returns `(is_valid, error_message)` and the failure text is stored on the connector row as `error_message`, leaving the connector in `status: "error"`. The `s3` and `azure_blob` checks accept the same key names the form writes. `backend/tests/test_connector_config_validation.py` pins this contract.
@@ -143,7 +145,7 @@ The frontend sends exactly one of the two interval fields: minutes when the unit
 
 ## 5. Backend APIs & Data Contracts
 
-All routes are under `APIRouter(prefix="/api/sources")` (`routes/sources.py:32`) and require the app-level `verify_api_key` dependency (`X-API-Key` header or `api_key` query parameter, `apps/api/main.py:36`). Error bodies come from `AppError` handlers: 404 `NotFoundError`, 409 `ConflictError`, 422 `ValidationError` (`file_manager/core/errors.py:16-28`).
+All routes are under `APIRouter(prefix="/api/sources")` (`routes/sources.py:40`) and require the app-level `verify_api_key` dependency (`X-API-Key` header or `api_key` query parameter, `apps/api/main.py:48`). Error bodies come from `AppError` handlers: 404 `NotFoundError`, 409 `ConflictError`, 422 `ValidationError` (`file_manager/core/errors.py:16-28`).
 
 | Method | Endpoint | Status | Description | Request / Response |
 |---|---|---|---|---|
@@ -167,9 +169,9 @@ All routes are under `APIRouter(prefix="/api/sources")` (`routes/sources.py:32`)
 | `POST` | `/api/sources/{id}/sync` | 200 | Trigger sync for all connectors of the source | `{"status":"triggered","source_id","connector_type","minio_bucket"}`, or `{"status":"error","message":"Source is disabled"}` / "not found" |
 | `POST` | `/api/sources/{id}/events` | 200 | MinIO bucket-notification webhook | See §6.7 |
 
-`SourceRecord` fields (`_source_to_dict`, `routes/sources.py:205-252`): `id`, `name`, `source_type` (`local_filesystem` \| `minio_manual` \| `minio`), `is_manual`, `is_local`, `local_path`, `connector_type`, `config`, `connector_monitor_mode`, `connector_sync_interval_minutes`, `connector_sync_interval_seconds`, `pipeline_monitor_mode`, `pipeline_sync_interval_minutes`, `minio_bucket`, `sync_interval_minutes`, `enabled`, `last_sync_at`, `status`, `total_files`, `total_size_bytes`, `error_message`, `pipeline_ids`, `pipeline_links[{pipeline_id,monitor_mode,sync_interval_minutes}]`, `connectors[]`, `connector_count`, `created_at`, `updated_at`. The frontend `SourceRecord` type also declares `pipelines`, which the API never returns.
+`SourceRecord` fields (`_source_to_dict`, `routes/sources.py:219`): `id`, `name`, `source_type` (`local_filesystem` \| `minio_manual` \| `minio`), `is_manual`, `is_local`, `local_path`, `connector_type`, `config`, `connector_monitor_mode`, `connector_sync_interval_minutes`, `connector_sync_interval_seconds`, `pipeline_monitor_mode`, `pipeline_sync_interval_minutes`, `minio_bucket`, `sync_interval_minutes`, `enabled`, `last_sync_at`, `status`, `total_files`, `total_size_bytes`, `error_message`, `pipeline_ids`, `pipeline_links[{pipeline_id,monitor_mode,sync_interval_minutes}]`, `connectors[]`, `connector_count`, `created_at`, `updated_at`. The frontend `SourceRecord` type also declares `pipelines`, which the API never returns.
 
-Connector record fields (`_connector_to_dict`, `routes/sources.py:117-134`): `id`, `source_id`, `connector_type`, `config`, `monitor_mode`, `sync_interval_minutes`, `sync_interval_seconds`, `enabled`, `last_sync_at`, `status`, `error_message`, `created_at`, `updated_at`.
+Connector record fields (`_connector_to_dict`, `routes/sources.py:119`): `id`, `source_id`, `connector_type`, `config`, `monitor_mode`, `sync_interval_minutes`, `sync_interval_seconds`, `enabled`, `last_sync_at`, `status`, `error_message`, `created_at`, `updated_at`.
 
 `SourceCreateRequest` also accepts the legacy single-connector fields `connector_type` + `config` and the legacy `monitor_mode` / `sync_interval_minutes` pair. `source_type` is typed as a loose union, so values such as `"connector"` are accepted, but only `minio` and `minio_manual` change creation behaviour — the `local_filesystem` creation branch was removed on 2026-09-20.
 
@@ -195,14 +197,14 @@ Connector record fields (`_connector_to_dict`, `routes/sources.py:117-134`): `id
   "pipeline_monitor_mode": "live"
 }
 ```
-Response `minio_bucket` is `<MINIO_BUCKET_PREFIX>-<name>-<id[:8]>` (default prefix `source`, `settings.py:44`; `routes/sources.py:255-259`).
+Response `minio_bucket` is `<MINIO_BUCKET_PREFIX>-<name>-<id[:8]>` (default prefix `source`, `settings.py`; `routes/sources.py:277`).
 
 ---
 
 ## 6. Key Workflows
 
 ### 6.1 Source creation
-`create_source` (`routes/sources.py:277-382`) branches two ways:
+`create_source` (`routes/sources.py:303-411`) branches two ways:
 1. **Manual Upload Source** (`source_type == "minio_manual"` or `connector_type` in `manual_upload`/`minio_manual`): the bucket name is generated, `config` is stamped with `source_type: "minio_manual"` and `mode: "manual_upload"`, `connector_type` is stored as `manual_upload`, `status` starts as `synced`, and the bucket is provisioned with `ensure_bucket`. No connector row is created. The response returns before any connector handling.
 2. **NiFi Connector Source**: sources with `connectors: [...]` (or a legacy `connector_type` other than `minio`) get a bucket plus one `SourceConnector` row per entry; each `connector_type` is validated against `VALID_CONNECTOR_IDS`. Source `status` is left at the model default (`disconnected`); `minio_bucket` is always auto-generated, never supplied by the client. After the commit the source poller is registered.
 
@@ -211,7 +213,7 @@ The `local_filesystem` creation branch that used to sit between these two was un
 Name uniqueness is enforced case-sensitively on the trimmed name (409 `SOURCE_EXISTS`).
 
 ### 6.1a Source deletion
-`DELETE /api/sources/{id}` (`routes/sources.py:502-532`):
+`DELETE /api/sources/{id}` (`routes/sources.py:504`):
 1. Deletes `KnowledgeProfileSource` and `PipelineSource` rows for the source.
 2. For a local source, recursively deletes `storage/local_sources/<folder_name>` through `_force_rmtree`.
 3. Otherwise calls `src.shared.storage.delete_bucket(minio_bucket)`. `_sync_delete_bucket` (`s3_client.py:138-155`) pages `list_objects_v2`, deletes every object individually (logging a warning per object that fails), then deletes the bucket itself. Failures are logged at warning level and do not fail the request.
@@ -236,12 +238,12 @@ Verified on 2026-09-20 against a live MinIO: create → upload → delete leaves
 - **Serialisation caveat**: `updated_at` carries `onupdate=func.now()`, so SQLAlchemy expires it after an emitted UPDATE. Both `PATCH` handlers call `await db.refresh(obj)` before serialising, otherwise reading `updated_at` triggers a lazy load outside the greenlet and the request fails with `MissingGreenlet` (500). A no-op PATCH never hit this, which is why it went unnoticed.
 
 ### 6.4 Sync execution and duplicate detection
-`sync_source_from_pathway` (`core/pathway_sync.py:27-181`) iterates the source's **enabled** connectors and calls `sync_connector_via_nifi` for each; per-connector results set `connector.status` to `synced` (with `last_sync_at`) or `error` (with `error_message`). Afterwards the source's `total_files`/`total_size_bytes` are recomputed from the bucket, `status` becomes `idle`, `last_sync_at` is stamped, pipeline syncs are triggered, and the MinIO watcher is started. Poller registration is **not** re-done here; see §6.5.
+`sync_source_from_pathway` (`core/pathway_sync.py:27-184`) iterates the source's **enabled** connectors and calls `sync_connector_via_nifi` for each; per-connector results set `connector.status` to `synced` (with `last_sync_at`) or `error` (with `error_message`). Afterwards the source's `total_files`/`total_size_bytes` are recomputed from the bucket, `status` becomes `idle`, `last_sync_at` is stamped, pipeline syncs are triggered, and the MinIO watcher is started. Poller registration is **not** re-done here; see §6.5.
 
-Change detection in the connector engines is metadata-based: S3 and Azure compare the stored `remote-etag` plus object size, the web scraper and SFTP compare sizes, and the local-directory sync compares mtime + size (`pathway_sync.py:376-391`). Connector output is written under the key prefix `connectors/<connector_id>/` inside the source bucket (`nifi_sync.py:167`, `:287`), so connector files show up in the file browser under that folder. Content-level SHA-256 hashing exists further downstream in the knowledge-profile fanout (`core/universal_fanout.py:255-256`), not in the connector sync path.
+Change detection in the connector engines is metadata-based: S3 and Azure compare the stored `remote-etag` plus object size, the web scraper and SFTP compare sizes, and the local-directory sync compares mtime + size (`pathway_sync.py:394-410`). Connector output is written under the key prefix `connectors/<connector_id>/` inside the source bucket (`nifi_sync.py:167`, `:287`), so connector files show up in the file browser under that folder. Content-level SHA-256 hashing exists further downstream in the knowledge-profile fanout (`core/universal_fanout.py:802`), not in the connector sync path.
 
 ### 6.5 Automatic background polling
-- `register_source_poller(source_id)` (`pathway_sync.py:449-528`) stops any existing poller and starts a new one:
+- `register_source_poller(source_id)` (`pathway_sync.py:463`) stops any existing poller and starts a new one:
   - The **enabled connector rows decide the schedule**. A source with connector rows but none enabled stops the poller and returns (`source_poller_skipped`). A bucket-only source (marker `connector_type`, no connector rows) is also skipped — there is nothing to poll.
   - Mode: `live` when **any enabled connector** is `live` → continuous loop with a fixed 3-second interval. Otherwise scheduled.
   - Scheduled interval, in order: the smallest `sync_interval_seconds` among enabled connectors (floored at 5 s), else the smallest `sync_interval_minutes × 60`, else **5 minutes**.
@@ -251,7 +253,7 @@ Change detection in the connector engines is metadata-based: S3 and Azure compar
 - Before 2026-09-20 the mode was `source.connector_monitor_mode == "live" or any(connector is live)`. Because every new source defaulted to `live`, a connector configured as scheduled was still polled every 3 seconds and the UI's "Scheduled every 30s" was a lie. The enabled connectors now win.
 - One loop serves the whole source, so when connectors in one source have different intervals the **shortest** one applies to all of them. Splitting into per-connector pollers is the next step if a source ever mixes a 5-second and an hour-long schedule.
 - The `sync_interval_seconds` column was added on 2026-09-20 to `sources` (`connector_sync_interval_seconds`) and `source_connectors` (`sync_interval_seconds`). Both are nullable; seconds always win over minutes when set.
-- Who starts it: source create, source update, connector add/update/delete, and server startup. `apps/api/main.py:23-26` schedules `init_all_source_pollers()` in the lifespan, which registers pollers for every enabled source.
+- Who starts it: source create, source update, connector add/update/delete, and server startup. `apps/api/main.py:37` schedules `init_all_source_pollers()` in the lifespan, which registers pollers for every enabled source.
 - `_do_sync_source_from_pathway` no longer re-registers the poller at the end of every sync. It used to, which tore the poller down and rebuilt it on each tick; registration belongs to the mutation paths and to startup.
 - Additional per-source watchers: `start_minio_monitor` (bucket notification watch stream, triggers pipeline syncs on create/upload events) and `start_local_fs_monitor` (2-second mtime snapshot loop over `storage/local_sources/<folder>`, triggers pipeline syncs on change).
 - `stop_source_poller` cancels and forgets the task; it is called on source delete, on any connector pause/resume, and whenever a source is found disabled.
@@ -270,19 +272,19 @@ Because `_do_sync_source_from_pathway` already filters `c.enabled`, a paused con
 **Do not fire the per-connector PATCHes in parallel.** Each one calls `register_source_poller`, which pops and cancels the previous task and stores a new one; concurrent calls race on `_SOURCE_POLLER_TASKS` and can leave a stray task. The UI sends them sequentially.
 
 ### 6.5b Selecting the connector for a sync
-`_do_sync_source_from_pathway` (`pathway_sync.py:35-181`) prefers enabled `SourceConnector` rows. Only when there are none does it fall back to the legacy single-connector fields, and since 2026-09-20 that fallback skips the marker values `minio`, `minio_manual`, `manual_upload` and `local_filesystem`. Without that guard a freshly created NiFi source (which stores `connector_type: "minio"`) synthesised a fake connector on every 3-second tick, logged `nifi_unsupported_connector_type type=minio`, and did nothing. A source with no connectors now exits early with `pathway_sync_no_connectors`.
+`_do_sync_source_from_pathway` (`pathway_sync.py:39`) prefers enabled `SourceConnector` rows. Only when there are none does it fall back to the legacy single-connector fields, and since 2026-09-20 that fallback skips the marker values `minio`, `minio_manual`, `manual_upload` and `local_filesystem`. Without that guard a freshly created NiFi source (which stores `connector_type: "minio"`) synthesised a fake connector on every 3-second tick, logged `nifi_unsupported_connector_type type=minio`, and did nothing. A source with no connectors now exits early with `pathway_sync_no_connectors`.
 
 ### 6.5c SQLite column backfill
 `_ensure_sqlite_columns` (`src/shared/db/session.py`) adds columns that `Base.metadata.create_all` cannot add to an existing table. It covers `sources.total_files`, `sources.total_size_bytes`, `sources.error_message`, `sources.connector_sync_interval_seconds` and `source_connectors.sync_interval_seconds`.
 
-Until 2026-09-20 the helper only ran on the Postgres→SQLite fallback path, so a deployment configured with `DATABASE_URL=sqlite+aiosqlite:///storage/ingestion.db` (the value in `backend/.env`) never received new columns and every `Source` query failed with `no such column`. `init_db` now calls it on the configured-SQLite path too.
+Until 2026-09-20 the helper ran only on the automatic SQLite fallback path, which is now removed, so a `Source` query on an unreachable database no longer silently served stale rows. `init_db` calls the helper when `DATABASE_URL` names SQLite on purpose. **There is one supported database: PostgreSQL.**
 
 ### 6.6 Source ↔ pipeline linking
 - `POST /{id}/pipeline/{pipeline_id}` inserts a `PipelineSource` row with optional per-link `monitor_mode` and `sync_interval_minutes` (both may be null, meaning "inherit the source default"), then starts the MinIO monitor for the source and enqueues a sync run for the pipeline. Duplicate links raise 409 `LINK_EXISTS`.
 - `DELETE /{id}/pipeline/{pipeline_id}` removes the link and enqueues a sync run.
 - Effective pipeline mode for a link = link `monitor_mode` if set, else `source.pipeline_monitor_mode`.
 - `pipeline_ids` and `pipeline_links` are exposed on `SourceRecord`; per-link values are `None` when unset.
-- Changing the source-level `pipeline_monitor_mode` to `live` attempts to install a MinIO bucket notification pointing at `getattr(settings, "internal_api_url", "http://localhost:8000")` + `/api/sources/{id}/events` (`routes/sources.py:488-489`). `internal_api_url` is not a field on `Settings`, so the fallback `http://localhost:8000` is always used. Failures are logged and do not fail the request.
+- Changing the source-level `pipeline_monitor_mode` to `live` attempts to install a MinIO bucket notification pointing at `getattr(settings, "internal_api_url", "http://localhost:8000")` + `/api/sources/{id}/events` (`routes/sources.py:486`). `internal_api_url` is not a field on `Settings`, so the fallback `http://localhost:8000` is always used. Failures are logged and do not fail the request.
 
 ### 6.7 MinIO event ingestion (`POST /api/sources/{id}/events`)
 Webhook for MinIO/S3 bucket notifications.
@@ -298,21 +300,66 @@ Webhook for MinIO/S3 bucket notifications.
 - `total_files` and `total_size_bytes` are column-backed metrics recalculated by `_update_source_metrics` after every upload/delete file call and at the end of every source sync, then returned in `SourceRecord` and rendered on the detail page.
 
 ### 6.9 Orphaned local-source cleanup
-`_cleanup_orphaned_local_sources` (`routes/sources.py:168-190`) scans `storage/local_sources/` and deletes any child directory whose folder name does not match an active local source (folder name taken from `config.folder_name`, else `minio_bucket` with the `local-` prefix stripped). Deletion uses `_force_rmtree`, which clears the read-only bit and retries on Windows/POSIX. It runs on every `GET /api/sources` and again after a source delete; all failures are caught and logged (`logger.warning`) without failing the request.
+`_cleanup_orphaned_local_sources` (`routes/sources.py:171`) scans `storage/local_sources/` and deletes any child directory whose folder name does not match an active local source (folder name taken from `config.folder_name`, else `minio_bucket` with the `local-` prefix stripped). Deletion uses `_force_rmtree`, which clears the read-only bit and retries on Windows/POSIX. It runs on every `GET /api/sources` and again after a source delete; all failures are caught and logged (`logger.warning`) without failing the request.
 
 ---
+
+### 6.10 Per-source webscraping (`*_scrp.txt` → `.md`)
+
+A source can turn a plain URL list into pages, without a connector and without the scraper's Qdrant mode.
+
+A **manifest** is any object in the source bucket whose name ends in `_scrp.txt`. Its content is one URL
+per line. Blank lines, `#` comments and anything that does not start with `http://` or `https://` are
+ignored, a repeated URL is kept once, and a leading UTF-8 byte-order mark is dropped. At most
+`webscrape_max_seeds` (50) URLs are used per run.
+
+The flow:
+
+1. Turn the switch on and save. The scan runs at once, so a manifest already in the bucket starts without
+   waiting. `PATCH /api/sources/{id}` carries `webscrape_enabled`, `webscrape_max_depth` (0-5) and
+   `webscrape_max_pages` (1-500).
+2. Every connector sync, every manual upload and every manual delete also scans. The scan is one bucket
+   listing plus a ledger diff, so it is cheap.
+3. A scheduler pass every `webscrape_reconcile_minutes` (10) scans every source with the switch on, which
+   covers a missed event, a lost enqueue, and a run that died mid-way. A row that never reached `success`
+   or `failed` is re-enqueued on that pass, even when the manifest did not change.
+4. The enqueued job reads the manifest, purges the run folder, then crawls each URL in order and writes one
+   `.md` per crawled page plus one full-page `.png`, under `<dir>/<manifest stem>/`.
+
+The change token is the object `etag` plus its size, the same token the fanout uses. An unchanged manifest
+is not crawled again. A changed one purges the run folder and regenerates the whole set, so no page from
+an older run survives. Deleting the manifest deletes its run folder and its ledger row. Turning the switch
+off detects nothing and deletes nothing, so the pages already in the bucket stay.
+
+| Route | Answers |
+|---|---|
+| `GET /api/sources/{id}/webscrape` | `{enabled, max_depth, max_pages, manifests[]}`, where each manifest has `file_key`, `status` (`pending`/`running`/`success`/`failed`), `seeds_planned`, `pages_scraped`, `generated_keys`, `error_message`, `updated_at` |
+| `POST /api/sources/{id}/webscrape/scan` | Runs the scan now and returns `{status, queued, removed}`. Answers `422 WEBSCRAPE_DISABLED` while the switch is off |
+
+The keys written back are `page-NNNNN-<url-slug>.md` and `images/page-NNNNN-<url-slug>.png`. The fanout
+ingests the `.md` files as ordinary text and **skips the manifest and every non-`.md` object in a run
+folder**, so a URL list and a screenshot never become chunks.
+
+Two scraper-side limits shape a run. It does not embed anything: `embedding_source` is `"none"`, so no
+LiteLLM call and no write to `scrape_embeddings`. And it rejects a private or loopback seed with `400`
+unless the scraper's own `ALLOW_PRIVATE_CRAWL_URLS` is true, so a manifest of intranet URLs records one
+error per seed and writes no pages.
+
+`crawler_db` caches every crawl by seed and config, and the cache holds an absolute path to the crawl's
+links file. A crawl created by the container form of the scraper therefore fails on a host run with a
+`404` on that file. Clear `crawl_jobs`, `crawl_results` and `scrape_jobs` once after changing where the
+scraper runs. See `two_project_run.md` section 4.7.
 
 ## 7. Verification (2026-09-20)
 
 Two checks cover this page.
 
-**1. Live API walkthrough.** A throwaway script drove the running API end to end (create source → bucket in MinIO → upload → list → delete → confirm the bucket is gone from MinIO, then a NiFi source with an `s3` connector on a 30-second schedule). All 18 assertions passed. The script was deleted after use; the flow is reproducible from the `curl`/HTTP examples above.
+**1. Live API walkthrough.** A throwaway script drove the running API end to end (create source → bucket in MinIO → upload → list → delete → confirm the bucket is gone from MinIO, then a NiFi source with an `s3` connector on a 30-second schedule). The script was deleted after use; the flow is reproducible from the `curl`/HTTP examples above.
 
-**2. Unit tests.** `backend/tests/test_connector_config_validation.py` (7 cases) pins the validator contract that decides whether a connector ever syncs:
+**2. Unit tests.** `backend/tests/test_connector_config_validation.py` pins the validator contract that decides whether a connector ever syncs:
 
 ```
 cd rag-ingestion-manager/backend && uv run pytest tests -q
-# 23 passed
 ```
 
 Frontend: `npx tsc --noEmit` reports no errors and `npx vite build` succeeds.
@@ -332,10 +379,10 @@ Measured against the running API on a connector created with `monitor_mode: "sch
 | `PATCH` returns 200 for a real change | both the connector and the source PATCH return 200 with the persisted `enabled` | pass (this is the fix in §6.3) |
 | Connector bucket shows no file actions | detail page → Source Files: table headers are Name / Size / Modified only, no "Open & Visualize", no Delete | pass |
 | Manual bucket keeps Delete only | detail page → Source Files: Actions column present with Delete, no "Open & Visualize" | pass |
-| Sources page pause toggle | card button flips Pause All ⇄ Resume All, subtitle flips to "Paused — polling stopped", banner names the connector count | pass |
+| Knowledge Fabric page pause toggle | card button flips Pause All ⇄ Resume All, subtitle flips to "Paused — polling stopped", banner names the connector count | pass |
 | Detail page pause | header `Pause All Connectors`, per-connector `Pause` → `Resume`, mode line shows "Paused", badge shows `Paused` | pass |
 
-`uv run pytest tests -q` → 23 passed (14 at the time of this run; the Knowledge Products work added `test_knowledge_product_files.py`). `npx tsc --noEmit` → no errors. `npx vite build` → succeeds.
+The measured checks above all passed. `npx tsc --noEmit` → no errors. `npx vite build` → succeeds.
 
 ## 8. Known limitations
 

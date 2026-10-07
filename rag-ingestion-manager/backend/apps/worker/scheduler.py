@@ -9,6 +9,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.shared.config.settings import get_settings
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the sync scheduler (does NOT start it)."""
     from src.ingestion_service.core.sync_runner import sync_all_pipelines
+    from src.ingestion_service.core.webscrape import scan_all_webscrape_sources
     from src.ingestion_service.clients.source_sync import sync_all_enabled_sources
 
     settings = get_settings()
@@ -49,8 +51,20 @@ def create_scheduler() -> AsyncIOScheduler:
         name="Source Connector Sync (cron)",
         replace_existing=True,
     )
+
+    # The webscrape reconciler. A connector sync and a manual upload both scan the
+    # bucket, but a missed event or a lost enqueue would otherwise leave a manifest
+    # unprocessed, so one pass every few minutes closes the gap.
+    scheduler.add_job(
+        scan_all_webscrape_sources,
+        IntervalTrigger(minutes=settings.webscrape_reconcile_minutes),
+        id="webscrape_reconcile",
+        name="Source Webscrape Reconcile",
+        replace_existing=True,
+    )
     logger.info(
-        "sync_scheduler_configured trigger=%s",
+        "sync_scheduler_configured trigger=%s webscrape_reconcile_minutes=%d",
         trigger,
+        settings.webscrape_reconcile_minutes,
     )
     return scheduler

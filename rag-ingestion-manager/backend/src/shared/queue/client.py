@@ -97,3 +97,25 @@ async def dequeue_pathway_sync(timeout: int = 5) -> uuid.UUID | None:
         return None
     payload = json.loads(result[1])
     return uuid.UUID(payload["source_id"])
+
+
+async def enqueue_webscrape_job(scrape_file_id: uuid.UUID) -> None:
+    settings = get_settings()
+    client = await get_redis()
+    await client.lpush(
+        settings.webscrape_queue,
+        json.dumps({"scrape_file_id": str(scrape_file_id)}),
+    )
+
+
+async def dequeue_webscrape_job(timeout: int = 5) -> uuid.UUID | None:
+    settings = get_settings()
+    client = await get_redis()
+    try:
+        result = await client.brpop(settings.webscrape_queue, timeout=timeout)
+    except aioredis.TimeoutError:
+        return None
+    if not result:
+        return None
+    payload = json.loads(result[1])
+    return uuid.UUID(payload["scrape_file_id"])

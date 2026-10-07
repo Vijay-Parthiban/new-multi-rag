@@ -74,3 +74,25 @@ def test_crawl_service_rejects_invalid_mode(db_session):
             max_pages=5,
             crawl_mode="invalid",
         )
+
+
+def test_mark_indexing_complete_accepts_none(db_session):
+    """`none` marks neither timestamp; only a truly invalid source raises."""
+    from crawler_db.repositories.crawl_repository import CrawlRepository
+
+    service = CrawlService()
+    job = service.create_crawl_job(
+        db_session,
+        seed_url="https://example.com",
+        max_depth=1,
+        max_pages=5,
+        crawl_mode="httpx",
+    )
+
+    CrawlRepository().mark_indexing_complete(db_session, job, embedding_source="none")
+
+    assert job.markdown_indexed_at is None
+    assert job.image_indexed_at is None
+
+    with pytest.raises(ValueError, match="Invalid embedding_source"):
+        CrawlRepository().mark_indexing_complete(db_session, job, embedding_source="video")

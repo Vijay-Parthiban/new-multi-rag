@@ -27,6 +27,13 @@ class FilePage:
     record_type: str = "chunk"
     parent_ref: str | None = None
 
+    def __post_init__(self) -> None:
+        # A PDF can carry a NUL byte in its extracted text. PostgreSQL rejects a
+        # string with 0x00, so psycopg2 fails the whole insert. Strip it here,
+        # once, before any chunker or writer sees the text.
+        if self.text and "\x00" in self.text:
+            self.text = self.text.replace("\x00", "")
+
 
 def iter_file_pages(
     path: Path,

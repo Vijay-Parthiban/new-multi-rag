@@ -1,0 +1,499 @@
+{
+ "name": "ABC Insurance Policy Golden",
+ "description": "26 questions over the three ABC insurance policy wordings (home, health, motor) in the abc-kp-store knowledge product.",
+ "items": [
+  {
+   "question": "What percentage of depreciation applies to an equipment item that is up to one year old when the claim is settled under my home policy?",
+   "ground_truth_answer": "An equipment item up to one year old carries 10% depreciation.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 5
+    }
+   ],
+   "metadata": {
+    "id": "H001",
+    "question_type": "single_hop_factual",
+    "reference_context": "Age of the equipment/ Item - Depreciation Percentage: Up to 6 Months 5%, Up to 1 Year 10%, Upto 2 Years 15%.",
+    "keypoints_covered": "depreciation=10%",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Depreciation table for equipment and items."
+   }
+  },
+  {
+   "question": "What is the deductible on a claim under the equipment cover of my home policy?",
+   "ground_truth_answer": "The deductible is 5% of the claim amount, subject to a minimum of 5000 rupees.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 5
+    }
+   ],
+   "metadata": {
+    "id": "H002",
+    "question_type": "single_hop_factual",
+    "reference_context": "Deductible : 5% of claim amount subject to minimum of Rs.5000/-",
+    "keypoints_covered": "deductible=5%;minimum=5000",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Deductible clause below the depreciation table."
+   }
+  },
+  {
+   "question": "By how much does my home sum insured grow every year, and what is the ceiling on that growth?",
+   "ground_truth_answer": "The sum insured increases by 10% per annum on each policy anniversary without additional premium, up to a maximum of 100% of the sum insured at policy commencement.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 8
+    }
+   ],
+   "metadata": {
+    "id": "H003",
+    "question_type": "multi_hop_reasoning",
+    "reference_context": "We will automatically increase Your Sum Insured during the Policy Period by 10% per annum on each anniversary of Your Policy without additional premium for a maximum of 100% of the Sum Insured at the Policy Commencement Date.",
+    "keypoints_covered": "annual_growth=10%;maximum=100%",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Two numbers in one clause."
+   }
+  },
+  {
+   "question": "Within how many days does the insurer respond to a grievance that I register about my home policy?",
+   "ground_truth_answer": "The insurer aims to respond to all grievances within 7 days.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 11
+    }
+   ],
+   "metadata": {
+    "id": "H004",
+    "question_type": "procedural_howto",
+    "reference_context": "We aim to respond to all Grievances within 7 days.",
+    "keypoints_covered": "response_time=7 days",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Grievance redressal stages."
+   }
+  },
+  {
+   "question": "How much does my home policy pay for contents that I bought after the policy started, if they are lost in a burglary?",
+   "ground_truth_answer": "Newly purchased contents are paid up to 10% of the burglary/theft sum insured or 20,000 rupees, whichever is less, and the original purchase invoice is required.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 4
+    }
+   ],
+   "metadata": {
+    "id": "H005",
+    "question_type": "single_hop_factual",
+    "reference_context": "Newly purchased Contents i.e. purchased after commencement of the Policy, subject to maximum payment of 10% of the Burglary/Theft Sum Insured (as specified in the Policy Schedule) or Rs 20,000 whichever is less, duly supported by original purchase invoice/ bill.",
+    "keypoints_covered": "cap=10%;proof=invoice",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Burglary and theft add-on."
+   }
+  },
+  {
+   "question": "For how many days can my contents stay in safe custody during a temporary absence and still be covered?",
+   "ground_truth_answer": "Contents placed in safe custody stay covered for a total of 120 days in any one period of insurance.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 4
+    }
+   ],
+   "metadata": {
+    "id": "H006",
+    "question_type": "single_hop_factual",
+    "reference_context": "Contents that You have placed in safe custody during Your temporary absence from Your Home as long as the period of the placement of such Contents does not exceed a total of 120 days in any one Period of Insurance.",
+    "keypoints_covered": "days=120",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Safe custody sub-limit."
+   }
+  },
+  {
+   "question": "If my home is damaged and I have to rent another place, for how long and up to what amount does the policy reimburse the rent?",
+   "ground_truth_answer": "The cost of general contents taken on rent is reimbursed for a maximum of six months, subject to bills, up to a limit of 2 Lakhs rupees, whichever is less.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 5
+    }
+   ],
+   "metadata": {
+    "id": "H007",
+    "question_type": "multi_hop_reasoning",
+    "reference_context": "Temporary Resettlement Expenses - 1. for a maximum period of six-month cost of general contents taken on rent by the insured would be reimbursed subject to submission of bill / invoice or up a limit of Rs. 2 Lakhs whichever is less.",
+    "keypoints_covered": "period=six months",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Temporary resettlement add-on."
+   }
+  },
+  {
+   "question": "Which subsidence and landslide losses are excluded from the home building cover?",
+   "ground_truth_answer": "Losses from subsidence, land slide or rock slide are excluded, including the normal cracking, settlement or bedding down of new structures, the settlement or movement of made up ground, and coastal or river erosion.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Flexi_Home_Insurance_Wordings_382b5f7114.pdf",
+     "page": 3
+    }
+   ],
+   "metadata": {
+    "id": "H008",
+    "question_type": "single_hop_factual",
+    "reference_context": "Subsidence, Landslide, Rockslide, Avalanche - Loss, destruction or damage directly caused by Subsidence of part of the site on which the property stands or Land slide/Rock slide excluding: (a) the normal cracking, settlement or bedding down of new structures (b) the settlement or movement of made up ground (c) coastal or river erosion.",
+    "keypoints_covered": "exclusion=river erosion",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Exclusion list under the building cover."
+   }
+  },
+  {
+   "question": "What is the initial waiting period of my health policy, and which claims are not blocked by it?",
+   "ground_truth_answer": "Illness treatment within 30 days from the first policy commencement date is excluded, except claims arising due to an accident. The exclusion does not apply where the insured person has continuous coverage for more than 12 months.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 21
+    }
+   ],
+   "metadata": {
+    "id": "E001",
+    "question_type": "single_hop_factual",
+    "reference_context": "First Thirty Days Waiting Period (Code-Excl 03): Expenses related to the treatment of any Illness within 30 days from the first Policy commencement date shall be excluded except Claims arising due to an Accident. This exclusion shall not apply if the Insured Person has continuous coverage for more than 12 months.",
+    "keypoints_covered": "waiting=30 days;exception=Accident",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Initial waiting period."
+   }
+  },
+  {
+   "question": "What waiting period applies to maternity and child care claims under my health policy?",
+   "ground_truth_answer": "A waiting period of 24 months applies to all claims under the maternity and child care cover.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 21
+    }
+   ],
+   "metadata": {
+    "id": "E002",
+    "question_type": "single_hop_factual",
+    "reference_context": "Maternity and Child Care Cover - A Waiting Period of 24 months shall apply for all Claims under this benefit.",
+    "keypoints_covered": "waiting=24 months",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Waiting period on a benefit."
+   }
+  },
+  {
+   "question": "How does my health policy define a pre-existing disease?",
+   "ground_truth_answer": "A condition, ailment, injury or disease that a physician diagnosed, or for which medical advice or treatment was recommended or received, not more than 24 months before the policy commencement date.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 3
+    }
+   ],
+   "metadata": {
+    "id": "E003",
+    "question_type": "single_hop_factual",
+    "reference_context": "Pre-Existing Disease means any condition, ailment, Injury or disease: i. That is/are diagnosed by a physician not more than 24 months prior to the date of commencement of the Policy issued by the Insurer; or ii. For which Medical Advice or treatment was recommended by, or received from, a physician, not more than 24 months prior to the date of commencement of the Policy.",
+    "keypoints_covered": "period=24 months",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Definition of a pre-existing disease."
+   }
+  },
+  {
+   "question": "What is the grace period for paying the premium of my health policy?",
+   "ground_truth_answer": "The grace period is fifteen days where the premium payment mode is monthly and thirty days in all other cases.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 2
+    }
+   ],
+   "metadata": {
+    "id": "E004",
+    "question_type": "single_hop_factual",
+    "reference_context": "The Grace Period for payment of the Premium for all types of insurance policies shall be: fifteen days where Premium payment mode is monthly and thirty days in all other cases.",
+    "keypoints_covered": "monthly=15;other_cases=30",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Standard definition clause."
+   }
+  },
+  {
+   "question": "What is a co-payment under my health policy, and does it reduce the sum insured?",
+   "ground_truth_answer": "A co-payment is a cost sharing requirement where the policyholder or insured bears a specified percentage of the admissible claim amount. A co-payment does not reduce the sum insured.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 1
+    }
+   ],
+   "metadata": {
+    "id": "E005",
+    "question_type": "single_hop_factual",
+    "reference_context": "Co-Payment means a cost sharing requirement under this Policy that provides that the Policyholder/Insured will bear a specified percentage of the admissible claims amount. A co-payment does not reduce the Sum Insured.",
+    "keypoints_covered": "cost_sharing=percentage",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Definition clause."
+   }
+  },
+  {
+   "question": "Does my health policy cover AYUSH treatment, and where may that treatment be taken?",
+   "ground_truth_answer": "Yes. In-patient AYUSH treatment is covered up to the limit in the policy schedule, taken in an AYUSH hospital or an AYUSH day care centre, under Ayurveda, Yoga, Naturopathy, Unani, Siddha and Homeopathy.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 6
+    }
+   ],
+   "metadata": {
+    "id": "E006",
+    "question_type": "single_hop_factual",
+    "reference_context": "AYUSH Treatment - We will indemnify the Insured Person up to the limit specified in the Policy Schedule, for the Medical Expenses, if during the Policy Year, any of the Insured Person undergoes In-Patient Treatment or treatment taken under Ayurveda, Yoga, Naturopathy, Unani, Siddha and Homeopathy in an AYUSH Hospital or an AYUSH Day Care Centre.",
+    "keypoints_covered": "systems=Homeopathy;place=AYUSH Day Care Centre",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Optional benefit, list of systems."
+   }
+  },
+  {
+   "question": "Which documents do I submit with a hospitalization claim under my health policy?",
+   "ground_truth_answer": "A duly filled and signed claim form, the medical practitioner's referral letter advising hospitalization, a certified copy of the hospital discharge summary, certified copies of the final hospital bill, pharmacy bills and investigation bills, all original investigation reports, ambulance or cab receipts, pre and post consultation bills, and a first information report or final police report where applicable.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 26
+    }
+   ],
+   "metadata": {
+    "id": "E007",
+    "question_type": "procedural_howto",
+    "reference_context": "List of Documents for Claims: 1. Duly filled and signed Claim form 2. Medical Practitioner's referral letter advising Hospitalization 3. Certified copy of Hospital Discharge Summary 4. Certified copy of final Hospital bill, pharmacy bills, Investigation labs bills 5. All original reports of Investigations done 6. Ambulance/Cab receipt/ bill 7. Pre and Post consultation bills 8. First Information Report/ Final Police Report, if applicable.",
+    "keypoints_covered": "documents=discharge summary;documents=claim form",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Claim document list."
+   }
+  },
+  {
+   "question": "What does portability transfer from one insurer to another under my health policy?",
+   "ground_truth_answer": "Portability lets a health insurance policyholder, including all members under a family cover, transfer the credits gained for pre-existing diseases and specific waiting periods from one insurer to another insurer.",
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 3
+    }
+   ],
+   "metadata": {
+    "id": "E008",
+    "question_type": "single_hop_factual",
+    "reference_context": "Portability means a facility provided to the health insurance Policyholders (including all members under family cover), to transfer the credits gained for, Pre-Existing Diseases and Specific Waiting Periods from one Insurer to another Insurer.",
+    "keypoints_covered": "credits=specific waiting periods",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Definition clause."
+   }
+  },
+  {
+   "question": "On what basis is the IDV of my car fixed when the motor policy starts?",
+   "ground_truth_answer": "The IDV is fixed at the commencement of each policy period on the basis of the manufacturer's listed selling price of the brand and model, adjusted for depreciation.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 2
+    }
+   ],
+   "metadata": {
+    "id": "M001",
+    "question_type": "single_hop_factual",
+    "reference_context": "The IDV of the vehicle (and accessories if any fitted to the vehicle) is to be fixed on the basis of the manufacturer's listed selling price of the brand and model as the vehicle insured at the commencement of insurance/renewal and adjusted for depreciation.",
+    "keypoints_covered": "basis=manufacturer",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Insured's Declared Value."
+   }
+  },
+  {
+   "question": "What depreciation does the motor policy apply to a car that is more than six months old but not more than one year old when the IDV is fixed?",
+   "ground_truth_answer": "A vehicle that exceeds 6 months but does not exceed 1 year of age carries 15% depreciation when the IDV is fixed.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 2
+    }
+   ],
+   "metadata": {
+    "id": "M002",
+    "question_type": "single_hop_factual",
+    "reference_context": "THE SCHEDULE OF DEPRECIATION FOR FIXING IDV OF THE VEHICLE: Not exceeding 6 months 5%, Exceeding 6 months but not exceeding 1 year 15%, Exceeding 1 year but not exceeding 2 years 20%.",
+    "keypoints_covered": "depreciation=15%",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Age wise depreciation table."
+   }
+  },
+  {
+   "question": "When is my car treated as a constructive total loss under the motor policy?",
+   "ground_truth_answer": "The vehicle is treated as a constructive total loss when the aggregate cost of retrieval or repair exceeds 75% of the IDV.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 2
+    }
+   ],
+   "metadata": {
+    "id": "M003",
+    "question_type": "single_hop_factual",
+    "reference_context": "The insured vehicle shall be treated as a CTL if the aggregate cost of retrieval and / or repair of the vehicle, subject to terms and conditions of the policy, exceeds 75% of the IDV of the vehicle.",
+    "keypoints_covered": "threshold=75%",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "CTL definition."
+   }
+  },
+  {
+   "question": "What discount does my motor policy give for a claim-free year, and by when must I renew to keep it?",
+   "ground_truth_answer": "A full year with no claim made or pending earns a 20% discount on the own damage premium, and the bonus is allowed only when the policy is renewed within 90 days of the previous policy's expiry.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 4
+    }
+   ],
+   "metadata": {
+    "id": "M004",
+    "question_type": "multi_hop_reasoning",
+    "reference_context": "No claim made or pending during the full 1 year of insurance - 20% discount on Own Damage Premium. A No Claim Bonus will only be allowed if the Policy is renewed within 90 days of the expiry date of the previous policy.",
+    "keypoints_covered": "discount=20%;renewal=90 days",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "No claim bonus table and renewal rule."
+   }
+  },
+  {
+   "question": "How long does the insurer take to settle a motor claim, and what is the timeline when the surveyor report is late?",
+   "ground_truth_answer": "The claim is settled within 7 days from the intimation of the claim or the receipt of the final survey report. Where the surveyor's report is not received within 15 days, the claim is settled within 22 days from the date of intimation.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 9
+    }
+   ],
+   "metadata": {
+    "id": "M005",
+    "question_type": "procedural_howto",
+    "reference_context": "CLAIM SETTLEMENT - Within a period of 7 days from the intimation of claim or receipt of the final survey report, as the case may be. Where the Company has failed to receive the report of surveyor within the stipulated time of 15 days, in such case, the claim shall be settled within 22 days from the date of intimation of claim.",
+    "keypoints_covered": "settlement=7 days;late_report=22 days",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Claim settlement timeline."
+   }
+  },
+  {
+   "question": "What help does my motor policy give if the car breaks down on a public road?",
+   "ground_truth_answer": "For a mechanical or electrical breakdown on a public road the company arranges a repairer to attend on the spot, and tows the vehicle to the nearest repair shop or garage when the repair cannot be done there.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 12
+    }
+   ],
+   "metadata": {
+    "id": "M006",
+    "question_type": "procedural_howto",
+    "reference_context": "Towing Assistance (Mechanical & Electrical Breakdown): In the event, that the insured vehicle cannot move or run on its own power on a public road due to any mechanical or electrical breakdown, the Company shall arrange for a repairer to attend to the insured vehicle on the spot.",
+    "keypoints_covered": "breakdown=mechanical or electrical",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Roadside assistance annexure."
+   }
+  },
+  {
+   "question": "Is my car covered while I use it for racing or speed testing?",
+   "ground_truth_answer": "No. The policy does not cover use for organised racing, pace making or speed testing.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 9
+    }
+   ],
+   "metadata": {
+    "id": "M007",
+    "question_type": "single_hop_factual",
+    "reference_context": "This Policy does not cover use for organised racing, pace making, or speed testing.",
+    "keypoints_covered": "excluded=racing",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "easy",
+    "notes": "Limitation as to use."
+   }
+  },
+  {
+   "question": "Which events are covered under the own damage section of my motor policy?",
+   "ground_truth_answer": "The own damage section covers loss or damage by fire, explosion, self-ignition or lightning, burglary or theft, riot and strike, earthquake, flood, typhoon, storm, inundation, cyclone, hailstorm or frost, accidental external means, malicious act, terrorist activity, transit by road, rail, inland waterway, lift, elevator or air, and landslide or rockslide.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 1
+    }
+   ],
+   "metadata": {
+    "id": "M008",
+    "question_type": "multi_hop_reasoning",
+    "reference_context": "Loss or damage to the vehicle and/or its accessories whilst thereon i. by fire explosion self-ignition or lightning; ii. by burglary housebreaking or theft; iii. by riot and strike; iv. by earthquake (fire and shock damage); v. by flood typhoon hurricane storm tempest inundation cyclone hailstorm frost; vi. by accidental external means; vii. by malicious act; viii. by terrorist activity; ix. whilst in transit by road rail inland-waterway lift elevator or air; x. by landslide rockslide.",
+    "keypoints_covered": "peril=theft;peril=landslide",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "hard",
+    "notes": "Long enumerated cover list."
+   }
+  },
+  {
+   "question": "Between my motor policy and my health policy, which one settles a claim within 7 days of intimation?",
+   "ground_truth_answer": "The motor policy settles a claim within 7 days from the intimation of the claim or the receipt of the final survey report.",
+   "expected_sources": [
+    {
+     "name": "SBIGI_Stand_Alone_Motor_Own_Damage_Cover_For_Private_Car_Policy_Wordings_26070301_5ca42dc55e.pdf",
+     "page": 9
+    }
+   ],
+   "metadata": {
+    "id": "X001",
+    "question_type": "comparative_cross_document",
+    "reference_context": "CLAIM SETTLEMENT - Within a period of 7 days from the intimation of claim or receipt of the final survey report, as the case may be.",
+    "keypoints_covered": "policy=motor",
+    "expected_behavior": "answer_correctly",
+    "difficulty": "medium",
+    "notes": "Compares the two policies on the same question."
+   }
+  },
+  {
+   "question": "What is the premium amount that I pay for my health policy this year?",
+   "ground_truth_answer": null,
+   "expected_sources": [
+    {
+     "name": "SBI_General_Health_Alpha_Policy_Wording_New_002_a04e639c0d.pdf",
+     "page": 1
+    }
+   ],
+   "metadata": {
+    "id": "X002",
+    "question_type": "unanswerable_out_of_scope",
+    "keypoints_covered": "refusal_expected",
+    "expected_behavior": "refuse_or_abstain",
+    "difficulty": "medium",
+    "notes": "No gold answer: the corpus holds no premium figure. Retrieval metrics on this row are not meaningful."
+   }
+  }
+ ]
+}

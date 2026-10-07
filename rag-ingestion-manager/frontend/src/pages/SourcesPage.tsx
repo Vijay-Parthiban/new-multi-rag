@@ -734,10 +734,10 @@ export default function SourcesPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
         <div>
           <div style={{ fontSize: "0.8rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-            Overview &gt; Sources
+            Overview &gt; Knowledge Fabric
           </div>
           <h1 style={{ fontSize: "1.75rem", fontWeight: 800, color: "#e6edf3", margin: 0, display: "flex", alignItems: "center", gap: "0.6rem" }}>
-            <span>Data Sources</span>
+            <span>Knowledge Fabric</span>
             <span style={{ fontSize: "0.75rem", padding: "0.2rem 0.6rem", borderRadius: "999px", background: "rgba(88, 166, 253, 0.15)", color: "#58a6ff", border: "1px solid rgba(88, 166, 253, 0.3)" }}>
               2026 Engine
             </span>

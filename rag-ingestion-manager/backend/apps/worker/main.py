@@ -6,8 +6,15 @@ from src.file_manager.core.operations import run_job
 from src.file_manager.utils.paths import ensure_storage_layout
 from src.ingestion_service.core.pipeline_runner import run_pipeline_job
 from src.ingestion_service.core.sync_runner import sync_pipeline
+from src.ingestion_service.core.webscrape import run_source_scrape_job
 from src.shared.db.session import AsyncSessionLocal, close_db
-from src.shared.queue.client import close_redis, dequeue_job, dequeue_pipeline_run, dequeue_sync_run
+from src.shared.queue.client import (
+    close_redis,
+    dequeue_job,
+    dequeue_pipeline_run,
+    dequeue_sync_run,
+    dequeue_webscrape_job,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 async def worker_loop() -> None:
     ensure_storage_layout()
-    logger.info("Worker started — file_manager:jobs + ingestion:pipeline:jobs + ingestion:sync:jobs")
+    logger.info(
+        "Worker started — file_manager:jobs + ingestion:pipeline:jobs + ingestion:sync:jobs + webscrape:jobs"
+    )
 
     while True:
         handled = False
@@ -52,6 +61,17 @@ async def worker_loop() -> None:
                     logger.info("Pipeline sync %s finished", pipeline_id)
                 except Exception:
                     logger.exception("Pipeline sync %s failed", pipeline_id)
+
+        scrape_file_id = await dequeue_webscrape_job(timeout=2)
+        if scrape_file_id:
+            handled = True
+            logger.info("Processing webscrape job %s", scrape_file_id)
+            async with AsyncSessionLocal() as db:
+                try:
+                    await run_source_scrape_job(db, scrape_file_id)
+                    logger.info("Webscrape job %s finished", scrape_file_id)
+                except Exception:
+                    logger.exception("Webscrape job %s failed", scrape_file_id)
 
         if not handled:
             await asyncio.sleep(0.1)

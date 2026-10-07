@@ -1,20 +1,20 @@
-# 02 — Folders & File Browser Page
+# 02 — Fabric Viewer Page (Folders & File Browser)
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
-The sidebar item labeled **Folders** (`/browse`) covers three distinct pages that share the `/browse` URL prefix but operate on different data:
+The sidebar item labeled **Fabric Viewer** (`/browse`) covers three distinct pages that share the `/browse` URL prefix but operate on different data:
 
 | Route | Component | Data source | Purpose |
 |---|---|---|---|
-| `/browse` | `BrowsePage.tsx` | MinIO buckets belonging to configured **Sources** | Browse/list files inside a source bucket, open one, visualize or download the raw object |
+| `/browse` | `BrowsePage.tsx` | MinIO buckets belonging to configured **Knowledge Fabric** sources | Browse/list files inside a source bucket, open one, visualize or download the raw object |
 | `/browse/:name` | `DirectoryPage.tsx` | **Upload folders** (the `directories` table) | List the files of one upload folder; rename/delete files; open the file viewer |
 | `/browse/:name/view/:fileId` | `FileViewerPage.tsx` | Upload folders | Preview one synced file inside an iframe served by the backend |
 
-The nav label and the page title agree since **2026-09-23**: both read **Folders**. Before that the title was "MinIO Sources & Files Browser" while the breadcrumb read "Folders / Sources", so one page carried three names. `/browse` does **not** show upload folders; upload folders are only reachable through `/browse/:name`. In the reverse direction, `/browse/:name` does not browse MinIO buckets.
+The nav label, the page title and the breadcrumb now agree: all read **Fabric Viewer** (renamed on **2026-10-02**). Before that pass they read **Folders**, and before 2026-09-23 the title was "MinIO Sources & Files Browser" while the breadcrumb read "Folders / Sources", so one page carried three names. `/browse` does **not** show upload folders; upload folders are only reachable through `/browse/:name`. In the reverse direction, `/browse/:name` does not browse MinIO buckets.
 
-A fourth, **component-level** browser exists — `components/Sources/FileBrowser.tsx` — which is embedded in the Sources page (`SourceDetailPage`) and in the Sources list drawer. It is not mounted on any `/browse` route. It is the only surface with folder-navigation, upload and pagination controls (sections 3.5 and 6), and since 2026-09-20 it is the **only** upload surface in the frontend.
+A fourth, **component-level** browser exists — `components/Sources/FileBrowser.tsx` — which is embedded in the Knowledge Fabric page (`SourceDetailPage`) and in the Knowledge Fabric list drawer. It is not mounted on any `/browse` route. It is the only surface with folder-navigation, upload and pagination controls (sections 3.5 and 6), and since 2026-09-20 it is the **only** upload surface in the frontend.
 
 There is **no** directory-creation page and **no** directory-deletion action anywhere in the UI or API. Folder workspaces are now written only by clients that call the chunked-upload API directly; the frontend no longer has such a caller.
 
@@ -22,20 +22,20 @@ There is **no** directory-creation page and **no** directory-deletion action any
 
 ## 2. Routing
 
-Routing is split between `App.tsx` (legacy redirects only) and `AppLayout.tsx` (persistent mounting + path parsing). `App.tsx` renders only three redirect routes plus a `*` catch-all that always renders `AppLayout` (`frontend/src/App.tsx:23-27`).
+Routing is split between `App.tsx` (legacy redirects only) and `AppLayout.tsx` (persistent mounting + path parsing). `App.tsx` renders only three redirect routes plus a `*` catch-all that always renders `AppLayout` (`frontend/src/App.tsx:23-28`).
 
 | Path | Rendered by | Mechanism |
 |---|---|---|
-| `/browse` and `/directories` | `BrowsePage` | `isBrowseExact = path === "/browse" \|\| path === "/directories"` (`AppLayout.tsx:97`, mounted at `:143-145`) |
-| `/browse/:name` | `DirectoryPage` | regex `^\/browse\/([^/]+)\/?$` (`AppLayout.tsx:59`), mounted at `:161` |
-| `/directories/:name` (legacy) | `DirectoryPage` | regex only (`AppLayout.tsx:63-64`); also receives `/directories/:name/view/:fileId` and `/files/:id/view` via viewer regexes (`:50-56`) |
-| `/browse/:name/view/:fileId` | `FileViewerPage` | regex `^\/browse\/([^/]+)\/view\/([^/]+)` (`AppLayout.tsx:47`), mounted at `:166-172` |
-| `/sources/:id` | `SourceDetailPage` | regex (`AppLayout.tsx:67-68`) |
+| `/browse` and `/directories` | `BrowsePage` | `isBrowseExact = path === "/browse" \|\| path === "/directories"` (`AppLayout.tsx:103`, mounted at `:150-152`) |
+| `/browse/:name` | `DirectoryPage` | regex `^\/browse\/([^/]+)\/?$` (`AppLayout.tsx:60`), mounted at `:166-169` |
+| `/directories/:name` (legacy) | `DirectoryPage` | regex only (`AppLayout.tsx:64`); also receives `/directories/:name/view/:fileId` and `/files/:id/view` via viewer regexes (`:52`, `:56`) |
+| `/browse/:name/view/:fileId` | `FileViewerPage` | regex `^\/browse\/([^/]+)\/view\/([^/]+)` (`AppLayout.tsx:48`), mounted at `:172-178` |
+| `/sources/:id` | `SourceDetailPage` | regex (`AppLayout.tsx:68`), mounted at `:181-184` |
 | `/directories` | → redirect to `/browse` | `App.tsx:23` |
 | `/directories/:name` | → redirect to `/browse/:name` | `App.tsx:24`, `LegacyFolderRedirect` (`:4-7`) |
 | `/directories/:name/view/:fileId` | → redirect to `/browse/:name/view/:fileId` | `App.tsx:25`, `LegacyViewerRedirect` (`:9-12`) |
 
-Pages are mounted persistently and toggled with CSS (`PersistentPage`, `AppLayout.tsx:37-47`); dynamic pages are conditionally rendered from the parsed params. `DirectoryPage` and `FileViewerPage` both accept their params as props (`routeName`/`routeFileId`) and fall back to `useParams` when used outside `AppLayout` (`DirectoryPage.tsx:15-16`, `FileViewerPage.tsx:17-19`).
+Pages are mounted persistently and toggled with CSS (`PersistentPage`, `AppLayout.tsx:27-42`); dynamic pages are conditionally rendered from the parsed params. `DirectoryPage` and `FileViewerPage` both accept their params as props (`routeName`/`routeFileId`) and fall back to `useParams` when used outside `AppLayout` (`DirectoryPage.tsx:15-16`, `FileViewerPage.tsx:17-19`).
 
 Neither page runs timers unless its path is active:
 
@@ -55,8 +55,8 @@ one `.folders-*` block in `index.css`.
 
 ```
 +-----------------------------------------------------------------------+
-| Folders                                  [Refresh files][Manage sources]|
-| breadcrumb: Overview / Folders                                         |
+| Fabric Viewer                            [Refresh files][Manage sources]|
+| breadcrumb: Overview / Fabric Viewer                                   |
 +-----------------------------------------------------------------------+
 | Source bucket          [bucket icon] <bucket> [file] N files [srv] N c.|
 | MinIO source  [ <source name> (<bucket>) - N connectors v ]            |
@@ -71,7 +71,7 @@ one `.folders-*` block in `index.css`.
 +-----------------------------------------------------------------------+
 ```
 
-- Header: title **Folders** and a description in user language, with **Refresh files** (re-calls
+- Header: title **Fabric Viewer** and a description in user language, with **Refresh files** (re-calls
   `listSourceFiles` for the current source, disabled while loading) and a **Manage sources** link to
   `/sources`.
 - Source selector: `<select className="input">` of all sources from `GET /api/sources`, each option
@@ -102,9 +102,9 @@ one `.folders-*` block in `index.css`.
 
 ### 3.2 Viewer modal on `/browse`
 
-Clicking a file sets `selectedFile`, resets the view mode to `preview`, and fetches the content as text via `getSourceFileContent` (`BrowsePage.tsx:74-84`). On failure the pane shows `[Error loading file content: ...]` (`:80-82`).
+Clicking a file sets `selectedFile`, resets the view mode to `preview`, and fetches the content as text via `getSourceFileContent` (`BrowsePage.tsx:163-176`). On failure the pane shows `[Error loading file content: ...]` (`:172-174`).
 
-The modal has a fixed overlay (click outside or the close button clears the selection), a header showing the key, bucket and byte-accurate size, three tabs, and a footer (`BrowsePage.tsx:279-474`):
+The modal has a fixed overlay (click outside or the close button clears the selection), a header showing the key, bucket and byte-accurate size, three tabs, and a footer (`BrowsePage.tsx:472-744`):
 
 | Tab | Content |
 |---|---|
@@ -115,15 +115,15 @@ The modal has a fixed overlay (click outside or the close button clears the sele
 The Details table gained a **Folder** row on 2026-09-23, so the split key is visible in full. Each tab
 is a button with `aria-pressed`, an icon, and an accent `border-bottom` while active.
 
-Rendered Visualizer dispatch (`BrowsePage.tsx:411-456`), keyed on the lowercased extension:
+Rendered Visualizer dispatch (`BrowsePage.tsx:665-715`), keyed on the lowercased extension:
 
 | Extension | Rendering | URL used |
 |---|---|---|
-| `png`, `jpg`, `jpeg`, `gif`, `webp`, `svg` | `<img>` | `getSourceFileContentUrl` (direct endpoint, not the fetched text) (`:417-425`) |
-| `csv` | HTML table built by `renderCsvTable` — naive `split(",")` per line, first line as header (`:94-131`, `:427-428`) | fetched text |
-| `json` | Pretty-printed with `JSON.stringify(parsed, null, 2)`; falls back to a plain `<pre>` when parsing throws (`:431-441`) | fetched text |
-| `pdf` | `<iframe>` 60vh tall | `getSourceFileContentUrl` (`:444-451`) |
-| anything else | `MarkdownMessage content={content}` (Markdown rendering) (`:455`) | fetched text |
+| `png`, `jpg`, `jpeg`, `gif`, `webp`, `svg` | `<img>` | `getSourceFileContentUrl` (direct endpoint, not the fetched text) (`:668-669`) |
+| `csv` | HTML table built by `renderCsvTable` — naive `split(",")` per line, first line as header (`:195-224`, `:677-678`) | fetched text |
+| `json` | Pretty-printed with `JSON.stringify(parsed, null, 2)`; falls back to a plain `<pre>` when parsing throws (`:681-699`) | fetched text |
+| `pdf` | `<iframe>` 60vh tall | `getSourceFileContentUrl` (`:703-712`) |
+| anything else | `MarkdownMessage content={content}` (Markdown rendering) (`:714`) | fetched text |
 
 Footer: **Download** (anchor with a `download` attribute pointing at the content URL, with an
 `IconDownload`) and **Close**.
@@ -142,8 +142,8 @@ this page: `IconEye`, `IconCode`, `IconInfo` and `IconDownload`.
 
 ```
 +-----------------------------------------------------------------------+
-| <folder name>          [Refresh][Open viewer][Manage Sources]          |
-| breadcrumb: Overview / Folders / <folder name>                         |
+| <folder name>          [Refresh][Open viewer][Manage Knowledge Fabric]          |
+| breadcrumb: Overview / Fabric Viewer / <folder name>                   |
 +-----------------------------------------------------------------------+
 | N files                                                               |
 | Name (status badge, "Same as X" note, error) | Status | Size | Updated |
@@ -151,23 +151,23 @@ this page: `IconEye`, `IconCode`, `IconInfo` and `IconDownload`.
 +-----------------------------------------------------------------------+
 ```
 
-- Header title is the folder name; description "Files with syncing status update automatically in the background."; breadcrumbs Overview → Folders (`/browse`) → folder (`DirectoryPage.tsx:63-73`).
-- Actions: **Refresh** (`load()`), **Open viewer** (only when a file with `status === "synced"` exists; links to `/browse/{name}/view/{firstSynced.id}`), **Manage Sources** → `/sources` (`DirectoryPage.tsx:75-90`).
-- Panel toolbar shows `N file(s)` (`:100-104`).
-- Empty state: file icon, "This folder is empty", and an **Upload files** button that navigates to `/sources` (where manual-upload sources live) (`:107-117`).
-- Table columns: **Name**, **Status**, **Size**, **Updated**, and an icon-only actions header (`:126-135`). Status is rendered by `StatusBadge`, which maps `processing` → "Syncing", `synced` → "Synced", `failed` → "Failed", `duplicate` → "Duplicate" (`components/StatusBadge.tsx:1-7`). The backend statuses are `processing`, `synced`, `failed`, `deleted`, `duplicate` (`backend/src/shared/db/models.py:22-27`); `deleted` rows never reach the UI because the listing endpoint filters them out.
-- Name cell: a link to the viewer when `status === "synced"`, otherwise plain text; duplicates additionally show "Same as {duplicate_of_file_name}"; a non-duplicate failure shows `error_message` (`:141-161`).
+- Header title is the folder name; description "Files with syncing status update automatically in the background."; breadcrumbs Overview → Fabric Viewer (`/browse`) → folder (`DirectoryPage.tsx:74-78`).
+- Actions: **Refresh** (`load()`), **Open viewer** (only when a file with `status === "synced"` exists; links to `/browse/{name}/view/{firstSynced.id}`), **Manage Knowledge Fabric** → `/sources` (`DirectoryPage.tsx:79-93`).
+- Panel toolbar shows `N file(s)` (`:103-107`).
+- Empty state: file icon, "This folder is empty", and an **Upload files** button that navigates to `/sources` (where manual-upload sources live) (`:111-122`).
+- Table columns: **Name**, **Status**, **Size**, **Updated**, and an icon-only actions header (`:126-134`). Status is rendered by `StatusBadge`, which maps `processing` → "Syncing", `synced` → "Synced", `failed` → "Failed", `duplicate` → "Duplicate" (`components/StatusBadge.tsx:1-7`). The backend statuses are `processing`, `synced`, `failed`, `deleted`, `duplicate` (`backend/src/shared/db/models.py:22-27`); `deleted` rows never reach the UI because the listing endpoint filters them out.
+- Name cell: a link to the viewer when `status === "synced"`, otherwise plain text; duplicates additionally show "Same as {duplicate_of_file_name}"; a non-duplicate failure shows `error_message` (`:139-160`).
 - Row actions (`DirectoryPage.tsx:164-214`):
   - **View** — link to `/browse/{name}/view/{id}`, only for `synced`.
   - **Original** — link to the duplicate's original file, only when `status === "duplicate"` and `duplicate_of_file_id` is set.
-  - **Rename** — opens an inline input pre-filled with `original_name`, placeholder `new-name.pdf`, with **Save** and **Cancel**. Disabled when status is `processing` or `duplicate`. Renaming an empty/whitespace value is a no-op (`:46-48`, `:196-205`).
-  - **Delete** — disabled while `processing` (`:208-213`). There is no confirmation dialog on this page (unlike `FileBrowser`, section 3.5).
+  - **Rename** — opens an inline input pre-filled with `original_name`, placeholder `new-name.pdf`, with **Save** and **Cancel**. Disabled when status is `processing` or `duplicate`. Renaming an empty/whitespace value is a no-op (`:46-50`, `:180-194`).
+  - **Delete** — disabled while `processing` (`:207-213`). There is no confirmation dialog on this page (unlike `FileBrowser`, section 3.5).
 
 ### 3.4 `/browse/:name/view/:fileId` — FileViewerPage
 
-- Top bar: breadcrumb Overview → Folders → folder → filename (`FileViewerPage.tsx:87-94`) and a stats line `{synced} synced · {processing} syncing · {duplicate} duplicate` plus **Refresh** (`:96-103`).
-- Left sidebar lists every file in the folder with a status badge and size; only `synced` files are links to `/browse/{dir}/view/{id}`, all others render as static rows (`:113-138`).
-- Main panel: title = current filename, then exactly one status-dependent block (`:141-168`):
+- Top bar: breadcrumb Overview → Fabric Viewer → folder → filename (`FileViewerPage.tsx:81-88`) and a stats line `{synced} synced · {processing} syncing · {duplicate} duplicate` plus **Refresh** (`:90-95`).
+- Left sidebar lists every file in the folder with a status badge and size; only `synced` files are links to `/browse/{dir}/view/{id}`, all others render as static rows (`:100-129`).
+- Main panel: title = current filename, then exactly one status-dependent block (`:132-176`):
   - `processing` → info alert "This file is still syncing. Preview will appear when status is synced."
   - `failed` → error alert "Sync failed: {error_message ?? 'Unknown error'}"
   - `duplicate` → warning alert "Duplicate upload — not stored on disk.", "Same content as {name}", plus a **View original** link when `duplicate_of_file_id` exists
@@ -176,9 +176,9 @@ this page: `IconEye`, `IconCode`, `IconInfo` and `IconDownload`.
 - If the route has no `:name` segment, the page loads the file metadata first and replaces the URL with `/browse/{meta.directory_name}/view/{id}` (`FileViewerPage.tsx:37-43`).
 - Auth caveat: the iframe URL is built from `API_URL` with no credentials appended (`FileViewerPage.tsx:28-31`). Only `getSourceFileContentUrl` appends the `api_key` query parameter (`api.ts:1364-1370`). With `API_KEY` configured, the viewer iframe receives 401 responses.
 
-### 3.5 `FileBrowser` component (Sources page only)
+### 3.5 `FileBrowser` component (Knowledge Fabric page only)
 
-`components/Sources/FileBrowser.tsx` is a self-contained MinIO browser with props `sourceId`, `bucketName`, `files`, `onDelete`, `onError`, `onInfo`, `allowUpload` (default `false`), `allowDelete` (default `false`), `allowPreview` (default `false`) (`FileBrowser.tsx:15-34`, `:71-81`). It is not mounted by any `/browse` route; it is the file view on the Sources page and in the Sources list drawer.
+`components/Sources/FileBrowser.tsx` is a self-contained MinIO browser with props `sourceId`, `bucketName`, `files`, `onDelete`, `onError`, `onInfo`, `allowUpload` (default `false`), `allowDelete` (default `false`), `allowPreview` (default `false`) (`FileBrowser.tsx:15-34`, `:71-81`). It is not mounted by any `/browse` route; it is the file view on the Knowledge Fabric page and in the Knowledge Fabric list drawer.
 
 - Toolbar shows the bucket name plus the current `prefix`; a two-button toggle switches between **All Files (Flat)** and **Folder View** (`:301-315`).
 - Path bar: `root` button (reloads with empty prefix), one crumb per prefix segment (clicking navigates to that segment), and an `↑ up` button using `parentPrefix` (`:50-62`, `:312-355`).
@@ -191,32 +191,33 @@ this page: `IconEye`, `IconCode`, `IconInfo` and `IconDownload`.
   - **Open & Visualize** — rendered only when `allowPreview` is true; links to `/api/sources/{sourceId}/files/content?key={key}` (the content endpoint, relative to the API). No caller passes `allowPreview`, so it never shows today.
   - **Delete** — rendered only when `allowDelete` or an `onDelete` prop is set; asks `window.confirm("Delete {key} from the bucket?")` then calls the `onDelete` prop or `deleteSourceFile` (`:181-197`).
   - When neither applies the **Actions column is omitted entirely** and rows are not focusable for deletion.
-- Who passes what (2026-09-20): the Sources detail page passes `allowUpload` and `allowDelete` only for `minio_manual` and legacy local sources; the Sources drawer does the same through `canManageFiles`. A connector bucket therefore renders Name / Size / Modified with no Actions column, and a manual bucket renders Delete but not Open & Visualize.
+- Who passes what (2026-09-20): the Knowledge Fabric detail page passes `allowUpload` and `allowDelete` only for `minio_manual` and legacy local sources; the Knowledge Fabric drawer does the same through `canManageFiles`. A connector bucket therefore renders Name / Size / Modified with no Actions column, and a manual bucket renders Delete but not Open & Visualize.
 - The `/browse` **BrowsePage** is a separate surface with its own **Open** button (section 3.1). It was reworked on 2026-09-23; `FileBrowser` itself is unaffected.
 
 ---
 
 ## 4. Backend APIs & Data Contracts
 
-All routes live on the ingestion backend (`apps/api/main.py`, port 8007). **Every** route is behind `verify_api_key` (`apps/api/main.py:36`).
+All routes live on the ingestion backend (`apps/api/main.py`, port 8007). **Every** route is behind `verify_api_key` (`apps/api/main.py:48`).
 
 ### 4.1 Authentication
 
-`verify_api_key` accepts the key from the `X-API-Key` header **or** the `api_key` query parameter, and additionally allows the key to be omitted entirely when the configured key is empty (`shared-libs/platform-common/src/platform_common/auth.py:19-36`). `/health`, `/docs`, `/openapi.json` and `/redoc` bypass auth (`:11`).
+`verify_api_key` accepts the key from the `X-API-Key` header **or** the `api_key` query parameter, and additionally allows the key to be omitted entirely when the configured key is empty (`shared-libs/platform-common/src/platform_common/auth.py:19-36`). `/health`, `/docs`, `/openapi.json` and `/redoc` bypass auth (`:13`).
 
-The frontend sends `X-API-Key` on all `apiFetch` calls (`api.ts:12-14`, `:51-60`); the raw-content URL helper appends `api_key` so that `<img>`, `<iframe>` and `<a download>` requests are authenticated (`api.ts:1364-1370`). Chunk PUTs use the header (`api.ts:106-109`).
+The frontend sends `X-API-Key` on all `apiFetch` calls (`api.ts:12-14`, `:68-72`); the raw-content URL helper appends `api_key` so that `<img>`, `<iframe>` and `<a download>` requests are authenticated (`api.ts:1542-1549`).
 
 ### 4.2 MinIO source browsing
 
 | Method | Endpoint | Handler | Notes |
 |---|---|---|---|
-| `GET` | `/api/sources` | `sources.py:274` | Source list used by the selector |
-| `GET` | `/api/sources/{source_id}/files?prefix=` | `sources.py:752` | Returns `{source_id, bucket, files[]}`; MinIO listing has a 5 s timeout and degrades to an empty list on failure (`sources.py:789-802`); local-filesystem sources are listed from `storage_root()/local_sources/{folder}` (`:764-777`) |
-| `POST` | `/api/sources/{source_id}/files` | `sources.py:836` | Multipart field names accepted: `file` and/or `files` (`:847-856`). Empty MinIO upload raises `EMPTY_FILE` (`:900`). Triggers a background sync (`:904`) |
-| `DELETE` | `/api/sources/{source_id}/files?key=` | `sources.py:914` | `key` is required |
-| `GET` | `/api/sources/{source_id}/files/content?key=` | `sources.py:955` | Returns raw bytes with the media type guessed from the key; missing object → `FILE_NOT_FOUND` (404) (`:988-990`) |
+| `GET` | `/api/sources` | `sources.py:292` | Source list used by the selector |
+| `GET` | `/api/sources/{source_id}/files?prefix=` | `sources.py:823` | Returns `{source_id, bucket, files[]}`; MinIO listing has a 5 s timeout and degrades to an empty list on failure (`sources.py`); local-filesystem sources are listed from `storage_root()/local_sources/{folder}` |
+| `POST` | `/api/sources/{source_id}/files` | `sources.py:907` | Multipart field names accepted: `file` and/or `files`. Empty MinIO upload raises `EMPTY_FILE`. Triggers a background sync |
+| `DELETE` | `/api/sources/{source_id}/files?key=` | `sources.py:985` | `key` is required |
+| `GET` | `/api/sources/{source_id}/files/content?key=` | `sources.py:1026` | Returns raw bytes with the media type guessed from the key; missing object → `FILE_NOT_FOUND` (404) |
+| `POST` | `/api/sources/{source_id}/events` | `sources.py:1077` | MinIO bucket-notification webhook (see document 03, §6.7) |
 
-Source file list entry (`sources.py:797-803`, typed as `SourceFileEntry` in `api.ts:1244-1248`):
+Source file list entry (`sources.py`, typed as `SourceFileEntry` in `api.ts`):
 
 ```json
 {
@@ -285,7 +286,7 @@ or, when the hash already exists in the same folder:
 
 ## 5. Key Workflows & User Operations
 
-1. **Browse a source and preview a file** — select a source, optionally filter, click the key or **Open & Visualize**. The modal fetches text for the raw/preview panes and uses the direct content URL for images/PDF/download (`BrowsePage.tsx:74-84`, `:411-472`).
+1. **Browse a source and preview a file** — select a source, optionally filter, click the key or **Open**. The modal fetches text for the raw/preview panes and uses the direct content URL for images/PDF/download (`BrowsePage.tsx:74-84`, `:411-472`).
 2. **Open the dedicated viewer** — from a folder row (**View**) or the **Open viewer** header action; the iframe streams the stored file inline (`files.py:78-82`).
 3. **Upload into a folder** — no longer possible from the UI. The chunked-upload client (`uploadFileChunked`) was removed on 2026-09-20 with the Upload page; call the chunked-upload API directly (section 6) if a folder workspace is needed.
 4. **Rename a file** — inline input in `DirectoryPage`; optimistic UI updates when `load()` re-runs after the 202 response, so the row shows `processing` until the worker finishes (`DirectoryPage.tsx:46-56`, `storage.py:119-142`).
@@ -343,12 +344,12 @@ Stored-name rule: `unique_stored_name` = `uuid4().hex[:12] + "-" + sanitize_file
 
 | HTTP | Code | Trigger |
 |---|---|---|
-| 404 | `FILE_NOT_FOUND` | Unknown/deleted file record (`files.py:64-65`, `service.py:40`); missing MinIO object when fetching content (`sources.py:988-990`) |
+| 404 | `FILE_NOT_FOUND` | Unknown/deleted file record (`files.py:64-65`, `service.py:40`); missing MinIO object when fetching content (`sources.py`) |
 | 404 | `FILE_NOT_AVAILABLE` | `view` on a file that is not `synced` or has no `relative_path` (`files.py:71-72`) |
 | 404 | `FILE_MISSING` | `view` where the path no longer exists on disk (`files.py:75-76`) |
 | 404 | `DIRECTORY_NOT_FOUND` | Listing files of a folder that does not exist (`storage.py:33-39`) |
 | 404 | `UPLOAD_NOT_FOUND` | Unknown chunk-upload session (`chunks.py:62`, `service.py:24`) |
-| 404 | `SOURCE_NOT_FOUND` | Unknown source id on the sources endpoints (`sources.py:757-758`, `:843-844`, `:921-922`, `:962-963`) |
+| 404 | `SOURCE_NOT_FOUND` | Unknown source id on the sources endpoints (`sources.py`) |
 | 409 | `INCOMPLETE_UPLOAD` / `MISSING_CHUNK_FILE` | Completing before all chunks land (`chunks.py:85-91`, `:98-103`) |
 | 409 | `DUPLICATE_FILE` | Append result collides with another file in the folder (`duplicates.py:70-78`) |
 | 409 | `FILE_NOT_RENAMEABLE` | Rename of a `processing` or `duplicate` file (`storage.py:126-127`) |
@@ -364,5 +365,5 @@ Stored-name rule: `unique_stored_name` = `uuid4().hex[:12] + "-" + sanitize_file
 - **No maximum chunk count** and no cap on request body size in the application code.
 - **The extension blocklist was client-side only** and lived in the removed `UploadPage` (video/audio). It is gone, so files the old page rejected can now be uploaded to a source bucket; the backend blocklist (`validator.py`) still applies to the chunked-upload path.
 - **Folder creation is implicit** and **folder deletion does not exist**: `POST /api/uploads/init` creates the directory row on first use (`storage.py:21-30`), and no endpoint removes it. Deleting the last file leaves an empty folder in `/api/directories`.
-- **Source uploads bypass all of the above**: `POST /api/sources/{id}/files` writes straight to MinIO using the sanitized filename with no hashing, dedup, size or extension validation beyond multipart parsing (`sources.py:884-901`).
+- **Source uploads bypass all of the above**: `POST /api/sources/{id}/files` writes straight to MinIO using the sanitized filename with no hashing, dedup, size or extension validation beyond multipart parsing (`sources.py:907-983`).
 - **Deletes are asynchronous.** `PATCH`/`DELETE /api/files/{id}` return 202 with a job id; the UI only reflects the outcome after its next `load()` (`files.py:85-96`, `DirectoryPage.tsx:46-62`).

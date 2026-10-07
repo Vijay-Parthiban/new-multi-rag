@@ -13,10 +13,10 @@ import IngestionProfilesPage from "../pages/IngestionProfilesPage";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
-  { to: "/browse", label: "Folders", icon: IconBrowse },
-  { to: "/sources", label: "Sources", icon: IconSources },
+  { to: "/browse", label: "Fabric Viewer", icon: IconBrowse },
+  { to: "/sources", label: "Knowledge Fabric", icon: IconSources },
   { to: "/ingestion-profiles", label: "Ingestion Profiles", icon: IconIngestion },
-  { to: "/knowledge-store", label: "Knowledge Store", icon: IconDatabase },
+  { to: "/knowledge-store", label: "Knowledge Hub", icon: IconDatabase },
 ];
 
 /**

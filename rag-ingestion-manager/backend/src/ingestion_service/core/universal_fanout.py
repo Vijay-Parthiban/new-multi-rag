@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.ingestion_service.core.knowledge_events import publish
 from src.ingestion_service.core.page_yielder import FilePage, iter_file_pages
+from src.ingestion_service.core.webscrape import drop_webscrape_control_objects
 from src.ingestion_service.embeddings.client import EmbeddingClient
 from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
 from src.ingestion_service.utils.text_splitter import (
@@ -594,6 +595,10 @@ async def execute_universal_fanout_sync(
                 token = str(getattr(obj, "etag", "") or getattr(obj, "last_modified", "") or "")
                 size = int(getattr(obj, "size", 0) or 0)
                 remote[key] = (token, size, obj)
+
+        # A `*_scrp.txt` object is a URL list, not content, and its run folder holds page
+        # screenshots. Both stay out of the stores whether or not the source switch is on.
+        drop_webscrape_control_objects(remote)
 
         res = await db.execute(
             select(KnowledgeProductFile).where(

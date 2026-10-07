@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     scraper_api_url: str = "http://localhost:8000"
     scraper_api_key: str = ""
     api_key: str = ""
+    # Per-source webscraping: a `*_scrp.txt` manifest in a source bucket is crawled and
+    # one `.md` per page is written back. One scrape job per seed URL, so the job
+    # timeout bounds a single seed, not a whole manifest.
+    webscrape_poll_seconds: int = 5
+    webscrape_job_timeout_seconds: int = 1800
+    webscrape_max_seeds: int = 50
+    webscrape_reconcile_minutes: int = 10
+    webscrape_queue: str = "ingestion:webscrape:jobs"
 
     opensearch_url: str = "http://opensearch:9200"
     # OpenSearch basic auth. Empty username means no auth header is sent.

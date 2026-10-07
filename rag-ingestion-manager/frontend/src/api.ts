@@ -1374,6 +1374,9 @@ export interface SourceRecord {
   status: string;
   total_files?: number | null;
   total_size_bytes?: number | null;
+  webscrape_enabled: boolean;
+  webscrape_max_depth: number;
+  webscrape_max_pages: number;
   error_message: string | null;
   pipelines: PipelineLinkInfo[];
   connectors: SourceConnectorRecord[];
@@ -1408,6 +1411,26 @@ export interface SourceUpdateRequest {
   pipeline_monitor_mode?: "live" | "scheduled";
   pipeline_sync_interval_minutes?: number | null;
   enabled?: boolean;
+  webscrape_enabled?: boolean;
+  webscrape_max_depth?: number;
+  webscrape_max_pages?: number;
+}
+
+export interface SourceWebscrapeManifest {
+  file_key: string;
+  status: string;
+  seeds_planned: number;
+  pages_scraped: number;
+  generated_keys: string[];
+  error_message: string | null;
+  updated_at: string | null;
+}
+
+export interface SourceWebscrapeStatus {
+  enabled: boolean;
+  max_depth: number;
+  max_pages: number;
+  manifests: SourceWebscrapeManifest[];
 }
 
 export interface ConnectorCreateRequest {
@@ -1462,6 +1485,16 @@ export async function updateSource(sourceId: string, body: SourceUpdateRequest):
 
 export async function deleteSource(sourceId: string): Promise<void> {
   await apiFetch(`/api/sources/${sourceId}`, { method: "DELETE" });
+}
+
+export async function getSourceWebscrape(sourceId: string): Promise<SourceWebscrapeStatus> {
+  return apiFetch<SourceWebscrapeStatus>(`/api/sources/${sourceId}/webscrape`);
+}
+
+export async function scanSourceWebscrape(
+  sourceId: string,
+): Promise<{ status: string; queued: number; removed: number }> {
+  return apiFetch(`/api/sources/${sourceId}/webscrape/scan`, { method: "POST" });
 }
 
 export async function addSourceConnector(

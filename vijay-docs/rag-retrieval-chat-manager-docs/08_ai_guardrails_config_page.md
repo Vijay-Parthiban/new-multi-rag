@@ -1,17 +1,17 @@
 # 08 — Guard Config Page
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-10-02
 
 **Sidebar label:** Guard Config · **Route:** `/guardrails/config` · **Component:** `frontend/src/pages/GuardrailsConfigPage.tsx` · **In-page `<h1>`:** "Guard Configuration"
 
-(Navigation entry and mount: `components/AppLayout.tsx:33,128,213`; page title `GuardrailsConfigPage.tsx:633`.)
+(Navigation entry and mount: `components/AppLayout.tsx:32,129,215`; page title `GuardrailsConfigPage.tsx:647`.)
 
 ## 1. Executive Summary & Page Purpose
-The **Guard Config Page** creates, edits, enables/disables and deletes `GuardrailsConfig` rows (table `guardrails_configs`, `rag_db/models/guardrails.py:13-26`). Each row selects a subset of the validators that `guardrails-service` exposes, the chat phases it applies to (`input`, `output`, `both`), and the parameters of every selected validator. The same rows are what Chat applies when a request carries `guardrails_config_id` (`routes/chat.py:24,379,431,528,612`) and what the Guard Evaluation page scores against (`routes/guardrails_evaluate.py:253-375`).
+The **Guard Config Page** creates, edits, enables/disables and deletes `GuardrailsConfig` rows (table `guardrails_configs`, `rag_db/models/guardrails.py:13-26`). Each row selects a subset of the validators that `guardrails-service` exposes, the chat phases it applies to (`input`, `output`, `both`), and the parameters of every selected validator. The same rows are what Chat applies when a request carries `guardrails_config_id` (`routes/chat.py:30, 464, 517, 643, 733`) and what the Guard Evaluation page scores against (`routes/guardrails_evaluate.py:253-375`).
 
-The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **3 validators**. Only `guardrails-service/config.py` (`_VALIDATORS`) defines that list, so there is no second copy of it in the repository.
+The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **3 validators**: `ban_list`, `detect_pii` and `toxic_language`. Only `guardrails-service/config.py` (`_VALIDATORS`) defines that list, so there is no second copy of it in the repository.
 
-A failing validator **blocks** the turn: the answer is replaced with fixed copy from `GUARD_BLOCK_COPY` (`routes/chat.py:118-139`) rather than being redacted. A transport or configuration problem does **not** block. The client reports such a problem as `validation_passed: true` plus an `error`, and the trace records it (`rag_shared/guardrails_client.py:62-121`).
+A failing validator **blocks** the turn: the answer is replaced with fixed copy from `GUARD_BLOCK_COPY` (`routes/chat.py:159-176`) rather than being redacted. A transport or configuration problem does **not** block. The client reports such a problem as `validation_passed: true` plus an `error`, and the trace records it (`rag_shared/guardrails_client.py:62-121`).
 
 ---
 
@@ -19,14 +19,14 @@ A failing validator **blocks** the turn: the answer is replaced with fixed copy 
 
 ```
 +----------------------------------------------------------------------------------+
-|  Chat request carrying guardrails_config_id        (routes/chat.py:24)            |
+|  Chat request carrying guardrails_config_id        (routes/chat.py:30)            |
 +-----------------------------------+----------------------------------------------+
                                     v
 +----------------------------------------------------------------------------------+
-|  _run_guardrails(config_id, phase, text)           (routes/chat.py:295-353)      |
+|  _run_guardrails(config_id, phase, text)           (routes/chat.py:352-411)      |
 |  1. load the GuardrailsConfig row from guardrails_configs                        |
 |  2. mode gate: "input" -> input phase only, "output" -> output phase only,        |
-|     "both" -> both phases                          (routes/chat.py:320-325)      |
+|     "both" -> both phases                          (routes/chat.py:376-379)      |
 |  3. POST {guardrails_url}/validate                                               |
 |     body: {"text": text, "phase": phase,                                         |
 |            "validators": [{"id": ..., "params": {...}, "on_fail": ...}, ...]}     |
@@ -37,8 +37,8 @@ A failing validator **blocks** the turn: the answer is replaced with fixed copy 
 |  results keyed by validator id: {"validation_passed": bool,                      |
 |                                  "error": str|null, "detail": str|null}           |
 |                                    (guardrails-service/config.py)         |
-|  any validation_passed == false -> turn is blocked (guardrails_client.py:123-128) |
-|  a guardrails_traces row is written for every phase run (routes/chat.py:335-345)  |
+|  any validation_passed == false -> turn is blocked (guardrails_client.py:126) |
+|  a guardrails_traces row is written for every phase run (routes/chat.py:385-394)  |
 +----------------------------------------------------------------------------------+
 ```
 
@@ -125,7 +125,7 @@ Exactly three options exist (`config.py`). `on_fail` sits beside the parameters 
 
 These four endpoints are the whole surface of the service. `guardrails-service/pyproject.toml:6-27` lists `guardrails-ai` and the validator packages.
 
-`POST /validate` rejects an empty validator list and a bad parameter with HTTP 422 and a readable message (`server.py:77-87`). A parameter error comes from `coerce_params` (`config.py`), for example `Ban List: 'Keywords' is required` (`config.py`). The reply is keyed by validator id and also carries `blocked`, `blocked_by` and `phase` (`config.py`).
+`POST /validate` rejects an empty validator list and a bad parameter with HTTP 422 and a readable message (`server.py:77-87`). A parameter error comes from `coerce_params` (`config.py`), for example `Ban List: 'Banned words' is required` (`config.py`). The reply is keyed by validator id and also carries `blocked`, `blocked_by` and `phase` (`config.py`).
 
 ### Why the validators are real packages now
 The old `config.py` imported `BanList`, `DetectPII` and `ToxicLanguage` from `guardrails.hub` inside a `try` / `except ImportError`, with hand-written fallbacks. No Hub validator was ever installed, so the fallbacks always ran. Two of them were wrong:
@@ -133,7 +133,7 @@ The old `config.py` imported `BanList`, `DetectPII` and `ToxicLanguage` from `gu
 - The fallback `ToxicLanguage.validate` always returned `PassResult()`. The toxic-language guard could never block anything. A live check before the fix proved it: the old service reported `validation_passed: true` for the sentence "You are an idiot and I hope you fail completely."
 - The fallback `DetectPII` was four regular expressions (email, phone, US SSN, IPv4). It missed `4111 1111 1111 1111`, a card number with spaces, and it never found names or locations.
 
-The service now installs the two packaged validators from public PyPI as `guardrails-ai-<name>`. The `guardrails hub install` CLI and its private registry are deprecated, and the `from guardrails.hub import X` shim is scheduled for removal (`config.py`, `pyproject.toml`).
+The service now installs the two packaged validators from public PyPI as `guardrails-ai-<name>`. `pyproject.toml` still lists the packages for the removed validators, so the image installs more Hub packages than the catalogue lists. The `guardrails hub install` CLI and its private registry are deprecated, and the `from guardrails.hub import X` shim is scheduled for removal (`config.py`, `pyproject.toml`).
 
 ### Deployment
 - `guardrails-service/Dockerfile:25-36` downloads the spaCy model `en_core_web_sm` (12 MB) and rewrites Presidio's `conf/default.yaml` from `en_core_web_lg` (590 MB) to the small model. The build fails if Presidio stops pinning the large model.
@@ -141,7 +141,7 @@ The service now installs the two packaged validators from public PyPI as `guardr
 - `rag-ingestion-manager/docker-compose.yaml:306-317` builds the service from `../guardrails-service`, maps port `18000` to `8000`, reads `rag-ingestion-manager/.env.guardrails`, and sets `extra_hosts: host.docker.internal:host-gateway` so the judge reaches LiteLLM on the host.
 - `rag-ingestion-manager/.env.guardrails:7-12` sets `LITELLM_BASE_URL`, `LLM_API_KEY`, `GUARDRAIL_LLM_MODEL=Gpt-oss-20b` and `GUARDRAIL_LLM_MAX_TOKENS=512`.
 
-The judge models are reasoning models. At `max_tokens=160` they return an empty body and the judge fails. At 512 they answer correctly in 1–3 s. `Gpt-oss-20b` measured 18/18 correct across six texts. `Gpt-oss-120b` measured 8–105 s and timed out, so do not select it. The code default is `Gpt-oss-120b` (`config.py`) and the deployment overrides it to `Gpt-oss-20b` (`.env.guardrails:9`).
+The judge models are reasoning models. At `max_tokens=160` they return an empty body and the judge fails. At 512 they answer correctly in 1–3 s. `Gpt-oss-20b` measured 18/18 correct across six texts. `Gpt-oss-120b` measured 8–105 s and timed out, so do not select it. The code default is `Gpt-oss-20b` (`config.py`) and the deployment sets the same value (`.env.guardrails:10`).
 
 ---
 
@@ -178,26 +178,26 @@ The judge models are reasoning models. At `max_tokens=160` they return an empty 
 |  │ Production Safety                                   [ Active ]            │   |
 |  │ Mode: both                                                                 │  |
 |  │ Guards: [ Ban List ] [ PII Detection ]                                     │  |
-|  │   Keywords: drop table, internal_only                                      │  |
+|  │   Banned words: drop table, internal_only                                  │  |
 |  │   PII types: Email Address, US SSN                                         │  |
 |  │                      [ Disable ] [ Edit ] [ Delete ]                       │  |
 |  └────────────────────────────────────────────────────────────────────────────┘  |
 +----------------------------------------------------------------------------------+
 ```
 
-- The page loads `listAvailableGuards()`, `listGuardrailsConfigs()` and `listGuardOnFailOptions()` in parallel with `Promise.allSettled` (`GuardrailsConfigPage.tsx:443-477`). There is no `active_only` filter in the UI. A catalog failure shows a "Could not load the validator catalog." panel with a Retry button (`GuardrailsConfigPage.tsx:642-653`).
-- The form is **progressive disclosure**. It splits into a validator picker on the left (`gr-form-split` / `gr-form-picker`, `GuardrailsConfigPage.tsx:676-717`) and a settings pane on the right (`gr-form-settings`, `GuardrailsConfigPage.tsx:718-780`). Only a **selected** validator gets a settings panel, so a config with two guards shows two panels, not sixteen. The section headers carry live counts: total validators (`:680-681`) and selected validators (`:720-721`).
-- Validators are grouped by `category` in the order the catalog returns them (`GuardrailsConfigPage.tsx:611-621,684-716`). Each category header carries its own count (`:686-689`).
+- The page loads `listAvailableGuards()`, `listGuardrailsConfigs()` and `listGuardOnFailOptions()` in parallel with `Promise.allSettled` (`GuardrailsConfigPage.tsx:452`). There is no `active_only` filter in the UI. The page renders **two** error panels, each with a Retry button: a catalog failure shows "Could not load the validator catalog." (`:663`), and a config-list failure shows "Could not load the saved configurations." (`:846`).
+- The form is **progressive disclosure**. It splits into a validator picker on the left (`gr-form-split` / `gr-form-picker`, `GuardrailsConfigPage.tsx:697`) and a settings pane on the right (`gr-form-settings`, `GuardrailsConfigPage.tsx:747`). Only a **selected** validator gets a settings panel, so a config with two guards shows two panels, not sixteen. The section headers carry live counts: total validators and selected validators (`GuardrailsConfigPage.tsx`).
+- Validators are grouped by `category` in the order the catalog returns them (`GuardrailsConfigPage.tsx`). Each category header carries its own count.
 - A picker row is a **two-line checkbox chip** (`gr-picker-chip`): the label and a `kind` tag (`local`, `model` or `llm`) on the first line, the validator's own `description` from the catalog on the second (`GuardrailsConfigPage.tsx`). The description used to be a `title` tooltip only, which hid the one line that says what the check does; it is now always visible, and it joins the checkbox's accessible name so a screen reader reads it too. A validator the service reports as unavailable renders with `gr-picker-chip--unavailable`, is disabled, and its description line carries `unavailable_reason` instead. The picker shows no `phase` tag — the phase appears in the settings panel that the validator opens.
-- The settings pane lists one `gr-setting-card` per selected validator (`GuardrailsConfigPage.tsx:733-779`). The card head carries the label, the `phase` tag and a `Remove` button (`:735-750`), which is the same toggle as deselecting the chip.
-- With nothing selected the pane shows an empty state that points at the picker ("Pick one on the left. Its options appear here.") rather than rendering a blank column (`GuardrailsConfigPage.tsx:725-731`).
-- One `ParamField` component renders every parameter. It switches on `param.type` and supports `string`, `text`, `integer`, `number`, `boolean`, `string_list` and `select` (`GuardrailsConfigPage.tsx:318-424`). No code in the form checks a validator id.
-- A `string_list` parameter with no `options` renders a free-text chip picker. A `string_list` parameter with `options` renders a chip picker over those options (`ItemPicker`, `GuardrailsConfigPage.tsx:34-213`; used at `:751-757`). That is how the keywords and the PII types are entered.
-- One `on_fail` select sits in every settings panel, labelled "Action when the text fails", filled from `GET /guardrails/on-fail-options` (`GuardrailsConfigPage.tsx:760-775`). Three options are in the list, so the control is a select, not a slider. A `FALLBACK_ON_FAIL` list keeps the form usable when that endpoint is down (`:218-237`).
-- Client-side save rules: a name is required, at least one guard must be selected, and every `required` parameter must have a value (`GuardrailsConfigPage.tsx:258-264,533-551`). The Create/Update button stays disabled otherwise (`GuardrailsConfigPage.tsx:804-813`). A missing required parameter shows `Give "<label>" a value (<guard label>).` (`GuardrailsConfigPage.tsx:548-550`).
-- Selecting a guard seeds its parameters from the catalog defaults and `on_fail: "noop"` (`seedParams`, `GuardrailsConfigPage.tsx:252-256`). Deselecting removes the entry, so `buildSettings()` never sends stale values (`GuardrailsConfigPage.tsx:270-287,492-506`).
-- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx:602-609,873-881`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx:516-532`), `Delete` opens a confirmation dialog then issues `DELETE /configs/{id}`. The dialog reuses the app's shared modal shell (`.modal-overlay` / `.modal-panel` / `.modal-header` / `.modal-body` / `.modal-footer`) with `role="alertdialog"`, names the config being removed, and focuses nothing else. A native `confirm()` came before it: it cannot be themed, it reads as a browser dialog rather than part of the page, and it blocks the whole tab.
-- A card shows a parameter row only when the value differs from the catalog default. A guard with all defaults shows "Default settings", and a guard id that is not in the catalog shows "Not in the catalog" (`GuardrailsConfigPage.tsx:288-316,854-871`).
+- The settings pane lists one `gr-setting-card` per selected validator (`GuardrailsConfigPage.tsx`). The card head carries the label, the `phase` tag and a `Remove` button (`GuardrailsConfigPage.tsx`), which is the same toggle as deselecting the chip.
+- With nothing selected the pane shows an empty state that points at the picker ("Pick one on the left. Its options appear here.") rather than rendering a blank column (`GuardrailsConfigPage.tsx`).
+- One `ParamField` component renders every parameter. It switches on `param.type` and supports `string`, `text`, `integer`, `number`, `boolean`, `string_list` and `select` (`GuardrailsConfigPage.tsx:319`). No code in the form checks a validator id.
+- A `string_list` parameter with no `options` renders a free-text chip picker. A `string_list` parameter with `options` renders a chip picker over those options (`ItemPicker`, `GuardrailsConfigPage.tsx:35`; used in the settings pane). That is how the keywords and the PII types are entered.
+- One `on_fail` select sits in every settings panel, labelled "Action when the text fails", filled from `GET /guardrails/on-fail-options` (`GuardrailsConfigPage.tsx`). Three options are in the list, so the control is a select, not a slider. A `FALLBACK_ON_FAIL` list keeps the form usable when that endpoint is down (`:219`).
+- Client-side save rules: a name is required, at least one guard must be selected, and every `required` parameter must have a value (`GuardrailsConfigPage.tsx:545-563`). The Create/Update button stays disabled otherwise (`GuardrailsConfigPage.tsx`). A missing required parameter shows `Give "<label>" a value (<guard label>).` (`GuardrailsConfigPage.tsx:554`).
+- Selecting a guard seeds its parameters from the catalog defaults and `on_fail: "noop"` (`seedParams`, `GuardrailsConfigPage.tsx:253`). Deselecting removes the entry, so `buildSettings()` never sends stale values (`GuardrailsConfigPage.tsx:271,496`).
+- Card actions: `Disable`/`Enable` issues `PUT /configs/{id}` with `{"is_active": !c.is_active}` (`GuardrailsConfigPage.tsx`), `Edit` re-fills the form (`GuardrailsConfigPage.tsx`), `Delete` opens a confirmation dialog then issues `DELETE /configs/{id}`. The dialog reuses the app's shared modal shell (`.modal-overlay` / `.modal-panel` / `.modal-header` / `.modal-body` / `.modal-footer`) with `role="alertdialog"`, names the config being removed, and focuses nothing else. A native `confirm()` came before it: it cannot be themed, it reads as a browser dialog rather than part of the page, and it blocks the whole tab.
+- A card shows a parameter row only when the value differs from the catalog default. A guard with all defaults shows "Default settings", and a guard id that is not in the catalog shows "Not in the catalog" (`GuardrailsConfigPage.tsx`).
 - The config grid uses **bounded** tracks, `repeat(auto-fill, minmax(340px, 460px))` with `justify-content: start` (`index.css` `.gr-config-grid`). Unbounded `1fr` tracks stretched a short summary into a sparse full-width card; plain `auto-fill` reserved empty tracks and left half the row blank when only one or two configs exist.
 - There is no "Save Policy", no default-policy selector and no threshold sliders.
 
@@ -230,7 +230,7 @@ now reads 3.
 
 ## 4. Backend APIs & Contracts
 
-Router: `routes/guardrails.py`, prefix `/guardrails` (mounted at the RAG API root, `rag_api/main.py:83`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:8`). All routes require the global API key (header `X-API-Key` or `api_key` query parameter).
+Router: `routes/guardrails.py`, prefix `/guardrails` (mounted at the RAG API root, `rag_api/main.py:83`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`). All routes require the global API key (header `X-API-Key` or `api_key` query parameter).
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
@@ -244,7 +244,7 @@ Router: `routes/guardrails.py`, prefix `/guardrails` (mounted at the RAG API roo
 
 Field lines: `routes/guardrails.py:230,256,262,294,307,321,361`.
 
-`GET /guardrails/guards` proxies the service catalog and caches it for 60 s (`routes/guardrails.py:29-59`). If the service is briefly down it serves the stale copy instead of failing. Without a cached copy it returns `503`. Each entry carries `category`, `phase`, `kind`, `available`, `unavailable_reason`, `params` and the legacy fields `items_key`, `items_label`, `allow_custom`, `options` (`routes/guardrails.py:157-172,230-254`). `config_name` in a trace resolves to `"No config"` when the trace has no config id and `"Deleted"` when the config row is gone (`routes/guardrails.py:392-402`).
+`GET /guardrails/guards` proxies the service catalog and caches it for 60 s (`routes/guardrails.py:33-59`). If the service is briefly down it serves the stale copy instead of failing. Without a cached copy it returns `503`. Each entry carries `category`, `phase`, `kind`, `available`, `unavailable_reason`, `params` and the legacy fields `items_key`, `items_label`, `allow_custom`, `options` (`routes/guardrails.py:157-172,230-254`). `config_name` in a trace resolves to `"No config"` when the trace has no config id and `"Deleted"` when the config row is gone (`routes/guardrails.py:392-402`).
 
 ### `GuardOption` and `GuardParam`
 `GuardParam` is `name`, `type`, `label`, `help`, `required`, `default`, `options`, `min`, `max` (`routes/guardrails.py:145-155`). `GuardOption` is `id`, `label`, `description`, `category`, `phase`, `kind`, `available`, `unavailable_reason`, `params`, plus the legacy `items_key`, `items_label`, `allow_custom`, `options` (`routes/guardrails.py:157-172`).
@@ -263,7 +263,7 @@ Field lines: `routes/guardrails.py:230,256,262,294,307,321,361`.
 - The retired guard id from before the catalog existed is renamed to `detect_pii` on read and on write (`rag_shared/guardrails_client.py:12`, `routes/guardrails.py:424,272,333,347`).
 - The upgrade runs on read and on write, so **no database migration was needed**. The column is JSONB (`rag_db/models/guardrails.py:20`).
 - Only selected guards keep an entry, and every entry gets an explicit `on_fail` (default `noop`) (`routes/guardrails.py:184-198`).
-- Every save is checked by the service through `POST /validate-config` before it is stored (`routes/guardrails.py:200-228`). A bad parameter returns HTTP 422 with the service message, for example `Ban List: 'Keywords' is required`. An unreachable service returns `503`.
+- Every save is checked by the service through `POST /validate-config` before it is stored (`routes/guardrails.py:200-228`). A bad parameter returns HTTP 422 with the service message, for example `Ban List: 'Banned words' is required`. An unreachable service returns `503`.
 - `ConfigCreateRequest`: `name` (required), `description?`, `guards` (required, catalog ids), `mode` (default `"both"`), `settings` (defaults to `{}`) (`routes/guardrails.py:75-81`). There is no `is_default` field — activation is the separate `is_active` boolean (default `true`, `rag_db/models/guardrails.py:22`).
 - Validation (`422`): `mode not in {input, output, both}` (`routes/guardrails.py:268`). An empty `guards` list gives "Select at least one guard" (`:270`). An id outside the catalog gives "Unknown guard: X" (`:274-276`). A missing required parameter or a rejected value is reported by the service (`:200-228`).
 - `ConfigUpdateRequest`: every field optional — `name`, `description`, `guards`, `mode`, `is_active`, `settings`. On update the settings are re-normalized against the resulting guard list (`routes/guardrails.py:321-359`).
@@ -290,14 +290,14 @@ Field lines: `routes/guardrails.py:230,256,262,294,307,321,361`.
 
 ## 5. Where Guard Configs Apply During Chat
 
-- `ChatRequest.guardrails_config_id` (`uuid | None`) is the only switch. When it is absent no guardrail check runs (`routes/chat.py:24`).
-- `_run_guardrails()` loads the config by id, returns immediately if the id does not resolve, skips the phase that `mode` excludes, calls `run_guardrails_check(text, cfg.guards, guardrails_url, timeout_s, settings=cfg.settings)` and writes a `guardrails_traces` row for every phase it does run (`routes/chat.py:295-353`).
-- Non-streaming `/chat`: input phase check before the pipeline call (`routes/chat.py:378-389`), output phase check on the generated answer (`routes/chat.py:430-443`).
-- Streaming `/chat/stream`: emits `{"type": "status", "message": "Checking guardrails..."}` before the input check and, on a block, a `blocked` SSE payload plus a `session` event with `route: "blocked"` (`routes/chat.py:527-560`). The output check runs on the final answer (`routes/chat.py:611-624,655-659`).
-- On a block the answer becomes `GUARD_BLOCK_COPY[guard][phase]` (`routes/chat.py:118-139`), latency is stamped `route="blocked"`, `blocked=True`, `blocked_by_guard`, `blocked_on` (`routes/chat.py:142-148`), the turn is persisted with metrics skipped, and OTEL span attributes `guardrails.config_id`, `guardrails.{phase}.blocked`, `guardrails.{phase}.blocked_by` are set (`routes/chat.py:347-351`).
+- `ChatRequest.guardrails_config_id` (`uuid | None`) is the only switch. When it is absent no guardrail check runs (`routes/chat.py:30`).
+- `_run_guardrails()` loads the config by id, returns immediately if the id does not resolve, skips the phase that `mode` excludes, calls `run_guardrails_check(text, cfg.guards, guardrails_url, timeout_s, settings=cfg.settings)` and writes a `guardrails_traces` row for every phase it does run (`routes/chat.py:352-411`).
+- Non-streaming `/chat`: input phase check before the pipeline call (`routes/chat.py:465-473`), output phase check on the generated answer (`routes/chat.py:518-527`).
+- Streaming `/chat/stream`: emits `{"type": "status", "message": "Checking guardrails..."}` before the input check (`routes/chat.py:644`) and, on a block, a `blocked` SSE payload plus a `session` event with `route: "blocked"` (`routes/chat.py:654-675`). The output check runs on the final answer (`routes/chat.py:734-743`).
+- On a block the answer becomes `GUARD_BLOCK_COPY[guard][phase]` (`routes/chat.py:159-179`), latency is stamped `route="blocked"`, `blocked=True`, `blocked_by_guard`, `blocked_on` (`routes/chat.py:183-187`), the turn is persisted with metrics skipped, and OTEL span attributes `guardrails.config_id`, `guardrails.{phase}.blocked`, `guardrails.{phase}.blocked_by` are set (`routes/chat.py:404-408`).
 
 ### Implementation notes (verified in the working tree)
-- Config guard ids are the catalog ids (`ban_list`, `detect_pii`, `toxic_language`, ...). The client renames the legacy PII guard id to `detect_pii` before it builds the request (`rag_shared/guardrails_client.py:12,91-92`), so a config written before the catalog existed keeps working.
-- A non-200 from the service becomes `{"validation_passed": true, "error": "HTTP <code>", "detail": <body>}` (`rag_shared/guardrails_client.py:62-121`). A validator with no result in the response gets `"validator missing from the response"` as its `error` (`rag_shared/guardrails_client.py:113-118`). Both fail open rather than blocking every chat turn.
-- `GUARD_BLOCK_COPY` is keyed by the three original guard ids (`routes/chat.py:118-134`). Its PII entry still carries the id that the catalog retired, so a block by `detect_pii` falls back to the generic sentence `"<Phase> blocked by guardrail: detect_pii."` from `_blocked_answer` (`routes/chat.py:137-139`). The block itself is correct. Only the friendly message is generic.
-- `settings.guardrails_url` defaults to `http://localhost:18000` and `settings.guardrails_timeout_s` defaults to `15.0` (`rag_shared/config.py:33-36`). The timeout rose from 5.0 s because each LLM judge needs about a second.
+- Config guard ids are the catalog ids (`ban_list`, `detect_pii`, `toxic_language`, ...). The client renames the legacy PII guard id to `detect_pii` before it builds the request (`rag_shared/guardrails_client.py:12,80`), so a config written before the catalog existed keeps working.
+- A non-200 from the service becomes `{"validation_passed": true, "error": "HTTP <code>", "detail": <body>}` (`rag_shared/guardrails_client.py:62-121`). A validator with no result in the response gets `"validator missing from the response"` as its `error` (`rag_shared/guardrails_client.py:118`). Both fail open rather than blocking every chat turn.
+- `GUARD_BLOCK_COPY` is keyed by the three current guard ids: `ban_list`, `detect_pii` and `toxic_language` (`routes/chat.py:159-176`). A block by any of them returns its own friendly copy from `_blocked_answer` (`routes/chat.py:178-180`). The retired PII id is renamed to `detect_pii` before the lookup, so the block text is correct.
+- `settings.guardrails_url` defaults to `http://localhost:18000` and `settings.guardrails_timeout_s` defaults to `15.0` (`rag_shared/config.py:51,54`). The timeout rose from 5.0 s because each LLM judge needs about a second.

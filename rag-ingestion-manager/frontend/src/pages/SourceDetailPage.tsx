@@ -23,13 +23,17 @@ import type {
   SourceConnectorRecord,
   SourceFileEntry,
   SourceRecord,
+  SourceWebscrapeStatus,
 } from "../api";
 import {
   ApiError,
   addSourceConnector,
   deleteSourceConnector,
   getSource,
+  getSourceWebscrape,
   listSourceFiles,
+  scanSourceWebscrape,
+  updateSource,
   updateSourceConnector,
 } from "../api";
 
@@ -118,6 +122,17 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
   });
   const [savingConnector, setSavingConnector] = useState(false);
 
+  // Per-source webscraping. The form holds the user's edits; `webscrape` holds the
+  // server state of each detected manifest.
+  const [webscrape, setWebscrape] = useState<SourceWebscrapeStatus | null>(null);
+  const [webscrapeForm, setWebscrapeForm] = useState({
+    enabled: false,
+    maxDepth: 0,
+    maxPages: 50,
+  });
+  const [savingWebscrape, setSavingWebscrape] = useState(false);
+  const [scanningWebscrape, setScanningWebscrape] = useState(false);
+
   const fetchSource = async () => {
     if (!id) return;
     try {
@@ -139,6 +154,61 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     }
   };
 
+  const fetchWebscrape = async (seedForm = false) => {
+    if (!id) return;
+    try {
+      const data = await getSourceWebscrape(id);
+      setWebscrape(data);
+      // The 20 s poll must not overwrite edits the user has not saved yet.
+      if (seedForm) {
+        setWebscrapeForm({
+          enabled: data.enabled,
+          maxDepth: data.max_depth,
+          maxPages: data.max_pages,
+        });
+      }
+    } catch {
+      // non-fatal: the panel keeps the last known state
+    }
+  };
+
+  const handleSaveWebscrape = async () => {
+    if (!source) return;
+    setSavingWebscrape(true);
+    try {
+      await updateSource(source.id, {
+        webscrape_enabled: webscrapeForm.enabled,
+        webscrape_max_depth: webscrapeForm.maxDepth,
+        webscrape_max_pages: webscrapeForm.maxPages,
+      });
+      setInfo(
+        webscrapeForm.enabled
+          ? "Web scraping is on. A detected *_scrp.txt file starts now."
+          : "Web scraping is off. The .md files already in the bucket stay there.",
+      );
+      await fetchSource();
+      await fetchWebscrape(true);
+    } catch (err) {
+      setError(toApiError(err, "WEBSCRAPE_SAVE_FAILED"));
+    } finally {
+      setSavingWebscrape(false);
+    }
+  };
+
+  const handleScanWebscrape = async () => {
+    if (!source) return;
+    setScanningWebscrape(true);
+    try {
+      const res = await scanSourceWebscrape(source.id);
+      setInfo(`Scan complete: ${res.queued} manifest(s) queued, ${res.removed} removed.`);
+      await fetchWebscrape(true);
+    } catch (err) {
+      setError(toApiError(err, "WEBSCRAPE_SCAN_FAILED"));
+    } finally {
+      setScanningWebscrape(false);
+    }
+  };
+
   useEffect(() => {
     if (!id) return;
     let mounted = true;
@@ -155,6 +225,8 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
 
         const fileRes = await listSourceFiles(id!).catch(() => ({ files: [] }));
         if (mounted) setFiles(fileRes.files ?? []);
+
+        if (mounted) await fetchWebscrape(true);
       } catch (err) {
         if (mounted) setError(toApiError(err, "LOAD_FAILED"));
       } finally {
@@ -166,6 +238,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
     const interval = setInterval(() => {
       fetchSource();
       fetchFiles();
+      fetchWebscrape();
     }, 20000);
 
     return () => {
@@ -320,7 +393,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
           <strong>{error.code}</strong>: {error.message}
         </div>
         <button type="button" className="btn btn-secondary" onClick={() => navigate("/sources")}>
-          ← Back to Data Sources
+          ← Back to Knowledge Fabric
         </button>
       </div>
     );
@@ -339,7 +412,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
         <div>
           <div style={{ fontSize: "0.8rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-            Overview &gt; Sources &gt; <span style={{ color: "#c9d1d9" }}>{source.name}</span>
+            Overview &gt; Knowledge Fabric &gt; <span style={{ color: "#c9d1d9" }}>{source.name}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
             <h1 style={{ fontSize: "1.75rem", fontWeight: 800, color: "#e6edf3", margin: 0, display: "flex", alignItems: "center", gap: "0.6rem" }}>
@@ -421,7 +494,7 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
             className="btn btn-secondary"
             onClick={() => navigate("/sources")}
           >
-            ← Back to Sources
+            ← Back to Knowledge Fabric
           </button>
           {connectorCount > 0 && (
             <button
@@ -650,6 +723,117 @@ export default function SourceDetailPage({ routeSourceId }: SourceDetailPageProp
               {files.length}
             </span>
           </button>
+        </div>
+      )}
+
+      {/* WEB SCRAPING (MinIO buckets only; a local source has no bucket) */}
+      {!isLocalSource && (
+        <div
+          style={{
+            border: "1px solid rgba(56, 68, 100, 0.45)",
+            borderRadius: "12px",
+            background: "rgba(11, 14, 20, 0.6)",
+            padding: "1.25rem 1.4rem",
+            marginBottom: "1.75rem",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
+            <div>
+              <h2 style={{ fontSize: "1.05rem", fontWeight: 700, color: "#e6edf3", margin: 0 }}>
+                Web scraping
+              </h2>
+              <div style={{ fontSize: "0.82rem", color: "#8b949e", marginTop: "0.3rem", maxWidth: "46rem" }}>
+                Put a <code>*_scrp.txt</code> file in this bucket with one URL per line. Each crawled page becomes one
+                <code> .md</code> file in the same bucket, and the Knowledge Product fanout ingests it. The URL list and
+                the page screenshots stay out of the index.
+              </div>
+            </div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", whiteSpace: "nowrap" }}>
+              <input
+                type="checkbox"
+                checked={webscrapeForm.enabled}
+                onChange={(e) => setWebscrapeForm((f) => ({ ...f, enabled: e.target.checked }))}
+              />
+              <span style={{ fontSize: "0.875rem", color: "#e6edf3" }}>
+                {webscrapeForm.enabled ? "On" : "Off"}
+              </span>
+            </label>
+          </div>
+
+          {webscrapeForm.enabled && (
+            <div style={{ display: "flex", gap: "1.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "0.3rem", fontSize: "0.82rem", color: "#94a3b8" }}>
+                Max depth (0-5)
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={webscrapeForm.maxDepth}
+                  onChange={(e) => setWebscrapeForm((f) => ({ ...f, maxDepth: Number(e.target.value) }))}
+                  style={{ width: "8rem" }}
+                />
+                <span style={{ color: "#6e7681" }}>
+                  0 = the linked page only. 1 or more also follows subpages to that depth.
+                </span>
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "0.3rem", fontSize: "0.82rem", color: "#94a3b8" }}>
+                Max pages per URL (1-500)
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={webscrapeForm.maxPages}
+                  onChange={(e) => setWebscrapeForm((f) => ({ ...f, maxPages: Number(e.target.value) }))}
+                  style={{ width: "8rem" }}
+                />
+              </label>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: "0.6rem", marginTop: "1rem", alignItems: "center" }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={handleSaveWebscrape}
+              disabled={savingWebscrape}
+            >
+              {savingWebscrape ? <IconSync size={14} className="spin" /> : null} Save
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleScanWebscrape}
+              disabled={scanningWebscrape || !webscrapeForm.enabled}
+            >
+              {scanningWebscrape ? <IconSync size={14} className="spin" /> : <IconZap size={14} />} Rescan now
+            </button>
+          </div>
+
+          {webscrape && (
+            <div style={{ marginTop: "1rem", borderTop: "1px solid rgba(56, 68, 100, 0.35)", paddingTop: "0.85rem" }}>
+              <div style={{ fontSize: "0.82rem", color: "#94a3b8" }}>
+                {webscrape.manifests.length} manifest(s) ·{" "}
+                {webscrape.manifests.reduce((sum, m) => sum + m.pages_scraped, 0)} page(s) generated
+              </div>
+              {webscrape.manifests.length === 0 && (
+                <div style={{ fontSize: "0.8rem", color: "#6e7681", marginTop: "0.3rem" }}>
+                  No <code>*_scrp.txt</code> file in this bucket yet.
+                </div>
+              )}
+              {webscrape.manifests.map((m) => (
+                <div key={m.file_key} style={{ marginTop: "0.5rem", fontSize: "0.82rem" }}>
+                  <code style={{ color: "#e6edf3" }}>{m.file_key}</code>{" "}
+                  <StatusBadge status={m.status} />{" "}
+                  <span style={{ color: "#94a3b8" }}>
+                    {m.seeds_planned} URL(s) · {m.pages_scraped} page(s)
+                  </span>
+                  {m.error_message && (
+                    <div style={{ color: "#f85149", marginTop: "0.2rem" }}>{m.error_message}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

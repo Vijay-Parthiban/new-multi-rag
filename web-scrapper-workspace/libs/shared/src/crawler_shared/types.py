@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-EmbeddingSource = Literal["markdown", "image"]
+EmbeddingSource = Literal["markdown", "image", "none"]
 
 WEB_SCRAPE_SOURCE_TYPE = "web_scrape"
 FILE_INGEST_SOURCE_TYPE = "file_ingest"

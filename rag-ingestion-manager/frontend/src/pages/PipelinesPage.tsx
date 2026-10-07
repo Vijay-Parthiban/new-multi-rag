@@ -336,7 +336,7 @@ export default function PipelinesPage() {
                       </option>
                     ))}
                   </select>
-                  <p className="field-hint">Associate this RAG pipeline with a Knowledge Store profile.</p>
+                  <p className="field-hint">Associate this RAG pipeline with a Knowledge Product in the Knowledge Hub.</p>
                 </div>
               )}
                 <option value="" disabled>Select an engine...</option>

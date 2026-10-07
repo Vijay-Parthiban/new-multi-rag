@@ -1,6 +1,6 @@
 # 06 — Ingestion Profiles (Reusable Destination & Chunking Configuration)
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
@@ -12,7 +12,7 @@ chunking parameters. A Knowledge Product picks one profile and **copies** its de
   route.
 - **Editor**: one modal, used for both create and edit.
 
-The sidebar entry sits between `Sources` and `Knowledge Store`.
+The sidebar entry sits between `Knowledge Fabric` and `Knowledge Hub`.
 
 Backend API: FastAPI router `apps/api/routes/ingestion_profiles.py`, prefix `/api/ingestion-profiles`
 (service `rag-ingestion-manager`, host port `8007`; every route sits behind the shared `verify_api_key`
@@ -65,12 +65,12 @@ Unique on `(ingestion_profile_id, destination_type)`, so one row per destination
 
 | id | name | product store name |
 |---|---|---|
-| `vector_qdrant` | Qdrant | `kp_<slug>_<id8>` |
-| `lexical_opensearch` | OpenSearch | `kp_<slug>_<id8>` |
-| `relational_pgvector` | PostgreSQL (pgvector) | `kp_<slug>_<id8>` (table stays `chunks`) |
-| `cache_redisvl` | RedisVL | `kp:<slug>:<id8>` |
+| `vector_qdrant` | Dense Vector Store (Qdrant) | `kp_<slug>_<id8>` |
+| `lexical_opensearch` | Sparse Vector Store (OpenSearch) | `kp_<slug>_<id8>` |
+| `relational_pgvector` | Relational Chunk Store (Postgres) | `kp_<slug>_<id8>` (table stays `chunks`) |
+| `cache_redisvl` | Cache Store (Redis VL) | `kp:<slug>:<id8>` |
 
-`graph_neo4j` is **not** in the catalogue. Migration `010_knowledge_products` deleted the stored rows, and
+`graph_neo4j` is **not** in the catalogue. It has no writer and no purger, so no fanout writes to Neo4j. Migration `010_knowledge_products` deleted the stored rows, and
 `backend/scripts/purge_neo4j_legacy.py` removed the graph nodes those rows pointed at. The profile editor shows
 four destination cards because the catalogue returns four entries.
 
@@ -253,7 +253,7 @@ One modal for create (`POST /api/ingestion-profiles`) and edit (`PATCH /api/inge
      `Text with images (vision captions for figures)` (`text_images`), with the hint
      `Text only ignores images and never calls a vision model.`
    - **Text Embedding Model** select over the models whose `kind` is `embedding`.
-   - **Caption Model** select over the models whose `kind` is `chat`, rendered only for `text_images`.
+   - **Caption Model** select over the models whose `kind` is `vision`, rendered only for `text_images`.
    - **Minimum Figure Pixels** number input (`min=0`), rendered only for `text_images`, with the hint
      `Figures smaller than this are skipped. 10000 skips logos and rules.`
 5. **Chunking**: a **Chunking Strategy** select, then `Chunk Size (characters)` (`min=100`, `max=8000`) and
@@ -284,7 +284,7 @@ Client-side validation, each setting the error banner and returning:
 | no text embedding model | `Select a text embedding model.` |
 | `text_images` with no caption model | `Select a caption model.` |
 
-The submit body carries `name`, `description`, `enabled`, `chunk_size`, `chunk_overlap`, `modality_mode`,
+The submit body carries `name`, `description`, `enabled`, `chunk_size`, `chunk_overlap`, `chunk_strategy`, `modality_mode`,
 `text_embedding_model`, `caption_model`, `image_min_pixels` and the full `destinations` list. `PATCH` **replaces
 the whole destination set** when that field is supplied: types absent from the payload are deleted, present types
 are updated in place, new types are inserted.
@@ -499,9 +499,9 @@ The `409` detail carries the usage count:
 - `KnowledgeProduct` gained a nullable `ingestion_profile_id` FK (`ondelete="SET NULL"`) and an
   `ingestion_profile` relationship with `lazy="selectin"`, so every product load also loads its profile at no
   extra round trip.
-- The dev SQLite path adds the new column through the `_ensure_sqlite_columns` list in
+- The configured-SQLite path adds the new column through the `_ensure_sqlite_columns` list in
   `src/shared/db/session.py`: `("knowledge_products", "ingestion_profile_id VARCHAR(36)")`. Without that entry a
-  local run fails with `no such column`.
+  local run fails with `no such column`. The automatic SQLite fallback is gone; PostgreSQL is the one database.
 - The four new profile columns are SQLite entries too: `modality_mode TEXT DEFAULT 'text'`,
   `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `caption_model TEXT` and
   `image_min_pixels INTEGER DEFAULT 10000`. Without them a local run fails with
@@ -510,8 +510,8 @@ The `409` detail carries the usage count:
   `recursive`, so nothing re-indexes and no store changes on the upgrade. The Postgres `chunks` table gained
   `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, added by `ALTER TABLE ... ADD COLUMN IF NOT
   EXISTS` in the writer, which is the same idempotent path the older columns use.
-- No Alembic revision was added. `init_db()` runs `Base.metadata.create_all`, which creates any table that does
-  not exist. The schema head stays `010_knowledge_products`.
+- No Alembic revision was added for the two profile tables. `init_db()` runs `Base.metadata.create_all`, which
+  creates any table that does not exist. The migration head is `015_source_webscrape`.
 - **The table name `ingestion_profiles` is deliberate.** Migration `008_knowledge_store` spent
   `knowledge_profiles` on the table that migration `010_knowledge_products` renamed to `knowledge_products`, so
   that name would collide with the migration history.
@@ -539,7 +539,7 @@ New functions in `api.ts`: `listIngestionProfiles`, `createIngestionProfile`, `u
 shape into the UI error, for a string detail and for an object with a `message`. API error text therefore
 reaches the UI instead of the bare status text.
 
-### Knowledge Store create/edit dialog
+### Knowledge Hub create/edit dialog
 
 The destination-configuration block was **removed**. The form is now name, description, Ingestion Profile
 select, a read-only summary of the chosen profile's enabled destinations and its chunking, Sync Mode, and the

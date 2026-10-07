@@ -9,6 +9,10 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 _MAX_EMBED_CHARS = 16_000
+# NVIDIA NIM refuses a request with more than 256 inputs ("input count 645
+# exceeds maximum allowed batch size"). Larger callers send batches, so split
+# here, in the one client every caller shares.
+_MAX_EMBED_BATCH = 256
 
 
 class EmbeddingClient:
@@ -46,18 +50,21 @@ class EmbeddingClient:
         if not texts:
             return []
         payload = [(text.strip() or " ")[:_MAX_EMBED_CHARS] for text in texts]
-        response = self._client.embeddings.create(
-            model=self._model,
-            input=payload,
-            extra_body={"input_type": "passage", "truncate": "END"},
-        )
-        vectors = [item.embedding for item in response.data]
-        logger.info(
-            "embedding_batch_created model=%s count=%d dimensions=%d",
-            self._model,
-            len(vectors),
-            len(vectors[0]) if vectors else 0,
-        )
+        vectors: list[list[float]] = []
+        for start in range(0, len(payload), _MAX_EMBED_BATCH):
+            batch = payload[start : start + _MAX_EMBED_BATCH]
+            response = self._client.embeddings.create(
+                model=self._model,
+                input=batch,
+                extra_body={"input_type": "passage", "truncate": "END"},
+            )
+            vectors.extend(item.embedding for item in response.data)
+            logger.info(
+                "embedding_batch_created model=%s count=%d dimensions=%d",
+                self._model,
+                len(response.data),
+                len(response.data[0].embedding) if response.data else 0,
+            )
         return vectors
 
     def embed_text(self, text: str) -> list[float]:

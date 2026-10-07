@@ -34,3 +34,13 @@ def test_iter_csv_file(tmp_path: Path) -> None:
 
     assert len(pages) == 1
     assert "Alex, Engineer" in pages[0].text
+
+
+def test_nul_byte_removed(tmp_path: Path) -> None:
+    """PostgreSQL rejects a NUL byte, so no page text may carry one."""
+    file_path = tmp_path / "notes.txt"
+    file_path.write_bytes(b"before\x00after")
+
+    pages = list(iter_file_pages(file_path, "text/plain", "notes.txt"))
+
+    assert pages[0].text == "beforeafter"

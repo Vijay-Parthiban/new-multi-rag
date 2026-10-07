@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# dev.sh — run the four app processes on the host, their dependencies in Docker.
+# dev.sh — run the app processes on the host, their dependencies in Docker.
 #
 # The apps hot-reload from source, so an edit to a backend or frontend file takes effect
 # without rebuilding an image. The data tier stays in containers, because Postgres, Redis,
-# Qdrant, MinIO, OpenSearch, the scraper and the guardrails service are not things you
-# edit while working.
+# Qdrant, MinIO, OpenSearch and the guardrails service are not things you edit while
+# working. The scraper moved here too: it is a host process now, so its code changes the
+# same way.
 #
 # Every subcommand runs ONE foreground process. Open a terminal per subcommand so each log
 # stays readable and Ctrl-C stops only that process.
 #
-#   ./dev.sh deps              start every dependency container
-#   ./dev.sh deps-stop         stop them again
-#   ./dev.sh status            what is up, and whether the host ports answer
+#   ./scripts/dev.sh deps              start every dependency container
+#   ./scripts/dev.sh deps-stop         stop them again
+#   ./scripts/dev.sh status            what is up, and whether the host ports answer
 #
-#   ./dev.sh ingestion-api     :8007
-#   ./dev.sh ingestion-worker  source sync and fanout jobs
-#   ./dev.sh ingestion-web     :5173
+#   ./scripts/dev.sh ingestion-api     :8007
+#   ./scripts/dev.sh ingestion-worker  source sync and fanout jobs
+#   ./scripts/dev.sh ingestion-web     :5173
 #
-#   ./dev.sh retrieval-api     :8001
-#   ./dev.sh retrieval-worker  RAGAS evaluation jobs
-#   ./dev.sh retrieval-web     :5174
+#   ./scripts/dev.sh scraper-api       :8000, runs crawler-db-migrate first
+#   ./scripts/dev.sh scraper-worker    crawl, scrape and scrape-page queue consumers
+#
+#   ./scripts/dev.sh retrieval-api     :8001
+#   ./scripts/dev.sh retrieval-worker  RAGAS evaluation jobs
+#   ./scripts/dev.sh retrieval-web     :5174
+#
+# The scraper reads `web-scrapper-workspace/.env` and then `.env.local`, which holds the
+# localhost values for a host run. It never reads `docker compose` env.
 #
 # The backends read `.env.local` after `.env`, so no variables are exported here. See
 # vijay-docs/two_project_run.md, section 4.
@@ -29,13 +36,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INGESTION="$ROOT/rag-ingestion-manager"
 RETRIEVAL="$ROOT/rag-retrieval-chat-manager"
+SCRAPER="$ROOT/web-scrapper-workspace"
 
 # The dependency containers. The ingestion compose owns the data tier, so it is the file
-# that declares them. `api`, `worker`, `pathway-worker` and `web` are deliberately absent:
-# those are the four processes this script runs on the host instead.
+# that declares them. `api`, `worker`, `pathway-worker`, `web` and the three scraper
+# services are deliberately absent: those are the host processes this script runs.
 DEP_SERVICES=(
-  postgres redis qdrant minio opensearch otel-collector
-  scraper-migrate scraper-api scraper-worker guardrails-service
+  postgres redis qdrant minio opensearch otel-collector guardrails-service
 )
 
 # The retrieval project reaches three things inside the ingestion stack (Postgres, Redis,
@@ -45,7 +52,7 @@ DEP_SERVICES=(
 HOST_PORTS=(5432 6379 6333 9200 9000 4000 18000 8007)
 
 usage() {
-  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -83,8 +90,8 @@ cmd_status() {
     fi
   done
   echo
-  echo "=== the four app processes (run these in their own terminals) ==="
-  for p in 8007 8001 5173 5174; do
+  echo "=== the app processes (run these in their own terminals) ==="
+  for p in 8007 8000 8001 5173 5174; do
     if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
       exec 3>&- 3<&- 2>/dev/null || true
       printf "  %-6s up\n" "$p"
@@ -119,6 +126,26 @@ cmd_ingestion_web() {
   exec node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173
 }
 
+cmd_scraper_api() {
+  require_dir "$SCRAPER"
+  cd "$SCRAPER"
+  # The crawler DB migration is idempotent and cheap, so a host run starts from the head.
+  uv run crawler-db-migrate
+  exec uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+}
+
+cmd_scraper_worker() {
+  require_dir "$SCRAPER"
+  cd "$SCRAPER"
+  # SimpleWorker for the same reason as the retrieval worker: the default worker calls
+  # os.fork(), which Windows does not have, so it dies on the first job.
+  # The working directory matters. SCRAPE_DATA_DIR is relative, and the API reads the
+  # page artifacts this worker writes.
+  exec uv run rq worker crawl scrape scrape-page \
+    --url redis://localhost:6379/0 \
+    --worker-class rq.worker.SimpleWorker
+}
+
 cmd_retrieval_api() {
   require_dir "$RETRIEVAL/backend"
   cd "$RETRIEVAL/backend"
@@ -150,6 +177,8 @@ case "${1:-}" in
   ingestion-api)     cmd_ingestion_api ;;
   ingestion-worker)  cmd_ingestion_worker ;;
   ingestion-web)     cmd_ingestion_web ;;
+  scraper-api)       cmd_scraper_api ;;
+  scraper-worker)    cmd_scraper_worker ;;
   retrieval-api)     cmd_retrieval_api ;;
   retrieval-worker)  cmd_retrieval_worker ;;
   retrieval-web)     cmd_retrieval_web ;;

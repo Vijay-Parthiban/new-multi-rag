@@ -1,6 +1,6 @@
 # 01 — Ingestion Overview Dashboard Page
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 The **Ingestion Overview Dashboard** (`frontend/src/pages/HomePage.tsx`) is the landing page of the `rag-ingestion-manager` frontend. It is rendered by `AppLayout.tsx` for the path `/` (nav entry `{ to: "/", label: "Overview", end: true }`) and is kept mounted persistently, so it is not re-mounted when the user navigates to another page and back.
@@ -13,23 +13,24 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
 
 ```
 +------------------------------------------------------------------------------------------+
-| Ingestion Manager  |  Overview  |  Folders  |  Sources  |  Knowledge Store                |
+| Ingestion Manager  |  Overview  |  Fabric Viewer  |  Knowledge Fabric  |  Ingestion Profiles  |  Knowledge Hub     |
 +------------------------------------------------------------------------------------------+
 | Ingestion Overview                                                                       |
-| Ingest documents, manage connected data sources, and orchestrate 4-destination Knowledge  |
-| Store fanout sync.                                                                        |
+| Ingest documents, manage the Knowledge Fabric, and orchestrate the 4-destination Knowledge |
+| Hub fanout sync.                                                                          |
 +------------------------------------------------------------------------------------------+
 | [ Connected Data Sources | Workspace Folders | Ingested Files | Knowledge Products ]      |
 +------------------------------------------------------------------------------------------+
 | Quick Launch Workspaces:                                                                  |
-| [ Data Sources & Storage ]  [ Folders & Files ]                                           |
-| [ External Connectors ]  [ Knowledge Store Fanout ]                                       |
+| [ Knowledge Fabric ]  [ Fabric Viewer ]                                                    |
+| [ External Connectors ]  [ Knowledge Hub ]                                               |
 +------------------------------------------------------------------------------------------+
 | Recent Folder Workspaces                                             [ View All ]          |
 | [ <folder name> : N files : relative time ] x up to 6                                     |
 +------------------------------------------------------------------------------------------+
 | Universal Multi-Sink Knowledge Engine (2026 Edition)        [ Configure Sinks ]           |
-| [ Qdrant ] [ OpenSearch ] [ PostgreSQL ] [ RedisVL ]                                      |
+| [ Dense Vector Store (Qdrant) ] [ Sparse Vector Store (OpenSearch) ]                    |
+| [ Relational Chunk Store (Postgres) ] [ Cache Store (Redis VL) ]                         |
 +------------------------------------------------------------------------------------------+
 ```
 
@@ -51,12 +52,12 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
 
   | Title | Route | Description | CTA |
   |---|---|---|---|
-  | `Data Sources & Storage` | `/sources` | Create NiFi connector sources or manual upload sources. Each source gets its own MinIO bucket. | Manage Sources |
-  | `Folders & Files` | `/browse` | Explore virtual directory workspaces and raw object storage contents. | Open Workspace |
-  | `External Connectors` | `/sources` | Sync Google Drive, Amazon S3, and Azure Blob Storage into MinIO buckets. | Manage Sources |
-  | `Knowledge Store Fanout` | `/knowledge-store` | Manage 4-destination multi-vector fanout sync to Qdrant, OpenSearch, Postgres, & RedisVL. | Manage Knowledge Store |
+  | `Knowledge Fabric` | `/sources` | Create NiFi connector sources or manual upload sources. Each source gets its own MinIO bucket. | Manage Knowledge Fabric |
+  | `Fabric Viewer` | `/browse` | Explore virtual directory workspaces and raw object storage contents. | Open Fabric Viewer |
+  | `External Connectors` | `/sources` | Sync Google Drive, Amazon S3, and Azure Blob Storage into MinIO buckets. | Manage Knowledge Fabric |
+  | `Knowledge Hub` | `/knowledge-store` | Manage multi-destination fanout sync to the dense vector, sparse vector, relational chunk and cache stores. | Manage Knowledge Hub |
 
-  `Data Sources & Storage` and `External Connectors` both link to `/sources` (distinct cards, same destination).
+  `Knowledge Fabric` and `External Connectors` both link to `/sources` (distinct cards, same destination).
 
 - **Recent Folder Workspaces panel** — header with `IconFolder`, title `Recent Folder Workspaces`, and a `View All` ghost button linking to `/browse`. Body states:
   - loading: `Loading workspace folders…`
@@ -65,10 +66,10 @@ The page is read-only: it loads three backend lists on mount, renders them as KP
   - There is **no** "Connected Sources Summary Table" on this page, and the source list fetched for the KPI counter is not rendered as a table.
 
 - **Knowledge sink engine banner** — panel titled `Universal Multi-Sink Knowledge Engine (2026 Edition)` with a `Configure Sinks` link to `/knowledge-store`, one paragraph of copy, and four static tiles (no API calls):
-  - `Qdrant:` Dense Vector Embeddings (HNSW)
-  - `OpenSearch:` BM25 Lexical & Inverted Index
-  - `PostgreSQL:` Relational & pgvector ACLs
-  - `RedisVL:` Parent-Child & Semantic Cache
+  - `Dense Vector Store (Qdrant):` Dense Vector Embeddings (HNSW)
+  - `Sparse Vector Store (OpenSearch):` BM25 Lexical & Inverted Index
+  - `Relational Chunk Store (Postgres):` Relational & pgvector ACLs
+  - `Cache Store (Redis VL):` Parent-Child & Semantic Cache
 
 ---
 

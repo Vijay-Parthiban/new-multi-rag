@@ -17,8 +17,8 @@ def main() -> None:
         db_root = docker_db_root
     else:
         # Fallback for local/workspace execution (this file lives at
-        # libs/database/src/crawler_db/migrate.py).
-        db_root = Path(__file__).resolve().parents[3]
+        # libs/database/src/crawler_db/migrate.py, so parents[2] is libs/database).
+        db_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=db_root,

@@ -1,0 +1,99 @@
+RAG INGESTION MANAGER — VIDEO DEMO TRANSCRIPT
+Total run time: 4:20 | Narration: about 610 words, about 145 words per minute
+App: RAG Ingestion Manager, host port 5173
+Structure: one overall use case at the start, then one section per page in navigation order.
+
+Each slot equals its reading time at 145 words per minute, so a slow click still fits. Each section
+names the screen it covers, so you can stretch or trim a line to the footage you recorded.
+
+
+[0:00 — 0:20]  THE PLATFORM AND THIS APP
+Screen: a title card, or the Overview page before you touch it.
+
+Together, these two projects form one RAG platform. The ingestion manager builds the knowledge
+base. The retrieval and chat manager reads it, answers from it, and scores every answer. The
+aim of this app is one flow: connect your storage, chunk each document once, write the chunks
+to four stores.
+
+
+[0:20 — 0:50]  OVERALL USE CASE
+Screen: Overview page, static.
+
+The RAG Ingestion Manager turns your documents into a knowledge base a chat pipeline can
+search. You connect storage: Google Drive, Amazon S3, Azure Blob Storage, a local folder, or a
+plain manual upload. Each source gets its own isolated MinIO bucket. The manager reads those
+files, splits them into chunks, and writes every chunk to four destination stores at the same
+time. This app is the write side of the platform.
+
+
+[0:50 — 1:14]  OVERVIEW
+Screen: Overview page. Point at the counters, then the cards, then the bottom panel.
+
+Four counters lead this page: connected data sources, workspace folders, ingested files, and
+knowledge products. The cards below open each page of the app. The panel at the bottom names
+the four destination types: a dense vector store on Qdrant, a sparse vector store on
+OpenSearch, a relational chunk store on Postgres, and a cache store on Redis VL.
+
+
+[1:14 — 1:47]  KNOWLEDGE FABRIC
+Screen: Knowledge Fabric page, then the create dialog.
+
+Knowledge Fabric is where a source is created. A NiFi connector source syncs an external
+system: Google Drive, Amazon S3, or Azure Blob Storage. A manual upload source gives you an
+empty bucket to fill yourself. A source can also point at a local folder. Each card shows the
+bucket, the connector count, the status, and the last sync. Polling is live or scheduled, and
+Pause All stops every connector of one source at once. Let me open one source.
+
+
+[1:47 — 2:23]  SOURCE DETAIL
+Screen: the source page. Show the connector list, the poll state, then the Web scraping switch.
+
+The source page keeps the connector configuration, the poll state, the sync history, and the
+files. A file added upstream appears here, and a deleted one disappears. The Web scraping
+switch is per source. When it is on, every file ending in _scrp.txt is read as a list of URLs.
+Each URL is crawled to a depth and page limit, and one Markdown file per page lands in the same
+bucket with a full page screenshot. The four destinations pick those files up on their own.
+
+
+[2:23 — 2:40]  FABRIC VIEWER
+Screen: Fabric Viewer page, then open one file.
+
+The Fabric Viewer is the read-only view of the same data. It lists the workspace folders with
+their file count and their last change. Open a folder for its files, then open a file to read
+the text. Every column sorts.
+
+
+[2:40 — 2:55]  INGESTION PROFILES
+Screen: Ingestion Profiles page. Point at one saved profile.
+
+Ingestion Profiles store a reusable rule set, so a new knowledge product starts from the same
+settings. A profile holds the chunk size, the overlap, the chunk strategy, the text or
+text-with-images modality, and the embedding model.
+
+
+[2:55 — 3:33]  KNOWLEDGE HUB
+Screen: Knowledge Hub page, then the create dialog, then the four destination cards.
+
+The Knowledge Hub holds the Knowledge Products. A product is one searchable collection: it
+links one or more source buckets, and it fans their files out to the four destinations. Here I
+create one. I name it, I select the sources, and I attach the destinations. Each destination
+derives an isolated store name from the product, so no two products share a collection, an
+index, a schema, or a cache prefix. The cards show that name, the last sync, and the state.
+One destination can be paused without touching the others.
+
+
+[3:33 — 4:04]  PRODUCT DETAIL AND LIVE FANOUT
+Screen: the product page. Show the timeline first, then the file table, then Inspect Store.
+
+Inside the product, the Live Fanout timeline streams each step as it happens: the file, the
+destination, and the outcome. The table records every file with its page count and the
+destinations that hold it. Inspect Store opens the visualizer for one store. The dense store
+draws the vector collection and its cluster space. The sparse store shows the indexed terms.
+The relational store lists the stored rows. The cache store shows the cached keys.
+
+
+[4:04 — 4:20]  CLOSE
+Screen: hold on the product page, or cut back to the Overview page.
+
+The Pipelines page in the retrieval app links a chat pipeline to one of these products, so the
+assistant reads exactly the data this app wrote.

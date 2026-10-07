@@ -227,7 +227,7 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
       <div className="page">
         <div className="alert alert-error">{error ?? "Knowledge Product not found."}</div>
         <button className="btn btn-secondary" onClick={() => navigate("/knowledge-store")}>
-          Back to Knowledge Store
+          Back to Knowledge Hub
         </button>
       </div>
     );
@@ -249,7 +249,7 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem", gap: "1rem", flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: "0.8rem", color: "#8b949e", marginBottom: "0.25rem" }}>
-            Overview &gt; Knowledge Store &gt;{" "}
+            Overview &gt; Knowledge Hub &gt;{" "}
             <span style={{ color: "#c9d1d9" }}>{product.name}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
@@ -308,7 +308,7 @@ export default function KnowledgeProductPage({ routeProductId }: KnowledgeProduc
 
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <button className="btn btn-secondary" onClick={() => navigate("/knowledge-store")}>
-            ← Back to Knowledge Store
+            ← Back to Knowledge Hub
           </button>
           {product.destinations.length > 0 && (
             <button

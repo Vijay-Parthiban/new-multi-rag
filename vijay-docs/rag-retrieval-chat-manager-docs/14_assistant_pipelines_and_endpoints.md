@@ -1,6 +1,6 @@
 # 14 — Assistant Pipelines & Callable Endpoints
 
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & What an Assistant Is
 
@@ -49,7 +49,7 @@ share a name stem.
 The record stays available on the ingestion service:
 
 ```bash
-curl -X GET http://localhost:8007/api/pipelines/by-slug/resume-assistant
+curl -X GET http://127.0.0.1:8007/api/pipelines/by-slug/resume-assistant
 ```
 
 A miss answers `404` with code `PIPELINE_NOT_FOUND`. The route is declared **before** `/{pipeline_id}`,
@@ -96,6 +96,12 @@ patterns stay available as long as one retrieval destination is enabled.
 All routes live on port `8001` and take the shared API key dependency. Send `X-API-Key` when
 `API_KEY` is set. The native routes carry the `/api` prefix. The OpenAI-compatible route carries `/v1`.
 
+**Which host to use.** The examples below use `http://127.0.0.1:8001`, because the compose stack
+publishes that port on the host and so does a native `uvicorn` run. A caller that runs inside another
+container on the `rag-shared` network must use the compose service name instead:
+`http://rag-api:8001`. The ingestion manager follows the same rule: `http://127.0.0.1:8007` from the
+host, `http://api:8007` from a container on the shared network.
+
 Every turn you send is tagged **`prod`**, because the backend reads the trace mode from an
 `X-RAG-Trace-Mode: test` header and **a request without that header is production**. Do not send the
 header from an integrating system: it exists so that a turn sent from the Chat page while somebody
@@ -112,7 +118,8 @@ tries a pipeline is distinguishable from real traffic. See
 | `POST` | `/api/assistants/{slug}/sessions/{session_id}/close` | End the conversation: export it as one trace, then clear its memory. |
 | `DELETE` | `/api/assistants/{slug}/sessions/{session_id}` | End the session and clear its memory, without exporting it. |
 
-`GET` and `DELETE` exist only when the product's Redis destination is enabled. See
+`GET` and `DELETE` answer `422 SESSION_MEMORY_UNAVAILABLE` when the product has no enabled
+Redis destination. See
 [15 — Assistant Session Memory](./15_assistant_session_memory.md).
 
 `POST .../close` works either way, because ending a conversation is meaningful in both cases.
@@ -146,8 +153,10 @@ Response fields:
 | `endpoints` | `{chat, chat_stream, openai_base_url, session_get, session_end}`, relative paths |
 
 ```bash
-curl -X GET http://localhost:8001/api/assistants/resume-assistant
+curl -X GET http://127.0.0.1:8001/api/assistants/resume-assistant
 ```
+
+The backend returns `session_memory` and all five `endpoints`. The frontend type is narrower: `AssistantConfig` in `frontend/src/api.ts:1350` declares `endpoints` as `{chat, chat_stream, openai_base_url}` only. The two session paths exist on the wire, and the UI builds them itself with `assistantSessionUrl()`, so the omission changes no behaviour. `[INFERENCE]`
 
 ### 3.2 `POST /api/assistants/{slug}/chat`
 
@@ -158,6 +167,8 @@ Request body:
 | `query` | string | required, the user question |
 | `session_id` | UUID | optional; continues an existing session |
 | `guardrails_config_id` | UUID | optional; overrides the pipeline's config |
+| `prompt_template_id` | UUID | optional; overrides the pipeline's prompt template |
+| `model_settings` | object | optional; overrides the pipeline's saved sampling settings |
 | `retrieval_mode` | string | optional; `hybrid`, `dense` or `sparse`. Default `dense` |
 | `retrieve_limit` | int | optional, 1–50 |
 | `rerank_enabled` | boolean | optional |
@@ -165,14 +176,16 @@ Request body:
 | `top_k` | int | optional, 1–50 |
 
 Response body, the same shape as `POST /chat`: `message_id`, `session_id`, `answer`, `sources[]`,
-`trace_id`, `metrics_status`. Each source is `{source_locator, chunk_index, rerank_score}`.
+`trace_id`, `metrics_status`. Each source is `{source_locator, chunk_index, rerank_score}`. The body
+also carries `effective_query`, which is non-null only when the session memory rewrote a follow-up into
+a standalone question (`chat.py:74`).
 
 `retrieval_mode` sets the Qdrant search mode and defaults to `dense`, because the fanout writes no
 sparse vectors. A request that asks for `hybrid` while the product has no Qdrant collection falls back
 to `dense`. The **strategy**, not this field, decides which stores the retriever reads.
 
 ```bash
-curl -X POST http://localhost:8001/api/assistants/resume-assistant/chat \
+curl -X POST http://127.0.0.1:8001/api/assistants/resume-assistant/chat \
   -H 'Content-Type: application/json' \
   -d '{"query": "What award did Rohan receive at Amazon?"}'
 ```
@@ -191,29 +204,30 @@ The same request body. The response is `text/event-stream`. Each frame is one JS
 | `error` | `content`, the failure text |
 
 ```bash
-curl -N -X POST http://localhost:8001/api/assistants/resume-assistant/chat/stream \
+curl -N -X POST http://127.0.0.1:8001/api/assistants/resume-assistant/chat/stream \
   -H 'Content-Type: application/json' \
   -d '{"query": "What award did Rohan receive at Amazon?"}'
 ```
 
 ### 3.4 `POST /v1/assistants/{slug}/chat/completions`
 
-Request body, the OpenAI subset this route honours:
+Request body, the OpenAI subset this route accepts:
 
 | Field | Type | Notes |
 |---|---|---|
 | `model` | string | optional, ignored |
 | `messages` | array | required; the last `role=user` message carries the question |
 | `stream` | boolean | default `false` |
-| `temperature` | float | optional |
-| `max_tokens` | int | optional |
-| `user` | string | optional |
+| `temperature` | float | optional, ignored |
+| `max_tokens` | int | optional, ignored |
+| `user` | string | optional; a UUID is the fallback session id |
+| `session_id` | string | optional; a UUID that carries session memory (`assistants.py:94`) |
 
 A body with no user message that carries text answers with the OpenAI error shape and code
 `MISSING_USER_MESSAGE`.
 
 ```bash
-curl -X POST http://localhost:8001/v1/assistants/resume-assistant/chat/completions \
+curl -X POST http://127.0.0.1:8001/v1/assistants/resume-assistant/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model": "assistant", "messages": [{"role": "user", "content": "What award did Rohan receive at Amazon?"}]}'
 ```
@@ -225,10 +239,14 @@ curl -X POST http://localhost:8001/v1/assistants/resume-assistant/chat/completio
 
 The `usage` counts are all zero. The route does not tokenise the answer.
 
+The non-streaming body also carries a `session_id` field, which is not part of the OpenAI shape; it
+lets a client that sent no id learn the session the turn used. The request body accepts the same
+`session_id` extension field, and a `user` that is a UUID is the fallback for it (`assistants.py:97-120`).
+
 ### 3.5 Errors
 
-Every assistant error carries a `detail` object with a `code` and a `message`. The `401` row is the
-shared auth dependency, whose detail is a plain string instead.
+Most assistant errors carry a `detail` object with a `code` and a `message`. The shared `401`
+dependency and the session-close `404` carry a plain string instead.
 
 | Status | Code | Cause |
 |---|---|---|
@@ -236,8 +254,13 @@ shared auth dependency, whose detail is a plain string instead.
 | `404` | `PROMPT_TEMPLATE_NOT_FOUND` | The attached template id no longer exists. |
 | `422` | `NOT_AN_ASSISTANT` | The slug names a legacy ingestion pipeline. |
 | `422` | `RAG_STRATEGY_UNAVAILABLE` | A store the strategy needs is missing. `detail.missing_destinations` names it. |
+| `422` | `INVALID_SESSION_ID` | The OpenAI route's `session_id` is not a UUID (`assistants.py:112`). |
+| `422` | `SESSION_MEMORY_UNAVAILABLE` | A session route ran for a product with no enabled Redis destination. |
 | `503` | `INGESTION_SERVICE_UNAVAILABLE` | The ingestion service on `8007` is unreachable. |
 | `401` | `Invalid or missing API key` | `API_KEY` is set and the header is absent or wrong. Plain string detail. |
+
+`DELETE .../sessions/{id}` also answers `503 SESSION_MEMORY_UNAVAILABLE` when Redis refuses the
+clear (`assistants.py:417-423`).
 
 A different non-`200` answer from the ingestion service passes through with code
 `INGESTION_SERVICE_ERROR` and the first 500 characters of the upstream body.
@@ -246,7 +269,7 @@ A different non-`200` answer from the ingestion service passes through with code
 ingestion service, so an ingestion outage makes every assistant route fail with this code.
 
 ```bash
-curl -i -X POST http://localhost:8001/api/assistants/does-not-exist/chat \
+curl -i -X POST http://127.0.0.1:8001/api/assistants/does-not-exist/chat \
   -H 'Content-Type: application/json' \
   -d '{"query": "hello"}'
 ```
@@ -255,7 +278,7 @@ curl -i -X POST http://localhost:8001/api/assistants/does-not-exist/chat \
 
 ## 4. OpenAI Compatibility
 
-Point an OpenAI SDK client at the **base URL** `http://localhost:8001/v1/assistants/{slug}`. The SDK
+Point an OpenAI SDK client at the **base URL** `http://127.0.0.1:8001/v1/assistants/{slug}`. The SDK
 appends `/chat/completions`, which is the route in Section 3.4. The copyable value comes from
 `assistantBaseUrl(slug)` in `frontend/src/api.ts`.
 
@@ -269,7 +292,7 @@ through the SDK's default headers.
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8001/v1/assistants/resume-assistant",
+    base_url="http://127.0.0.1:8001/v1/assistants/resume-assistant",
     api_key="unused",  # the SDK requires a value; the service sets no API_KEY
     # default_headers={"X-API-Key": "…"},  # add this when the service sets API_KEY
 )
@@ -297,7 +320,7 @@ for chunk in stream:
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:8001/v1/assistants/resume-assistant",
+  baseURL: "http://127.0.0.1:8001/v1/assistants/resume-assistant",
   apiKey: "unused", // the SDK requires a value; the service sets no API_KEY
   // defaultHeaders: { "X-API-Key": "…" }, // add this when the service sets API_KEY
 });
@@ -324,7 +347,7 @@ any time. Its allowed values are exactly the strategies the product's enabled de
 Two kinds of strategy exist. A **retrieval mode** names the store to read. A **generation pattern** wraps
 whichever retrieval mode the product can serve and adds a grading step before the answer is written. The
 frontend picker groups the options under `Retrieval — chooses where to search` and
-`Reasoning — grades what it found` (`frontend/src/api.ts:426-432`).
+`Reasoning — grades what it found` (`frontend/src/api.ts:425-428`).
 
 | Strategy | Store read | Needs enabled | Good for |
 |---|---|---|---|
@@ -382,8 +405,10 @@ two stores measure different kinds of relevance. The surviving record is the one
 single-store score, and its `retrieval_score` becomes the fused value. The fused list is sorted
 descending and cut to the request's limit.
 
-The Qdrant store for knowledge products is a **different server** from the scraper's. `Settings` field
-`qdrant_kp_url` holds it and falls back to `qdrant_url`. The fanout writes dense vectors only
+The Qdrant store for knowledge products uses `Settings.qdrant_kp_url`, which falls back to
+`qdrant_url`. Both keys name the **same** server on `6333`: one Qdrant holds the scraper's
+`scrape_embeddings` collection and every `kp_*` collection. Keep both keys set, because an empty
+`qdrant_kp_url` falls back silently and hides a typo. The fanout writes dense vectors only
 (`enable_sparse=False`), so for an assistant `hybrid` means Qdrant dense fused with OpenSearch BM25.
 
 **`hybrid` needs both destinations enabled.** `resolve_strategy` answers `422 RAG_STRATEGY_UNAVAILABLE`
@@ -425,7 +450,7 @@ The guardrails config and the prompt template are independent. Either, both or n
 ## 7. Worked Example
 
 This path runs live. The check script `rag-retrieval-chat-manager/backend/scripts/e2e_assistant_pipelines.py`
-executes it and passes every check.
+walks it end to end.
 
 ### Step 1 — Create the product and ingest
 
@@ -445,7 +470,7 @@ records in each of its three retrieval stores.
 ### Step 2 — Create the assistant
 
 ```bash
-curl -X POST http://localhost:8007/api/pipelines \
+curl -X POST http://127.0.0.1:8007/api/pipelines \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "Resume Assistant",
@@ -481,7 +506,7 @@ Validation codes on this call:
 ### Step 3 — Read the resolved configuration
 
 ```bash
-curl -X GET http://localhost:8001/api/assistants/resume-assistant
+curl -X GET http://127.0.0.1:8001/api/assistants/resume-assistant
 ```
 
 The `stores` block reads back the three names from the table above. The `strategies_available` list
@@ -490,7 +515,7 @@ holds the five entries.
 ### Step 4 — Ask a question
 
 ```bash
-curl -X POST http://localhost:8001/api/assistants/resume-assistant/chat \
+curl -X POST http://127.0.0.1:8001/api/assistants/resume-assistant/chat \
   -H 'Content-Type: application/json' \
   -d '{"query": "What award did Rohan receive at Amazon?"}'
 ```

@@ -1,6 +1,6 @@
 # 16 — Observability and Tracing
 
-**Last updated:** 2026-09-22
+**Last updated:** 2026-10-02
 
 **Covers:** the OTEL collector fan-out, the `test` and `prod` trace modes, the individual
 turn trace, the session trace, and how to add a platform.
@@ -30,17 +30,24 @@ turn trace, the session trace, and how to add a platform.
 The application never talks to Phoenix or Langfuse. It exports once, to the collector, and the
 collector fans out. That is what makes a new platform a collector change and nothing else.
 
+The two active exporters are `otlp_http/phoenix` and `otlp_http/langfuse`, both OTLP over HTTP
+(`otel/otel-collector-config.yaml`). A third exporter, `debug`, is also named in the pipeline, so the
+collector log carries every span too. Application span names: `rag.chat`, `rag.chat.stream`,
+`rag.pipeline.metrics`, `rag.session` and `rag.chat.turn`.
+
 | Setting | Value | Where |
 |---|---|---|
 | Collector OTLP receiver | `:4317` gRPC, `:4318` HTTP | `otel-collector-config.yaml` |
 | Application exporter target | `http://otel:4318` inside compose, `http://localhost:4318` on the host | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| Phoenix project | `rag-platform` | `PHOENIX_PROJECT_NAME` in `otel/.env` |
 | Credentials | `otel/.env` (gitignored) | `otel/.env.example` is the template |
 
 **The target has to match where the application runs.** `otel` is a compose service name, so an API
-started on the host cannot resolve it and the span is dropped with no error the caller can see. For a
-host run, set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` **and** `OTEL_TRACING_ENABLED=true`.
-The runbook's host block sets tracing off, which is right for a quick smoke check and wrong for a real
-one.
+started on the host cannot resolve it and the span is dropped with no error the caller can see. A host
+run reads `.env` first, then `.env.local`, and the later file wins. `rag-retrieval-chat-manager/backend/.env.local`
+ships `OTEL_TRACING_ENABLED=true` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`, so a host run
+traces by default. Set `OTEL_TRACING_ENABLED=false` in that file and both trace modes go silent: the spans
+are created but never exported, and nothing reports an error anywhere.
 
 ## 2. Two trace modes
 
@@ -251,10 +258,10 @@ sharing that span.
 | | Phoenix | Langfuse |
 |---|---|---|
 | Transport | OTLP/HTTP | OTLP/HTTP (no gRPC support) |
-| Endpoint | `https://app.phoenix.arize.com/v1/traces` | `https://jp.cloud.langfuse.com/api/public/otel` |
+| Endpoint to set | `https://app.phoenix.arize.com/s/<handle>` (the exporter appends `/v1/traces` itself, so a full `/v1/traces` path yields a 405) | `https://jp.cloud.langfuse.com/api/public/otel` (full path) |
 | Auth header | `Authorization: Bearer <api key>` | `Authorization: Basic base64(public:secret)` |
 | Extra | `x-project-name` routes to a project (HTTP only) | `x-langfuse-ingestion-version: 4` |
-| Self-hosted | `http://localhost:6006/v1/traces`, no auth | n/a |
+| Self-hosted | `http://localhost:6006`, no auth | n/a |
 
 The Langfuse region must match `LANGFUSE_BASE_URL` in the backend's `.env.langfuse`. The wrong
 region sends traces to a different project, and nothing reports an error.

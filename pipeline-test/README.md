@@ -1,7 +1,7 @@
 # Pipeline Test — a policy site with a production chatbot
 
 A demonstration project that calls a RAG pipeline's **own endpoint**, the way any future project
-would. It is a corporate policy page for Tata Consultancy Services with one chat window.
+would. It is an insurance policy page for ABC Insurance with one chat window.
 
 Nothing here is a test harness: every request goes to the pipeline endpoint and carries no
 trace-mode header, so the platform records all of it as production.
@@ -29,21 +29,22 @@ enabled Redis destination. This project does not decide it, and cannot override 
 
 ```ini
 MEMORY_STATE=enabled
-CHATBOT_1_LABEL=TCS Policy Assistant
-CHATBOT_1_ENDPOINT=http://localhost:8001/api/assistants/tcs-chat
+CHATBOT_1_LABEL=ABC Insurance Policy Assistant
+CHATBOT_1_ENDPOINT=http://localhost:8001/api/assistants/abc-insurancepolicy-bot
 ```
 
 `MEMORY_STATE` is the project's declaration of which kind of assistant it is. It chooses the
 words and the buttons.
 
 The endpoint is the assistant root. The backend appends `/chat`, `/chat/stream` and
-`/sessions/{id}`, because those routes belong to the same pipeline.
+`/sessions/{id}`, because those routes belong to the same pipeline. The slug is the pipeline's
+own, and it is on the RAG Pipelines page.
 
 Add a second entry to offer a picker:
 
 ```ini
-CHATBOT_2_LABEL=Resume Assistant
-CHATBOT_2_ENDPOINT=http://localhost:8001/api/assistants/no-mem-pipeline
+CHATBOT_2_LABEL=Second Assistant
+CHATBOT_2_ENDPOINT=http://localhost:8001/api/assistants/other-pipeline-slug
 ```
 
 ### The declaration is checked, not trusted
@@ -64,10 +65,10 @@ something other than what its label promises.
 
 ## Run it
 
-Prerequisites: both stacks running, and the two pipelines existing. Check one:
+Prerequisites: both stacks running, and the pipeline existing. Check one:
 
 ```bash
-curl http://localhost:8001/api/assistants/tcs-chat
+curl http://localhost:8001/api/assistants/abc-insurancepolicy-bot
 ```
 
 ### Backend
@@ -139,8 +140,11 @@ The demo backend relays the server-sent events unchanged. Ending a conversation 
 
 ## Notes
 
-- The policy text is illustrative sample content and is not an official TCS publication. The
-  assistant answers from the knowledge base named on its panel, not from the text.
+- The policy wording on the page is illustrative sample content, not a policy document of any
+  insurer. The assistant answers from the knowledge base named on its panel, not from the text.
+- The assistant is the `ABC-InsurancePolicy-Bot` pipeline over the `abc-kp-store` Knowledge
+  Product. That product has an enabled Redis destination, so the pipeline keeps the
+  conversation and `MEMORY_STATE=enabled` matches it: Start Session, End Session.
 - Conversations are stored on the retrieval side, so they appear in the Chat page history and in
   Real Time Monitoring, tagged `prod`.
 - The same e2e used for the Chat page covers this path:

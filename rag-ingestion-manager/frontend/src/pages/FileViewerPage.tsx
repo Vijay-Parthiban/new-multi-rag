@@ -81,7 +81,7 @@ export default function FileViewerPage({ routeDir, routeFileId, routeNavigate }:
         <Breadcrumb
           items={[
             { label: "Overview", to: "/" },
-            { label: "Folders", to: "/browse" },
+            { label: "Fabric Viewer", to: "/browse" },
             { label: directoryName, to: `/browse/${directoryName}` },
             { label: currentName || "Preview" },
           ]}

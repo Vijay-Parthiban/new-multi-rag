@@ -1,6 +1,6 @@
 # 03 — Interactive RAG Chat & Synthesis Page
 
-**Last updated:** 2026-09-22
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
@@ -8,18 +8,18 @@ The **Chat page** (`frontend/src/pages/ChatPage.tsx`, route `/chat`) is the conv
 pipeline. It selects a pipeline record, a guardrails config and per-query retrieval overrides, streams the
 answer over Server-Sent Events, renders cited sources, and then polls per-message RAGAS metrics.
 
-- Transport: the retrieval API at `RAG_API_URL = VITE_RAG_API_URL ?? "http://localhost:8001"`
-  (`frontend/src/api.ts:5`). Every request sends `X-API-Key` when `VITE_RAG_API_KEY` (falling back to
-  `VITE_API_KEY`) is set (`api.ts:6-7,16-18`). All routes in that app sit behind `Depends(verify_api_key)`
+- Transport: the retrieval API at `RAG_API_URL = VITE_RAG_API_URL ?? "http://127.0.0.1:8001"`
+  (`frontend/src/api.ts:7`). Every request sends `X-API-Key` when `VITE_RAG_API_KEY` (falling back to
+  `VITE_API_KEY`) is set (`api.ts:8-9,13-15`). All routes in that app sit behind `Depends(verify_api_key)`
   (`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/main.py:64`), which is a no-op while `API_KEY`
-  is empty (`shared-libs/platform-common/src/platform_common/auth.py:16-39`).
+  is empty (`shared-libs/platform-common/src/platform_common/auth.py`).
 - The page has **two request paths**. A pipeline with a `slug` is an assistant, and the page streams from
   `/api/assistants/{slug}/chat/stream`. A pipeline with a null slug is a legacy ingestion pipeline, and the
   page streams from `/chat/stream` (§3).
 - There is **no image attachment control** in the chat UI: the composer is a single text input plus `Send`.
   Multimodal content travels with the retrieval results (§9.4).
-- There is **no "Guardrails: On" toggle**. The sidebar exposes a Guardrails `<select>` whose default option is
-  `None`, plus every saved config (inactive ones are suffixed `(inactive)`).
+- There is **no "Guardrails: On" toggle**. The main config bar exposes a Guardrails `<select>` whose default
+  option is `None`, plus every saved config (inactive ones are suffixed `(inactive)`).
 - Chat users pick a pipeline by record from the selector. Each option reads `{name} ({rag_strategy})`.
 
 ---
@@ -28,23 +28,23 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
 
 ```
 +----------------------------------------------------------------------------------------------------------+
-| Conversations            |  [Mode: Hybrid][Limit: 20][Rerank: on][Top K: 5]                              |
-| [+ New]                  |  session: <id prefix> or "New Session"                                        |
-| ------------------------ |  You                                                            14:22         |
-| Pipeline  [select]       |  Find senior AI engineers with PyTorch, Neo4j and Qdrant experience.          |
-|  Strategy: hybrid        |                                                                               |
-|  Knowledge Product: name |  Assistant  [Normal RAG]                                         14:22        |
-|   · <chunk_strategy>     |  Based on the indexed resumes, **Alex Chen** is a Senior AI Engineer...       |
-|  Model: Gpt-oss-120b     |                                                                               |
-|  Endpoint: resume-scr... |  Faithful: 92%  Relevance: 88%  Ctx Prec: 75%  2 sources                      |
-| ------------------------ |  resume_alex_chen.pdf (Score: 0.94)                                           |
-| Guardrails [select: None]|  resume_elena_rostova.pdf (Score: 0.81)                                       |
-|  Mode: input             |  -------------------------------------------------------------------------    |
-|  Guards: ban_list, ...   |  [ Type your message...                                        ] [ Send ]     |
-| ------------------------ |                                                                               |
+| Conversations            |  [◀ History]  Strategy: hybrid (locked)  Model: Gpt-oss-120b (locked)         |
+| [+ New]                  |  session: <id prefix> or "New Session"  [End Session]  [Show settings] [Reset]|
+| ------------------------ |------------------------------------------------------------------------------|
+| Pipeline  [select]       |  [Retrieval mode: Hybrid][Retrieve limit: 20][Rerank: on][Top K: 5]           |
+|  Strategy: hybrid        |  [Prompt template: Pipeline default][Guardrails: None]                        |
+|  Knowledge Product: name |                                                                               |
+|   · <chunk_strategy>     |  You                                                            14:22         |
+|  Model: Gpt-oss-120b     |  Find senior AI engineers with PyTorch, Neo4j and Qdrant experience.          |
+|  Endpoint: resume-scr... |                                                                               |
+|  Memory: available · 24h |  Assistant  [Normal RAG]                                         14:22        |
+| ------------------------ |  Based on the indexed resumes, **Alex Chen** is a Senior AI Engineer...       |
 | Chat History             |                                                                               |
-|  <preview>               |                                                                               |
-|  12 messages · 14:22  ⋯  |                                                                               |
+|  <preview>               |  Faithful: 92%  Relevance: 88%  Ctx Prec: 75%  2 sources                      |
+|  12 messages · 14:22  ⋯  |  resume_alex_chen.pdf (Score: 0.94)                                           |
+|                          |  resume_elena_rostova.pdf (Score: 0.81)                                       |
+|                          |  -------------------------------------------------------------------------    |
+|                          |  [ Type your message...                                        ] [ Send ]     |
 +----------------------------------------------------------------------------------------------------------+
 |  Evaluation & Metrics (collapsible): Golden Dataset Eval | Eval Progress | Historical Metrics            |
 +----------------------------------------------------------------------------------------------------------+
@@ -54,13 +54,13 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
   The server creates the session on the next message.
 - Session rows show `preview` (the first user message truncated to 120 chars in the repository) or
   `Session <first 8 chars>`, the message count, and the last message time (HH:MM). A kebab menu offers
-  **Delete conversation** (`ChatPage.tsx:654-690`, `rag_db/repositories/chat_repository.py:150`).
+  **Delete conversation** (`ChatPage.tsx`, `rag_db/repositories/chat_repository.py`).
 - Messages are sorted by `created_at` with a user-before-assistant tie-break for identical timestamps
-  (`ChatPage.tsx:530-542`).
+  (`ChatPage.tsx`).
 - Assistant messages render through `MarkdownMessage` (`react-markdown` + `remark-gfm` + `remark-math` +
-  `rehype-katex`, `frontend/src/components/MarkdownMessage.tsx:1-5`). User text is rendered verbatim.
+  `rehype-katex`, `frontend/src/components/MarkdownMessage.tsx`). User text is rendered verbatim.
 - Source citations show **only the first 3** reranked chunks as
-  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:921-935`).
+  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:1258`).
   There is no chunk inspector drawer and no chunk-index display.
 - While streaming, the pending assistant bubble shows the current `status` message with a pulsing dot, then
   the streamed markdown with a blinking cursor.
@@ -71,7 +71,7 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
 
 ### 2.1 The pipeline information block
 
-The sidebar block under the pipeline selector shows four lines:
+The sidebar block under the pipeline selector shows five lines:
 
 | Line | Value |
 |---|---|
@@ -99,7 +99,7 @@ URL is on the Pipelines page (doc 02 §8).
 
 ## 3. The Request Path
 
-`handleSendMessage` builds one payload, then chooses the path (`ChatPage.tsx:371-406`).
+`handleSendMessage` builds one payload, then chooses the path (`ChatPage.tsx`).
 
 ### 3.1 An assistant (the record has a slug)
 
@@ -111,11 +111,13 @@ for await (const event of streamChat(
 )) { … }
 ```
 
-The page sends only `query`, `session_id` and the toolbar overrides. It does **not** send `collection`,
-`embedding_model` or `sparse_embedding_model`, because the assistant resolves them from its Knowledge Product.
-It also does not run the image-only dense override, because an assistant has no `modality` field.
+The page sends the query, the session id, the selected pipeline's id, and the per-turn overrides: the
+guardrails config, the prompt template and the model settings (`ChatPage.tsx:488-502`). It does **not** send
+`collection`, `embedding_model` or `sparse_embedding_model`, because the assistant resolves them from its
+Knowledge Product. It also does not run the image-only dense override, because an assistant has no `modality`
+field.
 
-`streamChat` (`frontend/src/api.ts:916`) takes an optional `opts` object: `{ path?, traceMode? }`. The default path stays `/chat/stream`.
+`streamChat` (`frontend/src/api.ts:1018`) takes an optional `opts` object: `{ path?, traceMode? }`. The default path stays `/chat/stream`.
 
 ### 3.2 A legacy ingestion pipeline (the slug is null)
 
@@ -142,35 +144,39 @@ the plain retrieval path only.
 | `rerank_enabled` | The toolbar Rerank checkbox (default on). |
 | `top_k` | The toolbar Top K (1–20, default 5). |
 | `guardrails_config_id` | The selected guardrails config id, omitted when `None`. |
+| `prompt_template_id` | The selected prompt template id, omitted when empty. An override for this turn only. |
+| `model_settings` | The model-settings overrides from the form (`temperature`, `top_p`, `top_k`, `max_tokens`). |
 | `pipeline_id` | The selected pipeline's id. Names the pipeline for the trace; the backend reads the records itself |
 | `collection`, `embedding_model`, `sparse_embedding_model` | Legacy path only, copied from the record. |
 
 On the assistant path the server applies `AssistantChatRequest`
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:51-63`). A missing
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:56-72`). A missing
 `retrieval_mode` becomes `dense`, because the fanout collections hold dense vectors only. A `hybrid` request
 against a product with no Qdrant collection also becomes `dense`. A request-level `guardrails_config_id` wins
 over the pipeline's own config, so the page can test another config without editing the pipeline.
 
 Server-side defaults come from `PipelineConfig`: `retrieval_mode=hybrid`, `retrieve_limit=20`,
-`rerank_enabled=true`, `top_k=5` (`rag_core/schemas.py:9-13`). The generation model falls back to
+`rerank_enabled=true`, `top_k=5` (`rag_core/schemas.py:36-41`). The generation model falls back to
 `settings.chat_model`.
 
 ### 3.4 Controls that remain
 
 | Control | Where | Values |
 |---|---|---|
-| `Mode` | Toolbar | `Hybrid`, `Dense`, `Sparse` |
-| `Limit` | Toolbar | 1–50, default 20 |
-| `Rerank` | Toolbar | A checkbox, default on |
-| `Top K` | Toolbar | 1–20, default 5. The group renders only while `Rerank` is on. |
-| Guardrails config | Sidebar | `None`, or one saved config. Inactive configs read `{name} (inactive)`. |
+| `Retrieval mode` | Settings row | `Hybrid`, `Dense`, `Sparse` |
+| `Retrieve limit` | Settings row | 1–50, default 20 |
+| `Rerank` | Settings row | A checkbox, default on |
+| `Top K (chunks)` | Settings row | 1–20, default 5. The control renders only while `Rerank` is on. |
+| `Prompt template` | Settings row | `Pipeline default`, or one saved template. An override for this turn only. |
+| `Guardrails` | Settings row | `None`, or one saved config. Inactive configs read `{name} (inactive)`. |
+| Model settings | Settings row | `temperature`, `top_p`, `top_k`, `max_tokens`, seeded from the pipeline. |
 
-The toolbar also shows the session indicator: a dot, plus the first 12 characters of the session id or
+The config bar also shows the session indicator: a dot, plus the first 12 characters of the session id or
 `New Session`.
 
 ### 3.5 The trace mode header
 
-Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:411`, `TRACE_MODE_HEADER` in `api.ts:912`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
+Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:538`, `TRACE_MODE_HEADER` in `api.ts:1015`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
 
 This matters because the page and an external caller hit **the same route**. The header is the only thing that separates them in the backends, and it is what tags the row `test` on the Real Time Monitoring page. A caller that knows nothing about the header cannot label real traffic as a test. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
@@ -224,7 +230,7 @@ Four controls are gone from the toolbar and the payload:
 **Reason:** the LLM query router and self-corrective RAG were never implemented. The old code imported
 `rag_core.query_router`, a module that never existed, so `POST /chat/stream` returned 500 on every request.
 The dead branch and the dead `config.rag_mode` read are gone
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/chat.py:570-580`). The page stops
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/chat.py`). The page stops
 offering a switch with no behaviour behind it.
 
 The server reports `route: "normal"` in the `done` metadata and in the `session` frame, and `route:
@@ -237,7 +243,12 @@ Three leftovers went with the controls, so nothing in the page refers to a route
 - The RAGAS panel held a branch that rendered `sc_iterations`, a self-corrective field that nothing ever
   wrote. The branch is gone.
 - The chat empty state carried a sentence about an "Intelligent (Auto)" classifier that picks greeting,
-  simple RAG or CRAG per query. It now describes the two real request paths.
+  simple RAG or CRAG per query. It now explains whether the selected pipeline keeps the conversation, and
+  how to start one.
+
+One badge remains: the page renders a `🔁 N loops` chip when `latency_ms.sc_loops > 1`
+(`ChatPage.tsx:1158-1168`). Nothing in the backend writes `sc_loops`, so the chip stays hidden with the
+current pipeline.
 
 ---
 
@@ -249,18 +260,18 @@ the OpenTelemetry context survives.
 
 | `type` | Payload keys | Emitted when |
 |---|---|---|
-| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:529`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py:160,176`). |
-| `token` | `content` | One frame per non-empty answer delta (`routes/chat.py:589-596`, `rag_core/pipeline.py:187`). |
-| `done` | `metadata` | The pipeline's done metadata: `answer`, `sources`, `retrieved_chunks`, `reranked_chunks`, `latency_ms` and `route: "normal"` (`rag_core/pipeline.py:193-210`). |
-| `session` | `session_id`, `message_id`, `route`, `metrics_status` | After the DB write. `route` is `blocked` on an output block, otherwise `normal` (`routes/chat.py:657-659`). |
-| `blocked` | `content`, `blocked_by_guard`, `blocked_on`, `blocked_title`, `session_id`, `message_id`, `route`, `metrics_status` | An input or an output guardrail block (`routes/chat.py:143-170,556,656`). |
-| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:661-662`). |
+| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:644`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py`). |
+| `token` | `content` | One frame per non-empty answer delta (`routes/chat.py`, `rag_core/pipeline.py`). |
+| `done` | `metadata` | The pipeline's done metadata: `answer`, `sources`, `retrieved_chunks`, `reranked_chunks`, `latency_ms` and `route: "normal"` (`rag_core/pipeline.py`). |
+| `session` | `session_id`, `message_id`, `route`, `metrics_status` | After the DB write. `route` is `blocked` on an output block, otherwise `normal` (`routes/chat.py`). |
+| `blocked` | `content`, `blocked_by_guard`, `blocked_on`, `blocked_title`, `session_id`, `message_id`, `route`, `metrics_status` | An input or an output guardrail block (`routes/chat.py`). |
+| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:795`). |
 
 The client splits the byte stream on `\n\n`, keeps only lines starting with `data: `, and `JSON.parse`s each
 into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`, `session_id`, `message_id`,
 `route`, `metrics_status`, `blocked_by_guard`, `blocked_on`, `blocked_title` and `metadata`
-(`api.ts:880-928`). The page prefers the `session` event's real ids over the `done` metadata, and marks a turn
-`blocked` when a `blocked` event arrived (`ChatPage.tsx:410-467`).
+(`api.ts:990-1008`). The page prefers the `session` event's real ids over the `done` metadata, and marks a turn
+`blocked` when a `blocked` event arrived (`ChatPage.tsx`).
 
 ---
 
@@ -273,14 +284,14 @@ The chat handlers run the guardrail check on the `guardrails_config_id`, for the
 - Blocked **output**: the streamed answer is replaced, the same blocked latency keys are merged in, and
   metrics are not enqueued.
 - `GUARD_BLOCK_COPY` covers `ban_list`, `pii_check` and `toxic_language`, each with an `input` and an `output`
-  sentence (`routes/chat.py:118-134`). The SSE `blocked` frame also carries `blocked_title`
+  sentence (`routes/chat.py:159`). The SSE `blocked` frame also carries `blocked_title`
   (`"Banned keyword"` / `"Personal information"` / `"Toxic language"`, else the guard name, else
   `"Guardrail"`).
 - The guardrails service names its guard `ban-list`, while the stored config uses `ban_list`.
   `rag_shared/guardrails_client.py` maps `_` to `-`, so the check reaches the service. Before that fix every
   check returned 404, the client read a non-200 as "passed", and no guardrail ever blocked anything.
 
-`BlockedCard` (`ChatPage.tsx:45-73`) maps `blocked_by_guard` to an icon, a title and a tone: `ban_list` → 🚫
+`BlockedCard` (`ChatPage.tsx:52`) maps `blocked_by_guard` to an icon, a title and a tone: `ban_list` → 🚫
 `Banned keyword`, `pii_check` → 🔒 `Personal information`, `toxic_language` → ⚠️ `Toxic language`. Any other
 guard falls back to 🛡️ with the guard name as the title. The phase label is `Response blocked` when
 `blocked_on === "output"`, otherwise `Input blocked`. The body is the server `content`, with a generic hint as
@@ -308,8 +319,8 @@ duplicated.
 
 After a turn, the page polls `GET /chat/messages/{message_id}/metrics` every **2500 ms**, up to **40**
 attempts, and tolerates HTTP 404 for the first **8** attempts (the worker may not have created the row yet)
-(`ChatPage.tsx:272-293`). It skips polling for blocked turns and for messages whose `metrics_status` is
-`skipped` or `failed` (`ChatPage.tsx:144-156`). When a poll returns `completed`, the historical stats are
+(`ChatPage.tsx:354-378`). It skips polling for blocked turns and for messages whose `metrics_status` is
+`skipped` or `failed` (`ChatPage.tsx:221-231`). When a poll returns `completed`, the historical stats are
 refreshed.
 
 ---
@@ -336,7 +347,7 @@ parameter, and both are optional while `API_KEY` is empty.
 The assistant routes answer `404 ASSISTANT_NOT_FOUND` for an unknown slug, `422 NOT_AN_ASSISTANT` for a legacy
 ingestion pipeline, `422 RAG_STRATEGY_UNAVAILABLE` when a store the strategy needs is missing, and
 `503 INGESTION_SERVICE_UNAVAILABLE` when the ingestion service does not answer
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:105-160`).
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:160-198`).
 
 ### 9.1 Sessions and message deletion
 
@@ -344,11 +355,11 @@ ingestion pipeline, `422 RAG_STRATEGY_UNAVAILABLE` when a store the strategy nee
   creates a session. There is no `POST /chat/sessions`.
 - `ChatSessionItem` keys: `session_id`, `created_at`, `last_message_at`, `preview`, `message_count`. `preview`
   is the first user message truncated to 120 chars. Because `list_sessions` inner-joins `chat_messages`, a
-  session with no messages is never listed (`chat_repository.py:120-155`).
+  session with no messages is never listed (`chat_repository.py:192-226`).
 - `ChatMessageItem` keys: `id`, `role`, `content`, `created_at`, `trace` (`retrieval_mode`, `rerank_enabled`,
   `generation_model`, `route`), `sources`, `metrics_status`, `blocked`, `blocked_by_guard`, `blocked_on`.
   `route` is read from the stored trace `latency_ms.route`, and `blocked` is true when `latency_ms.blocked` is
-  set or that route is `blocked` (`routes/chat.py:795-823`).
+  set or that route is `blocked` (`routes/chat.py`).
 - `DELETE /chat/sessions/{id}` soft-deletes the conversation and its turns and answers 204.
   `DELETE /chat/messages/{id}` returns `deleted_message_ids` covering the reply and its question. The
   `deleted_at` columns and both repository methods came in migration `005`.
@@ -390,18 +401,18 @@ Images are **never uploaded from the chat UI**. They travel with the retrieval r
 
 1. When a query runs against a store that holds image chunks (chunk `type == "image"`, content starting with
    `data:image/`, or `image_base64` plus `mime_type` metadata), `Generator.generate` splits the reranked chunks
-   into a text group and an image group (`generation_core/generator.py:97`, `rag_shared/chunk_utils.py:8-47`).
-2. The text chunks go to the chat model with the numbered-context RAG prompt (`generator.py:28-44`,
-   `prompt_builder.py:30-45`).
+   into a text group and an image group (`generation_core/generator.py`, `rag_shared/chunk_utils.py`).
+2. The text chunks go to the chat model with the numbered-context RAG prompt (`generator.py`,
+   `prompt_builder.py`).
 3. The image chunks go to the vision model, named by the request `vision_model` or `settings.vision_model`,
    default **`groq-vision`**, as an OpenAI multimodal message: one instruction text part, then per image a
    `[Image N] Source: <locator>` caption part and a `{"type": "image_url", "image_url": {"url": <data URI>}}`
    part. At most **3** images are attached, with `max_tokens=1024` and `temperature=0.2`
-   (`generation_core/vision_generator.py:21-70`).
+   (`generation_core/vision_generator.py`).
 4. When both a text answer and a vision answer exist, a third call to the `fusion_model` merges them.
    Otherwise the single available answer is returned. With no relevant chunks the answer is
    `NO_SOURCES_ANSWER`: `"I could not find any relevant sources in the knowledge base to answer this
-   question."` (`prompt_builder.py:5-7`).
+   question."` (`prompt_builder.py`).
 5. **A vision answer cannot stream.** With image chunks present, `generate_stream` makes one blocking call and
    yields the whole answer as a single `token` event. A text-only turn streams normally.
 6. `vision_model` and `fusion_model` are accepted overrides on `ChatRequest`, but the chat UI never sets them.

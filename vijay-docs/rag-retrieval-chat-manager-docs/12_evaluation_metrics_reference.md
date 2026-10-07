@@ -1,6 +1,6 @@
 # 12 — RAG Evaluation Metrics Reference Guide
 
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-02
 
 This document lists every metric the evaluation pipeline actually computes, the exact key it is stored under, how it is computed, its direction, and whether it requires an LLM judge (RAGAS) or is pure computation. It covers both **Live Chat** evaluation and **Offline (Golden Dataset)** evaluation.
 
@@ -24,7 +24,7 @@ Metric sources:
 
 ### 1. Formula-based metrics (offline golden runs only)
 
-`compute_retrieval_metrics(chunks, expected_sources, k_values)` returns exactly four keys, all computed at a **fixed `k = 5`**:
+`compute_retrieval_metrics(chunks, expected_sources, k_values)` returns exactly four keys. Precision, recall and hit use a **fixed `k = 5`**; `mrr` reads the full returned list:
 
 | Key | Definition | Edge cases |
 |---|---|---|
@@ -68,6 +68,7 @@ Retrieval and rerank metrics are computed on exact source matching, not on LLM j
 | `mrr_after` | `mrr` of the post-rerank list |
 | `mrr` | alias of `mrr_after` |
 | `mrr_delta` | `mrr_after - mrr_before` |
+| `mrr_before_at_k` | `mrr` of the pre-rerank list cut to the depth the reranker produced. This is the only pair at equal depth, so the stage reading compares it with `mrr_after` |
 | `kendall_tau` | `kendall_tau_rank_correlation(before, after)`, or `None` |
 | `ndcg` | `ndcg_at_k(after, expected_sources, 5)` |
 
@@ -105,6 +106,31 @@ Unlike the RAGAS keys, these two do not need a judge model and their values are 
 
 ---
 
+## The RAG Triad and the Stage Diagnosis
+
+The offline runner scores three more RAGAS metrics as one group, the RAG triad. `TRIAD_METRICS` names them (`ragas_client.py:263`) and `compute_triad_metrics()` produces them (`ragas_client.py:344`).
+
+| Key | Metric class | Inputs | Reads |
+|---|---|---|---|
+| `context_relevance` | `ContextRelevance` | question + contexts | the retrieval result alone |
+| `response_groundedness` | `ResponseGroundedness` | answer + contexts | the answer against its evidence |
+| `answer_relevancy` | `AnswerRelevancy` | question + answer | the answer against the question |
+
+`runner.py:126` merges the three keys into the same `generation_metrics` block as the other generation metrics, so no new column and no new stage exists for them. This is why the aggregate carries `mean_context_relevance` and `mean_response_groundedness` next to the older generation means.
+
+`diagnose()` (`eval_core/attribution.py`) reads the triad and names the stage that failed. Constants: `PASS_MARK = 0.7` (`attribution.py:27`) and `RERANK_LOSS_MARGIN = 0.05` (`attribution.py:31`). The reading order:
+
+1. No triad score at all → `unknown`.
+2. `context_relevance` below the pass mark → `retrieval`; `rerank` only when reranking ran and the reranked MRR fell below the retrieved MRR by more than the margin (`rerank_mrr + RERANK_LOSS_MARGIN < retrieval_mrr`). A run whose config sets `rerank_enabled = false` stays `retrieval`.
+3. `response_groundedness` below the pass mark → `generation_grounding`.
+4. `answer_relevancy` below the pass mark → `generation_relevance`.
+5. A partial triad → `unknown`.
+6. All three pass → `healthy`.
+
+`GET /evaluate/runs/{id}/items` returns the three scores as the per-item `triad` field and the stage reading as `diagnosis` (`routes/evaluate.py:429,433`). Both are computed when the report is read, from the stored metrics, so the rules can change without a re-run. A key the judge did not answer for is absent, not zero.
+
+---
+
 ## Direction Reference
 
 | Metric | Range | Higher is better | Stage |
@@ -119,6 +145,8 @@ Unlike the RAGAS keys, these two do not need a judge model and their values are 
 | `faithfulness` | 0–1 | yes | generation |
 | `answer_relevancy` | 0–1 | yes | generation |
 | `answer_correctness`, `accuracy` | 0–1 | yes | generation |
+| `context_relevance` | 0–1 | yes | triad (retrieval result) |
+| `response_groundedness` | 0–1 | yes | triad (answer against evidence) |
 | `behavior_match` | 0 or 1 | yes | generation (custom, not RAGAS) |
 | `keypoint_coverage` | 0–1 | yes (absent when not measurable) | generation (custom, not RAGAS) |
 
@@ -129,7 +157,7 @@ Unlike the RAGAS keys, these two do not need a judge model and their values are 
 * `settings.ragas_enabled = false` → all RAGAS calls return `{}`; live-chat staging returns empty `retrieval`/`reranker`/`generation` blocks. The two custom metrics (`behavior_match`, `keypoint_coverage`) are not RAGAS metrics, so they still compute in an offline run.
 * Empty answer → retrieval RAGAS and generation RAGAS are skipped.
 * No (normalized, non-blank) contexts → generation RAGAS is skipped.
-* `_should_skip_precision_recall(label, category)` skips `context_precision`/`context_recall` when `label == "incorrect"` or `category` is `out_of_corpus` / `unanswerable`. It is only reachable through `calculate_eval_metrics_async` / `compute_generation_metrics`; the live-chat and golden-runner paths do not pass `label`/`category`, so it does not fire there.
+* `_should_skip_precision_recall(label, category)` skips `context_precision`/`context_recall` when `label == "incorrect"` or `category` is `out_of_corpus` / `unanswerable`. It is only reachable through `calculate_retrieval_ragas_async` and `calculate_eval_metrics_async` (`ragas_client.py:134,394`); the live-chat and golden-runner paths pass no `label` and no `category`, so it does not fire there.
 * Non-finite RAGAS values (`NaN`), exceptions, and `None` results are dropped rather than stored.
 
 ---
@@ -188,6 +216,7 @@ GoldenItemEvaluator.evaluate_item()  per dataset item
        │                 → mrr_before, mrr_after, mrr, mrr_delta, kendall_tau, ndcg
        └── Generation  : compute_generation_ragas_metrics(..., ground_truth)
                          → faithfulness, answer_relevancy, answer_correctness + accuracy
+                         + triad: context_relevance, response_groundedness, answer_relevancy
                          + custom, no-judge metrics: behavior_match, keypoint_coverage
        │
        ▼
@@ -211,8 +240,8 @@ GoldenEvaluationsPage → Overall KPIs / Rubric Table / Metrics by Category / dr
 | Stage | Keys produced |
 |---|---|
 | `retrieval` (from `retrieval_metrics`) | `mean_precision`, `mean_recall`, `mean_hit`, `mean_mrr` |
-| `reranker` (from `rerank_metrics`) | `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`, `mean_ndcg`, `mean_kendall_tau` |
-| `generation` (from `generation_metrics`) | `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness`, `mean_behavior_match`, `mean_keypoint_coverage` |
+| `reranker` (from `rerank_metrics`) | `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`, `mean_mrr_before_at_k`, `mean_ndcg`, `mean_kendall_tau` |
+| `generation` (from `generation_metrics`) | `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness`, `mean_context_relevance`, `mean_response_groundedness`, `mean_behavior_match`, `mean_keypoint_coverage` |
 
 The payload also contains `item_count` and `config` (the run configuration). Runs with no completed items return empty stage blocks. `None` values (for example `kendall_tau`) are excluded from the average rather than counted as zero. An absent `keypoint_coverage` key is likewise excluded from its mean.
 
@@ -224,14 +253,14 @@ The aggregate payload also carries a `categories` block, keyed by the row's `que
 
 ## CRAG / Self-Corrective Metrics
 
-Per-iteration metrics described in earlier revisions of this document are **not implemented in the current code**:
+The self-corrective loop is **not implemented**. Per-iteration metrics described in earlier revisions of this document do not exist in the current code:
 
 * `eval_core` contains no `_iteration_metrics_async` and no code path that produces `sc_iterations`.
-* The self-corrective pipeline does not exist either: `RAGPipeline` implements only `retrieve`, `rerank`, `generate` and `chat`, and `rag_core.query_router` (imported by `POST /chat/stream`) is missing, so the streaming CRAG branch (`pipeline.stream_chat_self_corrective`) cannot run. Live-chat metrics are therefore produced only from the non-streaming `POST /chat` path.
-* The frontend reads `metrics.generation.sc_iterations` (ChatPage, EvaluationsPage, GoldenEvaluationsPage) and `latency_ms.sc_loops` (ChatPage), but nothing in the backend writes either key. `[INFERENCE]` Those panels therefore render empty.
-* The live metrics job **no longer fails**, but it used to: `eval_worker/tasks.py` passed a seventh `sc_iterations` argument to `compute_chat_pipeline_metrics`, which accepts only `settings`, `question`, `answer`, `retrieved_chunks` and `reranked_chunks`. Every call raised `TypeError` and the row was recorded as `status="failed"` with no scores. The extra argument is gone (`tasks.py:74-80`) and the call now matches the signature (`chat_metrics.py:121-128`). The panel above still renders empty, but for the reason in the previous bullet, not because the job fails.
-* The golden runner applies neither `rag_mode` nor `self_corrective_max_loops` even though both are part of `EvalRunConfig`; `GoldenItemEvaluator.evaluate_item` runs retrieve → rerank → generate exactly once, and `PipelineConfig` does not define those fields at all (they are dropped when the worker builds the config).
-* **The offline (golden) path is broken at the first call in the loop.** `run_evaluation` calls `evaluator.evaluate_item(golden, config, k_values, router_enabled=…, router_mode=…)` (`tasks.py:189-192`), but `evaluate_item` accepts only `(item, config, k_values)` (`runner.py:49-54`), so the call raises `TypeError`. The lines after it would fail as well: `result.latency_ms` (`tasks.py:231`) is not a field of `EvalItemResult` (`runner.py:33-39`). Each item is caught and stored with `status="failed"`. Verified by reading both sides of the call; the earlier `[INFERENCE]` marker is removed.
+* The self-corrective pipeline does not exist either. `RAGPipeline` implements `retrieve`, `rerank`, `generate`, `chat` and `stream_chat` only (`libs/rag-core/src/rag_core/pipeline.py:69,91,199,270,384`), and the module `rag_core.query_router` does not exist anywhere in the tree. The streaming CRAG branch (`pipeline.stream_chat_self_corrective`) and the dead `query_router` import are gone from `POST /chat/stream`. Live-chat metrics are produced only from the non-streaming `POST /chat` path.
+* The frontend still reads two fields the backend does not write. `EvaluationsPage.tsx:247` reads `metrics.generation.sc_iterations`, and `EvaluationsPage.tsx:250` and `ChatPage.tsx:1158,1168` read `latency_ms.sc_loops`. `GoldenEvaluationsPage.tsx` reads neither. Nothing in the backend writes either key, so those panels render empty. `[INFERENCE]`
+* The live metrics job **works**, but it used to fail: the worker passed a seventh `sc_iterations` argument to `compute_chat_pipeline_metrics`, which accepts only `settings`, `question`, `answer`, `retrieved_chunks` and `reranked_chunks`. Every call raised `TypeError` and the row was recorded as `status="failed"` with no scores. The extra argument is gone: the call is at `apps/eval-worker/src/eval_worker/tasks.py:66-72` and the signature is at `libs/eval-core/src/eval_core/chat_metrics.py:121`.
+* The golden runner reads `rag_mode` and `self_corrective_max_loops` from the run config into `PipelineConfig` (`tasks.py:148-149`), but `PipelineConfig` declares neither field (`libs/rag-core/src/rag_core/schemas.py:36`), so pydantic drops both. `GoldenItemEvaluator.evaluate_item` therefore runs retrieve → rerank → generate exactly once.
+* The offline (golden) path runs. `run_evaluation` calls `evaluate_item(golden, config, k_values, strategy=…, stores=…, judge_model=…)` (`tasks.py:218-225`), which matches the signature `evaluate_item(self, item, config, k_values=None, *, strategy=None, stores=None, judge_model=None)` (`runner.py:49-58`). `EvalItemResult` carries no `latency_ms`, and the worker reads it with `getattr(result, "latency_ms", None) or {}` (`tasks.py:253`) instead of failing on it.
 
 ---
 
@@ -241,8 +270,8 @@ Per-iteration metrics described in earlier revisions of this document are **not 
 |---|---|---|
 | Retrieval/rerank truncation `k` | `5` (hard-coded in both metric modules; `k_values` argument unused) | `retrieval_metrics.py`, `rerank_metrics.py` |
 | `eval_default_k` setting | `5` (not read by the metric functions) | `rag_shared/config.py` |
-| RRF constant | `k=60`, in the assistant `hybrid` path: `reciprocal_rank_fusion(..., k=60)` fuses the Qdrant dense list with the OpenSearch BM25 list | `libs/vector-core/src/vector_core/relational.py:140`, called from `libs/retrieval-core/src/retrieval_core/kp_retriever.py:67` |
-| RAGAS judge model | `RAGAS_JUDGE_MODEL`, default `llama-3.3-70b-versatile` | `rag_shared/config.py`; `backend/.env.example:68` sets `Gpt-oss-120b` |
+| RRF constant | `k=60`, the default of `reciprocal_rank_fusion`; the assistant `hybrid` path calls it with no `k` and fuses the Qdrant dense list with the OpenSearch BM25 list | `libs/vector-core/src/vector_core/relational.py:140`, called from `libs/retrieval-core/src/retrieval_core/kp_retriever.py:78` |
+| RAGAS judge model | `RAGAS_JUDGE_MODEL`, default `llama-3.3-70b-versatile` | `rag_shared/config.py:83`; `backend/.env.example:73` sets `Gpt-oss-120b` |
 | RAGAS judge model (per run) | `EvalRunConfig.judge_model`, nullable. Empty means `settings.ragas_judge_model`. Stored in `evaluation_runs.config` | `evaluate.py`, `evaluation_repository.py` |
 | RAGAS LLM endpoint | LiteLLM proxy: `LITELLM_PROXY` / `LITELLM_BASE_URL` / `settings.litellm_base_url`, normalized to `.../v1`; key from `LITELLM_API_KEY` / `OPENAI_API_KEY` / `settings.openai_api_key` | `ragas_client.py` |
 | RAGAS embeddings | `settings.embedding_model`, `nvidia-embed-textonly` in the shipped `.env` (2048 dimensions) — used by `AnswerRelevancy` and `AnswerCorrectness` | `ragas_client.py`, `rag_shared/config.py`, `backend/.env.example:40-42` |

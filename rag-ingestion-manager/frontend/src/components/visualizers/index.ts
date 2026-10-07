@@ -22,29 +22,29 @@ export interface VisualizerEntry {
  */
 export const VISUALIZERS: Record<string, VisualizerEntry> = {
   vector_qdrant: {
-    label: "Vector Search",
+    label: "Dense Vector Store",
     engine: "Qdrant",
     icon: "🌌",
     color: "#38bdf8",
     Component: VectorVisualizer,
   },
   lexical_opensearch: {
-    label: "Lexical BM25",
+    label: "Sparse Vector Store",
     engine: "OpenSearch",
     icon: "🔍",
     color: "#818cf8",
     Component: LexicalVisualizer,
   },
   relational_pgvector: {
-    label: "Relational Chunks",
-    engine: "PostgreSQL",
+    label: "Relational Chunk Store",
+    engine: "Postgres",
     icon: "🗄️",
     color: "#fbbf24",
     Component: RelationalVisualizer,
   },
   cache_redisvl: {
-    label: "Semantic Cache",
-    engine: "RedisVL",
+    label: "Cache Store",
+    engine: "Redis VL",
     icon: "⚡",
     color: "#f472b6",
     Component: CacheVisualizer,

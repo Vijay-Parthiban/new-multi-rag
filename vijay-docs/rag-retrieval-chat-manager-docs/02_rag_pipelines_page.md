@@ -1,6 +1,6 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
@@ -20,10 +20,10 @@ An assistant holds five parts:
 
 Key facts:
 
-- The page writes through the ingestion manager: `API_URL = VITE_API_URL ?? "http://localhost:8007"`
-  (`frontend/src/api.ts:3`).
+- The page writes through the ingestion manager: `API_URL = VITE_API_URL ?? "http://127.0.0.1:8007"`
+  (`frontend/src/api.ts:6`).
 - The endpoints the page hands out belong to the retrieval manager:
-  `RAG_API_URL = VITE_RAG_API_URL ?? "http://localhost:8001"` (`frontend/src/api.ts:5`).
+  `RAG_API_URL = VITE_RAG_API_URL ?? "http://127.0.0.1:8001"` (`frontend/src/api.ts:7`).
 - An assistant owns no document and no collection. It reads the Knowledge Product's stores, so the page
   carries no source picker, no folder picker, no chunking control and no scraper control (§4).
 - The `description` is the record's stored summary. The form hint for the field reads
@@ -41,7 +41,9 @@ Product** select offers only products with at least one enabled retrieval destin
 
 ## 2. The Seven Form Fields
 
-One renderer, `PipelineFields` (`PipelinesPage.tsx:106`), serves both the create card and the edit modal.
+One renderer, `PipelineFields` (`PipelinesPage.tsx:258`), serves both the create card and the edit modal.
+It renders seven fields, then a **Model settings** fieldset with four more controls (`temperature`,
+`top_p`, `top_k`, `max_tokens`). The form therefore has eleven controls in total.
 
 | Field | Required | What it selects |
 |---|---|---|
@@ -58,11 +60,11 @@ Field notes:
 - **Knowledge Product.** The option list holds only products with at least one enabled retrieval destination
   (`vector_qdrant`, `lexical_opensearch` or `relational_pgvector`). Each option reads
   `{name} — {n} destinations`. Below the select the page renders one chip per enabled destination, with the
-  store name from `destinationStoreLabel` (`frontend/src/api.ts:469`). While the list loads, the form is
+  store name from `destinationStoreLabel` (`frontend/src/api.ts:472`). While the list loads, the form is
   disabled and the hint reads `Loading knowledge products…`.
 - **RAG Strategy.** The page rebuilds this select from the selected product's destinations
-  (`frontend/src/api.ts:459-466`). Each option reads the label from `RAG_STRATEGY_LABELS`
-  (`frontend/src/api.ts:394-424`), and the options are grouped under `RAG_STRATEGY_GROUP_LABELS`
+  (`frontend/src/api.ts:456-470`). Each option reads the label from `RAG_STRATEGY_LABELS`
+  (`frontend/src/api.ts:394-423`), and the options are grouped under `RAG_STRATEGY_GROUP_LABELS`
   (`frontend/src/api.ts:426-429`): `Retrieval — chooses where to search` and
   `Reasoning — grades what it found`. The description of the chosen strategy shows below the select. A new
   product resets the strategy to the first available option, because the old strategy may need a store the
@@ -82,7 +84,7 @@ Field notes:
 - **Guardrails Config.** The config id travels with the pipeline. The Chat page can override it for one
   request without editing the pipeline.
 
-The page rejects an incomplete create in the browser. `Create assistant` stays disabled until the name has 2
+The page rejects an incomplete create in the browser. `Create Pipeline` stays disabled until the name has 2
 characters, the description has 8 characters, and the product, the strategy and the chat model are all set.
 Field errors appear under the field in `.field-hint`. API errors appear in an `.alert-error` as
 `{code}: {message}`.
@@ -171,8 +173,8 @@ dialog passes nothing.
 
 ### 5.1 The create dialog
 
-`Create Pipeline` in the header opens it. It carries the same seven fields as before, through
-`PipelineFields`, and the footer is `Cancel` and `Create Pipeline`. The submit button lives in the footer
+`Create Pipeline` in the header opens it. It carries the same seven fields as before, plus the Model
+settings fieldset, through `PipelineFields`, and the footer is `Cancel` and `Create Pipeline`. The submit button lives in the footer
 and reaches the form through `form="create-pipeline-form"`, so the form markup and the footer stay
 separate.
 
@@ -188,7 +190,7 @@ shows it.
 One component copies a URL. It writes to the clipboard, swaps `IconCopy` for `IconCheckCircle`, and changes
 its label to `Copied` for 2000 ms. `aria-label="Copy assistant endpoint"`.
 
-It appears inside every `EndpointRow` in the view dialog, and on every card that has a slug.
+It appears inside every `EndpointRow` in the view dialog. The card endpoint block shows the URL without a copy control.
 
 ---
 
@@ -284,7 +286,7 @@ grey on a dark grey card. Dark mode is unchanged.
 
 - No product qualifies: `.panel-empty` reads
   `No Knowledge Product has an enabled retrieval destination yet.` and links to the ingestion Knowledge Store
-  page at `http://localhost:5173/knowledge-store`.
+  page at `http://127.0.0.1:5173/knowledge-store`.
 - No pipelines saved: `No pipelines yet. Select Create Pipeline to build one.`
 - Loading: `Loading pipelines…`
 
@@ -298,12 +300,12 @@ and the footer is `Cancel` and `Save changes`.
 It uses the same `Modal` shell as §5, at `--lg` width, with `initialFocus={editNameRef}`. Opening it closes
 the view dialog first, so two dialogs never stack.
 
-The dialog renders the same seven fields through `PipelineFields`. `Save changes` sends
+The dialog renders the same seven fields, plus the Model settings fieldset, through `PipelineFields`. `Save changes` sends
 `PATCH /api/pipelines/{id}` with the full set, then reloads the grid.
 
 `PATCH` accepts `name`, `description`, `slug`, `rag_strategy`, `chat_model`, `prompt_template_id`,
-`guardrails_config_id`, `knowledge_product_id` and `embedding_model`
-(`frontend/src/api.ts:300-315`). Every component of an existing assistant stays editable.
+`guardrails_config_id`, `knowledge_product_id`, `embedding_model` and `model_settings`
+(`frontend/src/api.ts:366-383`). Every component of an existing assistant stays editable.
 
 ---
 
@@ -311,8 +313,8 @@ The dialog renders the same seven fields through `PipelineFields`. `Save changes
 
 | What it is | Value | Builder |
 |---|---|---|
-| OpenAI base URL | `http://localhost:8001/v1/assistants/{slug}` | `assistantBaseUrl` (`frontend/src/api.ts:1183`) |
-| Native chat URL | `http://localhost:8001/api/assistants/{slug}/chat` | `assistantChatUrl` (`frontend/src/api.ts:1188`) |
+| OpenAI base URL | `http://127.0.0.1:8001/v1/assistants/{slug}` | `assistantBaseUrl` (`frontend/src/api.ts:1358`) |
+| Native chat URL | `http://127.0.0.1:8001/api/assistants/{slug}/chat` | `assistantChatUrl` (`frontend/src/api.ts:1363`) |
 
 The host comes from `RAG_API_URL`. The port is `8001`, not `8007`. Port `8007` already owns
 `/api/pipelines/{uuid}` with a different payload shape, so the assistant surface lives beside the chat
@@ -320,13 +322,13 @@ service.
 
 An OpenAI SDK client points `base_url` at the base URL. The SDK appends `/chat/completions`, which is the
 route `POST /v1/assistants/{slug}/chat/completions`
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:336`).
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:513`).
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8001/v1/assistants/resume-screener",
+    base_url="http://127.0.0.1:8001/v1/assistants/resume-screener",
     api_key="unused",  # the service needs a key only when API_KEY is set
 )
 
@@ -345,7 +347,7 @@ keeps sessions.
 
 ## 9. Error Codes the Page Can Show
 
-The page renders `{code}: {message}` for an `ApiError` (`describeError`, `PipelinesPage.tsx:71`).
+The page renders `{code}: {message}` for an `ApiError` (`describeError`, `PipelinesPage.tsx:86`).
 
 | Code | HTTP | Cause |
 |---|---|---|
@@ -356,7 +358,7 @@ The page renders `{code}: {message}` for an `ApiError` (`describeError`, `Pipeli
 | `KNOWLEDGE_PRODUCT_NOT_FOUND` | 422 | The Knowledge Product is missing, or its id is invalid. |
 
 The validation codes come from `_validate_create` and `_validate_assistant_options` in
-`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:204-236`. The status codes come from the shared
+`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:224-270`. The status codes come from the shared
 error classes: `ValidationError` → 422, `ConflictError` → 409, `NotFoundError` → 404
 (`rag-ingestion-manager/backend/src/file_manager/core/errors.py:16-28`).
 

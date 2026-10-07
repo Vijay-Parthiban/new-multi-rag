@@ -1,6 +1,6 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-09-29
+**Last updated:** 2026-10-02
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
@@ -8,7 +8,7 @@ mandatory. Section 5 gives the fastest path for a machine that already ran the p
 
 **Section 5b is the recommended way to run the platform.** It starts each project as one container
 stack, with one command per project and nothing installed on the host. Sections 4 and 5 remain for
-running the nine processes by hand, which is useful when you are changing their code and want a fast
+running the eleven processes by hand, which is useful when you are changing their code and want a fast
 restart.
 
 The two projects are:
@@ -43,7 +43,8 @@ Know this table before you start. One row surprises people: **one Qdrant serves 
 | Qdrant | 6333 | 6333 | `rag-ingestion-manager/docker-compose.yaml` | **Everything:** the scraper's `scrape_embeddings` and every `kp_*` knowledge product collection the assistants read |
 | MinIO | 9000, 9001 | 9000, 9001 | `rag-ingestion-manager/docker-compose.yaml` | Source document buckets |
 | OpenSearch | 9200, 9600 | 9200, 9600 | `rag-ingestion-manager/docker-compose.yaml` | `kp_*` lexical indexes, BM25 |
-| Web scraper API | 8000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | `scrape_embeddings`, the ingestion scraper path |
+| Web scraper API | 8000 | 8000 (`scraper` profile) | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-api` | `scrape_embeddings`, the ingestion scraper path |
+| Web scraper worker | — | — | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-worker` | Crawl, scrape and page-render jobs |
 | Guardrails service | 18000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | Guard checks, guard traces |
 | LiteLLM proxy | 4000 | 4000 | **external** container | Every chat, embedding, rerank and caption call. It requires a key: `OPENAI_API_KEY`, `sk-bot` by default |
 | LiteLLM database | 5433 | 5432 | **external** container | LiteLLM's own keys and spend |
@@ -113,9 +114,9 @@ If you do not have them, run one LiteLLM yourself and set `LITELLM_BASE_URL` acc
 ### 3.2 The repository stack
 
 The ingestion compose file is the only one in this repository that declares the shared infrastructure:
-PostgreSQL, Redis, Qdrant on 6333, MinIO, OpenSearch, the web scraper, the guardrails service and an
+PostgreSQL, Redis, Qdrant on 6333, MinIO, OpenSearch, the guardrails service and an
 OpenTelemetry collector. A Neo4j service is still declared there and **no destination uses it**; you can
-ignore it.
+ignore it. The web scraper is declared there too, but it runs on the host (section 4.4).
 
 The build contexts are the monorepo root, so run compose from its own directory:
 
@@ -124,13 +125,9 @@ cd rag-ingestion-manager
 docker compose up -d postgres redis qdrant minio opensearch otel-collector
 ```
 
-Wait for the health checks, then start the two services that separate containers provide:
+Wait for the health checks, then start the guardrails service. It is published on host port 18000.
 
 ```bash
-# The web scraper. It needs its tables, which the migrate service creates.
-docker compose up -d --no-recreate scraper-migrate scraper-api
-
-# The guardrails service. It is published on host port 18000.
 docker compose up -d --no-recreate guardrails-service
 ```
 
@@ -146,8 +143,8 @@ it whenever `guardrails-service/pyproject.toml`, `config.py` or `server.py` chan
 docker compose build guardrails-service && docker compose up -d guardrails-service
 ```
 
-The service imports 13 validator modules at start, so give it about 15 seconds before the first
-request. The three LLM-backed validators also need LiteLLM on port 4000; the compose entry sets
+The service imports its validator modules at start, so give it about 15 seconds before the first
+request. The LLM judge validator also needs LiteLLM on port 4000; the compose entry sets
 `extra_hosts: host.docker.internal:host-gateway` so the container can reach it.
 
 OpenSearch takes the longest to become healthy. Check all of them:
@@ -238,11 +235,12 @@ falls back to a local model whose vector size does not match the collection.
 
 ---
 
-## 4. Run the four apps on the host, their dependencies in Docker
+## 4. Run the apps on the host, their dependencies in Docker
 
-**This is the mode to use while you change code.** The four processes run from source with hot reload,
-so an edit takes effect on save and nothing is rebuilt. Postgres, Redis, Qdrant, MinIO, OpenSearch, the
-scraper and the guardrails service stay in containers, because those are not files you edit.
+**This is the mode to use while you change code.** The processes run from source with hot reload, so an
+edit takes effect on save and nothing is rebuilt. Postgres, Redis, Qdrant, MinIO, OpenSearch and the
+guardrails service stay in containers, because those are not files you edit. The scraper runs here too
+(section 4.7), so its code changes the same way.
 
 Use one terminal per process. Each command below runs in the foreground, so its log stays readable and
 Ctrl-C stops only that one.
@@ -252,6 +250,8 @@ sh scripts/dev.sh deps              # start every dependency container
 sh scripts/dev.sh ingestion-api     # :8007, with --reload
 sh scripts/dev.sh ingestion-worker
 sh scripts/dev.sh ingestion-web     # :5173
+sh scripts/dev.sh scraper-api       # :8000, with --reload, runs crawler-db-migrate first
+sh scripts/dev.sh scraper-worker
 sh scripts/dev.sh retrieval-api     # :8001, with --reload
 sh scripts/dev.sh retrieval-worker
 sh scripts/dev.sh retrieval-web     # :5174
@@ -263,9 +263,9 @@ sh scripts/dev.sh deps-stop         # stop the dependencies
 **On Windows use `sh scripts/dev.sh`, not `bash scripts/dev.sh`.** `bash` on the PATH resolves to the
 WSL launcher, which has no Docker and no `uv`. `sh` runs the file in the same shell you are already in.
 
-The `--reload` flag is on both APIs, so a change to a Python file in either backend applies without a
-restart. The two queue workers have no such flag: they are long-lived consumers, so a change there needs
-Ctrl-C and the subcommand again. Neither frontend needs a flag; Vite hot-reloads on save.
+The `--reload` flag is on the APIs, so a change to a Python file in a backend applies without a restart.
+The queue workers have no such flag: they are long-lived consumers, so a change there needs Ctrl-C and
+the subcommand again. No frontend needs a flag; Vite hot-reloads on save.
 
 ### How the host processes get their settings
 
@@ -278,9 +278,16 @@ on top, and the later file wins:
 | `rag-ingestion-manager/backend/.env.local` | Optional host override | no |
 | `rag-retrieval-chat-manager/backend/.env` | The **container** names: `postgres`, `redis`, `qdrant`, `host.docker.internal` | no (gitignored) |
 | `rag-retrieval-chat-manager/backend/.env.local` | The host values: `localhost` on every port | no |
+| `web-scrapper-workspace/.env` | The **container** names, used by the workspace's own compose | yes |
+| `web-scrapper-workspace/.env.local` | The host values for the scraper, read after `.env` | no |
 
 `.env.local` is gitignored at the repository root, so it never travels. An unset key falls through to
 `.env`, and a real environment variable still beats both.
+
+Two keys are worth checking in that file on a host run: `OTEL_TRACING_ENABLED` must be `true`, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` must point at `http://localhost:4318`. The `.env` value, `http://otel:4318`,
+names the compose service and does not resolve from the host. With tracing off, no span reaches Langfuse
+or Phoenix and no error is logged: a `test` turn and a `prod` turn look the same from the outside.
 
 The retrieval `.env` is written for the containers, so **it is the file that needs a `.env.local`**.
 Delete that file and the same backend runs against the containers again with no edit.
@@ -333,12 +340,12 @@ ERROR:    Application startup failed. Exiting.
 A stale `ingestion.db` may still sit in the `rag-ingestion-manager_file_storage` volume. Nothing
 reads it now. Rename or delete it when you are sure no old run needs it.
 
-The two Qdrant variables name two different servers, and both are deliberate:
+The two Qdrant variables name the same server. One Qdrant on 6333 holds everything. Set both anyway:
 
 - `QDRANT_URL` is the legacy scrape store (`scrape_embeddings`) used by the scraper pipeline.
 - `QDRANT_KP_URL` is where the ingestion fanout writes knowledge-product collections, and where the
-  retrieval service reads them through `KpRetriever`. Leave it unset and the reader silently uses the
-  legacy server, finds no product collection, and answers "no relevant sources".
+  retrieval service reads them through `KpRetriever`. Set it explicitly: an empty value falls back
+  silently, and a fallback that always succeeds would hide a typo rather than fail.
 
 Run the migration, then the API:
 
@@ -420,11 +427,14 @@ The keys that must differ between the two modes:
 | `INGESTION_SERVICE_URL` | `http://host.docker.internal:8007` | `http://localhost:8007` |
 | `GUARDRAILS_URL` | `http://host.docker.internal:18000` | `http://localhost:18000` |
 | `LITELLM_BASE_URL` | `http://host.docker.internal:4000` | `http://localhost:4000` |
-| `OTEL_TRACING_ENABLED` | `true` | `false` |
+| `OTEL_TRACING_ENABLED` | `true` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel:4318` | `http://localhost:4318` |
 
-`OTEL_TRACING_ENABLED=false` matters more than it looks. With it on, every request tries to export spans
-to the collector's **container** hostname, which does not resolve from the host, so each request is slow
-and logs an error.
+`OTEL_TRACING_ENABLED` and its target have to agree with where the API runs. On the host the target is
+`http://localhost:4318`; the `http://otel:4318` in `.env` is the compose service name and does not
+resolve from the host. **Keep tracing on for a real run.** A `false` here switches export off for the
+whole app, so neither Langfuse nor Phoenix sees a span, and the trace mode makes no difference: a `test`
+turn and a `prod` turn are equally silent. Nothing logs an error either, because the tracer never starts.
 
 The variables, and why each one matters:
 
@@ -439,7 +449,7 @@ The variables, and why each one matters:
 | `GUARDRAILS_URL` | The guardrails service on 18000 | Guardrails silently pass every request |
 | `LITELLM_BASE_URL` | The LiteLLM proxy on 4000 | No answer, no embedding |
 | `EMBEDDING_MODEL` | A model the proxy serves | Vector search returns nothing, or the fanout fails |
-| `OTEL_TRACING_ENABLED` | `false` on a host run | Export errors when no collector answers on 4318 |
+| `OTEL_TRACING_ENABLED` | `true` on a host run, with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` | `false` turns tracing off silently: no span reaches Langfuse or Phoenix, for a `test` turn and a `prod` turn alike, and nothing is logged |
 
 `QDRANT_KP_URL` must name the same server as `QDRANT_URL`. One Qdrant holds the `kp_*` collections
 **and** `scrape_embeddings`. Set it explicitly anyway: the reader resolves
@@ -480,8 +490,57 @@ node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5174
 Open <http://127.0.0.1:5174>. Use `127.0.0.1`, not `localhost`, for the reason in section 8.
 
 The Vite config sets no dev proxy, so the browser calls `8001` and `8007` directly. `src/api.ts` supplies
-those defaults, and no frontend `.env` is needed. To point the UI at other hosts, set `VITE_API_URL`,
-`VITE_RAG_API_URL` and `VITE_SCRAPER_URL`.
+those defaults, and no frontend `.env` is needed. To point the UI at other hosts, set `VITE_API_URL`
+and `VITE_RAG_API_URL`. `VITE_SCRAPER_URL` belongs to the ingestion frontend, not this one.
+
+### 4.7 The web scraper
+
+The scraper is a separate application, `web-scrapper-workspace`, with its own FastAPI service and its
+own RQ worker. Both run on the host now, so its code hot-reloads like the rest. It shares the ingestion
+project's Postgres (database `crawler`), Redis and Qdrant, and it needs no container of its own.
+
+One-time setup:
+
+```bash
+cd web-scrapper-workspace
+uv sync --all-packages
+uv run playwright install chromium      # 112 MB, once per machine
+```
+
+Then one terminal each:
+
+```bash
+sh scripts/dev.sh scraper-api           # :8000, with --reload
+sh scripts/dev.sh scraper-worker
+```
+
+`scraper-api` runs `crawler-db-migrate` first, so the `crawler` tables are always at the head. Stop the
+container form before you start the host one, or port 8000 is taken:
+
+```bash
+cd rag-ingestion-manager
+docker compose stop scraper-api scraper-worker
+```
+
+Three details are worth knowing:
+
+- **Both processes must share one working directory.** `SCRAPE_DATA_DIR` and `CRAWL_DATA_DIR` are
+  relative, the worker writes the page files and the API reads them back for the ingestion job. The
+  commands above both run from `web-scrapper-workspace`, which keeps them together. The files land in
+  `web-scrapper-workspace/data/`.
+- **The worker uses `rq.worker.SimpleWorker`.** The default RQ worker calls `os.fork()`, which Windows
+  does not have, so the process would die the moment a job arrives. `dev.sh` passes the flag for you,
+  as it does for the retrieval evaluation worker.
+- **A crawl cache from the container runs is stale.** `crawl_jobs` stores absolute paths into the
+  container volume, so a host scrape that reuses one of those crawls fails with a `404` on the links
+  file. The rows are a cache, not data. Clear them once after the switch:
+
+```bash
+docker exec rag-ingestion-manager-postgres-1 psql -U crawler -d crawler \
+  -c "truncate crawl_jobs, crawl_results, scrape_jobs"
+```
+
+The container form stays available for a deployment without a host checkout. See section 5b.
 
 ---
 
@@ -492,7 +551,7 @@ Start in this order. Each step depends on the one before it.
 1. LiteLLM on 4000 and the LiteLLM database on 5433.
 2. The repository infrastructure: PostgreSQL, Redis, **Qdrant on 6333**, MinIO, OpenSearch, the OTel
    collector.
-3. The web scraper and the guardrails service.
+3. The guardrails service in Docker, and the web scraper on the host.
 4. The databases and roles, then the migrations for both backends.
 5. The ingestion API, then its two workers, then its frontend.
 6. The retrieval API, then its evaluation worker, then its frontend.
@@ -505,16 +564,22 @@ cd <external-services-dir> && docker compose up -d    # litellm:4000, postgres:5
 
 # 2. Repository infrastructure.
 cd rag-ingestion-manager && docker compose up -d postgres redis qdrant minio opensearch otel-collector
-cd rag-ingestion-manager && docker compose up -d --no-recreate scraper-migrate scraper-api guardrails-service
+cd rag-ingestion-manager && docker compose up -d --no-recreate guardrails-service
 
-# 3. Ingestion backend.
+# 3. The web scraper, on the host.
+cd web-scrapper-workspace && uv sync --all-packages && uv run playwright install chromium   # once
+cd web-scrapper-workspace && uv run crawler-db-migrate
+cd web-scrapper-workspace && uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+cd web-scrapper-workspace && uv run rq worker crawl scrape scrape-page --url redis://localhost:6379/0 --worker-class rq.worker.SimpleWorker
+
+# 4. Ingestion backend.
 cd rag-ingestion-manager/backend && uv run ingestion-db-migrate
 cd rag-ingestion-manager/backend && uv run uvicorn apps.api.main:app --host 0.0.0.0 --port 8007
 cd rag-ingestion-manager/backend && uv run python -m apps.worker.main
 cd rag-ingestion-manager/backend && uv run python -m apps.pathway_worker.main
 cd rag-ingestion-manager/frontend && node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173
 
-# 4. Retrieval backend. Prefix each command with the environment block from section 4.4.
+# 5. Retrieval backend. Prefix each command with the environment block from section 4.4.
 export DATABASE_URL="postgresql+psycopg://crawler:crawler@localhost:5432/rag"
 export REDIS_URL="redis://localhost:6379/0"
 export QDRANT_URL="http://localhost:6333"
@@ -524,7 +589,8 @@ export INGESTION_SERVICE_URL="http://localhost:8007"
 export GUARDRAILS_URL="http://localhost:18000"
 export LITELLM_BASE_URL="http://localhost:4000"
 export EMBEDDING_MODEL="nvidia-embed-textonly"
-export OTEL_TRACING_ENABLED=false
+export OTEL_TRACING_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 
 cd rag-retrieval-chat-manager/backend && uv sync --all-packages --python 3.12
 cd rag-retrieval-chat-manager/backend && uv run rag-db-migrate
@@ -537,8 +603,16 @@ cd rag-retrieval-chat-manager/frontend && node node_modules/vite/bin/vite.js --h
 
 ## 5b. Run each project as one container stack
 
-Sections 4 and 5 start nine processes by hand. The container path is shorter and is the one to prefer:
-**one command per project**, with no shell profile, no `uv` and no Node on the host.
+Sections 4 and 5 start eleven processes by hand. The container path is shorter and is the one to prefer
+for a machine with no checkout: **one command per project**, with no shell profile, no `uv`, no Node and
+no Chromium on the host.
+
+The scraper is the one exception. It sits behind the `scraper` profile, because its normal home is the
+host-run pair in section 4.7. A container-only deployment starts it with:
+
+```bash
+cd rag-ingestion-manager && docker compose --profile scraper up -d scraper-api scraper-worker
+```
 
 ### The two commands
 
@@ -566,16 +640,16 @@ Redis and Qdrant, and it resolves a pipeline by slug through the ingestion API. 
 ### What "running" looks like
 
 ```bash
-cd rag-ingestion-manager && docker compose ps -a     # 13 Up, 2 Exited (0)
-cd rag-retrieval-chat-manager/backend && docker compose ps -a   # 3 Up, 1 Exited (0)
+cd rag-ingestion-manager && docker compose ps -a
+cd rag-retrieval-chat-manager/backend && docker compose ps -a
 ```
 
-The exited ones are the one-shot jobs `migrate` and `scraper-migrate` on the ingestion side, and
-`migrate` on the retrieval side. **`Exited (0)` is success.** Any other exit code on a `migrate`
-service stops that stack, because the API waits for it.
+Every service reads `Up` except the one-shot jobs: `migrate` on the ingestion side, plus `scraper-migrate`
+when the `scraper` profile is on, and `migrate` on the retrieval side. **`Exited (0)` is success.** Any
+other exit code on a `migrate` service stops that stack, because the API waits for it.
 
-Every other service must read `Up`. A service that reads `Exited (255)` was stopped from outside, not
-by its own command. Start it again with `docker compose up -d <service>`.
+A service that reads `Exited (255)` was stopped from outside, not by its own command. Start it again with
+`docker compose up -d <service>`.
 
 ### Rebuild only what changed
 
@@ -661,15 +735,24 @@ cd rag-ingestion-manager
 docker compose up -d
 ```
 
-That starts 15 services: `migrate`, `api`, `worker`, `pathway-worker`, `web`, the shared data tier
-(`postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector`), and the scraper and guardrails
-containers. `migrate` runs to completion and exits `0`; that is success, not a failure.
+That starts 12 services: `migrate`, `api`, `worker`, `pathway-worker`, `web`, the shared data tier
+(`postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector`) and the guardrails container.
+`migrate` runs to completion and exits `0`; that is success, not a failure.
+
+The web scraper is not among them. It runs on the host (section 4.7). Add `--profile scraper` for a
+deployment with no host checkout:
+
+```bash
+cd rag-ingestion-manager
+docker compose --profile scraper up -d scraper-api scraper-worker
+```
 
 | Service | Port |
 |---|---|
 | `api` | 8007 |
 | `web` | 5173 |
 | `postgres` · `redis` · `qdrant` · `minio` · `opensearch` | 5432 · 6379 · 6333 · 9000 · 9200 |
+| `scraper-api`, with `--profile scraper` | 8000 |
 
 Check it:
 
@@ -707,8 +790,10 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8001/chat/stats?limit=
 
 ### Why the two compose files are not the same size
 
-The ingestion compose declares **15 services** (18 with `extras`); the retrieval compose declares **4**.
-That is not an oversight and not a half-finished migration. The two files answer different questions.
+The ingestion compose declares **18 services**: 12 start by default, 3 sit behind the `extras` profile
+(`neo4j`, `nifi`, `opensearch-dashboards`) and 3 behind the `scraper` profile (`scraper-api`,
+`scraper-worker`, `scraper-migrate`). The retrieval compose declares **4**. That is not an oversight and
+not a half-finished migration. The two files answer different questions.
 
 The ingestion project is **the producer and the owner of the data tier**. Its compose bundles four
 separate responsibilities into one file:
@@ -717,7 +802,7 @@ separate responsibilities into one file:
 |---|---|---|
 | The ingestion application | `api`, `worker`, `pathway-worker`, `web`, `migrate` | It is the project's own code |
 | The shared data tier | `postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector` | The data is **born** here: MinIO holds the bytes, Qdrant the dense vectors, OpenSearch the BM25 index, Postgres the metadata, Redis the job queues and session memory |
-| The web scraper, a separate application | `scraper-api`, `scraper-worker`, `scraper-migrate` | It fetches pages **into** the ingestion pipeline, so it sits on the producer side. Its own image, its own `.env.scraper`, its own `crawler-db-migrate` |
+| The web scraper, a separate application | `scraper-api`, `scraper-worker`, `scraper-migrate` (profile `scraper`) | It fetches pages **into** the ingestion pipeline, so it sits on the producer side. Its own image, its own `crawler-db-migrate`. It normally runs on the host instead, from `web-scrapper-workspace`, so its code hot-reloads like the four other apps |
 | The guardrails service, a second separate application | `guardrails-service` | Built from `../guardrails-service`, a different folder. Both projects call it over HTTP on 18000 |
 
 The retrieval project is **a pure consumer**. Its compose declares only its own four services and owns
@@ -735,7 +820,7 @@ The port counts show the same asymmetry:
 | | Ingestion | Retrieval |
 |---|---|---|
 | Published host ports | **13** — 8007, 5173, 5432, 6379, 6333, 9000, 9001, 9200, 9600, 4317, 4318, 8000, 18000 | **2** — 8001, 5174 |
-| Docker images built | 3 Dockerfiles (`backend`, `frontend`, `../guardrails-service`) plus 1 pulled (`tharun0511/web-scrapper-wokspace`) | 2 Dockerfiles (`backend`, `frontend`), nothing pulled |
+| Docker images built | 4 Dockerfiles (`backend`, `frontend`, `../guardrails-service`, `../web-scrapper-workspace`) plus 1 pulled as a build base (`tharun0511/web-scrapper-wokspace`). The scraper image is only built with `--profile scraper` | 2 Dockerfiles (`backend`, `frontend`), nothing pulled |
 | Exit-on-complete jobs | `migrate`, `scraper-migrate` | `migrate` |
 
 One line each: the ingestion project is the kitchen and the building's utility room. The retrieval
@@ -752,8 +837,8 @@ graph TB
       IPW["pathway-worker"]
       IWEB["web :5173"]
       IMIG["migrate (exits 0)"]
-      SAPI["scraper-api :8000"]
-      SWK["scraper-worker"]
+      SAPI["scraper-api :8000 (profile scraper; normally a host process)"]
+      SWK["scraper-worker (same)"]
       SMIG["scraper-migrate (exits 0)"]
       GRD["guardrails-service :18000"]
       subgraph TIER["data tier — owned here"]
@@ -894,6 +979,9 @@ reads two variables and they point at different projects:
 Setting `VITE_API_URL` to 8001 looks plausible and is wrong: every ingestion-backed call then 404s, and
 the whole frontend fills with console errors while still rendering. `src/api.ts` already falls back to
 the correct values, so the safest thing is to set both explicitly.
+The compose `environment:` block sets the values to `localhost`, which is correct inside a container;
+`src/api.ts` defaults to `127.0.0.1`. Both reach the same APIs. Use `127.0.0.1` in a host browser to
+avoid the IPv6 delay in section 8.
 
 ### The two Dockerfiles must mirror the repository layout
 
@@ -1042,14 +1130,15 @@ This section is the shortest path to a chat answer. Follow it once. After that, 
 whole platform.
 
 1. **Open the ingestion UI** at <http://localhost:5173>.
-2. **Create a source.** Go to `Sources`, add a source with a MinIO bucket, and let it sync. The `Folders`
-   and `Sources` pages show the files as they arrive.
-3. **Create a Knowledge Product.** Go to `Knowledge Store` and press `Create Knowledge Product`. Give it a
-   name. Enable the destinations you want to read later: `Qdrant` for vector search and `OpenSearch`
-   for keyword search. Enable both together if you want the `Hybrid` strategy. The `Self-reflective`
-   and `Corrective` strategies read whichever one you enable, and use `Hybrid` when you enable both.
+2. **Create a source.** Go to `Knowledge Fabric`, add a source with a MinIO bucket, and let it sync. The
+   `Fabric Viewer` and `Knowledge Fabric` pages show the files as they arrive.
+3. **Create a Knowledge Product.** Go to `Knowledge Hub` and press `Create Knowledge Product`. Give it a
+   name. Enable the destinations you want to read later: `Dense Vector Store (Qdrant)` for vector search
+   and `Sparse Vector Store (OpenSearch)` for keyword search. Enable both together if you want the
+   `Hybrid` strategy. The `Self-reflective` and `Corrective` strategies read whichever one you enable,
+   and use `Hybrid` when you enable both.
 4. **Attach sources and wait for the fanout.** Add the source to the product. The fanout writes one row
-   per chunk to every enabled destination. The Knowledge Store page shows a live timeline and, per
+   per chunk to every enabled destination. The Knowledge Hub page shows a live timeline and, per
    destination, the store inspector. Confirm the record count is larger than zero in each store you
    enabled.
 5. **Optional: an ingestion profile.** `Ingestion Profiles` sets the chunking and the modality once, then
@@ -1100,7 +1189,7 @@ Run these after the platform is up. Each one proves a layer.
 | Infrastructure | `docker ps --format "table {{.Names}}\t{{.Status}}"` | All containers `Up` |
 | Qdrant | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | Every `kp_*` collection, plus `scrape_embeddings` once the scraper has run. Without the header the answer is `401` |
 | OpenSearch | `curl -s "http://localhost:9200/_cat/indices?h=index"` | The `kp_*` indexes |
-| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 16 installed validators |
+| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 3 validators in its catalog |
 | LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/model/info` | The served models with the `model_info.mode` each one reports, 21 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
 | Ingestion API | `curl -s http://localhost:8007/api/pipelines` | A JSON array |
 | Retrieval API | `curl -s http://localhost:8001/prompt-templates` | `{"count": N, "items": [...]}` |
@@ -1159,12 +1248,12 @@ npx vite build
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| An assistant answers, but the source list is empty | The knowledge product has no `kp_*` collection, or its fanout never ran | Check the product on the ingestion `Knowledge Store` page, then re-sync. Confirm the collection exists on 6333 |
+| An assistant answers, but the source list is empty | The knowledge product has no `kp_*` collection, or its fanout never ran | Check the product on the ingestion `Knowledge Hub` page, then re-sync. Confirm the collection exists on 6333 |
 | Chat answers `Error occurred: [Errno 101] Network is unreachable` | **The Qdrant container is not running.** Nothing listens on 6333, so the reader cannot open the collection | Start it: `cd rag-ingestion-manager && docker compose up -d qdrant`. Confirm with `docker ps --filter name=qdrant` |
 | Chat answers `Error occurred: ...` on any address in `.env` | One of the four `host.docker.internal` services is down. `Errno 101` names the reach, not the service | Run the probe: `cd rag-retrieval-chat-manager/backend && docker cp scripts/check_deps.py backend-rag-api-1:/tmp/check_deps.py && docker exec backend-rag-api-1 python /tmp/check_deps.py`. It prints one line per dependency and names the one that failed |
 | Every assistant request returns 503 | The retrieval API cannot reach the ingestion API | Check `INGESTION_SERVICE_URL` and that `8007` answers |
 | `POST /api/assistants/{slug}/chat` returns 422 `NOT_AN_ASSISTANT` | The pipeline's strategy is a legacy one such as `naive` | Create the pipeline from the `Pipelines` page, or set `rag_strategy` to `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` |
-| 422 `RAG_STRATEGY_UNAVAILABLE` | The product does not have the destination the strategy needs enabled | Enable the destination in the ingestion `Knowledge Store` page, then re-create or patch the pipeline |
+| 422 `RAG_STRATEGY_UNAVAILABLE` | The product does not have the destination the strategy needs enabled | Enable the destination in the ingestion `Knowledge Hub` page, then re-create or patch the pipeline |
 | 422 `CHAT_MODEL_REQUIRED` | No `chat_model` on the pipeline | Set it in the `Pipelines` page or through `PATCH /api/pipelines/{id}` |
 | The `Hybrid` option is missing from the strategy list | Only one of the Qdrant and OpenSearch destinations is enabled | Enable both on the product |
 | Guardrails never block | `GUARDRAILS_URL` is wrong, or the config selects no validator that can block | Check `GUARDRAILS_URL` on 18000 and `curl -s http://localhost:18000/health-check` |

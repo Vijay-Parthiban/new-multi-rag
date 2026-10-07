@@ -6,7 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # `.env` holds the container values used by docker-compose.yaml. `.env.local` is an
+        # optional host-run override and is gitignored; pydantic-settings gives the later
+        # file precedence, so a key in `.env.local` wins over the same key in `.env`.
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
     )

@@ -123,9 +123,15 @@ COPY web-scrapper-workspace/apps/cli/src apps/cli/src
 COPY web-scrapper-workspace/scripts scripts
 
 # Cache layer 2: Re-sync workspace local changes into the .venv
+# `uv pip` rather than `.venv/bin/pip`: a uv-created venv has no pip of its own.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-dev --no-editable --package api --package worker --package cli \
-    && .venv/bin/pip install --no-cache-dir /shared-libs/platform-common
+    && uv pip install --python .venv/bin/python --no-cache /shared-libs/platform-common
+
+# A Windows checkout writes CRLF into these scripts (no .gitattributes pins them), and the
+# image runs them with dash, which rejects the `\r` on `set -e`. Normalise the copies here,
+# after the slow layer above so a script edit does not invalidate the dependency install.
+RUN sed -i 's/\r$//' scripts/*.sh
 
 
 # --- STAGE 2: Pre-Baked Base Environment ---

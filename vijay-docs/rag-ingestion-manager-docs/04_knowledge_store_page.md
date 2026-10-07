@@ -1,10 +1,10 @@
-# 04 — Knowledge Products (Fanout & Multi-Sink Visualizer)
+# 04 — Knowledge Hub Page (Knowledge Products, Fanout & Multi-Sink Visualizer)
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
-The **Knowledge Store** area (`frontend/src/pages/KnowledgeStorePage.tsx`, route `/knowledge-store`) manages
+The **Knowledge Hub** area (`frontend/src/pages/KnowledgeStorePage.tsx`, route `/knowledge-store`) manages
 **Knowledge Products**. A Knowledge Product links one or more MinIO source buckets to one or more ingestion
 destinations and syncs them continuously.
 
@@ -68,10 +68,10 @@ that still need it. A failing destination is recorded as a failure and the other
 
 | id | name | category | product store name |
 |---|---|---|---|
-| `vector_qdrant` | Qdrant | Vector Engine | `kp_<slug>_<id8>` |
-| `lexical_opensearch` | OpenSearch | Lexical & Sparse Search | `kp_<slug>_<id8>` |
-| `relational_pgvector` | PostgreSQL (pgvector) | Multi-Model Relational DB | `kp_<slug>_<id8>` (table stays `chunks`) |
-| `cache_redisvl` | RedisVL | Semantic Cache & Summary Store | `kp:<slug>:<id8>` |
+| `vector_qdrant` | Dense Vector Store (Qdrant) | Vector Engine | `kp_<slug>_<id8>` |
+| `lexical_opensearch` | Sparse Vector Store (OpenSearch) | Lexical & Sparse Search | `kp_<slug>_<id8>` |
+| `relational_pgvector` | Relational Chunk Store (Postgres) | Multi-Model Relational DB | `kp_<slug>_<id8>` (table stays `chunks`) |
+| `cache_redisvl` | Cache Store (Redis VL) | Semantic Cache & Summary Store | `kp:<slug>:<id8>` |
 
 `graph_neo4j` was removed. Migration `010_knowledge_products` deletes the stored rows, and
 `backend/scripts/purge_neo4j_legacy.py` removes the graph nodes those rows pointed at.
@@ -83,7 +83,7 @@ them.
 
 ### Sink details
 
-1. **Qdrant Vector DB (`vector_qdrant`)** — dense HNSW similarity search.
+1. **Dense Vector Store (`vector_qdrant`)** — dense HNSW similarity search.
    - The collection is created with `enable_sparse=False` and a dimension taken from the tick's embedding batch.
      No config value is read, because the `vector_size` field is gone.
    - `hnsw_m` and `hnsw_ef_construct` from the destination config are applied at creation.
@@ -93,7 +93,7 @@ them.
      the dense vector is the one shared by the whole tick.
    - Purge matches on both `file_key` **and** `source_id`, so two sources holding the same key cannot purge each
      other.
-2. **OpenSearch Lexical (`lexical_opensearch`)** — BM25 document store.
+2. **Sparse Vector Store (`lexical_opensearch`)** — BM25 document store.
    - The index is `PUT` with `number_of_shards` (default `1`), `number_of_replicas` (default `0`) and
      `refresh_interval` (default `"1s"`). No custom analyzer is created; `bm25_k1`, `bm25_b` and `sparse_model`
      are document metadata only.
@@ -102,7 +102,7 @@ them.
    - Purge uses `_delete_by_query` with `file_key.keyword`/`match_phrase` **and** `source_id.keyword`. The
      `.keyword` subfield is required: both fields are dynamically mapped as `text`, and a term query against the
      analysed field matches nothing.
-3. **PostgreSQL / pgvector (`relational_pgvector`)** — one table per product.
+3. **Relational Chunk Store (`relational_pgvector`)** — one table per product.
    - The product's schema is created with `CREATE SCHEMA IF NOT EXISTS`, and the table is `chunks` inside it:
      `id SERIAL PRIMARY KEY, file_key TEXT, source_id TEXT, page_index INT, chunk_index INT NOT NULL DEFAULT 0,
      content TEXT, modality TEXT, embedding vector(<derived>)` when `store_embeddings` is true, plus
@@ -117,9 +117,9 @@ them.
      chunk_index INT NOT NULL DEFAULT 0`, plus `CREATE INDEX IF NOT EXISTS`, upgrade a table made
      by an older version.
    - Purge and inspect both use the same connection resolver as the writer (`pg_connection_urls`,
-     `connect_pg`), which drops non-Postgres candidates. Without that the dev SQLite default would be handed to
+     `connect_pg`), which drops non-Postgres candidates. Without that a SQLite URL would be handed to
      psycopg.
-4. **RedisVL (`cache_redisvl`)** — per-chunk Redis JSON cache.
+4. **Cache Store (`cache_redisvl`)** — per-chunk Redis JSON cache.
    - Chunk key `"<index_prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>"`, value JSON
      `{content, file_key, source_id, page_index, chunk_index, modality, image_ref, similarity_threshold,
      embedding_model}`, expiry `ttl_seconds` (default `86400`). Without the chunk part every chunk of one page
@@ -181,7 +181,7 @@ per-product ledger (§5) means one product's records never make another skip a f
 
 ```
 +---------------------------------------------------------------------------------+
-|  Knowledge Store Manager                                                        |
+|  Knowledge Hub                                                                |
 |  Universal Multi-Sink Fanout Engine — Route MinIO documents to 4 enterprise ...  |
 |                                        [ Refresh ]  [ Create Knowledge Product ] |
 +---------------------------------------------------------------------------------+
@@ -194,8 +194,8 @@ per-product ledger (§5) means one product's records never make another skip a f
 |                                                                                 |
 |  Configured Destination Stores                                                   |
 |  +-----------------------+  +-----------------------+  +----------------------+  |
-|  | Qdrant       [ACTIVE] |  | OpenSearch   [ACTIVE] |  | ...                  |  |
-|  | <derived store name> |  | <derived store name> |  |                      |  |
+|  | Dense Vector [ACTIVE] |  | Sparse Vector [ACTIVE]|  | ...                  |  |
+|  | <derived store name>  |  | <derived store name>  |  |                      |  |
 |  | [Test Link]           |  | [Test Link]           |  |                      |  |
 |  +-----------------------+  +-----------------------+  +----------------------+  |
 |  Linked RAG Pipelines (n): pipeline cards + [Create / Manage Pipelines]          |
@@ -218,8 +218,8 @@ The store-name snippet is derived from the option's own `namespace_fields`, with
 ### Product page
 
 ```
-Overview > Knowledge Store > <name>
-<h1> <name>  [STATUS]  [Chunking: parent / child]  [Modality: Text + images]  [Live polling | Scheduled every 30s]   [← Back] [Pause All Destinations]
+Overview > Knowledge Hub > <name>
+<h1> <name>  [STATUS]  [Chunking: parent / child]  [Modality: Text + images]  [Live polling | Scheduled every 30s]   [← Back to Knowledge Hub] [Pause All Destinations]
 [ Source Buckets ] [ Files Indexed ] [ Pages Indexed ] [ Last Sync ]      (stats cards)
 Live Fanout:  MinIO bucket → Parse & chunk → <one chip per enabled destination>
               Added / Updated / Deleted / Unchanged / Pages  + Live|Reconnecting dot
@@ -235,12 +235,17 @@ page still feels live when the SSE stream is reconnecting.
 
 - **Pause All Destinations** / **Resume All Destinations**: one `POST` to `pause-all` or `resume-all`.
 - **Pause** / **Resume** per destination: `PATCH /{id}/destinations/{destination_id}`.
-- **Inspect Store**: opens the visualizer on that destination's tab.
+- **Inspect Store**: opens the visualizer on that destination's tab. The modal reads the store once when it opens
+  and once per tab change; **Refresh Live Data** is the only other read, so the 5 s page poll does not refetch it.
 - **Configure**: edits that destination's config and saves through `PATCH /{id}` with the full destination list,
   so the other destinations are sent back unchanged.
+- **Apply Profile**: shown only when the product has a linked profile. It opens a `ConfirmDialog` titled
+  `Apply Ingestion Profile?` whose details name the purge rules, and calls `POST /{id}/apply-profile`, then
+  reports the result. A legacy product with no profile shows no Apply Profile button.
 - No sync button exists anywhere.
 
-The header shows a `Chunking: <strategy>` badge when the product has a profile, and a `Modality: Text + images`
+The header shows a `Profile: <name>` badge, a `Chunk <size> / <overlap>` badge and a `Chunking: <strategy>`
+badge when the product has a profile, and a `Modality: Text + images`
 badge when the profile mode is `text_images`. That second badge is absent in
 `text` mode. Only a linked profile supplies the mode, so a legacy product shows no badge.
 
@@ -307,9 +312,9 @@ One modal for create (`POST /api/knowledge-products`) and edit (`PATCH /api/know
   assigns the per-product names at create time.
 - **Sync Mode**: a radio pair, **Immediate live sync** / **Scheduled sync**. Live hides the interval row. Scheduled
   shows a number input plus a unit select, `Seconds (minimum 5)` or `Minutes`.
-- **Link Data Sources**: checkboxes over `GET /api/sources`; on create every source is preselected. Local-FS
-  sources are labelled `Local File System (storage/local_sources/<folder>)`, MinIO sources
-  `MinIO Bucket (<bucket>)`.
+- **Link Knowledge Fabric Sources (MinIO Buckets & Local File Systems)**: checkboxes over `GET /api/sources`;
+  on create every source is preselected. Local-FS sources are labelled
+  `Local File System (storage/local_sources/<folder>)`, MinIO sources `MinIO Bucket (<bucket>)`.
 
 The dialog no longer collects destination configuration. It has no store-name field, no connection field and no
 LiteLLM model picker. One profile holds that configuration, and the product copies it on save.
@@ -327,7 +332,7 @@ Server-side schedule rules (`_apply_schedule`):
 It renders `field.group` as uppercase headers, hides `advanced: true` fields behind a per-destination
 "Show advanced settings" toggle, and maps `string`/`number`/`password`/`boolean`/`select`/`model` to inputs.
 `model` fields list the LiteLLM models filtered by `field.model_kind`, fall back to the full list when the filter
-is empty, and degrade to a free-text input when no models load. **The Knowledge Store dialog no longer renders
+is empty, and degrade to a free-text input when no models load. **The Knowledge Hub dialog no longer renders
 this component.** The Ingestion Profiles editor does (document 06), and that editor is what loads the LiteLLM
 model lists.
 
@@ -384,8 +389,8 @@ integer-only, because the API declares them as integers.
 
 `GET /api/knowledge-products/config/litellm-models?model_kind=<all|embedding|rerank|chat|vision|sparse>` calls
 the LiteLLM proxy's **`/v1/model/info`** path at the configured base URL, with a 10 s timeout and
-`Authorization: Bearer <openai_api_key>` when set. Each entry carries `model_info.mode`, and that mode is what
-classifies the model:
+`Authorization: Bearer <openai_api_key>` when set. The result is cached for 60 s (`_MODEL_INFO_TTL_S`). Each
+entry carries `model_info.mode`, and that mode is what classifies the model:
 
 | `model_info.mode` | `kind` in the response |
 |---|---|
@@ -396,7 +401,8 @@ classifies the model:
 | `vision` | `vision` |
 
 An entry with no mode, or a mode outside this table, is skipped and logged. The endpoint exists to classify, so
-an unclassified entry would only reach a dropdown that cannot place it.
+an unclassified entry would only reach a dropdown that cannot place it. The `sparse` kind is not a proxy mode:
+the route appends one synthetic entry for `settings.sparse_embedding_model` (`_SPARSE_KIND = "sparse"`).
 
 **The name is not consulted.** The previous version read `/v1/models` and guessed from substrings:
 `embed`/`embedding`/`nvidia-embed`/`bge`/`e5` → `embedding`; `bm25`/`sparse`/`splade` → `sparse`; otherwise
@@ -486,10 +492,11 @@ mode, the embedding model, the caption model and the image threshold.
 
 The route then re-registers the poller, which fires one sync. So a pipeline change writes every file again.
 
-The response reports three fields:
+The response reports four fields:
 
 | field | meaning |
 |---|---|
+| `added` | destination types the profile added |
 | `updated` | destination types whose config changed |
 | `removed` | destination types the profile no longer lists |
 | `purged_files` | number of purge calls that ran |
@@ -540,7 +547,7 @@ caption failed. Such a figure is dropped and the text of the file still ingests.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/knowledge-products/destinations/options` | destination types with typed fields, defaults and `namespace_fields` |
-| `GET` | `/api/knowledge-products/config/litellm-models` | LiteLLM `/v1/models` with env fallback |
+| `GET` | `/api/knowledge-products/config/litellm-models` | LiteLLM `/v1/model/info` classified by `model_info.mode`, cached 60 s, with env fallback |
 | `GET` | `/api/knowledge-products` | list products with counters |
 | `POST` | `/api/knowledge-products` | create; starts ingestion; `201` |
 | `GET` | `/api/knowledge-products/{id}/files` | ledger rows; `?status=&limit=50&offset=0` |
@@ -626,7 +633,9 @@ OpenSearch up to 1000 and Postgres up to 1000 rows for that file.
 prop, following the same `PersistentPage` + `useRouteParams` pattern as `/sources/:id`. The route is deep-linkable.
 
 **The visualizer registry is the extension point.** `VISUALIZERS` maps a destination type to
-`{label, engine, icon, color, Component}`. The modal builds its tabs from the product's destinations through
+`{label, engine, icon, color, Component}`. The labels are type-first: `Dense Vector Store` (engine `Qdrant`),
+`Sparse Vector Store` (`OpenSearch`), `Relational Chunk Store` (`Postgres`) and `Cache Store` (`Redis VL`). The
+modal builds its tabs from the product's destinations through
 `visualizerFor()`, so adding a destination means one writer and one purger in the backend, one catalogue entry,
 and one registry entry. A type with no visualizer renders `No visualizer for <type> yet.` instead of an empty tab.
 `GraphVisualizer.tsx` was deleted with the destination.
@@ -639,14 +648,18 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
   `knowledge_product_files`. `pipelines.knowledge_product_id` is the renamed foreign key.
 - `knowledge_products` carries `pipeline_fingerprint`, a hash of the chunking and modality settings.
   `apply-profile` rebuilds every destination when that hash changes.
-- Alembic head: `010_knowledge_products` (`down_revision = 009_pipeline_knowledge_profile`). It renames the three
-  tables and the index names, renames the foreign key columns, adds the three schedule columns, creates
-  `knowledge_product_files`, deletes the `graph_neo4j` destination rows and deletes `indexed_files` rows whose
-  `pipeline_id IS NULL` (the fanout's old state).
-- The dev database is SQLite, created by `Base.metadata.create_all`, which never renames a table.
-  `init_db()` therefore calls `_ensure_sqlite_renames(sqlite_path)` **before** `create_all` — otherwise
-  `create_all` creates an empty `knowledge_products` and the rename fails, orphaning the old table — and
-  `_ensure_sqlite_columns` after it. Every statement is individually guarded, so the whole sequence is idempotent.
+- Alembic head: `014_missing_model_columns` (`down_revision = 013_assistant_reasoning_patterns`). The chain runs
+  `001`…`010`, then `011_assistant_pipeline`, `012_pipeline_model_settings`, `013_assistant_reasoning_patterns`
+  and `014_missing_model_columns`. Migration `010` renamed the three tables and the index names, renamed the
+  foreign key columns, added the three schedule columns, created `knowledge_product_files`, deleted the
+  `graph_neo4j` destination rows and deleted `indexed_files` rows whose `pipeline_id IS NULL` (the fanout's old
+  state). Migration `014` added the six columns that existed only in the models.
+- **There is one database: PostgreSQL.** The automatic SQLite fallback in `init_db` is removed, and an
+  unreachable database stops the service. If `DATABASE_URL` names SQLite on purpose, `init_db()` calls
+  `_ensure_sqlite_renames(sqlite_path)` **before** `Base.metadata.create_all` — otherwise create_all makes an
+  empty `knowledge_products` and the rename fails, orphaning the old table — and `_ensure_sqlite_columns` after
+  it, because `create_all` never renames a table or adds a column. Every statement is individually guarded, so
+  the sequence is idempotent.
 - `shared-contracts/shared_contracts/knowledge.py` mirrors the real payload: `KnowledgeProductRead`,
   `KnowledgeProductCreate`, `KnowledgeProductUpdate`, `KnowledgeProductSourceRead`,
   `KnowledgeDestinationConfigRead`, `DestinationConfigInput`,
@@ -704,5 +717,5 @@ OPENSEARCH_URL=http://localhost:9200
 
 Postgres comes from `docker-compose.yaml` (`pgvector/pgvector:pg16`, database and user `ingestion`). Every
 destination reads its connection from these settings, because no connection field exists any more. The writer
-uses `settings.database_url` as the PostgreSQL candidate. When that URL is SQLite, `pg_connection_urls()` skips it
+uses `settings.database_url` as the PostgreSQL candidate. When that URL is not a Postgres URL, `pg_connection_urls()` skips it
 and falls back to `postgresql://ingestion:ingestion@localhost:5432/ingestion`.

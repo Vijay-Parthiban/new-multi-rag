@@ -230,6 +230,8 @@ class ScrapeService:
             )
 
     def is_embedding_source_indexed(self, crawl_job: CrawlJob, embedding_source: str) -> bool:
+        if embedding_source == "none":
+            return False
         if embedding_source == "markdown":
             return crawl_job.markdown_ingested
         if embedding_source == "image":
@@ -279,7 +281,7 @@ class ScrapeService:
         pipeline_description: str | None = None,
         use_sparse: bool = True,
     ) -> ScrapeJob:
-        if embedding_source not in {"markdown", "image"}:
+        if embedding_source not in {"markdown", "image", "none"}:
             raise ValueError(f"Invalid embedding_source: {embedding_source}")
         crawl_job = self._crawl_repo.get(session, crawl_job_id)
         if crawl_job is None:

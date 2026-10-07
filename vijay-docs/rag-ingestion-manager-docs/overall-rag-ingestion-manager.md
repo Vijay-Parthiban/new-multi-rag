@@ -1,19 +1,19 @@
 # Overall Architecture — RAG Ingestion Manager
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-02
 
 ## 1. System Overview
 `rag-ingestion-manager` is the document ingestion, storage-management, parsing, and multi-sink synchronization service of the `new-multi-rag` platform. It brings unstructured documents from configured sources (per-source MinIO buckets, manual browser uploads, legacy local filesystem folders, Apache NiFi connectors for Google Drive / Amazon S3 / Azure Blob Storage) into MinIO object storage, then executes a per-product fanout into four RAG storage destinations:
 
-| `destination_type` | Engine | Role | Accepted aliases |
+| `destination_type` | Name | Role | Accepted aliases |
 |---|---|---|---|
-| `vector_qdrant` | Qdrant | Dense vector similarity in a per-product collection | — |
-| `lexical_opensearch` | OpenSearch | BM25 lexical index | `elasticsearch` |
-| `relational_pgvector` | PostgreSQL | Relational chunk table, optional pgvector column | `database_pgvector` |
-| `cache_redisvl` | Redis / RedisVL | Semantic cache and parent-child key store | `cache_redis` |
+| `vector_qdrant` | Dense Vector Store (Qdrant) | Dense vector similarity in a per-product collection | — |
+| `lexical_opensearch` | Sparse Vector Store (OpenSearch) | BM25 lexical index | `elasticsearch` |
+| `relational_pgvector` | Relational Chunk Store (Postgres) | Relational chunk table, optional pgvector column | `database_pgvector` |
+| `cache_redisvl` | Cache Store (Redis VL) | Semantic cache and parent-child key store | `cache_redis` |
 
 Runtime processes:
-- **API** — FastAPI app `backend/apps/api/main.py` bound to container port 8000, published as host port 8007.
+- **API** — FastAPI app `backend/apps/api/main.py` bound to container port 8000, published as host port 8007. The API process also hosts the in-process pollers: its lifespan starts `init_all_source_pollers()` and `init_all_knowledge_pollers()`.
 - **Worker** — `backend/apps/worker/main.py`: Redis queue consumers plus an APScheduler cron.
 - **Pathway worker** — `backend/apps/pathway_worker/main.py`: connector sync queue consumer plus a 10-second scheduled-source poll.
 - **Frontend** — Vite/React SPA in `frontend/` (separate from the backend services), host port 5173.
@@ -61,8 +61,8 @@ Runtime processes:
                                             v
 +---------------------------------------------------------------------------------------+
 |                       RAG INGESTION MANAGER FRONTEND (Vite :5173)                    |
-|  Sidebar NAV: Overview / | Folders /browse | Sources /sources |                      |
-|     Ingestion Profiles /ingestion-profiles | Knowledge Store /knowledge-store         |
+|  Sidebar NAV: Overview / | Fabric Viewer /browse | Knowledge Fabric /sources |       |
+|     Ingestion Profiles /ingestion-profiles | Knowledge Hub /knowledge-store         |
 |  Pages mounted by AppLayout: HomePage, BrowsePage, DirectoryPage, FileViewerPage,     |
 |  SourcesPage, SourceDetailPage, IngestionProfilesPage, KnowledgeStorePage,            |
 |  KnowledgeProductPage                                                                 |
@@ -80,7 +80,7 @@ rag-ingestion-manager/
 │   ├── Dockerfile
 │   ├── alembic.ini
 │   ├── alembic/
-│   │   └── versions/                   # 001_initial_schema … 010_knowledge_products
+│   │   └── versions/                   # 001_initial_schema … 015_source_webscrape
 │   ├── apps/
 │   │   ├── api/
 │   │   │   ├── main.py                 # FastAPI app + lifespan + CORS + exception handlers
@@ -95,7 +95,7 @@ rag-ingestion-manager/
 │   │   │       ├── ingestion_profiles.py  # reusable destination + chunking profiles, apply-profile
 │   │   │       └── knowledge_destination_schemas.py   # typed destination field schemas
 │   │   ├── worker/
-│   │   │   ├── main.py                 # 3 Redis queue loops
+│   │   │   ├── main.py                 # 4 Redis queue loops
 │   │   │   └── scheduler.py            # APScheduler CronTrigger from SYNC_CRON_* settings
 │   │   └── pathway_worker/
 │   │       └── main.py                 # pathway_sync_queue consumer + 10s source poll
@@ -114,6 +114,10 @@ rag-ingestion-manager/
 │   │   ├── test_knowledge_destination_schemas.py
 │   │   ├── test_knowledge_product_files.py
 │   │   ├── test_ingestion_profile_chunking.py
+│   │   ├── test_connector_config_validation.py
+│   │   ├── test_litellm_model_kinds.py
+│   │   ├── test_no_sqlite_fallback.py
+│   │   ├── test_source_webscrape.py
 │   │   └── test_ingestion_modality_resolvers.py
 │   └── src/
 │       ├── file_manager/               # chunked-upload job engine for the metadata store
@@ -134,7 +138,8 @@ rag-ingestion-manager/
 │       │   │   ├── gdrive_sync.py      # Google Drive connector support
 │       │   │   ├── airbyte_connector.py# connector config mapper + pre-sync validation
 │       │   │   ├── nifi_sync.py        # NiFi sync engine (s3, azure_blob, gdrive, legacy types)
-│       │   │   └── indexer.py          # FileIndexer: chunk + embed + upsert to Qdrant
+│       │   │   ├── indexer.py          # FileIndexer: chunk + embed + upsert to Qdrant
+│       │   │   └── webscrape.py        # per-source webscrape: `*_scrp.txt` manifest -> `.md` pages
 │       │   ├── embeddings/
 │       │   │   ├── client.py           # LiteLLM embedding client, FastEmbed fallback (384-d)
 │       │   │   └── sparse_client.py    # re-export of platform_common sparse client
@@ -144,8 +149,10 @@ rag-ingestion-manager/
 │       └── shared/
 │           ├── auth.py                 # verify_api_key bound to settings.api_key
 │           ├── config/settings.py      # all settings and defaults
-│           ├── db/models.py            # SQLAlchemy models (16 tables)
+│           ├── db/models.py            # SQLAlchemy models (17 tables)
 │           ├── db/session.py           # engine, AsyncSessionLocal, get_db, init_db, _ensure_sqlite_renames, close_db
+│           ├── db/migrate.py           # Alembic runner with retry (used by run-migrate.sh)
+│           ├── io/async_files.py       # async file read/write helpers
 │           ├── queue/client.py         # Redis enqueue/dequeue for all queues
 │           └── storage/s3_client.py    # aioboto3/boto3 MinIO client, list/put/get/delete
 └── frontend/
@@ -158,6 +165,7 @@ rag-ingestion-manager/
         │   ├── PageHeader.tsx, Breadcrumb.tsx, StatusBadge.tsx, Icons.tsx, MarkdownMessage.tsx
         │   ├── DestinationConfigFields.tsx  # renders typed destination fields from the API schema
         │   ├── Sources/                # source/connector form components
+        │   ├── knowledge/              # LiveFanoutTimeline (SSE fanout timeline)
         │   └── visualizers/            # DestinationVisualizerModal + 4 destination visualizers
         ├── pages/                      # see §3.1 for mounted vs. present-but-unmounted
         │   ├── HomePage.tsx, BrowsePage.tsx, DirectoryPage.tsx, FileViewerPage.tsx,
@@ -184,7 +192,7 @@ rag-ingestion-manager/
 | `/knowledge-store` | `KnowledgeStorePage` |
 | `/knowledge-store/:id` | `KnowledgeProductPage` |
 
-Pages are mounted persistently and toggled by visibility, so component state (uploads in progress, open forms) survives navigation. The ingestion app does **not** mount `PipelinesPage`, `TrackingPage`, `PromptsPage`, `ChatPage`, `EvaluationsPage`, `GoldenEvaluationsPage`, `GuardrailsConfigPage`, `GuardrailsTracesPage`, or `GuardrailsEvaluationPage`; those files exist in `frontend/src/pages/` but belong to the retrieval/chat frontend. `App.tsx` only holds legacy redirects (`/directories*`), and `api.ts` additionally exposes scraper (`VITE_SCRAPER_URL`, default `http://localhost:8000`) and retrieval (`VITE_RAG_API_URL`, default `http://localhost:8001`) clients that the mounted ingestion pages do not use.
+Pages are mounted persistently and toggled by visibility, so component state (uploads in progress, open forms) survives navigation. The sidebar `NAV` list has **5 entries**: Overview (`/`), Fabric Viewer (`/browse`), Knowledge Fabric (`/sources`), Ingestion Profiles (`/ingestion-profiles`) and Knowledge Hub (`/knowledge-store`). The ingestion app does **not** mount `PipelinesPage`, `TrackingPage`, `PromptsPage`, `ChatPage`, `EvaluationsPage`, `GoldenEvaluationsPage`, `GuardrailsConfigPage`, `GuardrailsTracesPage`, or `GuardrailsEvaluationPage`; those files exist in `frontend/src/pages/` but belong to the retrieval/chat frontend. `App.tsx` only holds legacy redirects (`/directories*`), and `api.ts` additionally exposes scraper (`VITE_SCRAPER_URL`, default `http://127.0.0.1:8000`) and retrieval (`VITE_RAG_API_URL`, default `http://127.0.0.1:8001`) clients that the mounted ingestion pages do not use. The ingestion client itself reads `VITE_API_URL` and defaults to `""`, so it calls the relative `/api` path and the Vite dev proxy forwards it to `http://127.0.0.1:8007` (`frontend/vite.config.ts`).
 
 ---
 
@@ -213,6 +221,7 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/pipelines` | `POST` | `` | 201 | create pipeline |
 | `/api/pipelines` | `GET` | `/runs` | 200 | all runs, `limit` query (default 100) |
 | `/api/pipelines` | `GET` | `/runs/{run_id}` | 200 | single run |
+| `/api/pipelines` | `GET` | `/by-slug/{slug}` | 200 | assistant lookup by unique slug (declared before `/{pipeline_id}`) |
 | `/api/pipelines` | `GET` | `/{pipeline_id}` | 200 | pipeline detail |
 | `/api/pipelines` | `PATCH` | `/{pipeline_id}` | 200 | directories / scraper settings |
 | `/api/pipelines` | `DELETE` | `/{pipeline_id}` | 204 | deletes runs and source links too |
@@ -241,6 +250,8 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/sources` | `GET` | `/{source_id}/files/content` | 200 | file bytes with guessed media type |
 | `/api/sources` | `POST` | `/{source_id}/sync` | 200 | trigger sync for all connectors |
 | `/api/sources` | `POST` | `/{source_id}/events` | 200 | MinIO event webhook receiver |
+| `/api/sources` | `GET` | `/{source_id}/webscrape` | 200 | webscrape switch, limits and one row per `*_scrp.txt` manifest |
+| `/api/sources` | `POST` | `/{source_id}/webscrape/scan` | 200 | detect the manifests now; `422 WEBSCRAPE_DISABLED` while the switch is off |
 | `/api/knowledge-products` | `GET` | `/destinations/options` | 200 | destination types with the 15 typed field schemas, defaults and `namespace_fields` |
 | `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/model/info` listing classified by `model_info.mode`, `model_kind` in `all\|embedding\|rerank\|chat\|vision\|sparse`, `default_embedding_model`, `default_caption_model`, env fallback |
 | `/api/knowledge-products` | `GET` | `` | 200 | list products with sources and destinations, newest first |
@@ -271,23 +282,25 @@ Lifespan: `ensure_storage_layout()` -> `init_db()` -> `asyncio.create_task(init_
 ## 5. Background Workers & Scheduling
 
 ### 5.1 `apps/worker/main.py`
-Runs `create_scheduler()` (APScheduler `AsyncIOScheduler`, started but not blocking) and then a polling loop that drains three Redis lists, each with a 2-second timeout; when nothing was handled it sleeps 0.1 s.
+Runs `create_scheduler()` (APScheduler `AsyncIOScheduler`, started but not blocking) and then a polling loop that drains four Redis lists, each with a 2-second timeout; when nothing was handled it sleeps 0.1 s.
 
 | Queue (Redis list) | Setting | Payload | Handler |
 |---|---|---|---|
 | `file_manager:jobs` | `file_manager_queue` | `{"job_id": ...}` | `file_manager.core.operations.run_job` (upload/append/rename/delete jobs) |
 | `ingestion:pipeline:jobs` | `pipeline_queue` | `{"run_id": ...}` | `pipeline_runner.run_pipeline_job` |
 | `ingestion:sync:jobs` | `sync_queue` | `{"pipeline_id": ...}` | `sync_runner.sync_pipeline` |
+| `ingestion:webscrape:jobs` | `webscrape_queue` | `{"scrape_file_id": ...}` | `ingestion_service.core.webscrape.run_source_scrape_job` |
 
 ### 5.2 `apps/worker/scheduler.py`
-One `CronTrigger` built from the eight `sync_cron_*` settings drives two jobs:
+One `CronTrigger` built from the eight `sync_cron_*` settings drives two of the three jobs, and an `IntervalTrigger` drives the third:
 
 | Job id | Function | Purpose |
 |---|---|---|
 | `pipeline_file_sync` | `sync_runner.sync_all_pipelines` | re-sync and re-index files for all pipelines with directories |
 | `source_connector_sync` | `clients.source_sync.sync_all_enabled_sources` | enqueue `pathway_sync_queue` for enabled sources that are not currently syncing |
+| `webscrape_reconcile` | `ingestion_service.core.webscrape.scan_all_webscrape_sources` | rescan `*_scrp.txt` manifests that a missed event left unprocessed, on an `IntervalTrigger` |
 
-Default schedule is every 4 hours at minute 0 second 0 (`sync_cron_hour="*/4"`), configurable down to the year field via `SYNC_CRON_*` env vars.
+The cron default is every 4 hours at minute 0 second 0 (`sync_cron_hour="*/4"`), configurable down to the year field via `SYNC_CRON_*` env vars. The webscrape reconciler runs every `webscrape_reconcile_minutes` (default `10`).
 
 ### 5.3 `apps/pathway_worker/main.py`
 - Drains the literal Redis list `pathway_sync_queue` (enqueued by `enqueue_pathway_sync`) and calls `pathway_sync.sync_source_from_pathway(db, source_id)`.
@@ -398,7 +411,7 @@ The connection and secret fields left the surface on 2026-09-20, and `.env` supp
 
 ## 9. Database Schema & Migrations
 
-`src/shared/db/models.py` defines 16 tables:
+`src/shared/db/models.py` defines 17 tables:
 
 | Table | Model | Purpose |
 |---|---|---|
@@ -408,6 +421,7 @@ The connection and secret fields left the surface on 2026-09-20, and `.env` supp
 | `chunk_uploads` | `ChunkUpload` | resumable chunked upload sessions |
 | `sources` | `Source` | external source + its dedicated MinIO bucket, monitor modes, metrics |
 | `source_connectors` | `SourceConnector` | per-connector type/config/monitor mode |
+| `source_scrape_files` | `SourceScrapeFile` | per-source webscrape ledger: one row per `*_scrp.txt` manifest, unique on `(source_id, file_key)`, with `etag`/`size_bytes` change detection, `status`, `seeds_planned`, `pages_scraped`, `generated_keys` and `error_message` |
 | `pipeline_sources` | `PipelineSource` | M2M pipeline<->source link with per-link monitor config |
 | `pipelines` | `Pipeline` | rag strategy, embedding config, chunking, scraper settings, `knowledge_product_id` |
 | `pipeline_runs` | `PipelineRun` | run status, counters, scraper job ids |
@@ -437,10 +451,15 @@ Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 | `008_knowledge_store` | `008_knowledge_store.py` | created knowledge_profiles, knowledge_profile_sources, knowledge_destination_configs (all renamed in `010`) |
 | `009_pipeline_knowledge_profile` | `009_pipeline_knowledge_profile.py` | added `pipelines.knowledge_profile_id` (renamed in `010`) |
 | `010_knowledge_products` | `010_knowledge_products.py` | renamed the three knowledge tables, their indexes and columns; added `monitor_mode`, `sync_interval_seconds`, `sync_interval_minutes`; created `knowledge_product_files`; deleted the `graph_neo4j` destination rows and the `indexed_files` rows with `pipeline_id IS NULL` |
+| `011_assistant_pipeline` | `011_assistant_pipeline.py` | added `pipelines.slug` (unique index), `prompt_template_id`, `guardrails_config_id`, `chat_model`; made `qdrant_collection` nullable; added the `vector`, `lexical`, `relational` strategy labels on PostgreSQL |
+| `012_pipeline_model_settings` | `012_pipeline_model_settings.py` | added `pipelines.model_settings` (JSONB, nullable) |
+| `013_assistant_reasoning_patterns` | `013_assistant_reasoning_patterns.py` | added the `self_rag` and `corrective` strategy labels on PostgreSQL |
+| `014_missing_model_columns` | `014_missing_model_columns.py` | added the six columns that existed only in the models: `knowledge_products.ingestion_profile_id`, `knowledge_products.pipeline_fingerprint`, `sources.total_files`, `sources.total_size_bytes`, `sources.connector_sync_interval_seconds`, `source_connectors.sync_interval_seconds` |
+| `015_source_webscrape` | `015_source_webscrape.py` | added `sources.webscrape_enabled`, `sources.webscrape_max_depth` and `sources.webscrape_max_pages` for the per-source webscrape feature; the `source_scrape_files` table itself comes from `Base.metadata.create_all`, like the two Ingestion Profile tables. **Head revision.** |
 
-`models.py` also installs SQLite compilers for `JSONB`/`UUID` so the schema can be created on SQLite (used by tests). The SQLite dev database is created by `init_db()`, which runs `_ensure_sqlite_renames(path)` before `Base.metadata.create_all` and `_ensure_sqlite_columns(path)` after it, because `create_all` never renames a table.
+`models.py` installs SQLite compilers for `JSONB`/`UUID`. **There is one database: PostgreSQL.** The automatic SQLite fallback in `init_db` is removed, so an unreachable database stops the service at startup instead of serving stale rows. `test_no_sqlite_fallback.py` guards this. `init_db` still calls `Base.metadata.create_all` next to Alembic. If `DATABASE_URL` names SQLite on purpose, `init_db` runs `_ensure_sqlite_renames(path)` before `create_all` and `_ensure_sqlite_columns(path)` after it, because `create_all` never renames a table or adds a column.
 
-**The two Ingestion Profile tables have no Alembic revision.** `Base.metadata.create_all` creates any table that does not exist, so the head stays `010_knowledge_products`. Three details go with them:
+**The two Ingestion Profile tables have no Alembic revision.** `Base.metadata.create_all` creates any table that does not exist, so the migration head is `015_source_webscrape` and `011`…`015` do not mention the two profile tables. Three details go with them:
 
 - The name `ingestion_profiles` is deliberate. Migration `008_knowledge_store` spent `knowledge_profiles` on the table that `010_knowledge_products` renamed to `knowledge_products`, so reusing that name would collide with the migration history.
 - On SQLite the new column comes from the `_ensure_sqlite_columns` list in `src/shared/db/session.py`: `("knowledge_products", "ingestion_profile_id VARCHAR(36)")`. Without that entry every product read fails with `no such column`.
@@ -501,7 +520,7 @@ The vector dimension is **derived** from the embedding-model output, so no profi
 
 Profile CRUD rules: `name` is unique, and a duplicate answers `400`. `chunk_overlap` must stay below `chunk_size` on both `POST` and `PATCH`, and a violation answers `422 CHUNK_OVERLAP_TOO_LARGE`. A `text_images` profile without a caption model answers `422 CAPTION_MODEL_REQUIRED`. A supplied `destinations` list replaces the whole set. `DELETE` answers `409 PROFILE_IN_USE` with `product_count` while a product references the profile. Deleting is blocked on purpose, because the FK is `SET NULL`. A delete would leave the products with copied rows and no way to reach the profile again.
 
-The Knowledge Store create/edit dialog no longer collects destination configuration. It asks for a name, a description, an **Ingestion Profile** select with a read-only summary, the sync mode and the MinIO sources. The schedule stays on the product. A product created before this feature has no profile and shows the `Legacy: inline config` badge. The product detail page shows `Profile: <name>`, `Chunk <size> / <overlap>`, `Chunking: <strategy>` and `Modality: Text + images` badges and an **Apply Profile** button.
+The Knowledge Hub create/edit dialog no longer collects destination configuration. It asks for a name, a description, an **Ingestion Profile** select with a read-only summary, the sync mode and the MinIO sources. The schedule stays on the product. A product created before this feature has no profile and shows the `Legacy: inline config` badge. The product detail page shows `Profile: <name>`, `Chunk <size> / <overlap>`, `Chunking: <strategy>` and `Modality: Text + images` badges and an **Apply Profile** button.
 
 Chunking reads the profile through `_resolve_chunking(product)`: a product with no profile falls back to `1000 / 120`, and the overlap is clamped to `chunk_size - 1`. The strategy comes from `_resolve_chunk_strategy(product)`, which defaults to `recursive`. The modality comes from `_resolve_modality_mode(product)`. See §10.2 step 6 for where the split happens.
 
@@ -509,11 +528,11 @@ Chunking reads the profile through `_resolve_chunking(product)`: a product with 
 
 Every file runs six stages in one tick:
 
-1. **Text extraction** — `page_yielder.iter_file_pages()` reads PyMuPDF text for a PDF, python-docx for a DOCX, and csv, json or plain text directly. The fanout passes `render_pages=False`, so no page becomes a PNG.
+1. **Text extraction** — `page_yielder.iter_file_pages()` reads PyMuPDF text for a PDF, python-docx for a DOCX, and csv, json or plain text directly. The fanout passes `render_pages=False`, so no page becomes a PNG. `FilePage.__post_init__` strips a NUL byte (`0x00`) from the page text, because PostgreSQL rejects a string that holds one.
 2. **Figure extraction** — with `include_figures=True`, each embedded PDF image XObject becomes a `FilePage` with `modality="image"` and an `image_ref` of `{page_index, image_index}`. A figure below `image_min_pixels` is dropped here, so a logo or a rule never becomes a chunk.
 3. **Captioning** — on a `text_images` profile one vision call sends the figure to `caption_model`, and the reply replaces the image bytes as the page text. The stack uses vision captions and **does not implement OCR**. A scanned page has no text layer, so `text` mode yields no chunk for it and `text_images` mode captions its page image. A failed caption drops that figure and counts in `images_skipped`.
 4. **Chunking** — `_chunk_pages()` splits every page with `chunk_size`, `chunk_overlap` and the profile's `chunk_strategy`. Each figure page then gets a `chunk_index` above the text chunks of its own page. `context_aware` runs here too: one batch embedding call per page finds the topic shifts, and the whole split runs in a worker thread.
-5. **One shared embedding pass** — `_embed_records()` calls the embedding client **once per chunk per tick** and stores the vector on the `ChunkRecord`. The Qdrant and PostgreSQL writers reuse that vector, so no chunk is embedded twice.
+5. **One shared embedding pass** — `_embed_records()` calls the embedding client **once per chunk per tick** and stores the vector on the `ChunkRecord`. The Qdrant and PostgreSQL writers reuse that vector, so no chunk is embedded twice. The client's batch method, `embed_passages`, sends **at most 256 inputs per request** (`_MAX_EMBED_BATCH`), in order, because NVIDIA NIM refuses more; hitting the cap caps that one call and does not trigger the FastEmbed fallback.
 6. **Fanout** — the four writers run in parallel through `asyncio.gather`, and each one reads the shared record for its text, payload and vector.
 
 ---
@@ -531,7 +550,7 @@ Every file runs six stages in one tick:
 ---
 
 ## 12. Runtime Services & Ports (`docker-compose.yaml`)
-Compose file is shared with the retrieval stack; the ingestion-relevant services are:
+This compose file declares 18 services. It starts 12 of them by default. `neo4j`, `nifi` and `opensearch-dashboards` sit behind the `extras` profile, and `scraper-api`, `scraper-worker` and `scraper-migrate` behind the `scraper` profile, because the scraper normally runs on the host as two `web-scrapper-workspace` processes. The retrieval stack runs from its own compose file, `rag-retrieval-chat-manager/backend/docker-compose.yaml`, which declares four services; this file does not declare them.
 
 | Service | Image / build | Command | Ports |
 |---|---|---|---|
@@ -541,16 +560,18 @@ Compose file is shared with the retrieval stack; the ingestion-relevant services
 | `pathway-worker` | backend Dockerfile | `python -m apps.pathway_worker.main` | — |
 | `web` | `frontend/Dockerfile` | Vite dev server | `5173:5173` (`VITE_API_URL=http://localhost:8007`) |
 | `minio` | `minio/minio:RELEASE.2024-01-16T16-07-38Z` | `server /data --console-address ":9001"` | `9000:9000`, `9001:9001` |
-| `nifi` | `apache/nifi:1.24.0` | — | `8443:8443` |
-| `scraper-api` / `scraper-worker` / `scraper-migrate` | `tharun0511/web-scrapper-wokspace:latest` | — | `8000:8000` (scraper API) |
+| `nifi` | `apache/nifi:1.24.0` | — | `8443:8443` (`extras` profile) |
+| `scraper-api` / `scraper-worker` / `scraper-migrate` | Built from `web-scrapper-workspace/Dockerfile` (context: repo root), tagged `rag-web-scrapper:local`; its second stage reuses the published `tharun0511/web-scrapper-wokspace:latest` as a base | `--profile scraper` only. The normal path is `sh scripts/dev.sh scraper-api` and `scraper-worker` on the host | `8000:8000` (scraper API) |
 | `qdrant` | `qdrant/qdrant:v1.18.0` | — | `6333:6333` |
 | `redis` | `redis:7-alpine` | — | `6379:6379` |
 | `postgres` | `pgvector/pgvector:pg16` | — | `5432:5432` |
-| `neo4j` | (declared in `docker-compose.yaml`) | — | `7474:7474`, `7687:7687` (unused by any destination since 2026-09-20) |
+| `neo4j` | (declared in `docker-compose.yaml`) | — | `7474:7474`, `7687:7687` (unused by any destination since 2026-09-20; `extras` profile) |
+| `opensearch` | `opensearchproject/opensearch:2.11.0` | — | `9200:9200`, `9600:9600` (lexical destination) |
+| `opensearch-dashboards` | `opensearchproject/opensearch-dashboards:2.11.0` | — | `5601:5601` (`extras` profile) |
+| `guardrails-service` | guardrails-service Dockerfile | — | `18000:8000` |
 | `otel-collector` | `otel/opentelemetry-collector:0.148.0` | — | `4317:4317`, `4318:4318` |
-| `rag-migrate` / `rag-api` / `eval-worker` (+ guardrails services) | retrieval Dockerfile on this compose file | — | `8001:8001` (`rag-api`) |
 
-Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/app/storage`), `hf-cache` (`worker` and the retrieval `rag-api`), `minio_data`, `pg_data`, `qdrant_data`, `neo4j_data` (still declared, unused by any destination), `nifi_data`, `scraper_data`. All ingestion services set `extra_hosts: host.docker.internal:host-gateway`, so the LiteLLM base URL setting can point at a host-run proxy.
+Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/app/storage`), `hf-cache` (`worker`; the retrieval compose mounts it too), `minio_data`, `pg_data`, `qdrant_data`, `neo4j_data` (still declared, unused by any destination), `nifi_data`, `opensearch_data`, `scraper_data`. All ingestion services set `extra_hosts: host.docker.internal:host-gateway`, so the LiteLLM base URL setting can point at a host-run proxy.
 
 ---
 
@@ -560,4 +581,4 @@ Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/
 - E2E modality: `backend/scripts/e2e_ingestion_modality.py --source-id <uuid>` proves several facts. The field surface holds no connection or dimension key. The derived dimension reaches Qdrant. `text` mode stores no image document, and `text_images` stores one caption in every store. A `text_images` profile without a caption model answers `422 CAPTION_MODEL_REQUIRED`.
 - E2E chunk strategies: `backend/scripts/e2e_chunk_strategies.py --source-id <uuid>` moves one product through `section`, `parent_child`, `fixed` and `context_aware`. After each change it reads all four stores and proves the record count matches the strategy, that every child names a parent stored beside it, that a strategy change leaves no stale `record_type` behind, and that the stores agree on the count. It also proves that an unknown strategy name is a `422`.
 - Legacy cleanup: `backend/scripts/purge_neo4j_legacy.py` deletes the `Chunk`/`Document`/`Entity` nodes written before the graph destination was removed.
-- Tests: `backend/tests/test_page_yielder.py`, `test_page_yielder_figures.py`, `test_fanout_payload.py`, `test_knowledge_destination_schemas.py`, `test_knowledge_product_files.py`, `test_connector_config_validation.py`, `test_ingestion_profile_chunking.py` and `test_ingestion_modality_resolvers.py`. Chunking covers `_resolve_chunking` and `_resolve_chunk_strategy` with no profile and with one, an overlap above the size, `_chunk_pages` over one long page, a blank page and three pages, and every one of the seven strategies, including that a child record's `parent_ref` resolves to a `parent` record. Run with `uv run pytest tests -q` from `rag-ingestion-manager/backend`. 23 cases preceded this feature.
+- Tests: `backend/tests/test_page_yielder.py`, `test_page_yielder_figures.py`, `test_fanout_payload.py`, `test_knowledge_destination_schemas.py`, `test_knowledge_product_files.py`, `test_connector_config_validation.py`, `test_ingestion_profile_chunking.py`, `test_ingestion_modality_resolvers.py`, `test_litellm_model_kinds.py`, `test_no_sqlite_fallback.py` and `test_source_webscrape.py`. Chunking covers `_resolve_chunking` and `_resolve_chunk_strategy` with no profile and with one, an overlap above the size, `_chunk_pages` over one long page, a blank page and three pages, and every one of the seven strategies, including that a child record's `parent_ref` resolves to a `parent` record. Run with `uv run pytest tests -q` from `rag-ingestion-manager/backend`.

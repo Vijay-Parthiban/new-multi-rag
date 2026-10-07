@@ -1,0 +1,140 @@
+RAG RETRIEVAL & CHAT MANAGER — VIDEO DEMO TRANSCRIPT
+Total run time: 4:00 | Narration: about 580 words, about 145 words per minute
+App: RAG Retrieval & Chat Manager, host port 5174
+Structure: the overall aim first, then one section per page in navigation order.
+
+Each slot equals its reading time at 145 words per minute, so a slow click still fits. Each
+section names the screen it covers, so you can stretch or trim a line to the footage you shot.
+
+
+[0:00 — 0:18]  THE PLATFORM AND THIS APP
+Screen: a title card, or the Overview page before you touch it.
+
+These two projects form one RAG platform. The ingestion manager writes the knowledge base.
+This app, the retrieval and chat manager, is the read side. It points a pipeline at one
+knowledge product, answers questions from it, measures the answers, and guards them.
+
+
+[0:18 — 0:38]  OVERVIEW
+Screen: Overview page. Point at the four stat cards, then the quick-launch cards.
+
+The Overview page is the landing page. Four cards headline the platform: active RAG pipelines,
+average retrieval latency, the RAGAS faithfulness score, and the count of linked knowledge
+products. Six cards below open the workspace pages. The bottom panel lists the retrieval and
+synthesis features this build turns on.
+
+
+[0:38 — 1:01]  KNOWLEDGE STORE
+Screen: Knowledge Store page, then one product.
+
+Knowledge Store is a read-only mirror of the ingestion manager. The ingestion side is the only
+writer, so nothing here creates or edits a product. It exists so a pipeline can point at an
+existing product without leaving this app. Open one to inspect its destinations, its store
+names, and the state of each store.
+
+
+[1:01 — 1:27]  PIPELINES
+Screen: Pipelines page. Show a saved pipeline card, then the view dialog.
+
+The Pipelines page defines a RAG pipeline. A pipeline names one knowledge product, a retrieval
+strategy, an embedding model, a chat model, a prompt template, and a guardrails config. The view
+dialog shows its assistant endpoint, which is the URL an integrating project calls. A pipeline
+is created, edited, paused or deleted here, and the Chat page sees every change at once.
+
+
+[1:27 — 1:56]  CHAT
+Screen: Chat page. Start a session, ask one question, then point at the memory badge.
+
+This is the Chat page. It lists the saved conversations, and New starts one. Before the first
+question it reports whether the pipeline keeps session memory, read from the knowledge product's
+Redis destination. When it does, the button reads End Session and a follow-up question is
+understood in context. When it does not, each question stands alone and the button reads End
+Chat. Answers stream in with their sources.
+
+
+[1:56 — 2:08]  PROMPTS
+Screen: Prompts page.
+
+The Prompts page holds the prompt templates a pipeline can select. Each template is editable,
+and each one can be reset to its default, so a change is always reversible.
+
+
+[2:08 — 2:29]  REAL TIME MONITORING
+Screen: Real Time Monitoring page. Point at one row and its metric columns.
+
+Real Time Monitoring lists the recent chat turns that carry a quality-metrics row. Each row
+shows the question, the answer, and the scores: faithfulness, answer relevancy, context
+precision and recall, and the reranker metrics. It is a manual-refresh table, and it is where
+you confirm what a live turn actually retrieved.
+
+
+[2:29 — 2:55]  OFFLINE EVALUATION
+Screen: Offline Evaluation page. Show the dataset list, then a finished run.
+
+Offline Evaluation scores one pipeline against a golden dataset. You upload a JSON or CSV set,
+or import the built-in one, then choose a pipeline, a retrieval mode and a judge model, and run
+it. The result opens with the Triad panel, which names the failing stage, then the per-stage
+KPIs, the same numbers for each question type, and a rubric table.
+
+
+[2:55 — 3:07]  GUARD CONFIG
+Screen: Guard Config page.
+
+Guard Config builds the guardrail rules. Each config selects validators from the guardrails
+service, the chat phases they apply to, and their parameters. A failing validator blocks the
+turn.
+
+
+[3:07 — 3:17]  GUARD TRACES
+Screen: Guard Traces page. Open one row in the detail drawer.
+
+Guard Traces is the audit ledger. Every validation writes a row, passed or blocked, with the
+validator that failed and its raw results.
+
+
+[3:17 — 3:34]  GUARD EVALUATION
+Screen: Guard Evaluation page, then a finished run.
+
+Guard Evaluation scores a saved config against a dataset of texts that carry an expected verdict.
+It reports accuracy, precision, recall and F1, and it shows every item beside its expected and
+actual behaviour, so a false block is easy to find.
+
+
+[3:34 — 3:51]  THE ENDPOINT — PROD MODE
+Screen: the Pipelines page while a pipeline is created, then its view dialog with the endpoint.
+
+Creating a pipeline gives it its own assistant endpoint. A website calls that endpoint with one
+HTTP POST and keeps its own UI, while this platform does the retrieval and the answering. With
+no trace header, that call is production traffic.
+
+
+[3:51 — 4:00]  CLOSE
+Screen: hold on the Chat page, or cut back to the Overview page.
+
+Every answer is traced to Langfuse and Phoenix with the pipeline and the knowledge product it
+ran on.
+
+
+NOTE — TRACE MODES, AND WHERE THE LOGS GO
+Not part of the 4:00 timing. Read it over the final screen if you have room, or keep it as a
+written note beside this file.
+
+- **Two modes.** A turn from the Chat page carries the header `X-RAG-Trace-Mode: test`. A turn
+  that calls the assistant endpoint carries no such header and is production. It is the same
+  route and the same span name, and that header is the only difference.
+- **Four tags.** The backend derives them, so a tag can never contradict what the turn did:
+  `test-session` and `test-stateless` from the UI, `prod-session` and `prod-stateless` from an
+  integrating project. The mode also lands on the span as `deployment.environment`, which is
+  the field Langfuse groups on.
+- **How they are sent.** The app never calls Langfuse or Phoenix. It exports OTLP once, to the
+  collector on 4318 (`OTEL_EXPORTER_OTLP_ENDPOINT`), and the collector fans one copy out to
+  each backend. Tracing has to be on: `OTEL_TRACING_ENABLED=true`. With it off, both modes are
+  silent and neither backend sees a thing.
+- **Per turn.** One `rag.chat` span holds the turn (`rag.chat.stream` for a streamed turn),
+  with retrieval, rerank and generation under it, and `rag.pipeline.metrics` on the same trace
+  rather than a second one.
+- **Per session.** Ending a conversation emits one `rag.session` span that carries every
+  question and answer of that session. It is written only when the pipeline keeps memory, and
+  the session id on it groups that session's turn traces with it.
+- **Two backends, one write.** Phoenix, by Arize, and Langfuse each receive their own copy of
+  every span. Arize AX is a different product and is configured but disabled.

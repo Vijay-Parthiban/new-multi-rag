@@ -238,6 +238,12 @@ class Source(Base):
     status: Mapped[str] = mapped_column(String(32), default="disconnected")
     total_files: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     total_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True, default=0)
+    # Per-source webscraping. While enabled, a `*_scrp.txt` object in this source's bucket is
+    # read as a URL list; every crawled page becomes one `.md` object beside it.
+    # max_depth 0 means the linked page only; 1 or more follows subpages to that depth.
+    webscrape_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    webscrape_max_depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    webscrape_max_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -286,6 +292,42 @@ class SourceConnector(Base):
     )
 
     source: Mapped["Source"] = relationship(back_populates="connectors", lazy="selectin")
+
+
+class SourceScrapeFile(Base):
+    """Per-source webscrape state for one `*_scrp.txt` manifest.
+
+    This is the webscrape ledger. The `etag` plus `size_bytes` pair is the change
+    token, the same one ``KnowledgeProductFile`` uses: an unchanged manifest is not
+    crawled again, a changed one purges its run folder and regenerates.
+
+    ``create_all`` in ``init_db`` creates this table on both engines, so it needs no
+    migration. That matches the two Ingestion Profile tables.
+    """
+
+    __tablename__ = "source_scrape_files"
+    __table_args__ = (
+        Index("ix_source_scrape_files_unique", "source_id", "file_key", unique=True),
+        Index("ix_source_scrape_files_source_status", "source_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    file_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    etag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending")
+    seeds_planned: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    pages_scraped: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    generated_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class PipelineSource(Base):

@@ -120,7 +120,7 @@ class CrawlRepository:
             job.markdown_indexed_at = now
         elif embedding_source == "image":
             job.image_indexed_at = now
-        else:
+        elif embedding_source != "none":
             raise ValueError(f"Invalid embedding_source: {embedding_source}")
         session.flush()
         return job

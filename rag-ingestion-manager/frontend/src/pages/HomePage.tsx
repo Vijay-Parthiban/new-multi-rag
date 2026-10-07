@@ -8,31 +8,31 @@ import { formatRelativeTime } from "../utils/format";
 const QUICK_LINKS = [
   {
     to: "/sources",
-    title: "Data Sources & Storage",
+    title: "Knowledge Fabric",
     description: "Create NiFi connector sources or manual upload sources. Each source gets its own MinIO bucket.",
     icon: IconSources,
-    cta: "Manage Sources",
+    cta: "Manage Knowledge Fabric",
   },
   {
     to: "/browse",
-    title: "Folders & Files",
+    title: "Fabric Viewer",
     description: "Explore virtual directory workspaces and raw object storage contents.",
     icon: IconBrowse,
-    cta: "Open Workspace",
+    cta: "Open Fabric Viewer",
   },
   {
     to: "/sources",
     title: "External Connectors",
     description: "Sync Google Drive, Amazon S3, and Azure Blob Storage into MinIO buckets.",
     icon: IconSources,
-    cta: "Manage Sources",
+    cta: "Manage Knowledge Fabric",
   },
   {
     to: "/knowledge-store",
-    title: "Knowledge Store Fanout",
-    description: "Manage multi-vector fanout sync to Qdrant, OpenSearch, Postgres, & RedisVL.",
+    title: "Knowledge Hub",
+    description: "Manage multi-destination fanout sync to the dense vector, sparse vector, relational chunk and cache stores.",
     icon: IconDatabase,
-    cta: "Manage Knowledge Store",
+    cta: "Manage Knowledge Hub",
   },
 ] as const;
 
@@ -69,7 +69,7 @@ export default function HomePage() {
     <div className="page">
       <PageHeader
         title="Ingestion Overview"
-        description="Ingest documents, manage connected data sources, and orchestrate 4-destination Knowledge Store fanout sync."
+        description="Ingest documents, manage the Knowledge Fabric, and orchestrate the 4-destination Knowledge Hub fanout sync."
       />
 
       {/* Metric Highlights Banner */}
@@ -157,16 +157,16 @@ export default function HomePage() {
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0.75rem" }}>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #3b82f6" }}>
-            <strong>Qdrant:</strong> Dense Vector Embeddings (HNSW)
+            <strong>Dense Vector Store (Qdrant):</strong> Dense Vector Embeddings (HNSW)
           </div>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #10b981" }}>
-            <strong>OpenSearch:</strong> BM25 Lexical & Inverted Index
+            <strong>Sparse Vector Store (OpenSearch):</strong> BM25 Lexical & Inverted Index
           </div>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #f59e0b" }}>
-            <strong>PostgreSQL:</strong> Relational & pgvector ACLs
+            <strong>Relational Chunk Store (Postgres):</strong> Relational & pgvector ACLs
           </div>
           <div style={{ background: "var(--bg-card-alt)", padding: "0.75rem", borderRadius: "6px", fontSize: "0.85rem", borderLeft: "3px solid #ef4444" }}>
-            <strong>RedisVL:</strong> Parent-Child & Semantic Cache
+            <strong>Cache Store (Redis VL):</strong> Parent-Child & Semantic Cache
           </div>
         </div>
       </section>

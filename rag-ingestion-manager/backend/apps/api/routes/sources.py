@@ -26,7 +26,15 @@ from src.file_manager.core.errors import ConflictError, NotFoundError, Validatio
 from src.file_manager.utils.paths import sanitize_directory_name, sanitize_file_name, storage_root
 from src.shared.db.session import get_db
 from src.shared.storage import ensure_bucket
-from src.shared.db.models import Source, SourceConnector, SourceMonitorMode, Pipeline, PipelineSource, KnowledgeProductSource
+from src.shared.db.models import (
+    Source,
+    SourceConnector,
+    SourceMonitorMode,
+    SourceScrapeFile,
+    Pipeline,
+    PipelineSource,
+    KnowledgeProductSource,
+)
 from src.shared.config.settings import get_settings
 from src.ingestion_service.core.pathway_sync import register_source_poller, stop_source_poller
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -91,6 +99,10 @@ class SourceUpdateRequest(BaseModel):
     pipeline_monitor_mode: Literal["live", "scheduled"] | None = None
     pipeline_sync_interval_minutes: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
+    # Per-source webscraping. `webscrape_max_depth` 0 means the linked page only.
+    webscrape_enabled: bool | None = None
+    webscrape_max_depth: int | None = Field(default=None, ge=0, le=5)
+    webscrape_max_pages: int | None = Field(default=None, ge=1, le=500)
     # Legacy compat
     monitor_mode: Literal["live", "scheduled"] | None = None
     sync_interval_minutes: int | None = Field(default=None, ge=1)
@@ -193,6 +205,17 @@ def _trigger_sync_in_background(source: Source) -> None:
     asyncio.create_task(_runner())
 
 
+def _scan_webscrape_in_background(source_id) -> None:
+    """Detect the webscrape manifests of one source without blocking the request."""
+    async def _runner():
+        from src.ingestion_service.core.webscrape import scan_source_manifests_by_id
+        try:
+            await scan_source_manifests_by_id(source_id)
+        except Exception as exc:
+            logger.error("Background webscrape scan failed for source %s: %s", source_id, exc)
+    asyncio.create_task(_runner())
+
+
 async def _source_to_dict(s: Source) -> dict:
     try:
         pipelines = s.pipelines or []
@@ -228,6 +251,9 @@ async def _source_to_dict(s: Source) -> dict:
         "status": s.status,
         "total_files": getattr(s, "total_files", 0) or 0,
         "total_size_bytes": getattr(s, "total_size_bytes", 0) or 0,
+        "webscrape_enabled": bool(getattr(s, "webscrape_enabled", False)),
+        "webscrape_max_depth": int(getattr(s, "webscrape_max_depth", 0) or 0),
+        "webscrape_max_pages": int(getattr(s, "webscrape_max_pages", 50) or 50),
         "error_message": s.error_message,
         "pipeline_ids": [str(ps.pipeline_id) for ps in pipelines],
         "pipeline_links": [
@@ -438,8 +464,19 @@ async def update_source(
         source.pipeline_sync_interval_minutes = body.pipeline_sync_interval_minutes
     if body.enabled is not None:
         source.enabled = body.enabled
+    if body.webscrape_max_depth is not None:
+        source.webscrape_max_depth = body.webscrape_max_depth
+    if body.webscrape_max_pages is not None:
+        source.webscrape_max_pages = body.webscrape_max_pages
+    if body.webscrape_enabled is not None:
+        source.webscrape_enabled = body.webscrape_enabled
 
     await db.commit()
+
+    if body.webscrape_enabled is True:
+        # Start any manifest that is already in the bucket, without waiting for the
+        # reconciler. Fire and forget: the response does not depend on the scan.
+        _scan_webscrape_in_background(source_id)
 
     # Handle pipeline monitor mode changes (bucket notifications)
     if body.pipeline_monitor_mode is not None and old_pipeline_mode != source.pipeline_monitor_mode:
@@ -473,6 +510,7 @@ async def delete_source(
 
     await db.execute(delete(KnowledgeProductSource).where(KnowledgeProductSource.source_id == source_id))
     await db.execute(delete(PipelineSource).where(PipelineSource.source_id == source_id))
+    await db.execute(delete(SourceScrapeFile).where(SourceScrapeFile.source_id == source_id))
     is_local = _is_local_source(source)
     if is_local:
         try:
@@ -495,6 +533,69 @@ async def delete_source(
     await _cleanup_orphaned_local_sources(db)
     stop_source_poller(source_id)
     return {"status": "deleted", "id": str(source_id)}
+
+
+@router.get("/{source_id}/webscrape", status_code=200)
+async def get_source_webscrape(
+    source_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Return the webscrape switch and the state of each detected manifest.
+
+    A manifest is a `*_scrp.txt` object in this source's bucket. `pages_scraped` counts
+    the `.md` objects this source has written for it.
+    """
+    source = await db.get(Source, source_id)
+    if not source:
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+
+    result = await db.execute(
+        select(SourceScrapeFile)
+        .where(SourceScrapeFile.source_id == source_id)
+        .order_by(SourceScrapeFile.file_key)
+    )
+    rows = list(result.scalars().all())
+    return {
+        "enabled": bool(getattr(source, "webscrape_enabled", False)),
+        "max_depth": int(getattr(source, "webscrape_max_depth", 0) or 0),
+        "max_pages": int(getattr(source, "webscrape_max_pages", 50) or 50),
+        "manifests": [
+            {
+                "file_key": row.file_key,
+                "status": row.status,
+                "seeds_planned": int(row.seeds_planned or 0),
+                "pages_scraped": int(row.pages_scraped or 0),
+                "generated_keys": list(row.generated_keys or []),
+                "error_message": row.error_message,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.post("/{source_id}/webscrape/scan", status_code=200)
+async def scan_source_webscrape(
+    source_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Detect the manifests of this source now, for the page's Rescan button.
+
+    A changed manifest is enqueued, a finished one is retried, and a removed one has its
+    generated pages purged.
+    """
+    source = await db.get(Source, source_id)
+    if not source:
+        raise NotFoundError("SOURCE_NOT_FOUND", "Source not found.")
+    if not source.webscrape_enabled:
+        raise ValidationError(
+            "WEBSCRAPE_DISABLED",
+            "Turn on web scraping for this source before you scan.",
+        )
+
+    from src.ingestion_service.core.webscrape import scan_source_manifests
+
+    return await scan_source_manifests(db, source, force=True)
 
 @router.post("/{source_id}/connectors", status_code=201)
 async def add_source_connector(

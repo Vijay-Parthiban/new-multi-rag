@@ -1,10 +1,10 @@
 # 09 — Guard Traces Page
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-10-02
 
 **Sidebar label:** Guard Traces · **Route:** `/guardrails/traces` · **Component:** `frontend/src/pages/GuardrailsTracesPage.tsx` · **In-page `<h1>`:** "Guard Traces & Analytics"
 
-(Navigation entry and mount: `components/AppLayout.tsx:34,129,217`; page title `GuardrailsTracesPage.tsx:151`.)
+(Navigation entry and mount: `components/AppLayout.tsx:33,130,219`; page title `GuardrailsTracesPage.tsx:183`.)
 
 ## 1. Executive Summary & Page Purpose
 The **Guard Traces Page** is the audit ledger of guardrail checks. Every time `_run_guardrails()` validates a chat phase it writes one `guardrails_traces` row (table `guardrails_traces`, `rag_db/models/guardrails.py:29-44`) containing the query, the answer (output phase only), the blocked flag, the validator that blocked and the raw per-validator results. The page lists those rows with filters and pagination, renders aggregate counters and charts from `GET /guardrails/stats`, breaks failures down per validator, and opens one row in a detail drawer.
@@ -57,13 +57,13 @@ Each row is a **phase run**, not a chat turn: an input+output config on one mess
 
 The **Charts** view shows one labelled proportion bar for blocked versus passed, then the same ranked "Blocks by guard" list (`GuardrailsTracesPage.tsx:313-350`). It uses a `ProportionBar` component (`:20-56`) instead of the two donuts it used to draw.
 
-- Data load: `getGuardrailsStats()` and `listGuardrailsTraces({guard, blocked, limit: 25, offset: page * 25})` run in parallel on every filter/page change (`GuardrailsTracesPage.tsx:132-150`). The page size is fixed at 25 (`GuardrailsTracesPage.tsx:13`).
+- Data load: `getGuardrailsStats()` and `listGuardrailsTraces({guard, blocked, limit: 25, offset: page * 25})` run in parallel on every filter/page change (`GuardrailsTracesPage.tsx:118-138`). The page size is fixed at 25 (`GuardrailsTracesPage.tsx:13`).
 - KPI cards render `total_requests`, `blocked_requests`, `passed_requests` and `block_rate`. The card multiplies the 0–1 ratio by 100 and shows one decimal, so a rate of 0.069 displays as `6.9%` (`GuardrailsTracesPage.tsx:204-227`).
 - **Charts view** is one `ProportionBar` for blocked versus passed (`GuardrailsTracesPage.tsx:314-326`) plus the same "Blocks by guard" ranked list (`:327-350`). The two donuts were removed: a 13-versus-2 split renders as a circle with a sliver, and the SVG donut component and its ten CSS rules were deleted.
 - **Blocks by guard** is one card, always visible above the filters, driven by `stats.per_guard` (`guardBreakdown`, `GuardrailsTracesPage.tsx:152-162`). It sorts largest first, filters out zero counts, and labels each row `<count> blocked · <share>%` (`:229-270`). A row is a button: selecting it sets `filterGuard = guard`, `filterBlocked = "true"`, page 0, and returns to the table view (`:243-249`).
 - **Failures by validator** is a horizontal bar list computed from the `guard_results` of the traces that are currently loaded (`countValidatorFailures`, `GuardrailsTracesPage.tsx:86-100`). One bar shows `<failures> of <total> checks failed` for each validator id, sorted by failures (`GuardrailsTracesPage.tsx:273-305`). The panel subtitle states that the counts cover the loaded traces only (`:275-278`).
 - Filters (`GuardrailsTracesPage.tsx:364-397`):
-  - **Status**: `All Status` / `Blocked` / `Passed`, sent to the API as the `blocked` parameter (`GuardrailsTracesPage.tsx:11,137-145,366-375`).
+  - **Status**: `All Status` / `Blocked` / `Passed`, sent to the API as the `blocked` parameter (`GuardrailsTracesPage.tsx:11,125-126,366-375`).
   - **Validator**: a select, not a free-text box. Its options are the validator ids found in `stats.per_guard` and in the loaded `guard_results`, shown through `guardTitle()` (`GuardrailsTracesPage.tsx:164-172`). It is sent to the API as the `guard` parameter, which compares for exact equality against `blocked_by_guard` (`GuardrailsTracesPage.tsx:376-384`, `guardrails_repository.py:97-98`).
   - **Search the query text**: a client-side filter over the `query` of the loaded rows (`GuardrailsTracesPage.tsx:174-178,385-390`). It does not change the API call.
   - **Clear** resets all three filters and the page (`GuardrailsTracesPage.tsx:391-397`).
@@ -82,7 +82,7 @@ The **Charts** view shows one labelled proportion bar for blocked versus passed,
 
 ## 3. Backend APIs & Contracts
 
-Router: `routes/guardrails.py`, prefix `/guardrails` (`rag_api/main.py:83`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:8`). Global API key required.
+Router: `routes/guardrails.py`, prefix `/guardrails` (`rag_api/main.py:83`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`). Global API key required. The catalogue holds three validators: `ban_list`, `detect_pii` and `toxic_language`.
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
@@ -100,7 +100,7 @@ There is **no** `GET /guardrails/traces/{id}` endpoint — the router only defin
 | `limit` | int | 50 | page size (no upper bound) |
 | `offset` | int | 0 | rows to skip. Ordering is `created_at DESC` (`guardrails_repository.py:107`) |
 
-The UI sends `guard`, `blocked`, `limit` and `offset`. It never sends `config_id` even though the API supports it (`frontend/src/api.ts:1349-1361`).
+The UI sends `guard`, `blocked`, `limit` and `offset`. It never sends `config_id` even though the API supports it (`frontend/src/api.ts:1548-1561`).
 
 ### `TraceListResponse`
 `total` (count before paging), `limit`, `offset`, `items: list[TraceResponse]` (`routes/guardrails.py:125-129`).
@@ -111,17 +111,17 @@ The UI sends `guard`, `blocked`, `limit` and `offset`. It never sends `config_id
 | `id` | uuid | trace id |
 | `config_id` | uuid \| null | config that was applied. Null when the trace was written without one |
 | `config_name` | string \| null | resolved per row. It is `"No config"` when `config_id` is null, and `"Deleted"` when the config row no longer exists (`routes/guardrails.py:392-402`) |
-| `chat_message_id` | uuid \| null | accepted by `record_trace` but never passed by the chat call path, so it is always null for chat writes (`guardrails_repository.py:62-86`, `routes/chat.py:335-344`) |
+| `chat_message_id` | uuid \| null | accepted by `record_trace` but never passed by the chat call path, so it is always null for chat writes (`guardrails_repository.py:62-86`, `routes/chat.py:392-400`) |
 | `query` | string | the chat query |
-| `response` | string \| null | the generated answer. Set only by the output-phase check (`routes/chat.py:430-443`) |
+| `response` | string \| null | the generated answer. Set only by the output-phase check (`routes/chat.py:517-527`) |
 | `blocked` | bool | any validator failed |
 | `blocked_by_guard` | string \| null | first failing validator id |
-| `blocked_on` | string \| null | `"input"` / `"output"` when blocked, else null (`routes/chat.py:342`) |
+| `blocked_on` | string \| null | `"input"` / `"output"` when blocked, else null (`routes/chat.py:399`) |
 | `guard_results` | object | raw per-validator verdicts (below) |
 | `created_at` | ISO 8601 string \| null | write time |
 
 ### Per-validator verdicts (`guard_results`)
-Keys are the config's validator ids. Values come from the guardrails-service `/validate` response: `validation_passed` (bool), `error` (a transport or configuration problem), `detail` (`null` when passed, otherwise the failure reason) (`guardrails-service/config.py:762-793`). The page reads `validation_passed` (`GuardrailsTracesPage.tsx:51,69,480,484`), `detail` (`:488`) and `error` (`:489-491`). The frontend types are `GuardResult` and `GuardrailsTrace` (`frontend/src/api.ts:1270-1289`).
+Keys are the config's validator ids. Values come from the guardrails-service `/validate` response: `validation_passed` (bool), `error` (a transport or configuration problem), `detail` (`null` when passed, otherwise the failure reason) (`guardrails-service/config.py`). The page reads `validation_passed` (`GuardrailsTracesPage.tsx:51,69,480,484`), `detail` (`:488`) and `error` (`:489-491`). The frontend types are `GuardResult` and `GuardrailsTrace` (`frontend/src/api.ts:1469-1488`).
 
 ```json
 {
@@ -142,7 +142,7 @@ Keys are the config's validator ids. Values come from the guardrails-service `/v
 }
 ```
 
-Transport and configuration problems are recorded on the same shape with `validation_passed: true` and a non-null `error` (`"HTTP <code>"` plus the response body in `detail`, or the exception message), so they are distinguishable from a real block (`rag_shared/guardrails_client.py:62-121`). A validator that is missing from the service reply is reported as `"validator missing from the response"` in `error` (`rag_shared/guardrails_client.py:113-118`). There are **no** confidence scores, matched-entity spans or offsets in the response.
+Transport and configuration problems are recorded on the same shape with `validation_passed: true` and a non-null `error` (`"HTTP <code>"` plus the response body in `detail`, or the exception message), so they are distinguishable from a real block (`rag_shared/guardrails_client.py:62-121`). A validator that is missing from the service reply is reported as `"validator missing from the response"` in `error` (`rag_shared/guardrails_client.py:118`). There are **no** confidence scores, matched-entity spans or offsets in the response.
 
 ### `GET /guardrails/stats` -> `StatsResponse` (`routes/guardrails.py:132-137,408-416`, `guardrails_repository.py:111-136`)
 | Field | Meaning |
@@ -154,9 +154,9 @@ Transport and configuration problems are recorded on the same shape with `valida
 | `per_guard` | map of `blocked_by_guard` -> count over blocked rows. Rows with a null guard are bucketed under `"unknown"` |
 
 ### How traces are written
-`routes/chat.py:295-353` records the trace inside the same session as the config lookup: `config_id`, `query`, `response` (output phase only), `blocked`, `blocked_by_guard`, `blocked_on` (phase when blocked, else null) and the full `guard_results` map. Nothing else in the codebase writes `guardrails_traces`.
+`routes/chat.py:392-400` records the trace inside the same session as the config lookup: `config_id`, `query`, `response` (output phase only), `blocked`, `blocked_by_guard`, `blocked_on` (phase when blocked, else null) and the full `guard_results` map. Nothing else in the codebase writes `guardrails_traces`.
 
 ### Implementation note (verified in the working tree)
-- The service reply is keyed by the validator ids in the request. The client renames a legacy guard id before it builds the request, so an upgraded config and the trace agree on `detect_pii` (`rag_shared/guardrails_client.py:12,91-92`).
-- A failed chat turn records `blocked_on` as the phase. A passed turn records `blocked_on: null`, so the table shows `—` in the Phase column (`routes/chat.py:342`, `GuardrailsTracesPage.tsx:473`).
+- The service reply is keyed by the validator ids in the request. The client renames a legacy guard id before it builds the request, so an upgraded config and the trace agree on `detect_pii` (`rag_shared/guardrails_client.py:12,80`).
+- A failed chat turn records `blocked_on` as the phase. A passed turn records `blocked_on: null`, so the table shows `—` in the Phase column (`routes/chat.py:399`, `GuardrailsTracesPage.tsx:473`).
 - `frontend/src/utils/guardLabels.ts` is the single source of validator display names for the Traces page and the Guard Evaluation page. It exports `guardMeta()` (title plus tone), `guardTitle()` (title only) and `humanizeGuardId()`. The map was a page-local three-entry table that keyed the retired `pii_check` id, so a real PII block rendered the raw id `detect_pii`. Add a new catalog validator to that map to give it a name; without an entry it still renders as a readable slug.

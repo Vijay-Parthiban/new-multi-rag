@@ -37,3 +37,24 @@ def test_scrape_service_rejects_duplicate_markdown_indexing() -> None:
 
     with pytest.raises(ValueError, match="already has markdown vectors indexed"):
         service.create_scrape_job(session, crawl_job_id=crawl_id, embedding_source="markdown")
+
+
+def test_scrape_service_allows_none_when_markdown_already_indexed() -> None:
+    """`none` writes artifacts only, so an already-indexed crawl must still get a scrape job."""
+    service = ScrapeService()
+    session = MagicMock()
+    crawl_id = uuid.uuid4()
+    crawl_job = MagicMock()
+    crawl_job.id = crawl_id
+    crawl_job.status = JobStatus.COMPLETED
+    crawl_job.result = MagicMock()
+    crawl_job.markdown_indexed_at = datetime.now(UTC)
+    crawl_job.image_indexed_at = None
+    service._crawl_repo.get = MagicMock(return_value=crawl_job)
+    expected = MagicMock()
+    service._scrape_repo.create = MagicMock(return_value=expected)
+
+    job = service.create_scrape_job(session, crawl_job_id=crawl_id, embedding_source="none")
+
+    assert job is expected
+    service._scrape_repo.create.assert_called_once()

@@ -72,7 +72,7 @@ export default function KnowledgeStorePage() {
       setDestinationOptions(destOpts);
       setProfiles(profs);
     } catch (err: unknown) {
-      console.error("Failed to load Knowledge Store data:", err);
+      console.error("Failed to load Knowledge Hub data:", err);
     } finally {
       setLoading(false);
     }
@@ -300,7 +300,7 @@ export default function KnowledgeStorePage() {
             </div>
             <div>
               <h1 style={{ margin: 0, fontSize: "24px", fontWeight: 700, color: "#f8fafc" }}>
-                Knowledge Store Manager
+                Knowledge Hub
               </h1>
               <p style={{ margin: "4px 0 0 0", fontSize: "14px", color: "#94a3b8" }}>
                 Universal Multi-Sink Fanout Engine — Route MinIO documents to 4 enterprise RAG destinations.
@@ -452,7 +452,7 @@ export default function KnowledgeStorePage() {
             No Knowledge Products Created
           </h3>
           <p style={{ margin: "0 0 24px 0", fontSize: "14px", color: "#94a3b8" }}>
-            Create your first Knowledge Product to link MinIO document sources with Qdrant, OpenSearch, pgvector & RedisVL.
+            Create your first Knowledge Product to link MinIO document sources with the four destination types: a dense vector store, a sparse vector store, a relational chunk store and a cache store.
           </p>
           <button onClick={openCreateModal} className="btn btn-primary">
             <IconPlus style={{ width: "16px", height: "16px", marginRight: "8px" }} />
@@ -1176,7 +1176,7 @@ export default function KnowledgeStorePage() {
               {/* MinIO Bucket & Local File System Source Selection */}
               <div style={{ marginBottom: "28px" }}>
                 <label style={{ display: "block", fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "4px" }}>
-                  Link Data Sources (MinIO Buckets & Local File Systems)
+                  Link Knowledge Fabric Sources (MinIO Buckets & Local File Systems)
                 </label>
                 <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "10px" }}>
                   Select at least one MinIO bucket source, at least one Local File System source, or any combination of both.

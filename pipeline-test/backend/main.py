@@ -6,8 +6,8 @@ edit to one line of `.env` and a restart.
 
 One entry is one chatbot:
 
-    CHATBOT_1_LABEL=TCS Policy Assistant
-    CHATBOT_1_ENDPOINT=http://localhost:8001/api/assistants/tcs-chat
+    CHATBOT_1_LABEL=ABC Insurance Policy Assistant
+    CHATBOT_1_ENDPOINT=http://localhost:8001/api/assistants/abc-insurancepolicy-bot
 
 The endpoint is the assistant root. This service appends `/chat`, `/chat/stream` and
 `/sessions/{id}`, because those three routes belong to the same pipeline.

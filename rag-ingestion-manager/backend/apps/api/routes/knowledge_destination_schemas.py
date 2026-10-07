@@ -44,7 +44,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
     return [
         {
             "id": "vector_qdrant",
-            "name": "Qdrant",
+            "name": "Dense Vector Store (Qdrant)",
             "category": "Vector Engine",
             "description": "Dense vector similarity search with HNSW indexing",
             "namespace_fields": ["collection_name"],
@@ -59,7 +59,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
         },
         {
             "id": "lexical_opensearch",
-            "name": "OpenSearch",
+            "name": "Sparse Vector Store (OpenSearch)",
             "category": "Lexical & Sparse Search",
             "description": "BM25 lexical indexing with optional sparse model metadata",
             "namespace_fields": ["index_name"],
@@ -82,7 +82,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
         },
         {
             "id": "relational_pgvector",
-            "name": "PostgreSQL (pgvector)",
+            "name": "Relational Chunk Store (Postgres)",
             "category": "Multi-Model Relational DB",
             "description": "Relational chunk storage with optional pgvector embeddings",
             "namespace_fields": ["schema_name"],
@@ -97,7 +97,7 @@ def build_destination_types(settings: Settings) -> list[dict[str, Any]]:
         },
         {
             "id": "cache_redisvl",
-            "name": "RedisVL",
+            "name": "Cache Store (Redis VL)",
             "category": "Semantic Cache & Summary Store",
             "description": "Redis-backed chunk cache with optional LiteLLM summaries",
             "namespace_fields": ["index_prefix"],

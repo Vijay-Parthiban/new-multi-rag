@@ -230,9 +230,9 @@ export default function BrowsePage() {
   return (
     <div className="page">
       <PageHeader
-        title="Folders"
+        title="Fabric Viewer"
         description="Browse the files in a source bucket. Open one to read it, or to see where it lives and when it last changed."
-        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Folders" }]}
+        breadcrumbs={[{ label: "Overview", to: "/" }, { label: "Fabric Viewer" }]}
         actions={
           <div className="page-actions">
             <button

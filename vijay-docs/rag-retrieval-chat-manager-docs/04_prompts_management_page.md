@@ -1,6 +1,6 @@
 # 04 — Prompts Page (Prompt Templates)
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-10-02
 
 ## 1. Executive Summary & Page Purpose
 
@@ -66,8 +66,8 @@ drift.
 ## 3. Backend Endpoints
 
 Prefix `/prompt-templates`, mounted without an `/api` prefix
-(`app.include_router(prompt_templates.router)`, `backend/apps/rag-api/src/rag_api/main.py`). Base URL
-`http://localhost:8001`. Send `X-API-Key` when `API_KEY` is set.
+(`app.include_router(prompt_templates.router)`, `backend/apps/rag-api/src/rag_api/main.py:82`). Base URL
+`http://127.0.0.1:8001`. Send `X-API-Key` when `API_KEY` is set.
 
 | Method | Path | Body | Response |
 |---|---|---|---|
@@ -95,7 +95,7 @@ Error codes:
 | `404` | `PROMPT_TEMPLATE_NOT_FOUND` | No template has this id. |
 
 ```bash
-curl -X POST http://localhost:8001/prompt-templates \
+curl -X POST http://127.0.0.1:8001/prompt-templates \
   -H 'Content-Type: application/json' \
   -d '{"name": "One Word", "description": "Answers in one word.", "content": "Answer in exactly one word."}'
 ```
@@ -179,17 +179,18 @@ hardcoded. The `{context}` and `{question}` strings in the catalog were literals
 `.format()` or `Template` on them.
 
 That is why prompt templates exist: one table generation actually reads. No frontend code calls
-`/prompts` now.
+`/prompts` now. The client `api.ts` still defines six unused `/prompts` helpers: `listPrompts`,
+`getPrompt`, `updatePrompt`, `updatePromptsBulk`, `resetPrompt` and `resetAllPrompts` (`frontend/src/api.ts:1238-1274`). The page imports none of them.
 
 ---
 
 ## 6. Worked Example — A One-Word Template
 
-The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path. It passes.
+The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path.
 
 1. Create the template.
    ```bash
-   curl -X POST http://localhost:8001/prompt-templates \
+   curl -X POST http://127.0.0.1:8001/prompt-templates \
      -H 'Content-Type: application/json' \
      -d '{"name": "One Word", "description": "Answers in one word.", "content": "Answer in exactly one word."}'
    ```
@@ -202,7 +203,7 @@ The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path. It
    ```
 3. Ask a question through the assistant.
    ```bash
-   curl -X POST http://localhost:8001/api/assistants/<slug>/chat \
+   curl -X POST http://127.0.0.1:8001/api/assistants/<slug>/chat \
      -H 'Content-Type: application/json' \
      -d '{"query": "What award did Rohan receive at Amazon?"}'
    ```
@@ -213,13 +214,14 @@ The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path. It
 
 ## 7. Verification (2026-09-21)
 
+These results were recorded on 2026-09-21 and were not re-run in the 2026-09-30 pass.
+
 | Check | Result |
 |---|---|
-| `backend/scripts/e2e_assistant_pipelines.py` | 30 checks, all pass |
-| Template CRUD in that script | create, list, duplicate-name `409`, and a template in force |
-| `npx tsc --noEmit` | no error |
-| `npx vite build` | succeeds |
-| Browser, 14 retrieval routes | zero console errors |
+| `backend/scripts/e2e_assistant_pipelines.py` | covers template create and list, a duplicate-name `409`, and a template in force |
+| `npx tsc --noEmit` | recorded with no error |
+| `npx vite build` | recorded as a success |
+| Browser, the mounted retrieval routes | recorded with zero console errors |
 
 The script creates its fixtures with a per-run tag and deletes them in a `finally` block, so a re-run
 starts clean.
