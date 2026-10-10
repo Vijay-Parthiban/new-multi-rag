@@ -31,13 +31,24 @@ def test_build_fanout_payload_matches_retrieval_contract() -> None:
     assert payload["image_ref"] is None
 
 
-def test_build_fanout_payload_tags_a_captioned_figure() -> None:
+def test_build_fanout_payload_tags_a_page_image_record() -> None:
+    """A text_images page keeps its text and names the stored page image.
+
+    The four writers skip a record with no text, so the payload must carry the page
+    text as well as the image key, and the retrieval consumers read `type`, so it
+    stays "text" with the modality as the additive field.
+    """
     page = FilePage(
         page_index=1,
-        text="A bar chart of quarterly capacity.",
-        chunk_index=3,
+        text="Quarterly capacity rose by 12 percent.",
+        chunk_index=0,
         modality="image",
-        image_ref={"page_index": 1, "image_index": 0},
+        record_type="page",
+        image_ref={
+            "page_index": 1,
+            "bucket": "resumes",
+            "key": "_pages/reports/q3.pdf/page-00001.png",
+        },
     )
 
     payload = _build_fanout_payload(
@@ -48,8 +59,9 @@ def test_build_fanout_payload_tags_a_captioned_figure() -> None:
     )
 
     assert payload["modality"] == "image"
-    assert payload["image_ref"] == {"page_index": 1, "image_index": 0}
-    assert payload["chunk_index"] == 3
-    # A caption is text, so the retrieval contract is unchanged.
+    assert payload["record_type"] == "page"
+    assert payload["image_ref"]["key"].startswith("_pages/reports/q3.pdf/")
+    assert payload["chunk_index"] == 0
     assert payload["type"] == "text"
-    assert payload["content"] == "A bar chart of quarterly capacity."
+    assert payload["content"] == "Quarterly capacity rose by 12 percent."
+    assert payload["text"] == payload["content"]

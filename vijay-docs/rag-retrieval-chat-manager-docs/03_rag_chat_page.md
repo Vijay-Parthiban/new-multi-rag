@@ -1,6 +1,6 @@
 # 03 — Interactive RAG Chat & Synthesis Page
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. Executive Summary & Page Purpose
 
@@ -31,7 +31,7 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
 | Conversations            |  [◀ History]  Strategy: hybrid (locked)  Model: Gpt-oss-120b (locked)         |
 | [+ New]                  |  session: <id prefix> or "New Session"  [End Session]  [Show settings] [Reset]|
 | ------------------------ |------------------------------------------------------------------------------|
-| Pipeline  [select]       |  [Retrieval mode: Hybrid][Retrieve limit: 20][Rerank: on][Top K: 5]           |
+| Pipeline  [select]       |  [Retrieval mode: Hybrid][Retrieval count: 20][Rerank: on][Rerank count: 5]   |
 |  Strategy: hybrid        |  [Prompt template: Pipeline default][Guardrails: None]                        |
 |  Knowledge Product: name |                                                                               |
 |   · <chunk_strategy>     |  You                                                            14:22         |
@@ -60,7 +60,7 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
 - Assistant messages render through `MarkdownMessage` (`react-markdown` + `remark-gfm` + `remark-math` +
   `rehype-katex`, `frontend/src/components/MarkdownMessage.tsx`). User text is rendered verbatim.
 - Source citations show **only the first 3** reranked chunks as
-  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:1258`).
+  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:1266`).
   There is no chunk inspector drawer and no chunk-index display.
 - While streaming, the pending assistant bubble shows the current `status` message with a pulsing dot, then
   the streamed markdown with a blinking cursor.
@@ -112,12 +112,12 @@ for await (const event of streamChat(
 ```
 
 The page sends the query, the session id, the selected pipeline's id, and the per-turn overrides: the
-guardrails config, the prompt template and the model settings (`ChatPage.tsx:488-502`). It does **not** send
+guardrails config, the prompt template and the model settings (`ChatPage.tsx:490-508`). It does **not** send
 `collection`, `embedding_model` or `sparse_embedding_model`, because the assistant resolves them from its
 Knowledge Product. It also does not run the image-only dense override, because an assistant has no `modality`
 field.
 
-`streamChat` (`frontend/src/api.ts:1018`) takes an optional `opts` object: `{ path?, traceMode? }`. The default path stays `/chat/stream`.
+`streamChat` (`frontend/src/api.ts:1038`) takes an optional `opts` object: `{ path?, traceMode? }`. The default path stays `/chat/stream`.
 
 ### 3.2 A legacy ingestion pipeline (the slug is null)
 
@@ -139,10 +139,10 @@ the plain retrieval path only.
 |---|---|
 | `query` | The message text. |
 | `session_id` | The active session, or `null` for a new chat. |
-| `retrieval_mode` | The toolbar Mode: `hybrid` \| `dense` \| `sparse`. |
-| `retrieve_limit` | The toolbar Limit (1–50, default 20). |
-| `rerank_enabled` | The toolbar Rerank checkbox (default on). |
-| `top_k` | The toolbar Top K (1–20, default 5). |
+| `retrieval_mode` | The settings-panel Retrieval mode: `hybrid` \| `dense` \| `sparse`. |
+| `retrieve_limit` | The settings-panel Retrieval count, seeded from the pipeline's `retrieve_limit` (20 when the record carries none). |
+| `rerank_enabled` | The settings-panel Rerank checkbox, seeded from the pipeline's `rerank_enabled` (true when the record carries none). |
+| `top_k` | The settings-panel Rerank count, seeded from the pipeline's `rerank_top_k` (5 when the record carries none). |
 | `guardrails_config_id` | The selected guardrails config id, omitted when `None`. |
 | `prompt_template_id` | The selected prompt template id, omitted when empty. An override for this turn only. |
 | `model_settings` | The model-settings overrides from the form (`temperature`, `top_p`, `top_k`, `max_tokens`). |
@@ -150,23 +150,33 @@ the plain retrieval path only.
 | `collection`, `embedding_model`, `sparse_embedding_model` | Legacy path only, copied from the record. |
 
 On the assistant path the server applies `AssistantChatRequest`
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:56-72`). A missing
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:56-74`). A missing
 `retrieval_mode` becomes `dense`, because the fanout collections hold dense vectors only. A `hybrid` request
 against a product with no Qdrant collection also becomes `dense`. A request-level `guardrails_config_id` wins
 over the pipeline's own config, so the page can test another config without editing the pipeline.
 
-Server-side defaults come from `PipelineConfig`: `retrieval_mode=hybrid`, `retrieve_limit=20`,
-`rerank_enabled=true`, `top_k=5` (`rag_core/schemas.py:36-41`). The generation model falls back to
-`settings.chat_model`.
+The request leaves every retrieval setting optional. A request that names
+none takes `PipelineConfig`'s defaults: `retrieval_mode=hybrid`, `retrieve_limit=20`,
+`rerank_enabled=true`, `top_k=5` (`rag_core/schemas.py:36-41`). The Chat page names `retrieve_limit`,
+`rerank_enabled` and `top_k` on every turn, so those defaults apply only to a caller that sends none. The
+page reads the three from the selected pipeline's own columns first, with 20, true and 5 as the fallbacks
+when a record carries none. The generation model falls back to `settings.chat_model`.
+
+The page has no reranker-model control, so it sends no `rerank_model`. Unlike the sampling settings and the
+three retrieval numbers, a Chat-page turn cannot override the reranker a pipeline pins. On the assistant path
+the endpoint resolves it from the pipeline record, so the pipeline's pinned model reorders the chunks, and the
+deployment's model (`settings.reranker_model`, `nvidia-rerank`) applies only when the pipeline pins none. A
+pipeline with no slug is a legacy ingestion pipeline: its turn goes to `POST /chat/stream`, which does not read
+the pipeline record, so the deployment's model applies there.
 
 ### 3.4 Controls that remain
 
 | Control | Where | Values |
 |---|---|---|
 | `Retrieval mode` | Settings row | `Hybrid`, `Dense`, `Sparse` |
-| `Retrieve limit` | Settings row | 1–50, default 20 |
-| `Rerank` | Settings row | A checkbox, default on |
-| `Top K (chunks)` | Settings row | 1–20, default 5. The control renders only while `Rerank` is on. |
+| `Retrieval count` | Settings row | 1–50, seeded from the pipeline's `retrieve_limit` (20 when the record carries none). While `Rerank` is off, the hint reads that all retrieved chunks reach the prompt. |
+| `Rerank` | Settings row | A checkbox, seeded from the pipeline's `rerank_enabled` (`true` when the record carries none). |
+| `Rerank count` | Settings row | 1–50, seeded from the pipeline's `rerank_top_k` (5 when the record carries none). The control renders only while `Rerank` is on, so the panel hides it when reranking is off. |
 | `Prompt template` | Settings row | `Pipeline default`, or one saved template. An override for this turn only. |
 | `Guardrails` | Settings row | `None`, or one saved config. Inactive configs read `{name} (inactive)`. |
 | Model settings | Settings row | `temperature`, `top_p`, `top_k`, `max_tokens`, seeded from the pipeline. |
@@ -176,7 +186,7 @@ The config bar also shows the session indicator: a dot, plus the first 12 charac
 
 ### 3.5 The trace mode header
 
-Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:538`, `TRACE_MODE_HEADER` in `api.ts:1015`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
+Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:544`, `TRACE_MODE_HEADER` in `api.ts:1035`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
 
 This matters because the page and an external caller hit **the same route**. The header is the only thing that separates them in the backends, and it is what tags the row `test` on the Real Time Monitoring page. A caller that knows nothing about the header cannot label real traffic as a test. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
@@ -247,7 +257,7 @@ Three leftovers went with the controls, so nothing in the page refers to a route
   how to start one.
 
 One badge remains: the page renders a `🔁 N loops` chip when `latency_ms.sc_loops > 1`
-(`ChatPage.tsx:1158-1168`). Nothing in the backend writes `sc_loops`, so the chip stays hidden with the
+(`ChatPage.tsx:1174-1187`). Nothing in the backend writes `sc_loops`, so the chip stays hidden with the
 current pipeline.
 
 ---
@@ -270,7 +280,7 @@ the OpenTelemetry context survives.
 The client splits the byte stream on `\n\n`, keeps only lines starting with `data: `, and `JSON.parse`s each
 into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`, `session_id`, `message_id`,
 `route`, `metrics_status`, `blocked_by_guard`, `blocked_on`, `blocked_title` and `metadata`
-(`api.ts:990-1008`). The page prefers the `session` event's real ids over the `done` metadata, and marks a turn
+(`api.ts:1010-1033`). The page prefers the `session` event's real ids over the `done` metadata, and marks a turn
 `blocked` when a `blocked` event arrived (`ChatPage.tsx`).
 
 ---
@@ -319,8 +329,8 @@ duplicated.
 
 After a turn, the page polls `GET /chat/messages/{message_id}/metrics` every **2500 ms**, up to **40**
 attempts, and tolerates HTTP 404 for the first **8** attempts (the worker may not have created the row yet)
-(`ChatPage.tsx:354-378`). It skips polling for blocked turns and for messages whose `metrics_status` is
-`skipped` or `failed` (`ChatPage.tsx:221-231`). When a poll returns `completed`, the historical stats are
+(`ChatPage.tsx:363-383`). It skips polling for blocked turns and for messages whose `metrics_status` is
+`skipped` or `failed` (`ChatPage.tsx:228-239`). When a poll returns `completed`, the historical stats are
 refreshed.
 
 ---

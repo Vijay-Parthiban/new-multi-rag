@@ -1,6 +1,6 @@
 # 06 — Ingestion Profiles (Reusable Destination & Chunking Configuration)
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-08
 
 ## 1. Executive Summary & Page Purpose
 
@@ -24,8 +24,10 @@ Three behaviour notes the UI labels do not make obvious:
   `POST /api/knowledge-products`. Editing a profile after that does not touch a product that already exists.
 - **Store names stay per product.** A profile carries no store name. The copy assigns `kp_<slug>_<id8>` to every
   destination, and no stored value survives. Two products can therefore share one profile and stay isolated.
-- **The profile also carries the chunking.** The fanout splits every source page with the profile's
-  `chunk_size` and `chunk_overlap`, and writes one store document per chunk.
+- **The profile also carries the chunking.** In the `text` modality the fanout splits every source page with
+  the profile's `chunk_size`, `chunk_overlap` and `chunk_strategy` and writes one store document per chunk.
+  In the `text_images` modality no chunking runs: the fanout renders each document page to an image and
+  writes one store document per page.
 
 ---
 
@@ -41,11 +43,11 @@ Three behaviour notes the UI labels do not make obvious:
 | `enabled` | boolean | default `true`; edited in the modal, the list has no toggle |
 | `chunk_size` | integer | default `1000`; bounds `100`–`8000` |
 | `chunk_overlap` | integer | default `120`; bounds `0`–`2000` |
-| `chunk_strategy` | enum | `recursive` (default), `fixed`, `sentence`, `section`, `layout`, `context_aware`, `parent_child`. See §6 |
+| `chunk_strategy` | enum | `recursive` (default), `fixed`, `sentence`, `section`, `layout`, `context_aware`, `parent_child`, `contextual`, `page_level`, `sentence_window`. A native PostgreSQL enum type named `chunk_strategy`, not a text column; migration `016_chunk_config_page_images` adds the last three labels. See §6 |
 | `modality_mode` | enum | `text` (default) or `text_images` |
 | `text_embedding_model` | text(128) | one text embedding model for every destination; default `nvidia-embed-textonly` |
-| `caption_model` | text(128), nullable | vision model that captions figures; default `groq-vision` |
-| `image_min_pixels` | integer | default `10000`; a figure below this size is skipped |
+| `image_embedding_model` | text(128) | default `nvidia-embed-multimodal`; embeds the rendered page image on the `text_images` path |
+| `chunk_config` | JSONB | not null, default `{}`; the selected strategy's own settings, keyed by parameter name. One JSON column instead of a column per parameter, so a new strategy adds a key and not a migration |
 | `created_at`, `updated_at` | timestamp | `updated_at` carries `onupdate=func.now()` |
 
 ### `ingestion_profile_destinations` (`IngestionProfileDestination`)
@@ -160,9 +162,9 @@ The route runs these steps in order:
 1. Load the product (`404` when it is missing) and resolve the target profile.
 2. Re-copy the profile's destinations through `_destinations_from_profile()`.
 3. Compare the stored `pipeline_fingerprint` with the profile's current one. The hash covers the chunk size, the
-   overlap, the modality mode, the embedding model, the caption model and the image threshold. A different hash
-   purges **every** destination, because those values change what is written. A destination config change alone
-   purges that destination only.
+   overlap, the chunk strategy, the `chunk_config`, the modality mode, the text embedding model and the image
+   embedding model. A different hash purges **every** destination, because those values change what is written.
+   A destination config change alone purges that destination only.
 4. Compare the existing rows with the incoming set:
    - `removed` — a row the profile no longer lists,
    - `updated` — a row whose `config` changed,
@@ -199,8 +201,10 @@ set.
 |  [ Total Profiles ] [ Knowledge Products Using A Profile ] [ Destination         |
 |                                                              Catalogue: 4 ]      |
 +---------------------------------------------------------------------------------+
-|  <profile name>  [N of M destinations]  [Chunk 1000 / 120]  [Chunking: recursive]  [Text + images]  |
-|                  [Captions: groq-vision]  [DISABLED]                             |
+|  <profile name>  [N of M destinations]  [Chunk 1000 / 120]  [Chunking: recursive]  [Text only]   |
+|                  [DISABLED]                                                                     |
+|  <profile name>  [N of M destinations]  [Text + page images]  [Pages: nvidia-embed-multimodal] |
+|                  [DISABLED]                                                                     |
 |  <description>                                          [ Edit ]  [ Delete ]     |
 |  Destination chips:  [ Qdrant ENABLED ]  [ OpenSearch PAUSED ]  [ … ]            |
 |  0 Knowledge Product(s) use this profile.                                        |
@@ -214,13 +218,14 @@ A card shows the name, a `N of M destinations` badge, a `Chunk <size> / <overlap
 when `profile.enabled` is false, the description when present, one chip per destination with an `ENABLED` or
 `PAUSED` chip, and the usage line `N Knowledge Product(s) use this profile.`
 
-Two badges are new:
+The badges depend on the modality:
 
 | badge | shown when |
 |---|---|
-| `Chunking: <strategy>` | always; the short label from `formatChunkStrategy()` in `utils/format.ts` |
-| `Text + images` or `Text only` | always; `Text + images` follows `modality_mode = text_images` |
-| `Captions: <caption_model>` | only when `modality_mode` is `text_images` |
+| `Chunk <size> / <overlap>` | only when `modality_mode` is `text` |
+| `Chunking: <strategy>` | only when `modality_mode` is `text`; the short label from `formatChunkStrategy()` in `utils/format.ts` |
+| `Text + page images` or `Text only` | always; `Text + page images` follows `modality_mode = text_images` |
+| `Pages: <image_embedding_model>` | only when `modality_mode` is `text_images` and the model is not empty |
 
 `Edit` and `Delete` live on the card. The list has no per-card enable toggle; `enabled` is edited in the modal.
 
@@ -248,28 +253,61 @@ One modal for create (`POST /api/ingestion-profiles`) and edit (`PATCH /api/inge
 1. **Profile Name** (required, 1–128 chars, unique → `400`).
 2. **Description** textarea.
 3. **Profile enabled** checkbox.
-4. **Pipeline Stages** (new block, above the destination stores):
-   - **Modality** select: `Text only (selectable text and tables)` (`text`) or
-     `Text with images (vision captions for figures)` (`text_images`), with the hint
-     `Text only ignores images and never calls a vision model.`
-   - **Text Embedding Model** select over the models whose `kind` is `embedding`.
-   - **Caption Model** select over the models whose `kind` is `vision`, rendered only for `text_images`.
-   - **Minimum Figure Pixels** number input (`min=0`), rendered only for `text_images`, with the hint
-     `Figures smaller than this are skipped. 10000 skips logos and rules.`
-5. **Chunking**: a **Chunking Strategy** select, then `Chunk Size (characters)` (`min=100`, `max=8000`) and
-   `Chunk Overlap (characters)` (`min=0`, `max=2000`). The block hint reads `The strategy decides where one
-   chunk ends and the next starts. Chunk size and overlap apply to every strategy, and to every destination.`
-   The select lists the seven strategies, and a second line under it explains the chosen one.
-6. **Configure Destination Stores**: one card per catalogue entry, each with an enable checkbox and, when
-   enabled, the typed field grid from `components/DestinationConfigFields.tsx`. That component is generic over
-   `option.fields` and needed no change. The block carries the note
-   `Connections come from the server environment. Vector dimensions are derived from the embedding model.`
-7. Footer: `Cancel` and a submit reading `Saving Profile...` / `Update Profile` / `Create Ingestion Profile`.
+4. **Pipeline Stages**: the **Modality** select only, with two options:
+   - `Text only (chunks of text and tables)` (`text`),
+   - `Text with images (one record per page image)` (`text_images`).
 
-A create opens with `text`, an empty embedding model and `10000`. The page reads the model list, then defaults
-the embedding model to the deployment's `default_embedding_model`. The caption default comes from
-`default_caption_model`. Both arrive from `GET /api/knowledge-products/config/litellm-models`. So the form
-follows the server configuration rather than the proxy list order.
+   The hint follows the selection: `Chunking applies, and every chunk is embedded with the text model.` for
+   `text`, and `Every document page becomes one record, embedded from the page image, so there is nothing to
+   chunk.` for `text_images`. No model of any kind is chosen here.
+5. **Chunking**, rendered only when the modality is `text`:
+   - the **Chunking Strategy** select, built from `GET /api/ingestion-profiles/chunk-strategies`, so the
+     frontend holds no strategy knowledge;
+   - the selected strategy's `description` from the catalogue, as the hint below the select;
+   - the settings the catalogue declares for that strategy;
+   - the **Text Embedding Model** select over the models whose `kind` is `embedding`, with the hint
+     `One model for every store. The vector dimension comes from its output.`
+6. **Page Images**, rendered only when the modality is `text_images`:
+   - the **Multimodal Embedding Model** select over the models whose `kind` is `embedding`, defaulted from the
+     deployment's `default_image_embedding_model`;
+   - one hint: `Each page is rendered to an image at 150 dpi, stored in the source bucket under _pages/, and
+     embedded with this model. The page text rides along for the text stores. A file that renders no page
+     image, such as a Word document, keeps text chunks and the text model instead.`
+7. **Configure Destination Stores**: one card per catalogue entry, each with an enable checkbox and, when
+   enabled, the typed field grid from `components/DestinationConfigFields.tsx`, which delegates the rendering to
+   `components/ConfigFields.tsx`. That component is generic over `option.fields` and needed no change. The block
+   carries the note
+   `Connections come from the server environment. Vector dimensions are derived from the embedding model.`
+8. Footer: `Cancel` and a submit reading `Saving Profile...` / `Update Profile` / `Create Ingestion Profile`.
+
+The Chunking block renders the settings the catalogue declares for the selected strategy:
+
+| UI label | stored `chunk_strategy` | settings, in form order |
+|---|---|---|
+| Recursive Chunking (default) | `recursive` | `chunk_size` 100–8000, default 1000; `chunk_overlap` 0–2000, default 120 |
+| Fixed-Size Chunking | `fixed` | the same two |
+| Structure-Aware / Document-Aware Chunking | `section` | the same two |
+| Semantic Chunking | `context_aware` | `chunk_size` (labelled "Largest Chunk Size"), `chunk_overlap`, `semantic_threshold_type` select over `standard_deviation` (default) / `percentile` / `interquartile`, `semantic_threshold_amount` 0.5–3.0, default 1.0 |
+| Parent-Child / Hierarchical Chunking | `parent_child` | `chunk_size` (labelled "Parent Chunk Size (characters)"), `chunk_overlap` (labelled "Parent Chunk Overlap (characters)"), `child_chunk_size` 0–2000, default 0, `child_overlap` 0–500, default 0 |
+| Contextual Chunking | `contextual` | `chunk_size`, `chunk_overlap`, `context_model` (a chat model, required), `context_max_tokens` 50–500, default 100 |
+| Page-Level Chunking | `page_level` | `max_page_chars` 0–20000, default 0 |
+| Sentence-Window Chunking | `sentence_window` | `window_sentences` 1–10, default 2 |
+
+`chunk_size` and `chunk_overlap` are columns of the profile itself. Every other setting travels in
+`chunk_config`. Switching strategy keeps what was typed for each strategy, because the form holds one settings
+bag per strategy. Switching modality loses nothing.
+
+The retired values `sentence` and `layout` are no longer offered. A sentence-level record comes from
+`sentence_window`, and the PDF layout path is what `section` reads. Both stay valid at the API edge, so a
+profile that already stores one still reads, still ingests and still renders. The form shows such a value as
+`Sentence (retired, use Sentence-Window)` or `Document layout (retired, use Structure-Aware)`, and a save with it
+is accepted.
+
+A create opens with `text`, the strategy set to `recursive`, and each strategy's settings seeded from the
+catalogue defaults. The page reads the model list, then defaults the text embedding model to the deployment's
+`default_embedding_model` and the multimodal model to `default_image_embedding_model`. Both arrive from
+`GET /api/knowledge-products/config/litellm-models`. So the form follows the server configuration rather than
+the proxy list order.
 
 An edit shows one notice: `Saving does not change the N Knowledge Product(s) already using this profile. Use
 Apply Profile on a product to copy the new values.`
@@ -280,12 +318,15 @@ Client-side validation, each setting the error banner and returning:
 |---|---|
 | name empty | `Profile name is required.` |
 | `chunk_overlap >= chunk_size` | `Chunk overlap must be smaller than the chunk size.` |
+| `text` with no text embedding model | `Select a text embedding model.` |
+| `text_images` with no image embedding model | `Select a multimodal embedding model.` |
+| `contextual` with no context model | `Contextual Chunking needs a context model.` |
 | no destination enabled | `Enable at least one destination.` |
-| no text embedding model | `Select a text embedding model.` |
-| `text_images` with no caption model | `Select a caption model.` |
 
-The submit body carries `name`, `description`, `enabled`, `chunk_size`, `chunk_overlap`, `chunk_strategy`, `modality_mode`,
-`text_embedding_model`, `caption_model`, `image_min_pixels` and the full `destinations` list. `PATCH` **replaces
+The submit body carries `name`, `description`, `enabled`, `chunk_size`, `chunk_overlap`, `chunk_strategy`,
+`chunk_config`, `modality_mode`, `text_embedding_model`, `image_embedding_model` and the full `destinations`
+list. `text_embedding_model` is omitted when the modality is `text_images`, so an edit keeps the stored text
+model. `image_embedding_model` is `null` when the modality is `text`. `PATCH` **replaces
 the whole destination set** when that field is supplied: types absent from the payload are deleted, present types
 are updated in place, new types are inserted.
 
@@ -300,41 +341,64 @@ chunk pair answers `422`:
 `PATCH` validates the **effective** pair, so a request that sends only one half is still checked against the
 other stored value.
 
-The server also checks the caption model. A `text_images` profile with no caption model answers `422`:
+The server checks the settings of the selected strategy. A `chunk_config` that names a key the strategy does not
+declare, holds a value outside its range, or holds a value that is not one of a select's options answers `422`:
 
 ```json
-{"detail": {"code": "CAPTION_MODEL_REQUIRED",
-            "message": "modality_mode 'text_images' needs a caption_model."}}
+{"detail": {"code": "CHUNK_CONFIG_INVALID",
+            "message": "'Window Sentences' must be at most 10."}}
 ```
 
+The server also checks the image embedding model. A `text_images` profile with an explicitly empty
+`image_embedding_model` answers `422`:
+
+```json
+{"detail": {"code": "IMAGE_EMBEDDING_MODEL_REQUIRED",
+            "message": "modality_mode 'text_images' needs an image_embedding_model."}}
+```
+
+An absent `image_embedding_model` resolves to `MULTIMODAL_EMBEDDING_MODEL`, so only an empty string fails.
 `PATCH` validates against the effective values, so a request that sends only `modality_mode` is still checked
-against the stored caption model. The check exists so the user sees the problem at save time.
+against the stored image embedding model.
+
+A `PATCH` that changes the strategy and sends no `chunk_config` replaces the stored config with the new
+strategy's defaults, because the old settings belong to the old strategy. A stored config is only checked when
+the caller sends one, so a row that holds a key this version does not know cannot block an unrelated edit.
 
 ---
 
 ## 6. Chunking, Modality and the Fanout
 
-Five stages run in order for every file: extraction, captioning, chunking, one shared embedding pass, and
-fanout. `universal_fanout.py` owns the last four.
+The fanout has two shapes, because the modality decides the record shape. The `text` modality runs extraction,
+the optional strategy pre-pass, chunking, one shared embedding pass and fanout. The `text_images` modality runs
+extraction and render, one record per page, one embedding pass over the page images, and fanout.
+`universal_fanout.py` owns every stage after extraction.
 
 ```
-iter_file_pages(render_pages=False, include_figures=True, layout=<strategy == "layout">)
-        |                      -> FilePage(page_index=3, text=<one page>)
+iter_file_pages(render_pages=<modality == "text_images">, render_dpi=150,
+                layout=<strategy in {"section", "layout"}>)
+        |                      -> FilePage(page_index=3, text=<one page>, image_png=<a PNG, or None>)
         v
-_caption_pages(pages)        -> text_images only: one caption per figure
+text_images: _page_image_records(pages)
+                             -> one record per page: modality="image", record_type="page",
+                                image_ref={page_index, bucket, key}
+                                the PNG is written to <bucket>/_pages/<file_key>/page-<n>.png
+                                a page with no PNG takes the text path below
         |
         v
 _resolve_chunking(product)   -> (chunk_size, chunk_overlap)
-_resolve_chunk_strategy(product) -> "recursive" | "fixed" | ... | "parent_child"
+_resolve_chunk_strategy(product) -> "recursive" | "fixed" | ... | "sentence_window"
+_resolve_chunk_config(product)   -> the selected strategy's own settings
         |
         v
-_context_similarities(pages) -> context_aware only: one batch embedding call per page
+context_aware only: _context_similarities(pages) -> one batch embedding call per page
+contextual only:    _chunk_contexts(pages, ...)  -> one chat call per chunk
         |
         v
-_chunk_pages(pages, size, overlap, strategy, similarities)
+_chunk_pages(pages, size, overlap, strategy, config, similarities, contexts)
                              -> one FilePage per record,
                                 page_index=3, chunk_index=0..n-1,
-                                record_type="chunk"|"parent"|"child",
+                                record_type="chunk"|"parent"|"child"|"window"|"sentence",
                                 parent_ref="<page>:<parent chunk_index>"
         |
         v
@@ -343,25 +407,32 @@ one store document per record (Qdrant point, OpenSearch doc, Postgres row, Redis
 
 ### Modality modes
 
-`modality_mode` decides what the fanout reads, and a vision model runs only in the second mode:
+`modality_mode` decides what the fanout reads and which model embeds it:
 
-| mode | what is extracted | vision model |
+| mode | what is extracted | embedding model |
 |---|---|---|
-| `text` (default) | selectable text and tables only | none |
-| `text_images` | the same, plus one caption per embedded figure | `caption_model` |
+| `text` (default) | selectable text and tables only | `text_embedding_model` |
+| `text_images` | one PNG of each document page at 150 dpi, plus the page text | `image_embedding_model` |
 
-- `text` ignores every image, so a document never calls a vision model.
-- `text_images` sends each embedded PDF figure to `caption_model`, which writes one caption.
-- The caption becomes plain text, so every enabled destination stores it and the text query path finds it.
-- A figure smaller than `image_min_pixels` is skipped, so a logo or a rule never becomes a chunk.
-- Extraction reads embedded image XObjects through `page.get_images()` and `doc.extract_image`. It never
-  renders a page, so the fanout no longer wastes time on a 150 DPI render.
-- A failed caption is dropped and counted in `images_skipped`. The sync summary reports the count, and the
-  fanout publishes one `image_caption` event per file.
-- The payload gains `modality` (`text` or `image`) and `image_ref`, which carries `page_index` and
-  `image_index`. `type` stays `text`, so existing consumers keep working.
-- A caption is not stored in the PostgreSQL `image_ref` column, but the row carries `modality`.
-- API validation answers `422 CAPTION_MODEL_REQUIRED` when `text_images` has no caption model.
+- `text` renders no page image, so chunking runs and the text embedding model embeds every chunk.
+- `text_images` renders each page to a PNG with `page.get_pixmap(dpi=150)`, writes it to the source bucket at
+  `_pages/{file_key}/page-{page_index:05d}.png` (`page_image_object_key`), and embeds it through
+  `EmbeddingClient.embed_image_png`.
+- One record per page: `modality="image"`, `record_type="page"`, the page's extracted text as `content` and
+  `text`, and `image_ref = {page_index, bucket, key}`. `type` stays `text`, so the retrieval consumers keep
+  working.
+- No chunking runs on that path.
+- A page that renders no image takes the ordinary text path with `text_embedding_model` and `modality="text"`.
+  Every text format is in that group, and so is a PDF page PyMuPDF cannot rasterise.
+- The fanout drops keys under `_pages/` from its own source listing (`drop_generated_page_images`), because they
+  are output and not input. Without that rule a rendered PNG would be indexed as text on the next tick.
+- The sync summary reports the count of pages that fell back under `pages_without_image`, and the fanout
+  publishes one `page_image_missing` event per file.
+- `EmbeddingClient.embed_image_png` raises when the model cannot answer. It no longer returns a zero vector of a
+  guessed length, because a wrong dimension would poison the collection.
+- API validation answers `422 IMAGE_EMBEDDING_MODEL_REQUIRED` when `text_images` has no image embedding model.
+- A page whose text is empty is embedded from its image but carries empty `text`, and all four writers skip an
+  empty-text record. A scanned page therefore stores no document until OCR supplies its text.
 
 The legacy Pipeline path keeps `render_pages=True`, so it behaves as before.
 
@@ -372,9 +443,14 @@ The legacy Pipeline path keeps `render_pages=True`, so it behaves as before.
   default. It clamps the overlap to `chunk_size - 1`, because a stored row could predate the API bound.
 - `_resolve_chunk_strategy(product)` reads `chunk_strategy` off the same profile and defaults to
   `DEFAULT_CHUNK_STRATEGY = "recursive"`.
-- `_chunk_pages(pages, size, overlap, strategy, similarities)` splits every page with `chunk_text()`.
+- `_resolve_chunk_config(product)` reads `chunk_config` off the same profile and returns `{}` when it is absent.
+  The chunker clamps each value again, because a stored row can predate a bound.
+- `_chunk_pages(pages, size, overlap, strategy, config, similarities, contexts)` splits every page.
   `page_index` keeps the source page and `chunk_index` numbers the records from `0` inside each page. A blank
   page yields no chunk.
+- `_plans_for()` routes `parent_child` to `chunk_parent_child()`, `page_level` to `chunk_page()`,
+  `sentence_window` to `chunk_sentence_window()` and `contextual` to `chunk_textual()`. Every other strategy
+  goes through `chunk_text()`.
 - The fanout indexes chunks instead of whole pages. `pages_indexed` in the `knowledge_product_files` ledger
   still counts **source pages**, and the `Pages` column in the UI keeps its meaning.
 - When every page is blank the fanout records the file without writing a document. This keeps the ledger honest
@@ -382,19 +458,24 @@ The legacy Pipeline path keeps `render_pages=True`, so it behaves as before.
 
 #### Chunk strategies
 
-`chunk_text(text, chunk_size, chunk_overlap, strategy, similarities=None)` in
-`src/ingestion_service/utils/text_splitter.py` is the only chunker. The strategy picks the **unit stream** and
+`chunk_text(text, chunk_size, chunk_overlap, strategy, *, config=None, similarities=None)` in
+`src/ingestion_service/utils/text_splitter.py` is the entry point for the strategies whose records are all one
+kind. `chunk_parent_child()`, `chunk_page()`, `chunk_sentence_window()` and `chunk_textual()` return
+`ChunkPlan` records instead, because their records are not one kind. The strategy picks the **unit stream** and
 the **packing rule**:
 
 | `chunk_strategy` | Units | Packing | Notes |
 |---|---|---|---|
 | `recursive` (default) | headings and blank-line paragraphs | packed to the window | The original algorithm, kept byte-identical so an existing product re-syncs to the same text |
 | `fixed` | none | a hard window every `chunk_size` characters | Ignores structure; the cut lands mid-paragraph |
-| `sentence` | sentences | packed to the window | No sentence is split. An abbreviation such as `e.g.` does not end a sentence, because the next word must start with a capital, digit, quote or bracket |
+| `sentence` (retired) | sentences | packed to the window | No longer offered. No sentence is split. An abbreviation such as `e.g.` does not end a sentence, because the next word must start with a capital, digit, quote or bracket |
 | `section` | headings and blank-line paragraphs | one chunk per unit | A unit larger than `chunk_size` is cut on word boundaries |
-| `layout` | the PDF's own layout blocks, blank-line separated | one chunk per unit | `page_yielder._layout_text()` reads `page.get_text("blocks", sort=True)`, so a two-column page comes out in reading order and a table region stays separate. A non-PDF format has no layout blocks and behaves like `section` |
-| `context_aware` | sentences | packed inside a topic group | `_context_similarities()` embeds every sentence of a page in **one batch request**, then a boundary whose cosine similarity sits more than one standard deviation below the page mean starts a new group. A group boundary is never crossed. An unreachable embedding model falls back to the size window alone, so the file still ingests |
-| `parent_child` | headings and blank-line paragraphs, then sentences | parents at `chunk_size`, children at about a third of it | Both levels are stored. A child carries `record_type: "child"` and `parent_ref: "<page_index>:<parent chunk_index>"`; the parent carries `record_type: "parent"`. Parent records come first, so the ordinal in `parent_ref` addresses the parent's own `chunk_index`. A parent that fits inside one child window is stored alone, because a child identical to its parent doubles the store for nothing |
+| `layout` (retired) | the PDF's own layout blocks, blank-line separated | one chunk per unit | No longer offered, and now what `section` reads. `page_yielder._layout_text()` reads `page.get_text("blocks", sort=True)`, so a two-column page comes out in reading order and a table region stays separate. A non-PDF format has no layout blocks and behaves like `section` |
+| `context_aware` | sentences | packed inside a topic group | `_context_similarities()` embeds every sentence of a page in **one batch request**, then a boundary starts a new group when its cosine similarity falls below the threshold. The profile names the measure: `standard_deviation` below the page mean (default), `percentile` of the page similarities, or `interquartile`. All three read `semantic_threshold_amount` the same way, so a larger amount is the stricter test and yields fewer, larger groups. A stored value outside the catalogue falls back to standard deviation 1.0. A group boundary is never crossed. An unreachable embedding model falls back to the size window alone, so the file still ingests |
+| `parent_child` | headings and blank-line paragraphs, then sentences | parents at `chunk_size`, children at `child_chunk_size` or about a third of the parent | Both levels are stored. A child carries `record_type: "child"` and `parent_ref: "<page_index>:<parent chunk_index>"`; the parent carries `record_type: "parent"`. Parent records come first, so the ordinal in `parent_ref` addresses the parent's own `chunk_index`. A parent that fits inside one child window is stored alone, because a child identical to its parent doubles the store for nothing. `child_overlap` repeats characters at the start of the next child |
+| `contextual` | headings and blank-line paragraphs | packed to the window, each chunk prefixed with a context sentence | The fanout asks a chat model for one sentence per chunk (`_chunk_contexts()`, one call per chunk), then `chunk_textual()` stores `f"{sentence}\n\n{chunk}"`. A failed call stores the plain recursive chunk, so a model outage degrades the file and does not fail it |
+| `page_level` | blank-line paragraphs | one page per record, cut only when the page exceeds the limit | `chunk_page(text, max_page_chars)`. `max_page_chars` of 0 never splits a page, except the 8000-character ceiling the page record is held to. A longer page is cut on paragraph boundaries |
+| `sentence_window` | sentences | a window of `2 * window_sentences + 1` sentences, then each sentence inside it | `chunk_sentence_window(text, window_sentences)`. Windows do not overlap, so a sentence belongs to exactly one window. A window record carries `record_type: "window"`; a sentence carries `record_type: "sentence"` and `parent_ref: "<page_index>:<window chunk_index>"`. Windows come first. A window of one sentence is stored alone |
 
 `chunk_overlap` applies to every strategy. It is a parameter, not a strategy: the overlap window carries text
 across a boundary, and it does not depend on how the boundary was chosen.
@@ -408,17 +489,21 @@ Per-sink effect of chunking:
 |---|---|
 | Qdrant | one point per chunk; the payload carries the real `chunk_index`, plus `record_type` and `parent_ref` |
 | OpenSearch | one document per chunk; the document gained a `chunk_index`, `record_type` and `parent_ref` field |
-| PostgreSQL | one row per chunk; the `chunks` table gained `chunk_index INT NOT NULL DEFAULT 0` and, with the parent/child strategy, `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, both added on an older table with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
+| PostgreSQL | one row per chunk; the `chunks` table gained `chunk_index INT NOT NULL DEFAULT 0`, `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, all added on an older table with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
 | RedisVL | the key became `<prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>`; the JSON value gained `chunk_index`, `record_type` and `parent_ref` |
+
+In the `text_images` modality each sink receives one record per document page instead, with `record_type` of
+`page`, the page's extracted text, and `image_ref` carrying `page_index`, `bucket` and `key`.
 
 The store inspector returns `record_type` and `parent_ref` for all four destinations, and the visualizer panels
 render them: the lexical list and the Qdrant point panel show a `Record Type` tag (`parent`, or `child -> 0:3`),
 the relational row panel and the Redis key panel show the same field. Only the vector and lexical panels tag a
 record that is not a plain chunk, so a `recursive` product looks exactly as it did.
 
-Ponytail note on `context_aware`: the topic-shift threshold is a per-page statistic (`mean - 1σ`), so no
-constant has to be tuned per corpus. If a real document reports the wrong boundaries, the knob to expose is
-`_CONTEXT_SHIFT_SIGMA` in `text_splitter.py`, not a new field per profile.
+Ponytail note on `context_aware`: the topic-shift threshold is a per-page statistic, so no constant has to be
+tuned per corpus. The profile picks the measure and the amount. `_CONTEXT_MIN_SENTENCES = 6` in
+`text_splitter.py` is the only constant left: below that many sentences a mean and a standard deviation say
+nothing, so the strategy uses the size window alone.
 
 **A plain poll does not re-index after a chunking change.** File change detection is etag plus size, so a
 chunk-size change does not look like a file change. A store keeps its old documents until the object bytes change
@@ -433,13 +518,17 @@ changed (§3).
   local 384-dimension model when the proxy call fails, and that fallback would corrupt a batch.
 - **The vector dimension is derived, not configured.** `vector_size` is gone, and no field replaces it. The
   dimension is the length of the embedding-model output.
-- One text embedding model per profile (`text_embedding_model`) serves every destination.
+- One text embedding model per profile (`text_embedding_model`) serves every destination. On the `text_images`
+  path `_embed_image_records()` uses `image_embedding_model` for a record with a page PNG, and `_embed_records()`
+  uses `text_embedding_model` for a record without one. A batch that holds both logs a
+  `fanout_mixed_vector_models` warning, because a collection holds one vector size and one of the two groups
+  will fail to store.
 - The fanout refuses to recreate an existing Qdrant collection whose dimension disagrees. It raises instead,
   because a recreate would delete every point.
 
 The store inspector returns `modality`, `record_type` and `parent_ref` for Qdrant, OpenSearch, PostgreSQL and
 RedisVL. It returns `image_ref` where the store holds it. The RedisVL inspect returns the cached JSON value, so
-the caption text and the record type are readable. Qdrant needs no projection, because its payload is returned
+the stored text and the record type are readable. Qdrant needs no projection, because its payload is returned
 whole.
 
 The store inspector projects `chunk_index` for Qdrant, OpenSearch and PostgreSQL. Its OpenSearch window is 200
@@ -452,6 +541,7 @@ hits and its Redis window is 200 keys.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/ingestion-profiles` | list profiles with their destinations and `product_count`, newest first |
+| `GET` | `/api/ingestion-profiles/chunk-strategies` | the eight strategies with their settings, as a bare list. Declared before `/{profile_id}` |
 | `POST` | `/api/ingestion-profiles` | create a profile; `201` |
 | `GET` | `/api/ingestion-profiles/{profile_id}` | one profile with its destinations and `product_count` |
 | `PATCH` | `/api/ingestion-profiles/{profile_id}` | partial update; a supplied `destinations` list replaces the whole set |
@@ -460,14 +550,14 @@ hits and its Redis window is 200 keys.
 | `POST` | `/api/knowledge-products/{product_id}/apply-profile` | re-copy the linked profile; returns the applied summary |
 
 `_profile_to_dict()` returns `id`, `name`, `description`, `enabled`, `chunk_size`, `chunk_overlap`,
-`modality_mode`, `text_embedding_model`, `caption_model`, `image_min_pixels`, `created_at`, `updated_at`,
-`product_count` and `destinations`. Each destination entry carries `id`,
+`chunk_strategy`, `chunk_config`, `modality_mode`, `text_embedding_model`, `image_embedding_model`,
+`created_at`, `updated_at`, `product_count` and `destinations`. Each destination entry carries `id`,
 `ingestion_profile_id`, `destination_type`, `enabled`, `config`, `created_at` and `updated_at`, sorted by
 `destination_type`.
 
-`_product_to_dict()` gained four keys: `ingestion_profile_id`, `ingestion_profile_name`, `chunk_size` and
-`chunk_overlap`, plus `modality_mode`, `text_embedding_model`, `caption_model` and `image_min_pixels`. A product
-with no profile reports `modality_mode: "text"` and `null` for the rest.
+`_product_to_dict()` gained `ingestion_profile_id`, `ingestion_profile_name`, `chunk_size`, `chunk_overlap`,
+`chunk_strategy`, `modality_mode`, `text_embedding_model` and `image_embedding_model`. A product with no profile
+reports `modality_mode: "text"` and `null` for the rest.
 
 ### Errors
 
@@ -477,8 +567,9 @@ with no profile reports `modality_mode: "text"` and `null` for the rest.
 | `404` | — (`detail` is a string) | profile id not found |
 | `409` | `PROFILE_IN_USE` | `DELETE` on a profile that a product references |
 | `422` | `CHUNK_OVERLAP_TOO_LARGE` | `chunk_overlap >= chunk_size` |
-| `422` | `CAPTION_MODEL_REQUIRED` | `text_images` with no caption model |
-| `422` | — (FastAPI validation detail) | `chunk_strategy` is not one of the seven names. The field is a `Literal`, so the request never reaches the column |
+| `422` | `CHUNK_CONFIG_INVALID` | a `chunk_config` key the selected strategy does not declare, a value outside its range, or a value that is not one of a select's options |
+| `422` | `IMAGE_EMBEDDING_MODEL_REQUIRED` | `text_images` with an explicitly empty `image_embedding_model` |
+| `422` | — (FastAPI validation detail) | `chunk_strategy` is not one of the ten accepted names. The field is a `Literal`, so the request never reaches the column |
 | `422` | `PROFILE_REQUIRED` | `apply-profile` with no body and no product link |
 
 The `409` detail carries the usage count:
@@ -502,24 +593,35 @@ The `409` detail carries the usage count:
 - The configured-SQLite path adds the new column through the `_ensure_sqlite_columns` list in
   `src/shared/db/session.py`: `("knowledge_products", "ingestion_profile_id VARCHAR(36)")`. Without that entry a
   local run fails with `no such column`. The automatic SQLite fallback is gone; PostgreSQL is the one database.
-- The four new profile columns are SQLite entries too: `modality_mode TEXT DEFAULT 'text'`,
-  `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `caption_model TEXT` and
-  `image_min_pixels INTEGER DEFAULT 10000`. Without them a local run fails with
-  `no such column: ingestion_profiles.modality_mode`.
-- The chunk strategy added `chunk_strategy TEXT DEFAULT 'recursive'` in the same list. An existing row reads
-  `recursive`, so nothing re-indexes and no store changes on the upgrade. The Postgres `chunks` table gained
+- The profile columns are SQLite entries too: `modality_mode TEXT DEFAULT 'text'`,
+  `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `chunk_config TEXT DEFAULT '{}'` and
+  `image_embedding_model TEXT DEFAULT 'nvidia-embed-multimodal'`. Without them a local run fails with
+  `no such column: ingestion_profiles.modality_mode`. The patcher only adds columns, so the two dropped columns
+  stay unused on an old SQLite file.
+- The chunk strategy added `chunk_strategy TEXT DEFAULT 'recursive'` in the same list. On PostgreSQL the column
+  is a native enum type named `chunk_strategy`, not text. An existing row reads `recursive`, so nothing
+  re-indexes and no store changes on the upgrade. The Postgres `chunks` table gained
   `record_type TEXT NOT NULL DEFAULT 'chunk'` and `parent_ref TEXT`, added by `ALTER TABLE ... ADD COLUMN IF NOT
   EXISTS` in the writer, which is the same idempotent path the older columns use.
-- No Alembic revision was added for the two profile tables. `init_db()` runs `Base.metadata.create_all`, which
-  creates any table that does not exist. The migration head is `015_source_webscrape`.
+- Migration `016_chunk_config_page_images` (revision `016_chunk_config_page_images`, down_revision
+  `015_source_webscrape`) adds `chunk_config` (`JSONB NOT NULL DEFAULT '{}'::jsonb`) and
+  `image_embedding_model` (`VARCHAR(128) DEFAULT 'nvidia-embed-multimodal'`), drops the two columns the old
+  figure path used, and runs `ALTER TYPE chunk_strategy ADD VALUE IF NOT EXISTS` for `contextual`,
+  `page_level` and `sentence_window`. It is PostgreSQL only. The downgrade restores the two dropped columns and
+  drops the two added ones, and leaves the three enum labels in place, because PostgreSQL has no `DROP VALUE`.
+- The migration head is `016_chunk_config_page_images`. `init_db()` runs `Base.metadata.create_all`, which
+  creates any table that does not exist, so no Alembic revision was needed for the two profile tables
+  themselves.
 - **The table name `ingestion_profiles` is deliberate.** Migration `008_knowledge_store` spent
   `knowledge_profiles` on the table that migration `010_knowledge_products` renamed to `knowledge_products`, so
   that name would collide with the migration history.
 - No data backfill. Products created earlier keep `NULL` and their own destination rows, and they read the
   literal default `text` until the user re-applies the profile.
-- An existing profile reads the new `text_embedding_model` column as the literal `nvidia-embed-textonly`. Its
-  products pick the model up on the next `apply-profile`. `EMBEDDING_MODEL` in `.env` must name a model the
-  proxy serves.
+- An existing profile reads the new `text_embedding_model` column as the literal `nvidia-embed-textonly`, and
+  the new `image_embedding_model` column as `nvidia-embed-multimodal`. Its `chunk_config` reads `{}`, and the
+  chunker falls back to each setting's declared default. Its products pick the models up on the
+  next `apply-profile`. `EMBEDDING_MODEL` and `MULTIMODAL_EMBEDDING_MODEL` in `.env` must name models the proxy
+  serves.
 
 ---
 
@@ -530,14 +632,15 @@ The `409` detail carries the usage count:
 | `pages/IngestionProfilesPage.tsx` | the page: cards, metric tiles, create/edit modal, delete dialog |
 | `pages/KnowledgeStorePage.tsx` | product list; its create/edit dialog picks the profile |
 | `pages/KnowledgeProductPage.tsx` | product detail; profile badges and the `Apply Profile` action |
-| `components/DestinationConfigFields.tsx` | generic field renderer, used by the profile modal |
+| `components/ConfigFields.tsx` | generic field renderer over a field spec list, used by the chunk settings and by the destination grid |
+| `components/DestinationConfigFields.tsx` | destination field grid; delegates the rendering to `ConfigFields` |
 | `components/AppLayout.tsx` | the sidebar entry and the persistent page mount |
-| `api.ts` | `IngestionProfile`, `IngestionProfileDestinationConfig`, `IngestionProfileCreateRequest`, `ApplyProfileResult` |
+| `api.ts` | `IngestionProfile`, `IngestionProfileDestinationConfig`, `IngestionProfileCreateRequest`, `ApplyProfileResult`, `ChunkStrategy`, `ChunkStrategyParam`, `ChunkStrategySpec` |
 
 New functions in `api.ts`: `listIngestionProfiles`, `createIngestionProfile`, `updateIngestionProfile`,
-`deleteIngestionProfile` and `applyProductProfile`. `parseError` now also maps FastAPI's `{"detail": ...}`
-shape into the UI error, for a string detail and for an object with a `message`. API error text therefore
-reaches the UI instead of the bare status text.
+`deleteIngestionProfile`, `getChunkStrategies` and `applyProductProfile`. `parseError` now also maps FastAPI's
+`{"detail": ...}` shape into the UI error, for a string detail and for an object with a `message`. API error text
+therefore reaches the UI instead of the bare status text.
 
 ### Knowledge Hub create/edit dialog
 
@@ -574,35 +677,49 @@ On failure the same line shows the API message.
 
 ## 10. Verification
 
-- `backend/tests/test_ingestion_profile_chunking.py` — plain pytest with bare asserts, 21 cases.
+- `backend/tests/test_ingestion_profile_chunking.py` — plain pytest with bare asserts, 32 cases.
   `_resolve_chunking` is covered with no profile, with a profile, and with an overlap above the size.
   `_resolve_chunk_strategy` is covered with no profile and with a profile. `_chunk_pages` is covered over one
   long page, over a blank page, and over three pages. `chunk_index` runs from `0` with no gaps and restarts
-  inside each page. It also covers `_assign_image_chunk_indexes`, so a figure never collides with a text chunk
-  on the same Redis key.
+  inside each page. It also covers `_assign_image_chunk_indexes`, so an image record never collides with a text
+  record on the same Redis key.
 - The chunk strategies share that file. The default `recursive` path must equal itself, so a stored product
   re-syncs unchanged. `section` keeps every block whole. `fixed` ignores the block boundaries. `sentence` emits
-  runs of whole consecutive sentences. `context_aware` starts a chunk at a similarity dip and keeps one topic in
-  one chunk, and it falls back to the size window when the similarities are absent. `parent_child` stores parents
-  and children, gives a short block one parent and no child, and proves that every child's `parent_ref` resolves
-  to a record whose `record_type` is `parent`. An unknown strategy name raises rather than chunking silently.
-- `backend/tests/test_ingestion_modality_resolvers.py` — the modal default from a product with no profile, the
-  `text_images` mode, and the caption-model fallback to `settings.caption_model`.
-- `backend/tests/test_page_yielder_figures.py` — a PDF with one embedded figure yields a text page and one
-  `modality == "image"` page with a JPEG payload.
+  runs of whole consecutive sentences. `context_aware` starts a chunk at a similarity dip, keeps one topic in
+  one chunk, moves the boundary when `semantic_threshold_amount` changes, falls back to standard deviation 1.0
+  on a bad stored value, and falls back to the size window when the similarities are absent. `parent_child`
+  stores parents and children, gives a short block one parent and no child, honours an explicit
+  `child_chunk_size`, and proves that every child's `parent_ref` resolves to a record whose `record_type` is
+  `parent`. `page_level` stores one record for a short page and cuts a long page on paragraph boundaries.
+  `sentence_window` stores every window before its sentences and points every `parent_ref` at its window.
+  `contextual` puts a supplied context sentence in front of its chunk and keeps the plain recursive chunks when
+  the context map is empty. `validate_chunk_config` rejects an unknown key, an out-of-range value and a value
+  that is not a select option, accepts `{}`, and leaves a retired strategy alone. An unknown strategy name
+  raises rather than chunking silently.
+- `backend/tests/test_ingestion_modality_resolvers.py` — the modality default from a product with no profile,
+  `_resolve_image_embedding_model` with a profile and without one, and the image record's modality and
+  reference.
+- `backend/tests/test_embedding_image_failure.py` — `embed_image_png` raises when the model cannot answer,
+  instead of returning a zero vector of a guessed length.
+- `backend/tests/test_page_yielder.py` — `render_pages=True` yields one PNG per PDF page, `render_pages=False`
+  leaves the text alone, and `render_dpi` decides the raster size.
+- `backend/tests/test_fanout_payload.py` — the payload matches the retrieval contract, and a page record in
+  image mode carries `modality == "image"`, `record_type == "page"`, non-empty `text`, and an `image_ref` key
+  under `_pages/`.
 - `backend/scripts/e2e_ingestion_profiles.py` — the isolation regression proof. It proves that a profile carries
   no store name while the product copy gets `kp_*`, that one source page becomes many documents, that a larger
   `chunk_size` yields one document, that a config change through `apply-profile` moves a store, and that
   `DELETE` answers `409 PROFILE_IN_USE`.
 - `backend/scripts/e2e_ingestion_modality.py` — the modality proof. It checks the env-only field surface, the
-  derived dimension, a `text` sync, that `text` mode stores no image document, and that `text_images` stores a
-  caption in every store.
+  derived dimension, a `text` sync, that `text` mode stores no page-image record, and that `text_images` stores
+  one object per PDF page under `_pages/` and one record per page whose payload carries `modality == "image"`
+  and a non-empty `text`.
 - `backend/scripts/e2e_chunk_strategies.py` — the strategy proof. It uploads one structured document and moves
-  the same product through `section`, `parent_child`, `fixed` and `context_aware`, checking after each change
-  that every destination holds the expected record count, that the child records name a parent present in the
-  same store, that a strategy change leaves no stale record type behind, and that the four destinations agree
-  on the count. It also proves that an unknown strategy name is a `422` and that a profile with no strategy
-  stores `recursive`.
+  the same product through `section`, `parent_child`, `fixed`, `context_aware`, `page_level` and
+  `sentence_window`, checking after each change that every destination holds the expected record count, that the
+  child and sentence records name a parent present in the same store, that a strategy change leaves no stale
+  record type behind, and that the four destinations agree on the count. It also proves that an unknown strategy
+  name is a `422` and that a profile with no strategy stores `recursive`.
 
 Run them from `rag-ingestion-manager/backend`:
 

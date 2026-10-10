@@ -363,8 +363,58 @@ def main() -> int:
             f"HTTP {status}, model={resolved.get('chat_model') if isinstance(resolved, dict) else None}",
         )
 
+        # ── 14. The retrieval settings decide what the model reads ──────────
+        # Back to the store-backed strategy first: section 11 left a reasoning
+        # pattern in place, and a pattern may abstain, which would hide the counts.
+        status, patched = api.ingestion_call(
+            "PATCH",
+            f"/api/pipelines/{pipeline_id}",
+            {
+                "rag_strategy": "hybrid",
+                "retrieve_limit": 12,
+                "rerank_enabled": False,
+                "rerank_top_k": 3,
+            },
+        )
+        check(
+            "14 the pipeline stores the settings",
+            status == 200
+            and patched.get("retrieve_limit") == 12
+            and patched.get("rerank_enabled") is False
+            and patched.get("rerank_top_k") == 3,
+            f"HTTP {status}, {json.dumps({k: patched.get(k) for k in ('retrieve_limit', 'rerank_enabled', 'rerank_top_k')}) if isinstance(patched, dict) else patched}",
+        )
+        status, resolved = api.retrieval_call("GET", f"/api/assistants/{slug}")
+        check(
+            "14 the assistant reports them",
+            status == 200 and (resolved.get("retrieval") or {}).get("retrieve_limit") == 12,
+            f"HTTP {status}, {json.dumps((resolved.get('retrieval') if isinstance(resolved, dict) else None))}",
+        )
+        status, off = api.retrieval_call("POST", f"/api/assistants/{slug}/chat", {"query": QUESTION})
+        off_sources = len(off.get("sources") or []) if isinstance(off, dict) else 0
+        check(
+            "14 no reranking sends the retrieval count",
+            status == 200 and off_sources == 12,
+            f"HTTP {status}, {off_sources} sources reached the model, rerank count was 3",
+        )
+        status, _ = api.ingestion_call(
+            "PATCH", f"/api/pipelines/{pipeline_id}", {"rerank_enabled": True}
+        )
+        status, on = api.retrieval_call("POST", f"/api/assistants/{slug}/chat", {"query": QUESTION})
+        on_sources = len(on.get("sources") or []) if isinstance(on, dict) else 0
+        check(
+            "14 reranking sends the rerank count",
+            status == 200 and on_sources == 3,
+            f"HTTP {status}, {on_sources} sources reached the model, rerank count was 3",
+        )
+        check(
+            "14 the toggle changes what the model reads",
+            off_sources > on_sources,
+            f"off={off_sources} on={on_sources}",
+        )
+
     finally:
-        # ── 14. Cleanup ────────────────────────────────────────────────────
+        # ── 15. Cleanup ────────────────────────────────────────────────────
         for item_id, _label in created["pipelines"]:
             api.ingestion_call("DELETE", f"/api/pipelines/{item_id}")
         for item_id, _label in created["templates"]:
@@ -375,7 +425,7 @@ def main() -> int:
         status, rows = api.ingestion_call("GET", "/api/pipelines")
         remaining = [p["name"] for p in rows] if isinstance(rows, list) else []
         leftover = [n for n in remaining if RUN_TAG in n]
-        check("14 fixtures deleted", not leftover, str(remaining))
+        check("15 fixtures deleted", not leftover, str(remaining))
 
     print()
     print(f"{len(TRACE) - len(FAILURES)}/{len(TRACE)} checks passed")

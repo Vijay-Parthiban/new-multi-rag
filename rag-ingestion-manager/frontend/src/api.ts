@@ -313,7 +313,7 @@ export interface LiteLLMModelsResponse {
   litellm_base_url: string;
   models: LiteLLMModelOption[];
   default_embedding_model?: string;
-  default_caption_model?: string;
+  default_image_embedding_model?: string;
   warning?: string;
 }
 
@@ -340,6 +340,10 @@ export interface IngestionProfileDestinationConfig {
 
 export type IngestionModalityMode = "text" | "text_images";
 
+// Every value the API accepts. `sentence` and `layout` are no longer offered in
+// the form, because a sentence-level record comes from `sentence_window` and the
+// PDF layout path is what `section` reads. Both stay here so a profile that
+// already stores one still loads, and a save with it still succeeds.
 export type ChunkStrategy =
   | "recursive"
   | "fixed"
@@ -347,7 +351,39 @@ export type ChunkStrategy =
   | "section"
   | "layout"
   | "context_aware"
-  | "parent_child";
+  | "parent_child"
+  | "contextual"
+  | "page_level"
+  | "sentence_window";
+
+/** One setting of one chunk strategy, described by the backend catalogue. */
+export interface ChunkStrategyParam {
+  key: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "password" | "select" | "model";
+  description?: string;
+  required?: boolean;
+  group?: string;
+  placeholder?: string | null;
+  model_kind?: "embedding" | "chat" | "sparse" | null;
+  options?: { value: string; label: string }[];
+  min?: number | null;
+  max?: number | null;
+  advanced?: boolean;
+  /**
+   * `profile` means the value is a top-level field of the profile request.
+   * `strategy` means the value belongs in `chunk_config`.
+   */
+  scope: "profile" | "strategy";
+  default?: unknown;
+}
+
+export interface ChunkStrategySpec {
+  value: ChunkStrategy;
+  label: string;
+  description: string;
+  params: ChunkStrategyParam[];
+}
 
 export interface IngestionProfile {
   id: string;
@@ -357,10 +393,10 @@ export interface IngestionProfile {
   chunk_size: number;
   chunk_overlap: number;
   chunk_strategy: ChunkStrategy;
+  chunk_config?: Record<string, unknown>;
   modality_mode: IngestionModalityMode;
   text_embedding_model: string;
-  caption_model?: string | null;
-  image_min_pixels: number;
+  image_embedding_model: string;
   product_count: number;
   destinations: IngestionProfileDestinationConfig[];
   created_at?: string;
@@ -374,10 +410,10 @@ export interface IngestionProfileCreateRequest {
   chunk_size?: number;
   chunk_overlap?: number;
   chunk_strategy?: ChunkStrategy;
+  chunk_config?: Record<string, unknown>;
   modality_mode?: IngestionModalityMode;
   text_embedding_model?: string;
-  caption_model?: string | null;
-  image_min_pixels?: number;
+  image_embedding_model?: string | null;
   destinations?: {
     destination_type: string;
     enabled: boolean;
@@ -419,8 +455,7 @@ export interface KnowledgeProduct {
   chunk_strategy?: ChunkStrategy;
   modality_mode?: IngestionModalityMode;
   text_embedding_model?: string | null;
-  caption_model?: string | null;
-  image_min_pixels?: number | null;
+  image_embedding_model?: string | null;
   monitor_mode: "live" | "scheduled";
   sync_interval_seconds?: number | null;
   sync_interval_minutes?: number | null;
@@ -484,6 +519,14 @@ export interface TestConnectionResponse {
 
 export async function getDestinationOptions(): Promise<KnowledgeDestinationOption[]> {
   return apiFetch<KnowledgeDestinationOption[]>("/api/knowledge-products/destinations/options");
+}
+
+/**
+ * The chunk strategies the profile form offers, with the settings each one takes.
+ * The backend owns this list, so the form holds no strategy knowledge.
+ */
+export async function getChunkStrategies(): Promise<ChunkStrategySpec[]> {
+  return apiFetch<ChunkStrategySpec[]>("/api/ingestion-profiles/chunk-strategies");
 }
 
 export async function getLiteLLMModels(modelKind: LiteLLMModelKind = "all"): Promise<LiteLLMModelsResponse> {

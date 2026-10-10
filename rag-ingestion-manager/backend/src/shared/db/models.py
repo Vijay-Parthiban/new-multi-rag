@@ -72,8 +72,10 @@ class SourceMonitorMode(str, enum.Enum):
 class IngestionModality(str, enum.Enum):
     """What an Ingestion Profile sends to the stores.
 
-    TEXT keeps selectable text and tables and ignores images. TEXT_IMAGES adds one
-    vision-LLM caption per embedded figure.
+    TEXT keeps selectable text and tables and ignores images, and the profile
+    chunking settings apply. TEXT_IMAGES renders every document page to an image
+    and embeds that image with the multimodal model, so chunking does not apply:
+    one page is one record.
     """
 
     TEXT = "text"
@@ -85,6 +87,12 @@ class ChunkStrategy(str, enum.Enum):
 
     The algorithms live in ``src/ingestion_service/utils/text_splitter.py``. A
     stored row names one of them, and the fanout reads it per sync.
+
+    The profile form offers the strategies in
+    ``apps/api/routes/chunk_strategies.py``. ``SENTENCE`` and ``LAYOUT`` are no
+    longer offered there: a sentence-level record comes from ``SENTENCE_WINDOW``,
+    and the PDF layout path is now what ``SECTION`` reads. Both stay valid, so a
+    profile that already stores one still reads, ingests and renders.
     """
 
     RECURSIVE = "recursive"
@@ -94,6 +102,9 @@ class ChunkStrategy(str, enum.Enum):
     LAYOUT = "layout"
     CONTEXT_AWARE = "context_aware"
     PARENT_CHILD = "parent_child"
+    CONTEXTUAL = "contextual"
+    PAGE_LEVEL = "page_level"
+    SENTENCE_WINDOW = "sentence_window"
 
 
 def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
@@ -112,10 +123,11 @@ DEFAULT_CHUNK_STRATEGY = "recursive"
 
 # Modality defaults. DEFAULT_TEXT_EMBEDDING_MODEL must name a model the LiteLLM
 # proxy serves; the fanout derives the vector dimension from its output.
+# DEFAULT_IMAGE_EMBEDDING_MODEL names the multimodal model that embeds a rendered
+# page image on the text_images path.
 DEFAULT_TEXT_EMBEDDING_MODEL = "nvidia-embed-textonly"
-DEFAULT_CAPTION_MODEL = "groq-vision"
+DEFAULT_IMAGE_EMBEDDING_MODEL = "nvidia-embed-multimodal"
 DEFAULT_MODALITY_MODE = "text"
-DEFAULT_IMAGE_MIN_PIXELS = 10000
 
 
 class Directory(Base):
@@ -394,6 +406,25 @@ class Pipeline(Base):
     prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     guardrails_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     chat_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ── Retrieval settings ──────────────────────────────────────────────
+    # How many chunks the search returns, whether a reranker reorders them, and
+    # how many of the reranked ones reach the answering model. The retrieval
+    # manager reads all three on every assistant turn, so the pipeline owns the
+    # numbers a caller does not send.
+    retrieve_limit: Mapped[int] = mapped_column(
+        Integer, default=20, server_default="20", nullable=False
+    )
+    rerank_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    # Ignored while rerank_enabled is false: every retrieved chunk then reaches
+    # the model, so the count would have nothing to select from.
+    rerank_top_k: Mapped[int] = mapped_column(
+        Integer, default=5, server_default="5", nullable=False
+    )
+    # Which reranker reorders the chunks. Nullable, and a null means the
+    # retrieval manager's own reranker model applies.
+    rerank_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Sampling settings for the answering call, as JSON. Nullable, and a null
     # means the retrieval manager's service defaults apply.
     model_settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -613,9 +644,18 @@ class IngestionProfile(Base):
         default=DEFAULT_TEXT_EMBEDDING_MODEL,
         server_default=DEFAULT_TEXT_EMBEDDING_MODEL,
     )
-    caption_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    image_min_pixels: Mapped[int] = mapped_column(
-        Integer, default=DEFAULT_IMAGE_MIN_PIXELS, server_default=str(DEFAULT_IMAGE_MIN_PIXELS)
+    image_embedding_model: Mapped[str] = mapped_column(
+        String(128),
+        default=DEFAULT_IMAGE_EMBEDDING_MODEL,
+        server_default=DEFAULT_IMAGE_EMBEDDING_MODEL,
+    )
+    # The settings of the selected chunk strategy that belong to the strategy
+    # alone, keyed by the parameter name the catalogue declares. One JSON column
+    # instead of a column per parameter: a new strategy adds a key, not a
+    # migration, and a parameter only the selected strategy reads has no meaning
+    # on a profile that uses another one.
+    chunk_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

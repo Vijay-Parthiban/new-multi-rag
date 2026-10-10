@@ -136,9 +136,16 @@ def _ensure_sqlite_columns(sqlite_path) -> None:
             ("ingestion_profiles", "modality_mode TEXT DEFAULT 'text'"),
             ("ingestion_profiles", "chunk_strategy TEXT DEFAULT 'recursive'"),
             ("ingestion_profiles", "text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'"),
-            ("ingestion_profiles", "caption_model TEXT"),
-            ("ingestion_profiles", "image_min_pixels INTEGER DEFAULT 10000"),
+            ("ingestion_profiles", "chunk_config TEXT DEFAULT '{}'"),
+            (
+                "ingestion_profiles",
+                "image_embedding_model TEXT DEFAULT 'nvidia-embed-multimodal'",
+            ),
             ("pipelines", "model_settings JSON"),
+            ("pipelines", "retrieve_limit INTEGER NOT NULL DEFAULT 20"),
+            ("pipelines", "rerank_enabled BOOLEAN NOT NULL DEFAULT 1"),
+            ("pipelines", "rerank_top_k INTEGER NOT NULL DEFAULT 5"),
+            ("pipelines", "rerank_model VARCHAR(128)"),
         ]:
             try:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")

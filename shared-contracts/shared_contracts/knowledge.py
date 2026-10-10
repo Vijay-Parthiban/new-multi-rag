@@ -131,8 +131,9 @@ class KnowledgeProductRead(KnowledgeProductBase):
     chunk_strategy: str = "recursive"
     modality_mode: str = "text"
     text_embedding_model: str | None = None
-    caption_model: str | None = None
-    image_min_pixels: int | None = None
+    # The multimodal model a rendered page image is embedded with, on a
+    # text_images product.
+    image_embedding_model: str | None = None
     # The RAG pipelines that read this product. The Knowledge Store page shows
     # them as "Linked RAG Pipelines"; drop this and the count reads zero.
     pipelines: list[KnowledgeProductPipelineRead] = Field(default_factory=list)

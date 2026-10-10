@@ -111,7 +111,7 @@ class RAGPipeline:
 
         reranker = self.with_reranker(cfg.rerank_enabled, cfg.rerank_model)
         t0 = time.perf_counter()
-        reranked = reranker.rerank(query, retrieved, cfg.top_k)
+        reranked = reranker.rerank(query, retrieved, cfg.effective_top_k())
         latency["rerank"] = int((time.perf_counter() - t0) * 1000)
         latency["total"] = int((time.perf_counter() - total_start) * 1000)
 
@@ -223,7 +223,7 @@ class RAGPipeline:
 
         reranker = self.with_reranker(cfg.rerank_enabled, cfg.rerank_model)
         t0 = time.perf_counter()
-        reranked = reranker.rerank(query, retrieved, cfg.top_k)
+        reranked = reranker.rerank(query, retrieved, cfg.effective_top_k())
         latency["rerank"] = int((time.perf_counter() - t0) * 1000)
 
         graded = self._grade_passages(query, reranked, cfg, latency)
@@ -302,7 +302,7 @@ class RAGPipeline:
 
         reranker = self.with_reranker(cfg.rerank_enabled, cfg.rerank_model)
         t0 = time.perf_counter()
-        reranked = reranker.rerank(query, retrieved, cfg.top_k)
+        reranked = reranker.rerank(query, retrieved, cfg.effective_top_k())
         latency["rerank"] = int((time.perf_counter() - t0) * 1000)
 
         graded = self._grade_passages(query, reranked, cfg, latency)

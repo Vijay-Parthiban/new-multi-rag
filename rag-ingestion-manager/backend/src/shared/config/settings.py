@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     # embed call fall back to FastEmbed, whose 384 dimensions clash with any
     # configured vector_size.
     embedding_model: str = "nvidia-embed-textonly"
-    # Only offered as a suggestion in the pipeline dropdown. Captions are embedded
-    # with the text model, so no ingestion path embeds an image directly.
+    # Embeds a rendered page image on the text_images path, where one page is one
+    # record and no text chunking runs. The fanout derives the vector dimension
+    # from its output.
     multimodal_embedding_model: str = "nvidia-embed-multimodal"
     sparse_embedding_model: str = "Qdrant/bm25"
     embed_workers: int = 4
@@ -88,14 +89,13 @@ class Settings(BaseSettings):
     neo4j_password: str = "password"
     neo4j_auth_disabled: bool = True
 
-    # Vision model used to caption document figures when a profile enables images.
+    # Vision model the model picker offers for a figure caption or a vision chat.
+    # The ingestion path no longer captions anything: text_images embeds page
+    # images instead.
     caption_model: str = "groq-vision"
     # Chat model used for RedisVL RAPTOR summaries. Must be a model the proxy
     # serves and should be the cheap fast variant, because it runs per file.
     summary_model: str = "Gpt-oss-20b"
-    # Figures smaller than this are skipped. Below it a logo, rule or icon would
-    # become its own chunk.
-    image_min_pixels: int = 10000
 
     @property
     def embedding_model_options(self) -> list[str]:

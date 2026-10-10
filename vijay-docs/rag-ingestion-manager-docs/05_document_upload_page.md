@@ -1,6 +1,6 @@
 # 05 — Document Upload (removed page) & File Format Support
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-08
 
 > **Status: the `/upload` page no longer exists. This document is kept as history for the parsing and indexing path.** The standalone **Document Upload & Staging Manager** (`frontend/src/pages/UploadPage.tsx`, route `/upload`, sidebar label "Upload") was removed on 2026-09-20. The nav item, the page mount in `AppLayout.tsx`, the Home page quick-link card, and the client helper `uploadFileChunked` were all deleted with it.
 >
@@ -102,22 +102,26 @@ Upload itself only stores bytes. Indexing happens later, on one of two paths:
 
 **Path 1 — RAG pipeline sync (per linked pipeline).** The pipeline is enqueued by `_trigger_pipeline_syncs()`; the worker reads the source file and `ingestion_service/core/indexer.py` calls `chunk_text(text, pipeline.chunk_size, pipeline.chunk_overlap)` (`indexer.py:137`) where `chunk_text` is the recursive markdown/text splitter (`ingestion_service/utils/text_splitter.py:259`, splits on `^#+ ...` headings and blank lines, with word-level overflow splitting and overlap carried from the end of the previous chunk). Defaults from `apps/api/routes/pipelines.py:94-95`: `chunk_size = 1000` (allowed 100–8000), `chunk_overlap = 120` (allowed 0–2000); both are per-pipeline and settable on the Pipelines page.
 
-**Path 2 — Knowledge Product fanout (per linked product).** The product poller calls `sync_knowledge_product()` and then `execute_universal_fanout_sync(db, product)`. The fanout reads each source object, calls `iter_file_pages()`, then splits **every source page** with `chunk_text()` using the linked Ingestion Profile's `chunk_size` and `chunk_overlap` (a product with no profile falls back to `1000 / 120`). Each chunk becomes one store document: `page_index` keeps the source page and `chunk_index` numbers the chunks from `0` inside it. The ledger's `pages_indexed` still counts source pages. It records its own state in `knowledge_product_files`, not in `IndexedFile`. See document 04 for the per-destination payloads and document 06 for the profile.
+**Path 2 — Knowledge Product fanout (per linked product).** The product poller calls `sync_knowledge_product()` and then `execute_universal_fanout_sync(db, product)`. The fanout reads each source object, calls `iter_file_pages()`, then splits **every source page** with `chunk_text()` using the linked Ingestion Profile's `chunk_strategy`, `chunk_size`, `chunk_overlap` and `chunk_config` (a product with no profile falls back to `recursive` and `1000 / 120`). Each chunk becomes one store document: `page_index` keeps the source page and `chunk_index` numbers the chunks from `0` inside it. The ledger's `pages_indexed` still counts source pages. It records its own state in `knowledge_product_files`, not in `IndexedFile`. See document 04 for the per-destination payloads and document 06 for the profile.
 
-**Fanout payload fields.** The payload carries `modality` and `image_ref` next to `page_index` and `chunk_index`:
+A profile whose `modality_mode` is `text_images` takes a different path: the fanout renders **every document page** to a PNG at 150 dpi, writes it to the source bucket at `_pages/<file_key>/page-00000.png`, embeds it with the profile's `image_embedding_model`, and stores **one record per page**. No chunking runs on that path. A file that renders no page image, such as a DOCX, keeps the text path and the `text_embedding_model`.
 
-- `modality` is `"text"` for a text or table chunk. It is `"image"` for a figure caption.
-- `image_ref` is `{"page_index": N, "image_index": N}` for a figure caption. It is `null` for every other chunk.
-- `type` stays `"text"` for every chunk, including a caption. A caption is plain text, so existing consumers read that field unchanged.
+**Fanout payload fields.** The payload carries `modality`, `record_type` and `image_ref` next to `page_index` and `chunk_index`:
 
-**Caption failures.** A figure whose caption call fails is dropped. The fanout does not retry it. The count appears in the sync summary as `images_skipped`. The fanout also publishes one `image_caption` SSE event for that file, so the loss stays visible.
+- `modality` is `"text"` for a text or table chunk. It is `"image"` for a page record on a `text_images` profile.
+- `record_type` is `"chunk"` for a normal chunk, `"parent"` or `"child"` under Parent-Child, `"window"` or `"sentence"` under Sentence-Window, and `"page"` for a rendered page.
+- `image_ref` is `{"page_index": N, "bucket": "<bucket>", "key": "_pages/..."}` for a page record. It is `null` for every text chunk.
+- `type` stays `"text"` for every record, because the page text travels with the page image.
+
+**A page with no rendered image.** The fanout stores it as a text chunk and counts it in the sync summary as `pages_without_image`. It also publishes one `page_image_missing` SSE event for that file, so the fallback stays visible.
 
 Embedding defaults and dimension behaviour:
 - Default embedding model `settings.embedding_model = nvidia-embed-textonly`, called through the LiteLLM proxy at `LITELLM_BASE_URL` with `OPENAI_API_KEY`. A profile can override it through `text_embedding_model`.
+- A `text_images` profile embeds each rendered page image with `settings.multimodal_embedding_model` (`nvidia-embed-multimodal` by default) through `EmbeddingClient.embed_image_png`, which sends the PNG as a data URL. A profile can override it through `image_embedding_model`.
 - The fanout embeds each chunk once per tick and shares that one vector with every vector destination. It does not embed once per writer.
 - The vector dimension comes from the embedding model output, not from a setting. The `vector_size` config key is gone.
 - `embed_passages` splits a longer list into batches of 256, in order, because NVIDIA NIM refuses more than 256 inputs (`_MAX_EMBED_BATCH`, `shared-libs/platform-common/src/platform_common/embeddings/dense.py`). Reaching the cap means one embedding call is split, not that it falls back to FastEmbed.
-- `EmbeddingClient` (`ingestion_service/embeddings/client.py`) catches LiteLLM failures and falls back to FastEmbed `BAAI/bge-small-en-v1.5` (384-dimension vectors). The fanout rejects a batch whose vectors have mixed lengths, because of that fallback.
+- `EmbeddingClient` (`ingestion_service/embeddings/client.py`) catches LiteLLM failures on a text call and falls back to FastEmbed `BAAI/bge-small-en-v1.5` (384-dimension vectors). The fanout rejects a batch whose vectors have mixed lengths, because of that fallback. An image call has no fallback: `embed_image_png` raises, because the local text model has no image encoder and a zero vector of a guessed length would be stored as if it described the page.
 - The fanout refuses to recreate an existing Qdrant collection whose dimension disagrees, because recreation deletes every point. `ensure_collection()` also honours `hnsw_m` and `hnsw_ef_construct` (`shared-libs/platform-common/src/platform_common/vector/qdrant_store.py:71-116`).
 - Uploading into a source triggers the fanout/pipeline sync in the background. A product whose destinations are all paused is not re-indexed. A file whose ETag and size are unchanged since the last sync is not re-indexed either.
 

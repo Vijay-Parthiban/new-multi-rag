@@ -1,6 +1,6 @@
 # Overall Architecture — RAG Retrieval & Chat Manager
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. System Overview
 `rag-retrieval-chat-manager` is the query, retrieval, rerank, generation, guardrail, and evaluation service of the `new-multi-rag` ecosystem. It reads the shared Qdrant collection written by `web-scrapper-workspace` / `rag-ingestion-manager`, reranks hits with a LiteLLM-hosted cross-encoder, generates answers with LiteLLM chat/vision models, delegates safety checks to the external guardrails service, and runs Ragas-based evaluation both online (per chat message) and offline (golden datasets).
@@ -123,10 +123,10 @@ Two shared packages are consumed from sibling workspaces: `platform_common` (aut
 1. **Retrieve** — `RAGPipeline.retrieve()` (`libs/rag-core/src/rag_core/pipeline.py:69`) resolves the request config and calls `Retriever.retrieve()` (`libs/retrieval-core/src/retrieval_core/retriever.py:16`), which runs `search_scrape_chunks()` (`libs/vector-core/src/vector_core/search.py:17`).
    - `mode=dense` → LiteLLM dense embedding only; `mode=sparse` → sparse BM25 embedding only; `mode=hybrid` (default, `settings.default_retrieval_mode`) → both named vectors in one Qdrant query with RRF fusion.
    - Source filters: `source_type` (`all` / `web_scrape` / `file_ingest`) and `source_id`.
-2. **Rerank** — `RAGPipeline.rerank()` (`pipeline.py:91`) builds a reranker via `build_reranker(settings, enabled=cfg.rerank_enabled, model=cfg.rerank_model)` and truncates to `cfg.top_k` (default 5). Disabled → `NoopReranker`. Latency captured as `retrieve`, `rerank`, `total` ms.
+2. **Rerank** — `RAGPipeline.rerank()` (`pipeline.py:91`) builds a reranker via `build_reranker(settings, enabled=cfg.rerank_enabled, model=cfg.rerank_model)` and keeps its best `cfg.top_k` (default 5) chunks. Disabled → `NoopReranker`, and every retrieved chunk reaches the model, because `PipelineConfig.effective_top_k()` (`libs/rag-core/src/rag_core/schemas.py:62`) returns `cfg.top_k` while reranking is on and `cfg.retrieve_limit` while it is off. Latency captured as `retrieve`, `rerank`, `total` ms.
 3. **Generate** — `RAGPipeline.chat()` (`pipeline.py:199`) calls `Generator.generate(query, reranked, model=…, vision_model=…, fusion_model=…)`, which builds the RAG prompt from reranked chunks, generates the text answer, generates a vision answer for image chunks (when present), and optionally fuses both. Result: `ChatResult` with `answer`, `text_answer`, `vision_answer`, chunk counts, and per-stage latency.
 4. **Persist + enqueue** — `_persist_chat_turn()` (`routes/chat.py:272`) writes session/message/trace to Postgres and, when `ragas_enabled and chat_metrics_async`, creates a pending metrics row and enqueues `eval_worker.tasks.compute_chat_metrics` on the RQ `eval` queue (`routes/chat.py:342`).
-5. **Offline evaluation** — `POST /evaluate/runs` persists a run and enqueues `eval_worker.tasks.run_evaluation` (`routes/evaluate.py:538`); the worker scores golden items with `GoldenItemEvaluator` and stores per-item metrics.
+5. **Offline evaluation** — `POST /evaluate/runs` persists the run and enqueues `eval_worker.tasks.run_evaluation` (`routes/evaluate.py:565`). It resolves each retrieval setting the request omits from the deployment (`routes/evaluate.py:580`); the Offline Evaluation page sends the selected pipeline's own values. The worker scores golden items with `GoldenItemEvaluator` and stores per-item metrics.
 
 `POST /generate`, `POST /rerank`, `POST /retrieve` expose individual stages on the same pipeline.
 
@@ -222,13 +222,14 @@ A pipeline whose product has the Redis destination enabled also files each turn 
 | POST | `/chat/sessions/{session_id}/close` | `routes/chat.py:950` — exports the session trace and clears the memory |
 | DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:974` (204) |
 | DELETE | `/chat/messages/{message_id}` | `routes/chat.py:987` |
-| POST | `/evaluate/datasets`, `/evaluate/datasets/upload` | `routes/evaluate.py:169,179` |
-| POST | `/evaluate/datasets/huggingface` | `routes/evaluate.py:310` — imports the named Hugging Face dataset, no seed |
-| GET | `/evaluate/datasets`, `/evaluate/datasets/{id}`, `/evaluate/datasets/{id}/runs` | `routes/evaluate.py:345,374` and `:446` |
-| DELETE | `/evaluate/datasets/{id}` | `routes/evaluate.py:394` |
-| POST | `/evaluate/runs` | `routes/evaluate.py:520` |
-| GET | `/evaluate/runs/{id}`, `/evaluate/runs/{id}/items` | `routes/evaluate.py:542`,`:471` |
-| GET | `/evaluate/stats` | `routes/evaluate.py:714` |
+| POST | `/evaluate/datasets`, `/evaluate/datasets/upload` | `routes/evaluate.py:194,204` |
+| POST | `/evaluate/datasets/huggingface` | `routes/evaluate.py:335` — imports the named Hugging Face dataset, no seed |
+| GET | `/evaluate/datasets`, `/evaluate/datasets/{id}`, `/evaluate/datasets/{id}/runs` | `routes/evaluate.py:370,399` and `:471` |
+| DELETE | `/evaluate/datasets/{id}` | `routes/evaluate.py:419` |
+| GET | `/evaluate/pipeline-defaults` | `routes/evaluate.py:545` — the retrieval settings a run uses, resolved from the deployment |
+| POST | `/evaluate/runs` | `routes/evaluate.py:565` — resolves `retrieval_mode`, `retrieve_limit`, `rerank_enabled`, `rerank_model` and `top_k` from the request, else from the deployment, before it stores the run. The Offline Evaluation page supplies the selected pipeline's own values |
+| GET | `/evaluate/runs/{id}`, `/evaluate/runs/{id}/items` | `routes/evaluate.py:604`,`:496` |
+| GET | `/evaluate/stats` | `routes/evaluate.py:776` |
 | GET | `/prompts` | `routes/prompts.py:163` |
 | PUT | `/prompts` | `routes/prompts.py:187` |
 | POST | `/prompts/reset` | `routes/prompts.py:196` |

@@ -54,11 +54,17 @@ class EmbeddingClient:
             return [self._embed_fastembed(text) for text in texts]
 
     def embed_image_png(self, image_bytes: bytes) -> list[float]:
+        """Embed one page image. Raises when the model cannot answer.
+
+        No FastEmbed fallback: the local text model has no image encoder, and a
+        zero vector of a guessed length would be stored as if it described the
+        page. The caller reports the file instead.
+        """
         try:
             return self._base_client.embed_image_png(image_bytes)
         except Exception as exc:
             logger.warning("LiteLLM image embedding failed: %s", exc)
-            return [0.0] * 384
+            raise
 
     def _embed_fastembed(self, text: str) -> list[float]:
         text = text.strip()

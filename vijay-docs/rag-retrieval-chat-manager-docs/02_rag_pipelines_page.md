@@ -1,6 +1,6 @@
 # 02 — RAG Pipelines Management Page
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. Executive Summary & Page Purpose
 
@@ -41,9 +41,18 @@ Product** select offers only products with at least one enabled retrieval destin
 
 ## 2. The Seven Form Fields
 
-One renderer, `PipelineFields` (`PipelinesPage.tsx:258`), serves both the create card and the edit modal.
-It renders seven fields, then a **Model settings** fieldset with four more controls (`temperature`,
-`top_p`, `top_k`, `max_tokens`). The form therefore has eleven controls in total.
+One renderer, `PipelineFields` (`PipelinesPage.tsx:271`), serves both the create card and the edit modal.
+It renders seven fields, then a **Retrieval & reranking** fieldset and a **Model settings** fieldset. The
+retrieval group holds a **Retrieval count**, the **Rerank the retrieved chunks** checkbox, and, while the
+checkbox is on, a **Reranker model** select and then a **Rerank count**. The **Reranker model** select
+offers `Service default` (an empty value) first, then every reranker the LiteLLM proxy serves from
+`getLiteLLMModels("rerank")`, each rendered `input mono`. Its hint reads
+`Which model reorders the chunks. Service default is the deployment's reranker.`, or
+`The LiteLLM proxy serves no rerank model, so the deployment's own reranker applies.` when the proxy
+serves none. A new pipeline opens on the first model the proxy serves, and an existing pipeline shows its
+pinned model or `Service default`. Model settings holds
+`temperature`, `top_p` and `max_tokens`; the sampler `top_k` is not on this page. The form therefore has
+twelve controls while the reranker is off and fourteen while it is on.
 
 | Field | Required | What it selects |
 |---|---|---|
@@ -60,12 +69,12 @@ Field notes:
 - **Knowledge Product.** The option list holds only products with at least one enabled retrieval destination
   (`vector_qdrant`, `lexical_opensearch` or `relational_pgvector`). Each option reads
   `{name} — {n} destinations`. Below the select the page renders one chip per enabled destination, with the
-  store name from `destinationStoreLabel` (`frontend/src/api.ts:472`). While the list loads, the form is
+  store name from `destinationStoreLabel` (`frontend/src/api.ts:492`). While the list loads, the form is
   disabled and the hint reads `Loading knowledge products…`.
 - **RAG Strategy.** The page rebuilds this select from the selected product's destinations
-  (`frontend/src/api.ts:456-470`). Each option reads the label from `RAG_STRATEGY_LABELS`
-  (`frontend/src/api.ts:394-423`), and the options are grouped under `RAG_STRATEGY_GROUP_LABELS`
-  (`frontend/src/api.ts:426-429`): `Retrieval — chooses where to search` and
+  (`frontend/src/api.ts:476-492`). Each option reads the label from `RAG_STRATEGY_LABELS`
+  (`frontend/src/api.ts:414-443`), and the options are grouped under `RAG_STRATEGY_GROUP_LABELS`
+  (`frontend/src/api.ts:446-449`): `Retrieval — chooses where to search` and
   `Reasoning — grades what it found`. The description of the chosen strategy shows below the select. A new
   product resets the strategy to the first available option, because the old strategy may need a store the
   new product does not have. When the product serves no strategy, the select is disabled and the hint reads
@@ -173,8 +182,9 @@ dialog passes nothing.
 
 ### 5.1 The create dialog
 
-`Create Pipeline` in the header opens it. It carries the same seven fields as before, plus the Model
-settings fieldset, through `PipelineFields`, and the footer is `Cancel` and `Create Pipeline`. The submit button lives in the footer
+`Create Pipeline` in the header opens it. It carries the same seven fields as before, plus the Retrieval &
+reranking and Model settings fieldsets, through `PipelineFields`, and the footer is `Cancel` and `Create
+Pipeline`. The submit button lives in the footer
 and reaches the form through `form="create-pipeline-form"`, so the form markup and the footer stay
 separate.
 
@@ -242,7 +252,9 @@ A record with a null slug reads
 See [15 — Assistant Session Memory](./15_assistant_session_memory.md) for the endpoints themselves.
 
 **Configuration.** A `.view-grid` of `Knowledge Product` (with its `StatusBadge`), `RAG strategy`,
-`Chat model`, `Prompt template`, `Guardrails config`, `Created` and `Updated`.
+`Chat model`, `Retrieval`, `Prompt template`, `Guardrails config`, `Created` and `Updated`. The
+`Retrieval` row reads `N chunks read · rerank on (<model or "service default">), top M reach the model`,
+or `N chunks read · rerank off, all of them reach the model` while the reranker is off.
 
 **Stores read.** One row per enabled retrieval destination: `{destination_type}` and
 `{store}` plus `.{table_name}` when the config carries one. When there is none, the section reads
@@ -300,12 +312,24 @@ and the footer is `Cancel` and `Save changes`.
 It uses the same `Modal` shell as §5, at `--lg` width, with `initialFocus={editNameRef}`. Opening it closes
 the view dialog first, so two dialogs never stack.
 
-The dialog renders the same seven fields, plus the Model settings fieldset, through `PipelineFields`. `Save changes` sends
+The dialog renders the same seven fields, plus the Retrieval & reranking and Model settings fieldsets,
+through `PipelineFields`. `Save changes` sends
 `PATCH /api/pipelines/{id}` with the full set, then reloads the grid.
 
 `PATCH` accepts `name`, `description`, `slug`, `rag_strategy`, `chat_model`, `prompt_template_id`,
-`guardrails_config_id`, `knowledge_product_id`, `embedding_model` and `model_settings`
-(`frontend/src/api.ts:366-383`). Every component of an existing assistant stays editable.
+`guardrails_config_id`, `knowledge_product_id`, `embedding_model`, `retrieve_limit`, `rerank_enabled`,
+`rerank_top_k`, `rerank_model` and `model_settings` (`frontend/src/api.ts:381-402`). `rerank_model`
+names a LiteLLM rerank model, at most 128 characters, or null for the deployment's model, and a `PATCH`
+that sends an explicit null clears a pinned model. Every component of an existing assistant stays
+editable.
+
+`POST /api/pipelines` takes the same four retrieval settings with their defaults, and the record the API
+returns carries them (`_pipeline_to_dict`, `rag-ingestion-manager/backend/apps/api/routes/pipelines.py:164`).
+`retrieve_limit` (1-50, default 20) is how many chunks the search returns. `rerank_enabled` (default true)
+turns the reranker on or off. `rerank_top_k` (1-50, default 5) is how many reranked chunks reach the
+answering model, and it selects nothing while reranking is off. `rerank_model` (at most 128 characters,
+default null) pins the reranker, and null applies the deployment's model. A disabled reranker sends every
+retrieved chunk to the model.
 
 ---
 
@@ -313,8 +337,8 @@ The dialog renders the same seven fields, plus the Model settings fieldset, thro
 
 | What it is | Value | Builder |
 |---|---|---|
-| OpenAI base URL | `http://127.0.0.1:8001/v1/assistants/{slug}` | `assistantBaseUrl` (`frontend/src/api.ts:1358`) |
-| Native chat URL | `http://127.0.0.1:8001/api/assistants/{slug}/chat` | `assistantChatUrl` (`frontend/src/api.ts:1363`) |
+| OpenAI base URL | `http://127.0.0.1:8001/v1/assistants/{slug}` | `assistantBaseUrl` (`frontend/src/api.ts:1397`) |
+| Native chat URL | `http://127.0.0.1:8001/api/assistants/{slug}/chat` | `assistantChatUrl` (`frontend/src/api.ts:1402`) |
 
 The host comes from `RAG_API_URL`. The port is `8001`, not `8007`. Port `8007` already owns
 `/api/pipelines/{uuid}` with a different payload shape, so the assistant surface lives beside the chat
@@ -322,7 +346,7 @@ service.
 
 An OpenAI SDK client points `base_url` at the base URL. The SDK appends `/chat/completions`, which is the
 route `POST /v1/assistants/{slug}/chat/completions`
-(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:513`).
+(`rag-retrieval-chat-manager/backend/apps/rag-api/src/rag_api/routes/assistants.py:553`).
 
 ```python
 from openai import OpenAI
@@ -347,7 +371,7 @@ keeps sessions.
 
 ## 9. Error Codes the Page Can Show
 
-The page renders `{code}: {message}` for an `ApiError` (`describeError`, `PipelinesPage.tsx:86`).
+The page renders `{code}: {message}` for an `ApiError` (`describeError`, `PipelinesPage.tsx:99`).
 
 | Code | HTTP | Cause |
 |---|---|---|
@@ -358,7 +382,7 @@ The page renders `{code}: {message}` for an `ApiError` (`describeError`, `Pipeli
 | `KNOWLEDGE_PRODUCT_NOT_FOUND` | 422 | The Knowledge Product is missing, or its id is invalid. |
 
 The validation codes come from `_validate_create` and `_validate_assistant_options` in
-`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:224-270`. The status codes come from the shared
+`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:240-302`. The status codes come from the shared
 error classes: `ValidationError` → 422, `ConflictError` → 409, `NotFoundError` → 404
 (`rag-ingestion-manager/backend/src/file_manager/core/errors.py:16-28`).
 

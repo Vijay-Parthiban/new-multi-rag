@@ -19,16 +19,20 @@ export function formatRelativeTime(iso: string): string {
 }
 
 // Short display name for a chunk strategy, for the badges on the profile list and
-// the product detail page. The long label and its hint live in the profile form,
-// where the user picks one.
+// the product detail page. The long label and its hint come from the backend
+// catalogue, which is what the profile form renders.
 const CHUNK_STRATEGY_LABELS: Record<string, string> = {
   recursive: "Chunking: recursive",
-  fixed: "Chunking: fixed length",
-  sentence: "Chunking: sentence",
-  section: "Chunking: section",
-  layout: "Chunking: layout",
-  context_aware: "Chunking: context aware",
+  fixed: "Chunking: fixed size",
+  section: "Chunking: structure aware",
+  context_aware: "Chunking: semantic",
   parent_child: "Chunking: parent / child",
+  contextual: "Chunking: contextual",
+  page_level: "Chunking: page level",
+  sentence_window: "Chunking: sentence window",
+  // No longer offered in the form, but a profile saved earlier still holds one.
+  sentence: "Chunking: sentence",
+  layout: "Chunking: layout",
 };
 
 export function formatChunkStrategy(strategy: string): string {

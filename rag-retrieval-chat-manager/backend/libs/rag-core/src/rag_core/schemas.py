@@ -59,6 +59,15 @@ class PipelineConfig(BaseModel):
     # this field existed.
     model_settings: ModelSettings | None = None
 
+    def effective_top_k(self) -> int:
+        """How many chunks reach the answering model.
+
+        A reranker returns its best ``top_k``. With reranking off, nothing reorders
+        or discards what the search returned, so the whole retrieval reaches the
+        model and ``top_k`` selects nothing.
+        """
+        return self.top_k if self.rerank_enabled else self.retrieve_limit
+
     def sampling_kwargs(self) -> dict[str, float | int | None]:
         """Sampling arguments for the answering call, ready to unpack.
 

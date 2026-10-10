@@ -1,19 +1,20 @@
 # 06 — Offline Evaluation & Golden Datasets Page
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. Executive Summary & Page Purpose
 The **Offline Evaluation** page (`frontend/src/pages/GoldenEvaluationsPage.tsx`, route `/golden-evaluations`, nav label "Offline Evaluation") benchmarks **one pipeline configuration** against a golden question/answer dataset stored in Postgres. The operator picks a pipeline, picks how many rows to run, starts a run, and reads aggregate and per-question scores split into three stages: **retrieval**, **reranking**, **generation**.
 
-The page was reworked on 2026-09-23 around a built-in evaluation set:
+The page was reworked on 2026-09-23 around a built-in evaluation set, and again on 2026-10-08 so that a run measures the selected pipeline as it stands:
 
 - **The set** is imported from the Hugging Face Hub once, through `POST /evaluate/datasets/huggingface`: **65** question/answer pairs drawn from the Hugging Face documentation (`m-ric/huggingface_doc_qa_eval`). It is stored as an ordinary golden dataset, so a run against it is an ordinary run and its rows appear in the dataset list.
-- **Rows to test** samples N rows at random, default **5**. The page sends **no seed**, so each run draws a fresh sample (`GoldenEvaluationsPage.tsx:650`). The backend accepts a `seed`, but the page never sets it.
-- **The pipeline picker** fills in the pipeline's own configuration: its strategy, its Knowledge Product's store names, its embedding model and its chat model. The evaluator reads those stores, so the run measures that pipeline rather than the service defaults.
+- **Rows to test** samples N rows at random, default **5**. The page sends **no seed**, so each run draws a fresh sample (`GoldenEvaluationsPage.tsx:814`). The backend accepts a `seed`, but the page never sets it.
+- **The pipeline picker** fills in the pipeline's own configuration: its strategy, its chat model and sampling settings, its prompt template, its guardrails config, its Knowledge Product's store names, its embedding model, its chunking and its retrieval settings. The panel below the picker states all of it, read only. The evaluator reads those stores, so the run measures that pipeline rather than the service defaults.
+- **The retrieval settings come from the pipeline.** The page sends the selected pipeline's `retrieve_limit`, `rerank_enabled`, `rerank_model` and `top_k` (the pipeline's `rerank_top_k`) with every run. The `rerank_model` value is the pipeline's pinned model, or null when it pins none. The page sends no retrieval mode, so `POST /evaluate/runs` resolves that from the deployment. A null `rerank_model` also falls back to the deployment's `settings.reranker_model`. A caller that sends none of the four settings gets the deployment values. The run panel shows the values the next run will use.
 
 > **The set and the corpus must match.** Every question in the built-in set is answerable only from `A-Roucher/huggingface_doc`, the corpus it was generated from. A pipeline whose Knowledge Product does not hold that corpus retrieves nothing: every retrieval metric reads 0.0 and the generated answer names the file it did read instead. That measures the corpus, not the pipeline. The page states this beside the control.
 
-The dataset panel carries an upload control. It accepts a `.json` file or a `.csv` file, and an optional dataset name. The Strategy / RAG Mode / Max Loops selects were removed: the offline evaluator runs `retrieve → rerank → generate` and has no router and no self-corrective loop, so those three never changed anything.
+The dataset panel carries an upload control. It accepts a `.json` file or a `.csv` file, and an optional dataset name. The Strategy / RAG Mode / Max Loops selects were removed on 2026-09-23, and the Retrieval / Chunk limit / Rerank controls on 2026-10-08: the offline evaluator runs `retrieve → rerank → generate`, it has no router and no self-corrective loop, and the retrieval settings belong to the pipeline, so none of those controls changed the pipeline being measured.
 
 A run can name its own judge model through the **LLM-as-a-judge (optional)** dropdown in the run panel; the empty option reads **Service default**. Keep the same judge for two runs you intend to compare: the judge is what makes their scores comparable.
 
@@ -127,7 +128,7 @@ Sources: `eval_core/retrieval_metrics.py`, `eval_core/rerank_metrics.py`,
                     "generation": { "mean_context_relevance": 0.51 }, "item_count": 9 }
   },
   "item_count": 32,
-  "config": { "retrieval_mode": "hybrid", "retrieve_limit": 20, "rerank_enabled": true, "...": "..." }
+  "config": { "retrieval_mode": "dense", "retrieve_limit": 20, "rerank_enabled": true, "top_k": 5, "...": "..." }
 }
 ```
 
@@ -183,22 +184,28 @@ Upload rules (`rag_api/routes/evaluate.py`):
 | `GET` | `/evaluate/datasets/{dataset_id}` | Single dataset summary | `DatasetSummary` (404 `Dataset not found`) |
 | `DELETE` | `/evaluate/datasets/{dataset_id}` | Deletes dataset, its items, and its runs/run items | `204`, or 404 |
 | `GET` | `/evaluate/datasets/{dataset_id}/runs` | Lists runs for a dataset (`limit` 1–100 default 20, `skip` default 0) | `DatasetRunsResponse` |
+| `GET` | `/evaluate/pipeline-defaults` | The deployment's retrieval settings, the fallback for a pipeline record that carries none | `PipelineDefaultsResponse` |
 | `POST` | `/evaluate/runs` | Enqueues an evaluation run | `CreateEvalRunRequest` → `CreateEvalRunResponse` |
 | `GET` | `/evaluate/runs/{run_id}` | Polls run status, progress, aggregate metrics, error | `EvalRunResponse` (404 `Run not found`) |
 | `GET` | `/evaluate/runs/{run_id}/items` | Per-item scores, answers, sources, error | `EvalRunItemsResponse` |
 | `GET` | `/evaluate/stats` | Recent runs across all datasets (`limit` 1–100, default 20) | `EvaluationStatsResponse` |
 
-`EvalRunConfig` (`evaluate.py:30-61`) — the configurable run parameters, with defaults:
+`EvalRunConfig` (`evaluate.py:36-74`) — the run parameters. The first five are the pipeline's own retrieval settings. `POST /evaluate/runs` takes the ones the caller names and resolves the rest from the deployment before it stores the run, exactly as a live assistant turn does. The Offline Evaluation page sends `retrieve_limit`, `rerank_enabled`, `rerank_model` and `top_k` from the selected pipeline, and leaves `retrieval_mode` to the deployment. It sends the pipeline's pinned `rerank_model`, or null when the pipeline pins none, so the deployment's `settings.reranker_model` applies then. The stored config then names the values that ran.
+
+| Field | Default | Resolved to |
+|---|---|---|
+| `retrieval_mode` | `null` | `"dense"` — the mode a live assistant turn takes; the page does not send it |
+| `retrieve_limit` | `null` | the pipeline's `retrieve_limit`; `settings.retrieve_limit` (20) when the caller sends none |
+| `rerank_enabled` | `null` | the pipeline's `rerank_enabled`; `settings.reranker_enabled` (true) when the caller sends none |
+| `rerank_model` | `null` | the pipeline's pinned `rerank_model`; `settings.reranker_model` (`nvidia-rerank`) when the caller sends none (a pipeline that pins none) |
+| `top_k` | `null` | the pipeline's `rerank_top_k`; `settings.rerank_top_k` (5) when the caller sends none |
+| `generation_model` | `null` | the selected pipeline's `chat_model` on the page; the service default without one |
+| `judge_model` | `null` | `settings.ragas_judge_model`. The page offers **Service default** for it |
+
+The rest are run options the caller sets, with the defaults of `EvalRunConfig`:
 
 | Field | Default |
 |---|---|
-| `retrieval_mode` | `"hybrid"` |
-| `retrieve_limit` | `20` |
-| `rerank_enabled` | `true` |
-| `rerank_model` | `null` |
-| `top_k` | `5` |
-| `generation_model` | `null` |
-| `judge_model` | `null` — RAGAS judge for this run. Empty uses `settings.ragas_judge_model` |
 | `k_values` | `[1, 3, 5, 10]` |
 | `collection` | `null` |
 | `embedding_model` | `null` |
@@ -213,14 +220,14 @@ Upload rules (`rag_api/routes/evaluate.py`):
 | `self_corrective_max_loops` | `3` |
 | `router_enabled` | `false` |
 
-Sample run response (`GET /evaluate/runs/{id}`, model `EvalRunResponse` at `evaluate.py:79`):
+Sample run response (`GET /evaluate/runs/{id}`, model `EvalRunResponse` at `evaluate.py:104`):
 
 ```json
 {
   "run_id": "7fa291b8-4c31-419b-a01c-8b89d412e001",
   "dataset_id": "1c2f0f5e-8f6f-4a2f-9d7e-2f2a9d0d1a11",
   "status": "completed",
-  "config": { "retrieval_mode": "hybrid", "retrieve_limit": 20, "rerank_enabled": true },
+  "config": { "retrieval_mode": "dense", "retrieve_limit": 20, "rerank_enabled": true, "top_k": 5 },
   "aggregate_metrics": { "retrieval": { "mean_mrr": 0.63 }, "item_count": 32,
                          "categories": { "single_hop": { "retrieval": { "mean_mrr": 0.71 }, "item_count": 12 } },
                          "config": {} },
@@ -242,7 +249,7 @@ Sample run response (`GET /evaluate/runs/{id}`, model `EvalRunResponse` at `eval
 }
 ```
 
-Per-item row (`EvalRunItemResponse`, `evaluate.py:414`): `item_id`, `dataset_item_id`, `status`, `question`, `expected_sources`, `ground_truth_answer`, `generated_answer`, `retrieval_metrics`, `rerank_metrics`, `generation_metrics`, `category` (from `metadata.category`), `error_message`, plus `triad` (the three triad scores), `diagnosis` (the stage reading, with its reason and evidence), `retrieved_chunks` and `reranked_chunks` (the two chunk lists the detail page shows).
+Per-item row (`EvalRunItemResponse`, `evaluate.py:439`): `item_id`, `dataset_item_id`, `status`, `question`, `expected_sources`, `ground_truth_answer`, `generated_answer`, `retrieval_metrics`, `rerank_metrics`, `generation_metrics`, `category` (from `metadata.category`), `error_message`, plus `triad` (the three triad scores), `diagnosis` (the stage reading, with its reason and evidence), `retrieved_chunks` and `reranked_chunks` (the two chunk lists the detail page shows).
 
 ---
 
@@ -266,7 +273,7 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 - **Item statuses** are exactly `pending`, `completed`, `failed` (`models/evaluation.py`; `evaluation_repository.py`).
 - **Progress** (`evaluation_repository.py`): `items_total` is the dataset's item count, `items_completed` / `items_failed` are counts of run items in those statuses. A failed item never increments `items_completed`.
 - **Error surfacing**: a failed run stores `aggregate_metrics = {"error": "<message>"}` and the API only exposes it as `error_message` when `status == "failed"` (`evaluate.py`). Failed items carry their own `error_message`, shown in the drill-down row.
-- **Polling**: the UI re-fetches `GET /evaluate/runs/{run_id}` and the row list every 2500 ms while the run is neither `completed` nor `failed` (`GoldenEvaluationsPage.tsx:559-571`).
+- **Polling**: the UI re-fetches `GET /evaluate/runs/{run_id}` and the row list every 2500 ms while the run is neither `completed` nor `failed` (`GoldenEvaluationsPage.tsx:715-729`).
 
 ---
 
@@ -291,18 +298,22 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 |  Evaluation set         [ Refresh from Hugging Face ] |  Run                                  |
 |  != This set asks about the Hugging Face            |  Pipeline configuration                 |
 |     documentation. Its questions are answerable     |  (name · strategy · knowledge product)  |
-|     only from A-Roucher/huggingface_doc ...=        |  reads <store> · embedding=<model>      |
-|  [ Upload CSV or JSON ]                            |  LLM-as-a-judge [ Service default ]      |
-|  - HF Doc QA (65 items)                       Delete |  Rows to test [ 5 ]                     |
+|     only from A-Roucher/huggingface_doc ...=        |  Strategy, chat model, sampling         |
+|  [ Upload CSV or JSON ]                            |  Prompt template, guardrails            |
+|  - HF Doc QA (65 items)                       Delete |  Product, modality, chunking            |
+|                                                     |  Retrieval: dense · 20 chunks read      |
+|                                                     |  · rerank on (bge-reranker-v2-m3), top 5 |
+|                                                     |  reach the prompt (read only)           |
+|                                                     |  Dense / lexical / relational stores    |
+|                                                     |  Rows to test [ 5 ]                     |
 |                                                     |  5 of 65 rows, chosen at random         |
-|                                                     |  Retrieval: dense | sparse | hybrid     |
-|                                                     |  Chunk limit, Rerank checkbox           |
+|                                                     |  LLM-as-a-judge [ Service default ]     |
 |                                                     |  [ Run evaluation on 5 rows ]           |
 +-----------------------------------------------------+-----------------------------------------+
 |  Runs (10 per page, server-side skip/limit paging)                                            |
 |  Run       | Status    | Progress        | Created | Config                               |
 |  ----------+-----------+-----------------+---------+-------------------------------------- |
-|  7fa291b8… | completed | 32/32           | 2h ago  | hybrid · limit 20 · rerank on · ...   |
+|  7fa291b8… | completed | 32/32           | 2h ago  | dense · limit 20 · rerank on · ...    |
 +-----------------------------------------------------------------------------------------------+
 |  Overall KPIs: stage tabs Retrieval / Reranker / Generation, list or bar-chart toggle         |
 |  RAG TRIAD: three bars — context relevance, groundedness, answer relevance                    |
@@ -317,9 +328,12 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 ```
 
 Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the evaluation-set panel (upload
-control for `.json` or `.csv`), the run panel (including the judge-model dropdown), the runs table
+control for `.json` or `.csv`), the run panel (including the judge-model dropdown and the Retrieval
+line, which reads the selected pipeline), the runs table
 and paging, the triad panel, the detail link, the rubric table and the "Metrics by Category" panel.
 Rubric thresholds are 0.85 / 0.65.
+
+The run panel's **Retrieval** line reads the selected pipeline's own values: its chunk count, its rerank switch, its reranker model and its top count. The reranker model reads the pipeline's pinned model when it has one, else the deployment's. The retrieval mode comes from the deployment. When the pipeline has reranking off, the line reads `rerank off, all of them reach the prompt`.
 
 **The triad panel** (`components/TriadPanel.tsx`) draws the three scores with a bar each, the
 threshold colouring (>=0.70 pass, 0.50-0.70 warn, below that fail), the run's reading sentence, and

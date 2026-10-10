@@ -328,6 +328,14 @@ export interface PipelineRecord {
   /** External name the chat endpoints address this pipeline by. */
   slug: string | null;
   chat_model: string | null;
+  /** How many chunks the search returns. The assistant endpoint reads this. */
+  retrieve_limit: number;
+  /** Whether a reranker reorders the retrieved chunks before the answer is written. */
+  rerank_enabled: boolean;
+  /** How many reranked chunks reach the model. Ignored while reranking is off. */
+  rerank_top_k: number;
+  /** The reranker this pipeline pinned. Null means the deployment's model. */
+  rerank_model: string | null;
   /** Sampling settings saved on the pipeline. Null means service defaults. */
   model_settings: ModelSettings | null;
   prompt_template_id: string | null;
@@ -360,6 +368,13 @@ export interface CreatePipelineRequest {
   chat_model?: string | null;
   prompt_template_id?: string | null;
   guardrails_config_id?: string | null;
+  /** Bounded 1–50 by the ingestion API. */
+  retrieve_limit?: number;
+  rerank_enabled?: boolean;
+  /** Bounded 1–50 by the ingestion API. */
+  rerank_top_k?: number;
+  /** A LiteLLM rerank model, or null for the deployment's. */
+  rerank_model?: string | null;
   model_settings?: ModelSettings | null;
 }
 
@@ -378,6 +393,11 @@ export interface PipelinePatchRequest {
   guardrails_config_id?: string | null;
   knowledge_product_id?: string;
   embedding_model?: string;
+  retrieve_limit?: number;
+  rerank_enabled?: boolean;
+  rerank_top_k?: number;
+  /** Null clears the pinned model, so the deployment's applies again. */
+  rerank_model?: string | null;
   model_settings?: ModelSettings | null;
 }
 
@@ -1162,6 +1182,25 @@ export interface EvalRunItemRow {
 export async function listEvaluationRunItems(runId: string): Promise<EvalRunItemRow[]> {
   const res = await ragFetch<{ items: EvalRunItemRow[] }>(`/evaluate/runs/${runId}/items`);
   return res.items || [];
+}
+
+/**
+ * The retrieval settings an evaluation run uses.
+ *
+ * Deployment values, not run options: a run measures the selected pipeline, so the
+ * page shows these and offers no control over them.
+ */
+export interface EvalPipelineDefaults {
+  retrieval_mode: string;
+  retrieve_limit: number;
+  rerank_enabled: boolean;
+  rerank_model?: string | null;
+  top_k: number;
+  judge_model?: string | null;
+}
+
+export async function getEvalPipelineDefaults(): Promise<EvalPipelineDefaults> {
+  return ragFetch<EvalPipelineDefaults>("/evaluate/pipeline-defaults");
 }
 
 export async function createEvaluationRun(

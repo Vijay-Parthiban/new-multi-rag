@@ -198,3 +198,44 @@ def test_a_pipeline_with_malformed_settings_does_not_break_a_turn():
     # Out of range, so unusable: the turn must still run.
     assert _pipeline_model_settings({"model_settings": {"temperature": 99.0}}) is None
     assert _pipeline_model_settings({"model_settings": "not a mapping"}) is None
+
+
+# ── Retrieval settings: the same chain, for the counts that decide what is sent ──
+
+
+def test_the_pipeline_supplies_the_retrieval_settings():
+    """A record the ingestion side saved, with no request value in sight."""
+    from rag_api.routes.assistants import _resolved_setting
+
+    pipeline = {"retrieve_limit": 12, "rerank_enabled": False, "rerank_top_k": 3}
+
+    assert _resolved_setting(pipeline, None, "retrieve_limit", 20) == 12
+    assert _resolved_setting(pipeline, None, "rerank_enabled", True) is False
+    assert _resolved_setting(pipeline, None, "rerank_top_k", 5) == 3
+
+
+def test_a_request_value_overrides_the_pipeline_setting():
+    from rag_api.routes.assistants import _resolved_setting
+
+    assert _resolved_setting({"retrieve_limit": 12}, 3, "retrieve_limit", 20) == 3
+    # False is a value the caller chose, and a truthiness check would discard it.
+    assert _resolved_setting({"rerank_enabled": True}, False, "rerank_enabled", True) is False
+
+
+def test_a_record_without_the_columns_falls_back_on_the_deployment():
+    """A pipeline written before the columns existed carries no key, or a null one."""
+    from rag_api.routes.assistants import _resolved_setting
+
+    assert _resolved_setting({}, None, "retrieve_limit", 20) == 20
+    assert _resolved_setting({"retrieve_limit": None}, None, "retrieve_limit", 20) == 20
+    assert _resolved_setting({}, None, "rerank_enabled", True) is True
+
+
+def test_a_disabled_reranker_keeps_every_retrieved_chunk():
+    """With reranking off, the retrieval count alone decides what the model reads,
+    so the rerank count selects nothing."""
+    off = PipelineConfig(rerank_enabled=False, retrieve_limit=7, top_k=3)
+    on = PipelineConfig(rerank_enabled=True, retrieve_limit=7, top_k=3)
+
+    assert off.effective_top_k() == 7
+    assert on.effective_top_k() == 3

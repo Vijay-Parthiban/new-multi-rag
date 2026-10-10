@@ -271,11 +271,8 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
             else DEFAULT_MODALITY_MODE
         ),
         "text_embedding_model": product_text_embedding_model(product),
-        "caption_model": (
-            product.ingestion_profile.caption_model if product.ingestion_profile else None
-        ),
-        "image_min_pixels": (
-            product.ingestion_profile.image_min_pixels if product.ingestion_profile else None
+        "image_embedding_model": (
+            product.ingestion_profile.image_embedding_model if product.ingestion_profile else None
         ),
         "monitor_mode": mode,
         "sync_interval_seconds": product.sync_interval_seconds,
@@ -443,20 +440,22 @@ def _pipeline_fingerprint(profile: IngestionProfile | None) -> str:
             str(DEFAULT_CHUNK_SIZE),
             str(DEFAULT_CHUNK_OVERLAP),
             DEFAULT_CHUNK_STRATEGY,
+            "{}",
             DEFAULT_MODALITY_MODE,
             settings.embedding_model,
-            settings.caption_model,
-            str(settings.image_min_pixels),
+            settings.multimodal_embedding_model,
         )
     else:
         parts = (
             str(profile.chunk_size),
             str(profile.chunk_overlap),
             _profile_chunk_strategy(profile),
+            # sort_keys, so two equal configs that differ only in key order do not
+            # read as a change and needlessly purge every destination.
+            json.dumps(profile.chunk_config or {}, sort_keys=True),
             _profile_modality_mode(profile),
             profile.text_embedding_model or "",
-            profile.caption_model or "",
-            str(profile.image_min_pixels),
+            profile.image_embedding_model or "",
         )
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -637,7 +636,7 @@ async def list_litellm_models(
             "litellm_base_url": settings.litellm_base_url,
             "models": [m for m in models if model_kind in ("all", m["kind"])],
             "default_embedding_model": settings.embedding_model,
-            "default_caption_model": settings.caption_model,
+            "default_image_embedding_model": settings.multimodal_embedding_model,
             "warning": "Could not reach the LiteLLM proxy; showing the models the environment names.",
         }
 
@@ -650,7 +649,8 @@ async def list_litellm_models(
         # The deployment's own choice. The proxy list order is not a preference,
         # and its first embedding model may be one this deployment cannot use.
         "default_embedding_model": settings.embedding_model,
-        "default_caption_model": settings.caption_model,
+        # The model that embeds a rendered page image on the text_images path.
+        "default_image_embedding_model": settings.multimodal_embedding_model,
     }
 
 

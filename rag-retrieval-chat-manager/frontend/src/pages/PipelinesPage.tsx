@@ -68,6 +68,11 @@ type Draft = {
   promptTemplateId: string;
   guardrailsConfigId: string;
   chatModel: string;
+  retrieveLimit: number;
+  rerankEnabled: boolean;
+  rerankTopK: number;
+  /** Empty means the deployment's reranker model applies. */
+  rerankModel: string;
   model_settings: ModelSettings;
 };
 
@@ -79,6 +84,14 @@ const EMPTY_DRAFT: Draft = {
   promptTemplateId: "",
   guardrailsConfigId: "",
   chatModel: "",
+  // Mirror the ingestion API's own defaults, so a pipeline created here and one
+  // created by a script start from the same numbers.
+  retrieveLimit: 20,
+  rerankEnabled: true,
+  rerankTopK: 5,
+  // A new pipeline opens on the first reranker the proxy serves, so the picker
+  // shows a real model. The create dialog refills this once the list has loaded.
+  rerankModel: "",
   // A new pipeline opens on the tuned values, not on empty boxes.
   model_settings: { ...DEFAULT_MODEL_SETTINGS },
 };
@@ -262,6 +275,7 @@ function PipelineFields({
   templates,
   guardrails,
   chatModels,
+  rerankModels,
   loadingProducts,
   idPrefix,
   onNameRef,
@@ -273,6 +287,8 @@ function PipelineFields({
   templates: PromptTemplate[];
   guardrails: GuardrailsConfig[];
   chatModels: { id: string; label: string }[];
+  /** The models the proxy reports with mode `rerank`. */
+  rerankModels: { id: string; label: string }[];
   loadingProducts: boolean;
   idPrefix: string;
   onNameRef?: (el: HTMLInputElement | null) => void;
@@ -480,12 +496,112 @@ function PipelineFields({
       {fieldError(chatModelError, draft.chatModel.length > 0)}
 
       <fieldset style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+        <legend className="field-label">Retrieval &amp; reranking</legend>
+        <p className="field-hint" style={{ margin: "0 0 0.75rem" }}>
+          The search runs first, the reranker reorders what it found, and the answering model
+          reads what survives. These values are saved on the pipeline and the assistant endpoint
+          uses them on a turn that names none of its own.
+        </p>
+
+        <label className="field-label" htmlFor={`${idPrefix}-retrieve-limit`}>
+          Retrieval count
+        </label>
+        <input
+          id={`${idPrefix}-retrieve-limit`}
+          className="input"
+          type="number"
+          min={1}
+          max={50}
+          required
+          value={draft.retrieveLimit}
+          aria-describedby={`${idPrefix}-retrieve-limit-hint`}
+          onChange={(e) => setDraft({ ...draft, retrieveLimit: parseInt(e.target.value) || 1 })}
+        />
+        <p className="field-hint" id={`${idPrefix}-retrieve-limit-hint`}>
+          How many chunks the search returns.
+        </p>
+
+        <label className="check-row" htmlFor={`${idPrefix}-rerank-enabled`}>
+          <input
+            id={`${idPrefix}-rerank-enabled`}
+            type="checkbox"
+            checked={draft.rerankEnabled}
+            aria-describedby={`${idPrefix}-rerank-hint`}
+            onChange={(e) => setDraft({ ...draft, rerankEnabled: e.target.checked })}
+          />
+          Rerank the retrieved chunks
+        </label>
+        <p className="field-hint" id={`${idPrefix}-rerank-hint`}>
+          A reranker scores every retrieved chunk against the question and puts the best ones
+          first. It costs one extra call on every turn.
+        </p>
+
+        {/* Progressive disclosure: the count has nothing to select from while reranking is
+            off, so the form hides it and states what happens instead. */}
+        {draft.rerankEnabled ? (
+          <>
+            <label className="field-label" htmlFor={`${idPrefix}-rerank-model`}>
+              Reranker model
+            </label>
+            <select
+              id={`${idPrefix}-rerank-model`}
+              className="input mono"
+              value={draft.rerankModel}
+              aria-describedby={`${idPrefix}-rerank-model-hint`}
+              onChange={(e) => setDraft({ ...draft, rerankModel: e.target.value })}
+            >
+              <option value="">Service default</option>
+              {rerankModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label || m.id}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint" id={`${idPrefix}-rerank-model-hint`}>
+              {rerankModels.length === 0
+                ? "The LiteLLM proxy serves no rerank model, so the deployment's own reranker applies."
+                : "Which model reorders the chunks. Service default is the deployment's reranker."}
+            </p>
+
+            <label className="field-label" htmlFor={`${idPrefix}-rerank-top-k`}>
+              Rerank count
+            </label>
+            <input
+              id={`${idPrefix}-rerank-top-k`}
+              className="input"
+              type="number"
+              min={1}
+              // More than the search returned cannot be reranked, so the browser holds the
+              // field to the retrieval count above.
+              max={draft.retrieveLimit}
+              required
+              value={draft.rerankTopK}
+              aria-describedby={`${idPrefix}-rerank-top-k-hint`}
+              onChange={(e) => setDraft({ ...draft, rerankTopK: parseInt(e.target.value) || 1 })}
+            />
+            <p className="field-hint" id={`${idPrefix}-rerank-top-k-hint`}>
+              How many of the retrieved chunks reach the chat model after reranking. At most the
+              retrieval count.
+            </p>
+          </>
+        ) : (
+          <p className="field-hint">
+            Reranking is off, so all {draft.retrieveLimit} retrieved chunks reach the chat model.
+          </p>
+        )}
+      </fieldset>
+
+      <fieldset style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
         <legend className="field-label">Model settings</legend>
         <p className="field-hint" style={{ margin: "0 0 0.75rem" }}>
           These values are saved on the pipeline. The Chat page can override them for a test
           without saving.
         </p>
-        {MODEL_SETTING_FIELDS.map((field) => (
+        {/* The sampler's top_k is dropped here. It is not an OpenAI parameter, so it
+            changes nothing for the models this app calls, and it is not the count of
+            chunks that reach the prompt — that is the rerank count above. The Chat
+            page keeps the field, for a model that does sample. */}
+        {MODEL_SETTING_FIELDS.filter((field) => field.key !== "top_k").map((field) => (
           <div key={field.key}>
             <label className="field-label" htmlFor={`${idPrefix}-${field.key}`}>
               {field.label}
@@ -527,6 +643,8 @@ export default function PipelinesPage() {
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [guardrails, setGuardrails] = useState<GuardrailsConfig[]>([]);
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
+  /** The proxy's rerank models, for the pipeline's reranker picker. */
+  const [rerankModels, setRerankModels] = useState<{ id: string; label: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -557,12 +675,13 @@ export default function PipelinesPage() {
         return fallback;
       });
 
-    const [pipes, prods, tpls, grds, models] = await Promise.all([
+    const [pipes, prods, tpls, grds, models, rerankers] = await Promise.all([
       capture(listPipelines(), [] as PipelineRecord[]),
       capture(listKnowledgeProducts(), [] as KnowledgeProduct[]),
       capture(listPromptTemplates(), { count: 0, items: [] as PromptTemplate[] }),
       capture(listGuardrailsConfigs(), { count: 0, items: [] as GuardrailsConfig[] }),
       capture(getLiteLLMModels("chat"), [] as { id: string; label: string }[]),
+      capture(getLiteLLMModels("rerank"), [] as { id: string; label: string }[]),
     ]);
 
     setPipelines(pipes);
@@ -570,6 +689,7 @@ export default function PipelinesPage() {
     setTemplates(tpls.items ?? []);
     setGuardrails(grds.items ?? []);
     setChatModels(models);
+    setRerankModels(rerankers);
     setError(firstError === undefined ? null : describeError(firstError));
     setLoading(false);
   }, []);
@@ -619,6 +739,12 @@ export default function PipelinesPage() {
         knowledge_product_id: draft.knowledgeProductId,
         rag_strategy: draft.ragStrategy,
         chat_model: draft.chatModel,
+        retrieve_limit: draft.retrieveLimit,
+        rerank_enabled: draft.rerankEnabled,
+        rerank_top_k: draft.rerankTopK,
+        // null, not "": the backend reads a null as "no model pinned", which is
+        // what "Service default" means.
+        rerank_model: draft.rerankModel || null,
         prompt_template_id: draft.promptTemplateId || null,
         guardrails_config_id: draft.guardrailsConfigId || null,
         model_settings: draft.model_settings,
@@ -638,7 +764,8 @@ export default function PipelinesPage() {
   }
 
   function openCreate() {
-    setDraft(EMPTY_DRAFT);
+    // The picker opens on a model the proxy actually serves, when it serves one.
+    setDraft({ ...EMPTY_DRAFT, rerankModel: rerankModels[0]?.id ?? "" });
     setShowErrors(false);
     setFormError(null);
     setShowCreate(true);
@@ -653,6 +780,13 @@ export default function PipelinesPage() {
       promptTemplateId: pipeline.prompt_template_id ?? "",
       guardrailsConfigId: pipeline.guardrails_config_id ?? "",
       chatModel: pipeline.chat_model ?? "",
+      // A record written before these columns existed reads as null here, so every
+      // field falls back on the same default the API uses.
+      retrieveLimit: pipeline.retrieve_limit ?? 20,
+      rerankEnabled: pipeline.rerank_enabled ?? true,
+      rerankTopK: pipeline.rerank_top_k ?? 5,
+      // Empty means the record pins no model, so the deployment's reranker applies.
+      rerankModel: pipeline.rerank_model ?? "",
       // A saved record may omit a knob or hold null, so every box falls back on the default.
       model_settings: {
         temperature: pipeline.model_settings?.temperature ?? DEFAULT_MODEL_SETTINGS.temperature,
@@ -693,6 +827,12 @@ export default function PipelinesPage() {
         embedding_model: productEmbeddingModel(product),
         rag_strategy: editDraft.ragStrategy,
         chat_model: editDraft.chatModel,
+        retrieve_limit: editDraft.retrieveLimit,
+        rerank_enabled: editDraft.rerankEnabled,
+        rerank_top_k: editDraft.rerankTopK,
+        // An explicit null clears a pinned model, which is how the form returns a
+        // pipeline to the deployment's reranker.
+        rerank_model: editDraft.rerankModel || null,
         knowledge_product_id: editDraft.knowledgeProductId,
         // null, not undefined: the backend reads a present null as "detach".
         prompt_template_id: editDraft.promptTemplateId || null,
@@ -929,6 +1069,7 @@ export default function PipelinesPage() {
                 templates={templates}
                 guardrails={guardrails}
                 chatModels={chatModels}
+                rerankModels={rerankModels}
                 loadingProducts={loading}
                 idPrefix="create"
                 showErrors={showErrors}
@@ -1050,6 +1191,17 @@ export default function PipelinesPage() {
                 <dd className="mono">{viewing.chat_model ?? "—"}</dd>
               </div>
               <div>
+                <dt>Retrieval</dt>
+                <dd>
+                  {viewing.retrieve_limit} chunks read ·{" "}
+                  {viewing.rerank_enabled
+                    ? `rerank on (${viewing.rerank_model || "service default"}), top ${
+                        viewing.rerank_top_k
+                      } reach the model`
+                    : "rerank off, all of them reach the model"}
+                </dd>
+              </div>
+              <div>
                 <dt>Prompt template</dt>
                 <dd>
                   {templates.find((t) => t.id === viewing.prompt_template_id)?.name ?? "No prompt"}
@@ -1128,6 +1280,7 @@ export default function PipelinesPage() {
               templates={templates}
               guardrails={guardrails}
               chatModels={chatModels}
+              rerankModels={rerankModels}
               loadingProducts={loading}
               idPrefix="edit"
               showErrors={editShowErrors}

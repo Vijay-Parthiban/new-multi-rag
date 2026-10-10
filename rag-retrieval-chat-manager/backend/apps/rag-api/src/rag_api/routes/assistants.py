@@ -232,6 +232,21 @@ def _system_prompt_for(
     return template.content
 
 
+def _resolved_setting(
+    pipeline: dict[str, Any], request_value: Any, saved_key: str, fallback: Any
+) -> Any:
+    """The request's value, else the pipeline's, else the deployment's.
+
+    The pipeline stores its retrieval settings as real columns, so a request that
+    names none takes them. A record the ingestion side wrote before those columns
+    existed carries no key, and the deployment's value then applies.
+    """
+    if request_value is not None:
+        return request_value
+    saved = pipeline.get(saved_key)
+    return saved if saved is not None else fallback
+
+
 async def _build_chat_request(
     request: Request, slug: str, body: AssistantChatRequest
 ) -> ChatRequest:
@@ -246,14 +261,23 @@ async def _build_chat_request(
     if stores.qdrant_collection is None and retrieval_mode is SearchMode.HYBRID:
         retrieval_mode = SearchMode.DENSE
 
+    # The pipeline owns the retrieval settings. A request that names one overrides it
+    # for that turn, and the deployment's value is the last fallback, for a record the
+    # ingestion side wrote before those columns existed.
     return ChatRequest(
         query=body.query,
         session_id=body.session_id,
         retrieval_mode=retrieval_mode,
-        retrieve_limit=body.retrieve_limit or settings.retrieve_limit,
-        rerank_enabled=body.rerank_enabled if body.rerank_enabled is not None else settings.reranker_enabled,
-        rerank_model=body.rerank_model,
-        top_k=body.top_k or settings.rerank_top_k,
+        retrieve_limit=_resolved_setting(
+            pipeline, body.retrieve_limit, "retrieve_limit", settings.retrieve_limit
+        ),
+        rerank_enabled=_resolved_setting(
+            pipeline, body.rerank_enabled, "rerank_enabled", settings.reranker_enabled
+        ),
+        rerank_model=_resolved_setting(
+            pipeline, body.rerank_model, "rerank_model", settings.reranker_model
+        ),
+        top_k=_resolved_setting(pipeline, body.top_k, "rerank_top_k", settings.rerank_top_k),
         generation_model=pipeline.get("chat_model") or settings.chat_model,
         collection=stores.qdrant_collection,
         embedding_model=product.get("text_embedding_model") or settings.embedding_model,
@@ -318,6 +342,22 @@ async def get_assistant(slug: str, request: Request) -> dict[str, Any]:
         "description": pipeline["description"],
         "chat_model": pipeline.get("chat_model") or settings.chat_model,
         "strategy": pipeline["rag_strategy"],
+        # The settings a turn takes when the request names none, which is the path an
+        # integrator uses. A request may override any of them per turn.
+        "retrieval": {
+            "retrieve_limit": _resolved_setting(
+                pipeline, None, "retrieve_limit", settings.retrieve_limit
+            ),
+            "rerank_enabled": _resolved_setting(
+                pipeline, None, "rerank_enabled", settings.reranker_enabled
+            ),
+            "rerank_top_k": _resolved_setting(
+                pipeline, None, "rerank_top_k", settings.rerank_top_k
+            ),
+            "rerank_model": _resolved_setting(
+                pipeline, None, "rerank_model", settings.reranker_model
+            ),
+        },
         "strategies_available": [
             {"id": s, "label": STRATEGY_LABELS[s][0], "description": STRATEGY_LABELS[s][1]}
             for s in pipeline["_strategies"]

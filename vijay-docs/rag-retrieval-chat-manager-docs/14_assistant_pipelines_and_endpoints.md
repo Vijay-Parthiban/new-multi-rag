@@ -1,6 +1,6 @@
 # 14 — Assistant Pipelines & Callable Endpoints
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. Executive Summary & What an Assistant Is
 
@@ -18,6 +18,15 @@ One assistant holds:
 | One chat model | yes | the LiteLLM alias that answers |
 | One prompt template | no | becomes the system message |
 | One guardrails config | no | checks the input and the output |
+
+The pipeline record also owns four retrieval settings that every turn reads. `retrieve_limit`
+(1-50, default `20`) is how many chunks the search returns. `rerank_enabled` (default `true`) is the
+reranker toggle. `rerank_top_k` (1-50, default `5`) is how many reranked chunks reach the answering
+model, and it selects nothing while reranking is off. `rerank_model` (`VARCHAR(128)`, nullable) names the
+reranker that reorders the chunks, and a null applies the deployment's `settings.reranker_model`. The
+ingestion service stores them on the `pipelines` row
+(`rag-ingestion-manager/backend/apps/api/routes/pipelines.py:110-114`,
+`017_pipeline_retrieval_settings`, `018_pipeline_rerank_model`).
 
 **An assistant owns no documents.** It writes nothing and holds no collection of its own. The pipeline
 record's `qdrant_collection` is nullable for this reason. Every chunk it reads comes from the Knowledge
@@ -145,6 +154,7 @@ Response fields:
 | `name`, `description` | from the pipeline record |
 | `chat_model` | the resolved chat model |
 | `strategy` | the strategy in force |
+| `retrieval` | `{retrieve_limit, rerank_enabled, rerank_top_k, rerank_model}`. The settings a turn takes when the request names none |
 | `strategies_available[]` | `{id, label, description}` per strategy the product can serve |
 | `knowledge_product` | `{id, name, status, chunk_strategy, text_embedding_model}` |
 | `stores` | `{qdrant_collection, opensearch_index, pg_schema, pg_table}` |
@@ -152,11 +162,28 @@ Response fields:
 | `session_memory` | `{enabled, ttl_seconds, reason}`. `enabled` is the product's Redis destination; `reason` explains `false` |
 | `endpoints` | `{chat, chat_stream, openai_base_url, session_get, session_end}`, relative paths |
 
+The `retrieval` block reports what a turn takes when the request names none. A turn resolves each
+retrieval value in this order: the value in the request body wins, then the pipeline's saved value,
+then the deployment setting (`_resolved_setting`, `assistants.py:235`). A record the ingestion side
+wrote before the four columns existed carries no value, so the deployment setting then applies.
+`_build_chat_request` applies the order to `retrieve_limit`, `rerank_enabled`, `rerank_model` and
+`top_k` (`assistants.py:250-280`), and the deployment keys are `retrieve_limit`, `reranker_enabled`,
+`reranker_model` and `rerank_top_k` (`libs/shared/src/rag_shared/config.py:65-69`). The request field is
+`rerank_model`, and the deployment key is `reranker_model`.
+
+**A disabled reranker sends the whole retrieval to the model.** When `rerank_enabled` is `false`, every
+chunk the search returned reaches the answering model, and `rerank_top_k` selects nothing.
+`PipelineConfig.effective_top_k()` returns `top_k` while reranking is on and `retrieve_limit` while it
+is off (`libs/rag-core/src/rag_core/schemas.py:62-69`). Every rerank call site uses it:
+`RAGPipeline.rerank()` (`libs/rag-core/src/rag_core/pipeline.py:114`), `RAGPipeline.chat()`
+(`pipeline.py:226`), `RAGPipeline.stream_chat()` (`pipeline.py:305`) and
+`GoldenItemEvaluator.evaluate_item` (`libs/eval-core/src/eval_core/runner.py:87`).
+
 ```bash
 curl -X GET http://127.0.0.1:8001/api/assistants/resume-assistant
 ```
 
-The backend returns `session_memory` and all five `endpoints`. The frontend type is narrower: `AssistantConfig` in `frontend/src/api.ts:1350` declares `endpoints` as `{chat, chat_stream, openai_base_url}` only. The two session paths exist on the wire, and the UI builds them itself with `assistantSessionUrl()`, so the omission changes no behaviour. `[INFERENCE]`
+The backend returns `session_memory` and all five `endpoints`. The frontend type is narrower: `AssistantConfig` in `frontend/src/api.ts:1367` declares `endpoints` as `{chat, chat_stream, openai_base_url}` only, and carries no `retrieval` block. The two session paths exist on the wire, and the UI builds them itself with `assistantSessionUrl()`, so the omission changes no behaviour. `[INFERENCE]`
 
 ### 3.2 `POST /api/assistants/{slug}/chat`
 
@@ -170,10 +197,13 @@ Request body:
 | `prompt_template_id` | UUID | optional; overrides the pipeline's prompt template |
 | `model_settings` | object | optional; overrides the pipeline's saved sampling settings |
 | `retrieval_mode` | string | optional; `hybrid`, `dense` or `sparse`. Default `dense` |
-| `retrieve_limit` | int | optional, 1–50 |
-| `rerank_enabled` | boolean | optional |
-| `rerank_model` | string | optional |
-| `top_k` | int | optional, 1–50 |
+| `retrieve_limit` | int | optional, 1–50; overrides the pipeline's saved value for this turn |
+| `rerank_enabled` | boolean | optional; overrides the pipeline's saved value for this turn |
+| `rerank_model` | string | optional; overrides the pipeline's pinned rerank model for this turn |
+| `top_k` | int | optional, 1–50; overrides the pipeline's `rerank_top_k` for this turn |
+
+Each field resolves the request value first, then the pipeline's saved value, then the deployment
+setting (see §3.1).
 
 Response body, the same shape as `POST /chat`: `message_id`, `session_id`, `answer`, `sources[]`,
 `trace_id`, `metrics_status`. Each source is `{source_locator, chunk_index, rerank_score}`. The body
@@ -260,7 +290,7 @@ dependency and the session-close `404` carry a plain string instead.
 | `401` | `Invalid or missing API key` | `API_KEY` is set and the header is absent or wrong. Plain string detail. |
 
 `DELETE .../sessions/{id}` also answers `503 SESSION_MEMORY_UNAVAILABLE` when Redis refuses the
-clear (`assistants.py:417-423`).
+clear (`assistants.py:452-458`).
 
 A different non-`200` answer from the ingestion service passes through with code
 `INGESTION_SERVICE_ERROR` and the first 500 characters of the upstream body.
@@ -347,7 +377,7 @@ any time. Its allowed values are exactly the strategies the product's enabled de
 Two kinds of strategy exist. A **retrieval mode** names the store to read. A **generation pattern** wraps
 whichever retrieval mode the product can serve and adds a grading step before the answer is written. The
 frontend picker groups the options under `Retrieval — chooses where to search` and
-`Reasoning — grades what it found` (`frontend/src/api.ts:425-428`).
+`Reasoning — grades what it found` (`frontend/src/api.ts:447-448`).
 
 | Strategy | Store read | Needs enabled | Good for |
 |---|---|---|---|
@@ -534,8 +564,11 @@ identifies the ingested file, so a caller can cite it.
 
 Every component stays editable. `PATCH /api/pipelines/{id}` on `8007` accepts `name`, `description`,
 `slug`, `rag_strategy`, `chat_model`, `prompt_template_id`, `guardrails_config_id`,
-`knowledge_product_id` and `embedding_model`. An explicit `null` for `prompt_template_id` or
-`guardrails_config_id` detaches it. Omitting the key leaves it.
+`knowledge_product_id`, `embedding_model`, `retrieve_limit`, `rerank_enabled`, `rerank_top_k` and
+`rerank_model`. An explicit `null` for `prompt_template_id` or `guardrails_config_id` detaches it, and an
+explicit `null` for `rerank_model` returns the pipeline to the deployment's reranker. Omitting the key
+leaves it. The retrieval settings are optional with a `None` check, so `"rerank_enabled": false` is a
+value and turns the reranker off (`pipelines.py:621-625`).
 
 The check script moves the assistant through `vector`, `lexical`, `hybrid`, `self_rag` and `corrective`,
 calls the chat route after each move, and asserts an answer every time. Each retrieval mode must also

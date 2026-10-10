@@ -27,12 +27,26 @@ from rag_shared.config import Settings, get_settings
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
 
 
+# The retrieval mode a live assistant turn uses when the request names none. A run
+# takes the same value, so it measures the pipeline rather than a mode the page
+# picked.
+DEFAULT_RETRIEVAL_MODE = "dense"
+
+
 class EvalRunConfig(BaseModel):
-    retrieval_mode: str = "hybrid"
-    retrieve_limit: int = 20
-    rerank_enabled: bool = True
+    """What a run measures, and the stores it reads.
+
+    The retrieval settings are not run options. The Offline Evaluation page sends
+    none of them, and ``create_eval_run`` resolves each from the deployment, the
+    same way a live assistant turn does. They stay in the model so an existing
+    caller can still name one.
+    """
+
+    retrieval_mode: str | None = None
+    retrieve_limit: int | None = None
+    rerank_enabled: bool | None = None
     rerank_model: str | None = None
-    top_k: int = 5
+    top_k: int | None = None
     generation_model: str | None = None
     k_values: list[int] = Field(default_factory=lambda: [1, 3, 5, 10])
     # The stores to read. Filling these in runs the evaluation on one pipeline's configuration
@@ -63,6 +77,17 @@ class EvalRunConfig(BaseModel):
 class CreateEvalRunRequest(BaseModel):
     dataset_id: uuid.UUID
     config: EvalRunConfig = Field(default_factory=EvalRunConfig)
+
+
+class PipelineDefaultsResponse(BaseModel):
+    """The retrieval settings a run uses, so the page can show them before a run."""
+
+    retrieval_mode: str
+    retrieve_limit: int
+    rerank_enabled: bool
+    rerank_model: str | None = None
+    top_k: int
+    judge_model: str | None = None
 
 
 class CreateEvalRunResponse(BaseModel):
@@ -517,6 +542,26 @@ def list_eval_run_items(
     return EvalRunItemsResponse(run_id=run_id, count=len(items), items=items)
 
 
+@router.get("/pipeline-defaults", response_model=PipelineDefaultsResponse)
+def get_pipeline_defaults(request: Request) -> PipelineDefaultsResponse:
+    """The retrieval settings an evaluation run uses.
+
+    The page shows them beside the selected pipeline, because a run measures that
+    pipeline and offers no retrieval options. They are deployment values and not
+    run options: the assistant route resolves the same ones for a live turn, so a
+    run of a pipeline and a chat turn through it read the same stores the same way.
+    """
+    settings: Settings = request.app.state.settings
+    return PipelineDefaultsResponse(
+        retrieval_mode=DEFAULT_RETRIEVAL_MODE,
+        retrieve_limit=settings.retrieve_limit,
+        rerank_enabled=settings.reranker_enabled,
+        rerank_model=settings.reranker_model,
+        top_k=settings.rerank_top_k,
+        judge_model=settings.ragas_judge_model,
+    )
+
+
 @router.post("/runs", response_model=CreateEvalRunResponse)
 def create_eval_run(request: Request, body: CreateEvalRunRequest) -> CreateEvalRunResponse:
     from rag_db.repositories.evaluation_repository import EvaluationRepository
@@ -526,12 +571,29 @@ def create_eval_run(request: Request, body: CreateEvalRunRequest) -> CreateEvalR
     queue = request.app.state.queue
     session_factory = get_session_factory(settings)
 
+    # The pipeline's own retrieval settings, resolved once here. Resolving before the
+    # store means the saved config names the numbers that actually ran, which is what
+    # the run detail, the stage attribution and the rerank verdict all read.
+    config = body.config.model_copy(
+        update={
+            "retrieval_mode": body.config.retrieval_mode or DEFAULT_RETRIEVAL_MODE,
+            "retrieve_limit": body.config.retrieve_limit or settings.retrieve_limit,
+            "rerank_enabled": (
+                body.config.rerank_enabled
+                if body.config.rerank_enabled is not None
+                else settings.reranker_enabled
+            ),
+            "rerank_model": body.config.rerank_model or settings.reranker_model,
+            "top_k": body.config.top_k or settings.rerank_top_k,
+        }
+    )
+
     with session_factory() as db:
         repo = EvaluationRepository(db)
         dataset = repo.get_dataset(body.dataset_id)
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
-        run = repo.create_run(body.dataset_id, body.config.model_dump())
+        run = repo.create_run(body.dataset_id, config.model_dump())
         db.commit()
         run_id = run.id
 

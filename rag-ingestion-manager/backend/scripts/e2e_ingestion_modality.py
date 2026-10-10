@@ -1,16 +1,18 @@
-"""End-to-end verification of the Ingestion Profile modality and env-only config.
+"""End-to-end verification of the Ingestion Profile modality.
 
 Proves, against a running ingestion API and live destination stores:
   1. A profile carries no connection value and no vector dimension, and its store
      names are absent until the product copy derives them.
   2. The vector dimension is derived from the embedding model output, so a Qdrant
      write succeeds without the user typing a size.
-  3. Text mode ignores document figures: no store holds a record tagged as an
-     image.
-  4. Switching the profile to ``text_images`` re-ingests, and every destination
-     receives the vision caption tagged with modality and image_ref.
-  5. The four destinations agree on the image record count, so none dropped one.
-  6. ``text_images`` without a caption model is rejected at save time.
+  3. Text mode stores no record tagged as an image.
+  4. Switching the profile to ``text_images`` re-ingests the file, and every
+     destination receives one record per document page, embedded from the page
+     image rather than from the text.
+  5. Every page image is stored in the source bucket under ``_pages/``, and the
+     stored record names it.
+  6. The four destinations agree on the page count, so none dropped a record.
+  7. ``text_images`` with an empty image embedding model is rejected at save time.
 
 Usage:
     uv run python scripts/e2e_ingestion_modality.py
@@ -41,11 +43,15 @@ NAMESPACE_KEY = {
     "relational_pgvector": "schema_name",
     "cache_redisvl": "index_prefix",
 }
-FILE_KEY = "e2e_modality_figure.pdf"
-CAPTION_MODEL = "groq-vision"
+FILE_KEY = "e2e_modality_pages.pdf"
+IMAGE_EMBEDDING_MODEL = "nvidia-embed-multimodal"
+PAGES = 3
 CHUNK_SIZE = 600
 CHUNK_OVERLAP = 60
-SETTLE_TIMEOUT_S = 240
+# The test product links a real source bucket, so a sync run also processes every
+# other document in that bucket. The waits are long enough for this file's own row
+# and records to appear behind the rest, and a genuine failure still ends the run.
+SETTLE_TIMEOUT_S = 600
 
 # Keys that must never come back from the options route or a profile payload.
 CONNECTION_KEYS = {
@@ -73,28 +79,43 @@ def check(condition: bool, label: str, detail: Any = None) -> None:
     print(f"  FAIL  {label}" + (f"  ({detail})" if detail is not None else ""))
 
 
-def figure_pdf() -> bytes:
-    """A one-page PDF with a selectable text layer and one embedded figure.
+def pages_pdf() -> bytes:
+    """A three-page PDF, one text layer per page.
 
-    Built here so no binary fixture is committed. The text layer keeps text mode
-    non-empty, and the figure is what image mode must caption.
+    Built here so no binary fixture is committed. Three pages make "one record per
+    page" and "one stored object per page" countable rather than a guess.
     """
     import fitz
 
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text(
-        (72, 72),
-        "Quarterly capacity review. Region North shipped 1200 units, region South "
-        "shipped 900 units, and the combined total reached 2100 units for the "
-        "period under review.",
-    )
-    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 400, 300))
-    pix.set_rect(pix.irect, (10, 120, 200))
-    page.insert_image(fitz.Rect(72, 110, 372, 335), pixmap=pix)
+    for index in range(PAGES):
+        page = doc.new_page()
+        page.insert_text(
+            (72, 72),
+            f"Page {index + 1} of the quarterly capacity review. Region North shipped "
+            f"{1200 + index} units and region South shipped 900 units, so the combined "
+            "total for the period rose against the previous quarter.",
+        )
     payload = doc.tobytes()
     doc.close()
     return payload
+
+
+def page_image_keys(bucket: str, file_key: str) -> list[str]:
+    """The page images the fanout wrote for one file, read straight from the bucket.
+
+    Read from object storage, because that object is what a later reader downloads.
+    """
+    import asyncio
+
+    from src.shared.storage.s3_client import list_objects
+
+    try:
+        objects = asyncio.run(list_objects(bucket, f"_pages/{file_key}/"))
+    except Exception as exc:
+        print("could not list the source bucket:", exc)
+        return []
+    return sorted(obj.key for obj in objects)
 
 
 def inspect(client: httpx.Client, api: str, product_id: str, dest: str) -> dict[str, Any]:
@@ -102,12 +123,23 @@ def inspect(client: httpx.Client, api: str, product_id: str, dest: str) -> dict[
 
     The store sample cap applies to a whole store, so a per-file count has to ask
     for that file or a large store hides some of its records.
+
+    The call is retried and its failure is returned, not raised: an inspect reads a
+    live store while the API also serves the fanout for a product that syncs the
+    whole bucket, and a dropped connection must not end the run.
     """
-    resp = client.get(
-        f"{api}/api/knowledge-products/{product_id}/inspect/{dest}",
-        params={"file_key": FILE_KEY},
-    )
-    return resp.json() if resp.status_code == 200 else {"error": resp.text}
+    last_error: Any = None
+    for _ in range(3):
+        try:
+            resp = client.get(
+                f"{api}/api/knowledge-products/{product_id}/inspect/{dest}",
+                params={"file_key": FILE_KEY},
+            )
+            return resp.json() if resp.status_code == 200 else {"error": resp.text}
+        except Exception as exc:
+            last_error = exc
+            time.sleep(3)
+    return {"error": f"inspect failed after 3 attempts: {last_error}"}
 
 
 def dest_total(dest: str, payload: dict[str, Any]) -> int:
@@ -135,8 +167,8 @@ def dest_file_records(dest: str, payload: dict[str, Any], file_key: str) -> list
     if dest == "relational_pgvector":
         return [dict(r) for r in payload.get("rows") or [] if r.get("file_key") == file_key]
     if dest == "cache_redisvl":
-        # The cached value is JSON under each key, so the stored record carries
-        # modality even though the key name does not.
+        # The cached value is JSON under each key, so the stored record carries the
+        # modality and the page reference even though the key name does not.
         out: list[dict[str, Any]] = []
         for entry in payload.get("keys") or []:
             key = str(entry.get("key") or "")
@@ -155,7 +187,9 @@ def dest_file_records(dest: str, payload: dict[str, Any], file_key: str) -> list
 
 def image_records(dest: str, payload: dict[str, Any], file_key: str) -> list[dict[str, Any]]:
     return [
-        r for r in dest_file_records(dest, payload, file_key) if str(r.get("modality") or "") == "image"
+        r
+        for r in dest_file_records(dest, payload, file_key)
+        if str(r.get("modality") or "") == "image"
     ]
 
 
@@ -169,9 +203,9 @@ def wait_for_images(
 ) -> dict[str, Any]:
     """Poll until every destination holds at least ``min_images`` image records.
 
-    A minimum, not an exact count: the bucket can hold other documents whose own
-    figures are captioned too. That every destination sees the same count is
-    checked separately, because that is the cross-store invariant.
+    A minimum, not an exact count, because a store can hold other files of the same
+    bucket. That the four destinations agree on their count is checked separately,
+    since that is the cross-store invariant.
     """
     deadline = time.time() + timeout_s
     state: dict[str, Any] = {}
@@ -186,6 +220,7 @@ def wait_for_images(
                 "images": len(found),
                 "error": payload.get("error"),
                 "sample": (found[0].get("content") or "")[:120] if found else "",
+                "kinds": sorted({str(r.get("record_type") or "") for r in found}),
                 "refs": [r.get("image_ref") for r in found],
             }
             if len(found) < min_images:
@@ -223,12 +258,27 @@ def wait_for_text_hits(
 
 
 def ledger_row(client: httpx.Client, api: str, product_id: str) -> dict[str, Any] | None:
-    resp = client.get(f"{api}/api/knowledge-products/{product_id}/files", params={"limit": 50})
-    if resp.status_code != 200:
-        return None
-    for row in resp.json().get("files", []):
-        if row.get("file_key") == FILE_KEY:
-            return row
+    """The ledger row for FILE_KEY, or None.
+
+    The route orders by ``updated_at`` and caps one page at 200 rows, and a product
+    that links a whole bucket holds more rows than one page. So the search pages
+    until it finds the row or runs out of rows.
+    """
+    offset = 0
+    while offset < 1000:
+        resp = client.get(
+            f"{api}/api/knowledge-products/{product_id}/files",
+            params={"limit": 200, "offset": offset},
+        )
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        for row in body.get("files", []):
+            if row.get("file_key") == FILE_KEY:
+                return row
+        offset += 200
+        if offset >= int(body.get("total") or 0):
+            return None
     return None
 
 
@@ -269,18 +319,21 @@ def clear_stale_records(client: httpx.Client, api: str) -> None:
         print("stale cleanup skipped:", exc)
 
 
-def pick_source(client: httpx.Client, api: str, requested: str | None) -> str | None:
+def pick_source(client: httpx.Client, api: str, requested: str | None) -> tuple[str, str] | None:
+    """(source id, bucket) for a source the fanout can list."""
     resp = client.get(f"{api}/api/sources")
     if resp.status_code != 200:
         print("could not list sources:", resp.status_code, resp.text)
         return None
     sources = resp.json()
-    if requested:
-        return requested
     for src in sources:
+        if requested and src.get("id") != requested:
+            continue
         if src.get("minio_bucket") and not str(src["minio_bucket"]).startswith("local-"):
-            return src["id"]
-    return sources[0]["id"] if sources else None
+            return src["id"], str(src["minio_bucket"])
+    if sources:
+        return sources[0]["id"], str(sources[0].get("minio_bucket") or "")
+    return None
 
 
 def main() -> int:
@@ -292,18 +345,21 @@ def main() -> int:
     api = args.base_url.rstrip("/")
     report: dict[str, Any] = {}
 
-    with httpx.Client(timeout=60.0) as client:
+    # 300s: an inspect reads four live stores, and the API also serves the fanout
+    # while the test product syncs the whole bucket.
+    with httpx.Client(timeout=300.0) as client:
         try:
             client.get(f"{api}/api/knowledge-products").raise_for_status()
         except Exception as exc:
             print(f"Ingestion API not reachable at {api}: {exc}")
             return 1
 
-        source_id = pick_source(client, api, args.source_id)
-        if not source_id:
+        picked = pick_source(client, api, args.source_id)
+        if not picked:
             print("No source bucket available. Create a source first.")
             return 1
-        print(f"Using source {source_id}")
+        source_id, bucket = picked
+        print(f"Using source {source_id} (bucket {bucket})")
         clear_stale_records(client, api)
         clear_file(client, api, source_id)
 
@@ -320,9 +376,7 @@ def main() -> int:
                 "chunk_size": CHUNK_SIZE,
                 "chunk_overlap": CHUNK_OVERLAP,
                 "modality_mode": "text",
-                # Explicit null, so the 422 check below has a profile with no
-                # caption model to switch on.
-                "caption_model": None,
+                "text_embedding_model": "nvidia-embed-textonly",
                 "destinations": [
                     {"destination_type": dest, "enabled": True, "config": {}} for dest in DEST_TYPES
                 ],
@@ -337,14 +391,24 @@ def main() -> int:
             "id": profile["id"],
             "modality_mode": profile["modality_mode"],
             "text_embedding_model": profile["text_embedding_model"],
-            "caption_model": profile["caption_model"],
+            "image_embedding_model": profile["image_embedding_model"],
+            "chunk_config": profile["chunk_config"],
         }
 
-        check(profile["modality_mode"] == "text", "the profile stores text mode", profile["modality_mode"])
+        check(
+            profile["modality_mode"] == "text",
+            "the profile stores text mode",
+            profile["modality_mode"],
+        )
         check(
             bool(profile.get("text_embedding_model")),
             "the profile stores a text embedding model",
             profile.get("text_embedding_model"),
+        )
+        check(
+            profile.get("chunk_config") == {},
+            "a profile created with no strategy settings stores an empty config",
+            profile.get("chunk_config"),
         )
         check(
             all(
@@ -352,10 +416,87 @@ def main() -> int:
                 for d in profile["destinations"]
             ),
             "no connection value or store name in the profile config",
-            [sorted(set(d["config"] or {}) & (CONNECTION_KEYS | DERIVED_KEYS)) for d in profile["destinations"]],
+            [
+                sorted(set(d["config"] or {}) & (CONNECTION_KEYS | DERIVED_KEYS))
+                for d in profile["destinations"]
+            ],
         )
 
-        print("\n=== 1b. The options route offers no connection field ===")
+        print("\n=== 1b. The strategy catalogue reaches the form ===")
+        specs = client.get(f"{api}/api/ingestion-profiles/chunk-strategies")
+        report["chunk_strategies"] = [
+            {"value": s["value"], "params": [p["key"] for p in s["params"]]}
+            for s in (specs.json() if specs.status_code == 200 else [])
+        ]
+        check(specs.status_code == 200, "the catalogue route answers", specs.status_code)
+        if specs.status_code == 200:
+            by_value = {s["value"]: s for s in specs.json()}
+            check(
+                len(by_value) == 8,
+                "the catalogue offers eight strategies",
+                sorted(by_value),
+            )
+            check(
+                {"recursive", "fixed", "section", "context_aware", "parent_child", "contextual",
+                 "page_level", "sentence_window"} == set(by_value),
+                "the catalogue names the eight strategies",
+                sorted(by_value),
+            )
+            contextual = {
+                p["key"]: p for p in by_value.get("contextual", {}).get("params", [])
+            }
+            check(
+                contextual.get("context_model", {}).get("model_kind") == "chat"
+                and contextual.get("context_model", {}).get("required") is True,
+                "contextual declares a required chat model",
+                contextual.get("context_model"),
+            )
+            semantic = {
+                p["key"]: p for p in by_value.get("context_aware", {}).get("params", [])
+            }
+            check(
+                len(semantic.get("semantic_threshold_type", {}).get("options") or []) == 3,
+                "semantic declares three breakpoint measures",
+                semantic.get("semantic_threshold_type"),
+            )
+
+        print("\n=== 1c. A bad strategy config is rejected ===")
+        resp_bad_config = client.patch(
+            f"{api}/api/ingestion-profiles/{profile['id']}",
+            json={"chunk_strategy": "sentence_window", "chunk_config": {"bogus": 1}},
+        )
+        detail = resp_bad_config.json().get("detail") if resp_bad_config.status_code == 422 else {}
+        report["bad_config"] = {"status": resp_bad_config.status_code, "detail": detail}
+        check(
+            resp_bad_config.status_code == 422,
+            "422 when a strategy config names an unknown key",
+            resp_bad_config.status_code,
+        )
+        check(
+            isinstance(detail, dict) and detail.get("code") == "CHUNK_CONFIG_INVALID",
+            "CHUNK_CONFIG_INVALID code returned",
+            detail,
+        )
+
+        print("\n=== 1d. Images with an empty model are rejected ===")
+        resp_422 = client.patch(
+            f"{api}/api/ingestion-profiles/{profile['id']}",
+            json={"modality_mode": "text_images", "image_embedding_model": ""},
+        )
+        detail = resp_422.json().get("detail") if resp_422.status_code == 422 else {}
+        report["image_model_required"] = {"status": resp_422.status_code, "detail": detail}
+        check(
+            resp_422.status_code == 422,
+            "422 when images are enabled with an empty model",
+            resp_422.status_code,
+        )
+        check(
+            isinstance(detail, dict) and detail.get("code") == "IMAGE_EMBEDDING_MODEL_REQUIRED",
+            "IMAGE_EMBEDDING_MODEL_REQUIRED code returned",
+            detail,
+        )
+
+        print("\n=== 1e. The options route offers no connection field ===")
         options = client.get(f"{api}/api/knowledge-products/destinations/options").json()
         offered = {f["key"] for o in options for f in (o.get("fields") or [])}
         report["offered_fields"] = sorted(offered)
@@ -365,20 +506,6 @@ def main() -> int:
             sorted(offered & (CONNECTION_KEYS | DERIVED_KEYS)),
         )
         check(len(offered) == 15, "15 destination fields remain", len(offered))
-
-        print("\n=== 1c. Images without a caption model are rejected ===")
-        resp_422 = client.patch(
-            f"{api}/api/ingestion-profiles/{profile['id']}",
-            json={"modality_mode": "text_images", "caption_model": None},
-        )
-        detail = resp_422.json().get("detail") if resp_422.status_code == 422 else {}
-        report["caption_required"] = {"status": resp_422.status_code, "detail": detail}
-        check(resp_422.status_code == 422, "422 when images are enabled without a caption model", resp_422.status_code)
-        check(
-            isinstance(detail, dict) and detail.get("code") == "CAPTION_MODEL_REQUIRED",
-            "CAPTION_MODEL_REQUIRED code returned",
-            detail,
-        )
 
         print("\n=== 2. A product from the profile ingests in text mode ===")
         resp_product = client.post(
@@ -400,9 +527,14 @@ def main() -> int:
             "id": product["id"],
             "modality_mode": product.get("modality_mode"),
             "text_embedding_model": product.get("text_embedding_model"),
+            "image_embedding_model": product.get("image_embedding_model"),
         }
 
-        check(product.get("modality_mode") == "text", "text mode on the product", product.get("modality_mode"))
+        check(
+            product.get("modality_mode") == "text",
+            "text mode on the product",
+            product.get("modality_mode"),
+        )
         check(
             bool(product.get("text_embedding_model")),
             "the embedding model is reported on the product",
@@ -415,7 +547,10 @@ def main() -> int:
                 for dest in DEST_TYPES
             ),
             "the product copy derives every store name",
-            {dest: (by_type[dest]["config"] or {}).get(NAMESPACE_KEY[dest]) for dest in DEST_TYPES},
+            {
+                dest: (by_type[dest]["config"] or {}).get(NAMESPACE_KEY[dest])
+                for dest in DEST_TYPES
+            },
         )
         check(
             all("vector_size" not in (by_type[dest]["config"] or {}) for dest in DEST_TYPES),
@@ -423,19 +558,23 @@ def main() -> int:
             [by_type[dest]["config"] for dest in DEST_TYPES],
         )
 
-        print("\n=== 3. Upload the figure PDF ===")
+        print(f"\n=== 3. Upload the {PAGES}-page PDF ===")
         resp_up = client.post(
             f"{api}/api/sources/{source_id}/files",
-            files={"file": (FILE_KEY, io.BytesIO(figure_pdf()), "application/pdf")},
+            files={"file": (FILE_KEY, io.BytesIO(pages_pdf()), "application/pdf")},
         )
-        check(resp_up.status_code in (200, 201), "the PDF is uploaded to the bucket", resp_up.text[:200])
+        check(
+            resp_up.status_code in (200, 201),
+            "the PDF is uploaded to the bucket",
+            resp_up.text[:200],
+        )
 
         row = wait_for_ledger(client, api, product["id"])
         report["ledger"] = row
         check(bool(row) and row.get("status") == "synced", "the ledger reaches synced", row)
         check(
-            row is not None and row.get("pages_indexed") == 1,
-            "the ledger counts one source page",
+            row is not None and row.get("pages_indexed") == PAGES,
+            f"the ledger counts {PAGES} source pages",
             row.get("pages_indexed") if row else None,
         )
 
@@ -473,13 +612,17 @@ def main() -> int:
         print("\n=== 6. Switch to text_images and re-apply ===")
         resp_patch = client.patch(
             f"{api}/api/ingestion-profiles/{profile['id']}",
-            json={"modality_mode": "text_images", "caption_model": CAPTION_MODEL},
+            json={"modality_mode": "text_images", "image_embedding_model": IMAGE_EMBEDDING_MODEL},
         )
-        check(resp_patch.status_code == 200, "the profile switches to text_images", resp_patch.text[:200])
+        check(
+            resp_patch.status_code == 200,
+            "the profile switches to text_images",
+            resp_patch.text[:200],
+        )
         patched = resp_patch.json()
         report["patched"] = {
             "modality_mode": patched.get("modality_mode"),
-            "caption_model": patched.get("caption_model"),
+            "image_embedding_model": patched.get("image_embedding_model"),
         }
         check(
             patched.get("modality_mode") == "text_images",
@@ -487,28 +630,38 @@ def main() -> int:
             patched.get("modality_mode"),
         )
         check(
-            patched.get("caption_model") == CAPTION_MODEL,
-            "the caption model stored on the profile",
-            patched.get("caption_model"),
+            patched.get("image_embedding_model") == IMAGE_EMBEDDING_MODEL,
+            "the image embedding model stored on the profile",
+            patched.get("image_embedding_model"),
         )
 
-        resp_apply = client.post(f"{api}/api/knowledge-products/{product['id']}/apply-profile", json={})
+        resp_apply = client.post(
+            f"{api}/api/knowledge-products/{product['id']}/apply-profile", json={}
+        )
         applied = resp_apply.json() if resp_apply.status_code == 200 else {}
-        report["apply"] = {"status": resp_apply.status_code, "updated": applied.get("updated"), "purged": applied.get("purged_files")}
+        report["apply"] = {
+            "status": resp_apply.status_code,
+            "updated": applied.get("updated"),
+            "purged": applied.get("purged_files"),
+        }
         check(resp_apply.status_code == 200, "apply-profile returns 200", resp_apply.text[:300])
         check(
             sorted(applied.get("updated") or []) == sorted(DEST_TYPES),
-            "a pipeline change marks every destination for a rebuild",
+            "a modality change marks every destination for a rebuild",
             applied.get("updated"),
         )
-        check(int(applied.get("purged_files") or 0) >= 1, "the old records are purged", applied.get("purged_files"))
+        check(
+            int(applied.get("purged_files") or 0) >= 1,
+            "the old records are purged",
+            applied.get("purged_files"),
+        )
 
-        print("\n=== 7. Every destination receives the captioned figure ===")
-        image_state = wait_for_images(client, api, product["id"], min_images=1)
+        print(f"\n=== 7. Every destination receives one record per page ===")
+        image_state = wait_for_images(client, api, product["id"], min_images=PAGES)
         report["image_mode"] = image_state["state"]
         check(
             image_state["ok"],
-            "every destination holds the captioned figure",
+            f"every destination holds {PAGES} page records",
             image_state["state"],
         )
 
@@ -516,29 +669,44 @@ def main() -> int:
             counts = [entry["images"] for entry in image_state["state"].values()]
             check(
                 len(set(counts)) == 1,
-                "the four destinations agree on the image count",
+                "the four destinations agree on the page count",
                 counts,
+            )
+            check(
+                all(entry["kinds"] == ["page"] for entry in image_state["state"].values()),
+                "every image record is tagged as a page",
+                {dest: e["kinds"] for dest, e in image_state["state"].items()},
             )
             samples = {dest: entry["sample"] for dest, entry in image_state["state"].items()}
-            report["captions"] = samples
+            report["pages"] = samples
             check(
                 all(sample.strip() for sample in samples.values()),
-                "every stored image record carries caption text",
+                "every stored page record carries the page text",
                 samples,
             )
-            refs = image_state["state"]["vector_qdrant"]["refs"]
+            refs = [
+                ref
+                for entry in image_state["state"].values()
+                for ref in entry["refs"]
+                if isinstance(ref, dict)
+            ]
             check(
-                bool(refs)
-                and all(
-                    isinstance(r, dict) and "page_index" in r and "image_index" in r for r in refs
-                ),
-                "the image record carries a page and image reference",
-                refs,
+                bool(refs) and all(str(ref.get("key") or "").startswith("_pages/") for ref in refs),
+                "the page record names its stored page image",
+                refs[:3],
+            )
+
+            keys = page_image_keys(bucket, FILE_KEY)
+            report["page_images"] = keys
+            check(
+                len(keys) == PAGES,
+                f"the bucket holds {PAGES} page images under _pages/",
+                keys,
             )
             check(
-                set(counts) != {0},
-                "text mode did not already hold these records",
-                counts,
+                len({Path(key).name for key in keys}) == len(keys),
+                "each page image has its own object name",
+                keys,
             )
 
             after_row = wait_for_ledger(client, api, product["id"])

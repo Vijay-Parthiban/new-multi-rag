@@ -1,6 +1,6 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-08
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
@@ -46,7 +46,7 @@ Know this table before you start. One row surprises people: **one Qdrant serves 
 | Web scraper API | 8000 | 8000 (`scraper` profile) | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-api` | `scrape_embeddings`, the ingestion scraper path |
 | Web scraper worker | — | — | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-worker` | Crawl, scrape and page-render jobs |
 | Guardrails service | 18000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | Guard checks, guard traces |
-| LiteLLM proxy | 4000 | 4000 | **external** container | Every chat, embedding, rerank and caption call. It requires a key: `OPENAI_API_KEY`, `sk-bot` by default |
+| LiteLLM proxy | 4000 | 4000 | **external** container | Every chat, text embedding, image embedding and rerank call. It requires a key: `OPENAI_API_KEY`, `sk-bot` by default |
 | LiteLLM database | 5433 | 5432 | **external** container | LiteLLM's own keys and spend |
 
 Confirm what is already up before you start anything:
@@ -87,7 +87,7 @@ own directories, or provide equivalents and update the environment variables in 
 
 | Container | Host port | Why it is external |
 |---|---|---|
-| `litellm` | 4000 | The model gateway for chat, embeddings, rerank and image captions |
+| `litellm` | 4000 | The model gateway for chat, text embeddings, page-image embeddings and rerank |
 | `litellm_db` | 5433 | LiteLLM's PostgreSQL |
 
 **Qdrant is no longer external.** One Qdrant, declared by the ingestion compose and published on
@@ -226,7 +226,7 @@ The proxy requires the key. It is the same value the backends send as `OPENAI_AP
 | Purpose | Setting | Value used today |
 |---|---|---|
 | Dense embeddings | `EMBEDDING_MODEL` | `nvidia-embed-textonly` — returns 2048 dimensions, the size the fanout writes |
-| Image captions | `caption_model` | `groq-vision` |
+| Page-image embeddings | `MULTIMODAL_EMBEDDING_MODEL` | `nvidia-embed-multimodal` — embeds one rendered page image on a `text_images` profile |
 | Rerank | `RERANKER_MODEL` | `nvidia-rerank` |
 | Chat | the pipeline's `chat_model` | `Gpt-oss-120b` or `Gpt-oss-20b` |
 

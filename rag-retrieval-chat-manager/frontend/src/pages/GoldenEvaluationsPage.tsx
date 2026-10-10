@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import PageHeader from "../components/PageHeader";
@@ -7,9 +7,12 @@ import {
   createEvaluationRun,
   deleteGoldenDataset,
   destinationStoreLabel,
+  EvalPipelineDefaults,
   EvalRunItemRow,
   EvalRunResponse,
+  GuardrailsConfig,
   RunDiagnosis,
+  getEvalPipelineDefaults,
   getEvaluationRun,
   getLiteLLMModels,
   GoldenDatasetSummary,
@@ -19,8 +22,11 @@ import {
   listDatasetRuns,
   listEvaluationRunItems,
   listGoldenDatasets,
+  listGuardrailsConfigs,
   listPipelines,
+  listPromptTemplates,
   PipelineRecord,
+  PromptTemplate,
   uploadGoldenDataset,
 } from "../api";
 import { formatRelativeTime } from "../utils/format";
@@ -381,6 +387,16 @@ function RubricTable({ items, status }: { items: EvalRunItemRow[], status?: stri
   );
 }
 
+/** The stores a pipeline reads: one name per destination, or null when it has none. */
+interface PipelineStores {
+  collection: string | null;
+  embedding: string | null;
+  sparse: string | null;
+  opensearch: string | null;
+  pgSchema: string | null;
+  pgTable: string | null;
+}
+
 /**
  * The stores a pipeline's own turns read.
  *
@@ -389,7 +405,7 @@ function RubricTable({ items, status }: { items: EvalRunItemRow[], status?: stri
  * legacy field would evaluate the service default collection instead of the pipeline's own,
  * which retrieves nothing and scores zero for a reason that has nothing to do with the pipeline.
  */
-function pipelineStores(pipeline: PipelineRecord | null) {
+function pipelineStores(pipeline: PipelineRecord | null): PipelineStores {
   const product = pipeline?.knowledge_product;
   if (!product) {
     return {
@@ -421,14 +437,122 @@ function pipelineStores(pipeline: PipelineRecord | null) {
   };
 }
 
+/**
+ * The pipeline under test, stated rather than offered.
+ *
+ * A run measures this pipeline as it stands, so the page shows its configuration and
+ * gives no control over the retrieval settings. One line states what the run will
+ * read: the pipeline's own settings, which the run carries, with the deployment's
+ * values filling any gap the record leaves.
+ */
+function PipelineSummary({
+  pipeline,
+  stores,
+  defaults,
+  templates,
+  guardrails,
+}: {
+  pipeline: PipelineRecord;
+  stores: PipelineStores;
+  defaults: EvalPipelineDefaults | null;
+  templates: PromptTemplate[];
+  guardrails: GuardrailsConfig[];
+}) {
+  const product = pipeline.knowledge_product;
+  const model = pipeline.model_settings;
+  const templateName = pipeline.prompt_template_id
+    ? templates.find((t) => t.id === pipeline.prompt_template_id)?.name || "set (name unavailable)"
+    : "service default";
+  const guardrailsName = pipeline.guardrails_config_id
+    ? guardrails.find((g) => g.id === pipeline.guardrails_config_id)?.name ||
+      "set (name unavailable)"
+    : "none";
+  const sampling = [
+    model?.temperature != null ? `temperature ${model.temperature}` : null,
+    model?.top_p != null ? `top_p ${model.top_p}` : null,
+    model?.max_tokens != null ? `max_tokens ${model.max_tokens}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const rows: [string, string][] = [
+    ["Strategy", pipeline.rag_strategy],
+    ["Chat model", pipeline.chat_model || "service default"],
+    ["Sampling", sampling || "service default"],
+    ["Prompt template", templateName],
+    ["Guardrails", guardrailsName],
+    ["Knowledge product", product?.name || "none"],
+    ["Modality", pipeline.modality || "text"],
+    [
+      "Chunking",
+      `${product?.chunk_strategy || "—"} · ${pipeline.chunk_size} size / ${pipeline.chunk_overlap} overlap`,
+    ],
+    [
+      // The pipeline's own settings, because the run carries them. The deployment fills
+      // a gap only where the record has none to give, which is what a pipeline written
+      // before those columns existed looks like.
+      "Retrieval",
+      `${defaults?.retrieval_mode ?? "dense"} · ${
+        pipeline.retrieve_limit ?? defaults?.retrieve_limit ?? "—"
+      } chunks read · ${
+        pipeline.rerank_enabled ?? defaults?.rerank_enabled ?? true
+          ? `rerank on (${pipeline.rerank_model ?? defaults?.rerank_model ?? "default"}), top ${
+              pipeline.rerank_top_k ?? defaults?.top_k ?? "—"
+            } reach the prompt`
+          : "rerank off, all of them reach the prompt"
+      }`,
+    ],
+    ["Dense store", stores.collection || "service default collection"],
+    ["Embedding model", stores.embedding || "service default"],
+    [
+      "Lexical store",
+      stores.opensearch
+        ? `${stores.opensearch}${stores.sparse ? ` · sparse ${stores.sparse}` : ""}`
+        : "none",
+    ],
+    [
+      "Relational store",
+      stores.pgSchema && stores.pgTable ? `${stores.pgSchema}.${stores.pgTable}` : "none",
+    ],
+  ];
+
+  return (
+    <div
+      className="muted"
+      style={{
+        display: "grid",
+        gridTemplateColumns: "auto 1fr",
+        gap: "0.3rem 0.9rem",
+        fontSize: "0.8rem",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 6,
+        padding: "0.7rem 0.8rem",
+      }}
+    >
+      <div style={{ gridColumn: "1 / -1" }}>
+        <strong>{pipeline.name}</strong>
+        {pipeline.description ? <span> · {pipeline.description}</span> : null}
+      </div>
+      {rows.map(([label, value]) => (
+        <Fragment key={label}>
+          <span>{label}</span>
+          <span className="mono">{value}</span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
 export default function GoldenEvaluationsPage() {
   const [datasets, setDatasets] = useState<GoldenDatasetSummary[]>([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [pipelineId, setPipelineId] = useState("");
-  const [retrievalMode, setRetrievalMode] = useState("hybrid");
-  const [retrieveLimit, setRetrieveLimit] = useState(20);
-  const [rerankEnabled, setRerankEnabled] = useState(true);
+  // The retrieval settings a run uses. They come from the deployment, not from this
+  // page: a run measures the selected pipeline as it stands, so the page shows them
+  // and offers no control over them.
+  const [pipelineDefaults, setPipelineDefaults] = useState<EvalPipelineDefaults | null>(null);
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [guardrails, setGuardrails] = useState<GuardrailsConfig[]>([]);
   const [runs, setRuns] = useState<EvalRunResponse[]>([]);
   const [runsCount, setRunsCount] = useState(0);
   const [page, setPage] = useState(0);
@@ -516,6 +640,37 @@ export default function GoldenEvaluationsPage() {
       })
       .catch(() => {
         if (!cancelled) setJudgeModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // What a run will use, and the names of the prompt template and guardrails config the
+  // selected pipeline points at. A failure here costs the detail line and the two names, and
+  // must not stop a run, so every call is caught on its own.
+  useEffect(() => {
+    let cancelled = false;
+    void getEvalPipelineDefaults()
+      .then((defaults) => {
+        if (!cancelled) setPipelineDefaults(defaults);
+      })
+      .catch(() => {
+        if (!cancelled) setPipelineDefaults(null);
+      });
+    void listPromptTemplates()
+      .then((res) => {
+        if (!cancelled) setTemplates(res.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    void listGuardrailsConfigs()
+      .then((res) => {
+        if (!cancelled) setGuardrails(res.items || []);
+      })
+      .catch(() => {
+        if (!cancelled) setGuardrails([]);
       });
     return () => {
       cancelled = true;
@@ -628,16 +783,24 @@ export default function GoldenEvaluationsPage() {
     setBusy(true);
     setError(null);
     try {
-      // The run carries the pipeline's own stores, so the evaluation measures that pipeline
-      // rather than whatever collection the service defaults to. The strategy and the store
-      // names travel together: the evaluator reads the knowledge-product stores only when both
-      // are present.
+      // The run carries the pipeline's own stores and retrieval settings, so the
+      // evaluation measures that pipeline rather than whatever the service defaults to.
+      // The strategy and the store names travel together: the evaluator reads the
+      // knowledge-product stores only when both are present.
+      //
+      // The pipeline's retrieval settings travel the same way — how many chunks the
+      // search returns, whether a reranker reorders them, and how many survive it. The
+      // route keeps its own deployment fallback for a caller that sends none, which is
+      // what a pipeline record written before those columns existed produces.
       const stores = pipelineStores(selectedPipeline);
       const created = await createEvaluationRun(selectedDatasetId, {
-        retrieval_mode: retrievalMode,
-        retrieve_limit: retrieveLimit,
-        rerank_enabled: rerankEnabled,
         rag_strategy: selectedPipeline.rag_strategy,
+        retrieve_limit: selectedPipeline.retrieve_limit,
+        rerank_enabled: selectedPipeline.rerank_enabled,
+        top_k: selectedPipeline.rerank_top_k,
+        // The reranker the pipeline pinned, when it pinned one. Null leaves the
+        // route to resolve the deployment's model.
+        rerank_model: selectedPipeline.rerank_model,
         // The pipeline's own chat model. Without it the service default applies, and the
         // service default is a model the proxy does not serve.
         generation_model: selectedPipeline.chat_model,
@@ -820,11 +983,13 @@ export default function GoldenEvaluationsPage() {
               </select>
             </label>
             {selectedPipeline && (
-              <p className="muted" style={{ fontSize: "0.8rem", margin: 0 }}>
-                reads {stores.collection ?? "the service default collection"} · embedding=
-                {stores.embedding ?? "default"}
-                {stores.sparse ? ` · sparse=${stores.sparse}` : ""}
-              </p>
+              <PipelineSummary
+                pipeline={selectedPipeline}
+                stores={stores}
+                defaults={pipelineDefaults}
+                templates={templates}
+                guardrails={guardrails}
+              />
             )}
             <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
               Rows to test
@@ -842,43 +1007,11 @@ export default function GoldenEvaluationsPage() {
               {rowsToTest} of {selectedDatasetCount} rows, chosen at random on every run. Each row
               costs one retrieval, one generation and one scoring pass.
             </p>
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                Retrieval
-                <select
-                  className="input"
-                  value={retrievalMode}
-                  onChange={(e) => setRetrievalMode(e.target.value)}
-                >
-                  <option value="dense">dense</option>
-                  <option value="sparse">sparse</option>
-                  <option value="hybrid">hybrid</option>
-                </select>
-              </label>
-              <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-                Chunk limit
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={retrieveLimit}
-                  onChange={(e) => setRetrieveLimit(Number(e.target.value) || 20)}
-                  style={{ width: 90 }}
-                />
-              </label>
-              <label className="muted" style={{ display: "flex", gap: "0.35rem", alignItems: "center", marginTop: "1.4rem" }}>
-                <input
-                  type="checkbox"
-                  checked={rerankEnabled}
-                  onChange={(e) => setRerankEnabled(e.target.checked)}
-                />
-                Rerank
-              </label>
-              {/* The offline evaluator runs retrieve -> rerank -> generate and scores each
-                  stage. It has no router and no self-corrective loop, so the Strategy, RAG
-                  Mode and Max Loops controls that used to sit here changed nothing. */}
-            </div>
+            {/* The retrieval settings are not controls. A run measures the pipeline above as it
+                stands, so the route resolves the mode, the chunk limit, the rerank switch and
+                top-k from the deployment, and the summary above states them. The evaluator runs
+                retrieve -> rerank -> generate and scores each stage; it has no router and no
+                self-corrective loop. */}
             <label className="muted" style={{ display: "grid", gap: "0.25rem", maxWidth: 320 }}>
               LLM-as-a-judge (optional)
               <select

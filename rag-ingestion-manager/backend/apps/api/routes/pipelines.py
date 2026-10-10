@@ -105,6 +105,13 @@ class PipelineCreateRequest(BaseModel):
     chat_model: str | None = Field(default=None, max_length=128)
     prompt_template_id: uuid.UUID | None = None
     guardrails_config_id: uuid.UUID | None = None
+    # Retrieval settings. The retrieval manager reads these on every turn, so the
+    # pipeline decides what the search returns and what survives reranking.
+    retrieve_limit: int = Field(default=20, ge=1, le=50)
+    rerank_enabled: bool = True
+    rerank_top_k: int = Field(default=5, ge=1, le=50)
+    # Which reranker, or null for the retrieval manager's own model.
+    rerank_model: str | None = Field(default=None, max_length=128)
     model_settings: ModelSettings | None = None
 
     @field_validator("directory_names")
@@ -139,6 +146,11 @@ class PipelinePatchRequest(BaseModel):
     guardrails_config_id: uuid.UUID | None = None
     knowledge_product_id: uuid.UUID | None = None
     embedding_model: str | None = Field(default=None, max_length=128)
+    retrieve_limit: int | None = Field(default=None, ge=1, le=50)
+    rerank_enabled: bool | None = None
+    rerank_top_k: int | None = Field(default=None, ge=1, le=50)
+    # Sending null clears any model this pipeline pinned, so the deployment's applies.
+    rerank_model: str | None = Field(default=None, max_length=128)
     model_settings: ModelSettings | None = None
 
     @field_validator("directory_names")
@@ -171,6 +183,10 @@ def _pipeline_to_dict(p: Pipeline) -> dict:
         "scraper_max_pages": p.scraper_max_pages,
         "scraper_mode": p.scraper_mode,
         "chat_model": p.chat_model,
+        "retrieve_limit": p.retrieve_limit,
+        "rerank_enabled": p.rerank_enabled,
+        "rerank_top_k": p.rerank_top_k,
+        "rerank_model": p.rerank_model,
         "model_settings": p.model_settings or None,
         "prompt_template_id": str(p.prompt_template_id) if p.prompt_template_id else None,
         "guardrails_config_id": (
@@ -452,6 +468,10 @@ async def create_pipeline(body: PipelineCreateRequest, db: Annotated[AsyncSessio
         chat_model=body.chat_model,
         prompt_template_id=body.prompt_template_id,
         guardrails_config_id=body.guardrails_config_id,
+        retrieve_limit=body.retrieve_limit,
+        rerank_enabled=body.rerank_enabled,
+        rerank_top_k=body.rerank_top_k,
+        rerank_model=body.rerank_model,
         model_settings=(body.model_settings.model_dump() if body.model_settings else None),
     )
     db.add(pipeline)
@@ -592,6 +612,18 @@ async def update_pipeline(
         pipeline.chat_model = body.chat_model
     if body.embedding_model is not None:
         pipeline.embedding_model = body.embedding_model
+    # Same rule as the two attachments above: sending null clears the pinned
+    # reranker, so the retrieval manager's own model applies again.
+    if "rerank_model" in sent:
+        pipeline.rerank_model = sent["rerank_model"]
+    # A false rerank_enabled is a value, not an absent key, so the None check is
+    # the only correct test here.
+    if body.retrieve_limit is not None:
+        pipeline.retrieve_limit = body.retrieve_limit
+    if body.rerank_enabled is not None:
+        pipeline.rerank_enabled = body.rerank_enabled
+    if body.rerank_top_k is not None:
+        pipeline.rerank_top_k = body.rerank_top_k
 
     await db.commit()
     await db.refresh(pipeline)

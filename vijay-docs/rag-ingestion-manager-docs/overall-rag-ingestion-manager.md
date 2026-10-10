@@ -1,6 +1,6 @@
 # Overall Architecture — RAG Ingestion Manager
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. System Overview
 `rag-ingestion-manager` is the document ingestion, storage-management, parsing, and multi-sink synchronization service of the `new-multi-rag` platform. It brings unstructured documents from configured sources (per-source MinIO buckets, manual browser uploads, legacy local filesystem folders, Apache NiFi connectors for Google Drive / Amazon S3 / Azure Blob Storage) into MinIO object storage, then executes a per-product fanout into four RAG storage destinations:
@@ -104,12 +104,12 @@ rag-ingestion-manager/
 │   │   ├── e2e_knowledge_fanout.py     # E2E fanout, store isolation and purge verification script
 │   │   ├── e2e_knowledge_pause.py      # E2E pause/resume verification script
 │   │   ├── e2e_ingestion_profiles.py   # E2E profiles, chunking and re-apply verification script
-│   │   ├── e2e_ingestion_modality.py   # E2E env-only field surface and caption verification script
+│   │   ├── e2e_ingestion_modality.py   # E2E field surface, page-image and text-mode verification script
 │   │   ├── e2e_chunk_strategies.py     # E2E chunk strategy record-shape verification script
 │   │   └── purge_neo4j_legacy.py       # one-shot legacy graph-node purge
 │   ├── tests/
 │   │   ├── test_page_yielder.py
-│   │   ├── test_page_yielder_figures.py
+│   │   ├── test_embedding_image_failure.py
 │   │   ├── test_fanout_payload.py
 │   │   ├── test_knowledge_destination_schemas.py
 │   │   ├── test_knowledge_product_files.py
@@ -128,10 +128,10 @@ rag-ingestion-manager/
 │       │   │   ├── source_sync.py      # trigger_source_sync, sync_all_enabled_sources
 │       │   │   └── scraper.py          # web-scraper API client
 │       │   ├── core/
-│       │   │   ├── universal_fanout.py # four-destination fanout, figure captioning + per-file purge
+│       │   │   ├── universal_fanout.py # four-destination fanout, page-image records + per-file purge
 │       │   │   ├── knowledge_sync.py   # product poller: register_knowledge_poller, sync_knowledge_product
 │       │   │   ├── knowledge_events.py # SSE event bus for the live fanout timeline
-│       │   │   ├── page_yielder.py     # iter_file_pages(): PDF/DOCX/CSV/JSON/text pages + embedded PDF figures
+│       │   │   ├── page_yielder.py     # iter_file_pages(): PDF/DOCX/CSV/JSON/text pages, optional page render
 │       │   │   ├── sync_runner.py      # pipeline chunk indexing (sync_pipeline, sync_all_pipelines)
 │       │   │   ├── pipeline_runner.py  # pipeline run orchestration (files + scraper)
 │       │   │   ├── pathway_sync.py     # connector sync orchestration, live & scheduled source pollers
@@ -143,7 +143,7 @@ rag-ingestion-manager/
 │       │   ├── embeddings/
 │       │   │   ├── client.py           # LiteLLM embedding client, FastEmbed fallback (384-d)
 │       │   │   └── sparse_client.py    # re-export of platform_common sparse client
-│       │   ├── utils/text_splitter.py  # chunk_text() + chunk_parent_child(): the seven chunk strategies
+│       │   ├── utils/text_splitter.py  # chunk_text() + chunk_parent_child() + chunk_page(): the eight chunk strategies
 │       │   ├── vector/                 # re-exports of platform_common Qdrant helpers + search
 │       │   └── types.py                # FILE_INGEST_SOURCE_TYPE, WEB_SCRAPE_SOURCE_TYPE
 │       └── shared/
@@ -253,7 +253,7 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/sources` | `GET` | `/{source_id}/webscrape` | 200 | webscrape switch, limits and one row per `*_scrp.txt` manifest |
 | `/api/sources` | `POST` | `/{source_id}/webscrape/scan` | 200 | detect the manifests now; `422 WEBSCRAPE_DISABLED` while the switch is off |
 | `/api/knowledge-products` | `GET` | `/destinations/options` | 200 | destination types with the 15 typed field schemas, defaults and `namespace_fields` |
-| `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/model/info` listing classified by `model_info.mode`, `model_kind` in `all\|embedding\|rerank\|chat\|vision\|sparse`, `default_embedding_model`, `default_caption_model`, env fallback |
+| `/api/knowledge-products` | `GET` | `/config/litellm-models` | 200 | LiteLLM `/v1/model/info` listing classified by `model_info.mode`, `model_kind` in `all\|embedding\|rerank\|chat\|vision\|sparse`, `default_embedding_model`, `default_image_embedding_model`, env fallback |
 | `/api/knowledge-products` | `GET` | `` | 200 | list products with sources and destinations, newest first |
 | `/api/knowledge-products` | `POST` | `` | 201 | create product (400 on duplicate name); an optional `ingestion_profile_id` copies that profile's destinations; registers the poller and starts ingestion |
 | `/api/knowledge-products` | `GET` | `/{product_id}/files` | 200 | ingested-file ledger, `?status=&limit=50&offset=0` -> `{"files": [...], "total": n}` |
@@ -268,9 +268,10 @@ App factory: `apps/api/main.py`. Routers are included in this order: `uploads`, 
 | `/api/knowledge-products` | `POST` | `/{product_id}/test-connection` | 200 | connectivity test for one destination |
 | `/api/knowledge-products` | `GET` | `/{product_id}/inspect/{destination_type}` | 200 | live store read-back, implemented for all four destinations |
 | `/api/ingestion-profiles` | `GET` | `` | 200 | list Ingestion Profiles with their destinations and `product_count`, newest first |
-| `/api/ingestion-profiles` | `POST` | `` | 201 | create an Ingestion Profile; `400` on a duplicate name, `422 CHUNK_OVERLAP_TOO_LARGE` on a bad chunk pair, `422 CAPTION_MODEL_REQUIRED` when `text_images` has no caption model |
+| `/api/ingestion-profiles` | `GET` | `/chunk-strategies` | 200 | the eight chunk strategies with their labels, descriptions, settings, ranges and defaults, as a bare list; the profile form renders this list |
+| `/api/ingestion-profiles` | `POST` | `` | 201 | create an Ingestion Profile; `400` on a duplicate name, `422 CHUNK_OVERLAP_TOO_LARGE` on a bad chunk pair, `422 CHUNK_CONFIG_INVALID` on a bad strategy setting, `422 IMAGE_EMBEDDING_MODEL_REQUIRED` when `text_images` has no image embedding model |
 | `/api/ingestion-profiles` | `GET` | `/{profile_id}` | 200 | one Ingestion Profile with its destinations and usage count |
-| `/api/ingestion-profiles` | `PATCH` | `/{profile_id}` | 200 | partial update; a supplied `destinations` list replaces the whole set |
+| `/api/ingestion-profiles` | `PATCH` | `/{profile_id}` | 200 | partial update; a supplied `destinations` list replaces the whole set; a strategy change with no `chunk_config` resets the config to the new strategy's defaults |
 | `/api/ingestion-profiles` | `DELETE` | `/{profile_id}` | 200 | delete an unreferenced profile; `409 PROFILE_IN_USE` with `product_count` when a product references it |
 
 Error handling: `AppError` subclasses (NotFound/Validation/Conflict) are mapped by `apps/api/exceptions.py`; any other exception is caught by the global handler and returned as `500 {"error": {"message": ...}}`. CORS is wide open: `allow_origins=["*"]`, `allow_credentials=False`, `allow_methods=["*"]`, `allow_headers=["*"]`.
@@ -377,9 +378,8 @@ Loaded with pydantic-settings from an optional `.env` (`extra="ignore"`) and cac
 | `litellm_base_url` | `http://host.docker.internal:4000` | embeddings, entity extraction, model listing; the destination field surface no longer declares it |
 | `openai_api_key` | `sk-bot` | LiteLLM bearer token |
 | `embedding_model` | `nvidia-embed-textonly` | default dense model for an Ingestion Profile |
-| `multimodal_embedding_model` | `nvidia-embed-multimodal` | offered in the pipeline model dropdown; no ingestion path embeds an image directly, because a figure becomes a caption and the caption is embedded as text |
-| `caption_model` | `groq-vision` | vision model that captions document figures, on `text_images` profiles |
-| `image_min_pixels` | `10000` | a figure below this pixel count is skipped |
+| `multimodal_embedding_model` | `nvidia-embed-multimodal` | embeds a rendered page image on the `text_images` modal path; each document page is one record in the vector stores |
+| `caption_model` | `groq-vision` | the vision model the model list offers for a vision chat; the ingestion path no longer captions anything |
 | `summary_model` | `Gpt-oss-20b` | chat model for RedisVL RAPTOR summaries; a small fast model, because it runs per file |
 | `sparse_embedding_model` | `Qdrant/bm25` | sparse/lexical model |
 | `embed_workers` | `4` | embedding concurrency hint |
@@ -430,12 +430,12 @@ The connection and secret fields left the surface on 2026-09-20, and `.env` supp
 | `knowledge_product_sources` | `KnowledgeProductSource` | M2M product<->source (MinIO bucket) |
 | `knowledge_product_destinations` | `KnowledgeProductDestination` | per-destination `enabled`, `config` (JSONB), `status`, `error_message`, `last_sync_at` |
 | `knowledge_product_files` | `KnowledgeProductFile` | per-product fanout ledger: `(knowledge_product_id, source_id, file_key)` unique, `etag`, `size_bytes`, `content_hash`, `status`, `pages_indexed`, `destinations_synced`, `error_message`, `last_synced_at` |
-| `ingestion_profiles` | `IngestionProfile` | reusable configuration: `name` unique, `description`, `enabled`, `chunk_size` (default `1000`), `chunk_overlap` (default `120`), `modality_mode` (`text` or `text_images`), `text_embedding_model`, `caption_model`, `image_min_pixels` |
+| `ingestion_profiles` | `IngestionProfile` | reusable configuration: `name` unique, `description`, `enabled`, `chunk_size` (default `1000`), `chunk_overlap` (default `120`), `chunk_strategy` (native enum, default `recursive`), `chunk_config` (JSONB, the selected strategy's own settings), `modality_mode` (`text` or `text_images`), `text_embedding_model`, `image_embedding_model` (default `nvidia-embed-multimodal`) |
 | `ingestion_profile_destinations` | `IngestionProfileDestination` | per-destination `enabled` and `config` (JSONB) held by a profile, unique on `(ingestion_profile_id, destination_type)`; the config holds tuning and behaviour keys only |
 
 `KnowledgeProduct.ingestion_profile` is `lazy="selectin"`, so a product load also loads its profile. A product with `ingestion_profile_id IS NULL` keeps its own destination rows and ingests as before; no data backfill ran.
 
-`KnowledgeProduct.pipeline_fingerprint` is a hash of the chunk size, overlap, modality mode, embedding model, caption model and image threshold. `POST /{id}/apply-profile` purges and re-syncs every destination when that hash differs.
+`KnowledgeProduct.pipeline_fingerprint` is a hash of the chunk size, overlap, `chunk_config`, modality mode, text embedding model and image embedding model. `POST /{id}/apply-profile` purges and re-syncs every destination when that hash differs.
 
 Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 
@@ -455,15 +455,18 @@ Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 | `012_pipeline_model_settings` | `012_pipeline_model_settings.py` | added `pipelines.model_settings` (JSONB, nullable) |
 | `013_assistant_reasoning_patterns` | `013_assistant_reasoning_patterns.py` | added the `self_rag` and `corrective` strategy labels on PostgreSQL |
 | `014_missing_model_columns` | `014_missing_model_columns.py` | added the six columns that existed only in the models: `knowledge_products.ingestion_profile_id`, `knowledge_products.pipeline_fingerprint`, `sources.total_files`, `sources.total_size_bytes`, `sources.connector_sync_interval_seconds`, `source_connectors.sync_interval_seconds` |
-| `015_source_webscrape` | `015_source_webscrape.py` | added `sources.webscrape_enabled`, `sources.webscrape_max_depth` and `sources.webscrape_max_pages` for the per-source webscrape feature; the `source_scrape_files` table itself comes from `Base.metadata.create_all`, like the two Ingestion Profile tables. **Head revision.** |
+| `015_source_webscrape` | `015_source_webscrape.py` | added `sources.webscrape_enabled`, `sources.webscrape_max_depth` and `sources.webscrape_max_pages` for the per-source webscrape feature; the `source_scrape_files` table itself comes from `Base.metadata.create_all`, like the two Ingestion Profile tables |
+| `016_chunk_config_page_images` | `016_chunk_config_page_images.py` | added `ingestion_profiles.chunk_config` (JSONB, not null, default `{}`) and `ingestion_profiles.image_embedding_model` (VARCHAR(128), default `nvidia-embed-multimodal`); dropped the two retired profile columns; added the `contextual`, `page_level` and `sentence_window` labels to the native `chunk_strategy` enum type. PostgreSQL only; SQLite is patched by `_ensure_sqlite_columns` |
+| `017_pipeline_retrieval_settings` | `017_pipeline_retrieval_settings.py` | added `pipelines.retrieve_limit` (INTEGER, not null, default `20`), `pipelines.rerank_enabled` (BOOLEAN, not null, default `true`) and `pipelines.rerank_top_k` (INTEGER, not null, default `5`), the retrieval settings an assistant takes on every turn. PostgreSQL only; SQLite is patched by `_ensure_sqlite_columns` |
+| `018_pipeline_rerank_model` | `018_pipeline_rerank_model.py` | added `pipelines.rerank_model` (VARCHAR(128), nullable), the reranker a pipeline pins; a null means the deployment's `settings.reranker_model` (`nvidia-rerank`) applies. PostgreSQL only; SQLite is patched by `_ensure_sqlite_columns`. **Head revision.** |
 
 `models.py` installs SQLite compilers for `JSONB`/`UUID`. **There is one database: PostgreSQL.** The automatic SQLite fallback in `init_db` is removed, so an unreachable database stops the service at startup instead of serving stale rows. `test_no_sqlite_fallback.py` guards this. `init_db` still calls `Base.metadata.create_all` next to Alembic. If `DATABASE_URL` names SQLite on purpose, `init_db` runs `_ensure_sqlite_renames(path)` before `create_all` and `_ensure_sqlite_columns(path)` after it, because `create_all` never renames a table or adds a column.
 
-**The two Ingestion Profile tables have no Alembic revision.** `Base.metadata.create_all` creates any table that does not exist, so the migration head is `015_source_webscrape` and `011`…`015` do not mention the two profile tables. Three details go with them:
+**The two Ingestion Profile tables have no `CREATE TABLE` migration.** `Base.metadata.create_all` creates any table that does not exist, so the tables appear without a revision of their own; revision `016` alters the `ingestion_profiles` columns afterwards. Three details go with them:
 
 - The name `ingestion_profiles` is deliberate. Migration `008_knowledge_store` spent `knowledge_profiles` on the table that `010_knowledge_products` renamed to `knowledge_products`, so reusing that name would collide with the migration history.
 - On SQLite the new column comes from the `_ensure_sqlite_columns` list in `src/shared/db/session.py`: `("knowledge_products", "ingestion_profile_id VARCHAR(36)")`. Without that entry every product read fails with `no such column`.
-- The four modality columns are SQLite entries too: `modality_mode TEXT DEFAULT 'text'`, `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `caption_model TEXT` and `image_min_pixels INTEGER DEFAULT 10000`. Without them a local run fails with `no such column: ingestion_profiles.modality_mode`.
+- The profile columns are SQLite entries too: `modality_mode TEXT DEFAULT 'text'`, `chunk_strategy TEXT DEFAULT 'recursive'`, `text_embedding_model TEXT DEFAULT 'nvidia-embed-textonly'`, `chunk_config TEXT DEFAULT '{}'` and `image_embedding_model TEXT DEFAULT 'nvidia-embed-multimodal'`. Without them a local run fails with `no such column: ingestion_profiles.modality_mode`. The patcher only adds columns, so the two retired columns stay unused on an old SQLite file.
 
 ---
 
@@ -483,15 +486,16 @@ Migrations in `backend/alembic/versions/` (linear chain, `001` has no parent):
 5. There is no manual sync route. `register_knowledge_poller(product_id)` starts the product's poller and fires one immediate sync. Each later tick calls `sync_knowledge_product(product_id)`. That function guards on `_SYNCING_PRODUCTS` and sets `status="syncing"`. It calls `execute_universal_fanout_sync(db, product)`, then sets `status="idle"`, `last_sync_at` and clears `error_message`. It writes the same on every enabled destination. On a failure it sets `status="error"` and keeps the message. The API host and the pathway worker both call this function, so it also takes a cross-process Redis lock (`knowledge:sync:lock:<product_id>`, TTL 900 s). A compare-and-delete script releases the lock, so one holder never deletes another holder's lock.
 6. `execute_universal_fanout_sync(db, product)`:
    - resolves the product with sources and destinations loaded, keeps only enabled destinations and linked sources; with no enabled destination it returns zeros with `"message": "No destination is enabled."`;
-   - per source, builds the set of live objects — `list_objects(bucket)` for MinIO, `storage/local_sources/<folder>.rglob("*")` for local sources — and loads the existing `KnowledgeProductFile` rows for `source_id` keyed by `file_key`;
+   - per source, builds the set of live objects — `list_objects(bucket)` for MinIO, `storage/local_sources/<folder>.rglob("*")` for local sources — and loads the existing `KnowledgeProductFile` rows for `source_id` keyed by `file_key`; `drop_generated_page_images()` drops every key under `_pages/`, because a page image is the fanout's own output and not input;
    - compares the object's **etag and size** against the row: unchanged and already present in every enabled destination -> skipped without a download; changed -> purge the key from every destination in `destinations_synced` (a paused one included), then re-fanout; absent from the live set but present in `knowledge_product_files` -> purge from every destination that holds it, then delete the row;
-   - downloads the object to a `tempfile.NamedTemporaryFile`, then `page_yielder.iter_file_pages(..., render_pages=False, include_figures=True)` yields `FilePage(page_index, text, image_png)` rows (PyMuPDF for PDF, python-docx, csv, json, plain text/markdown fallback). Extraction reads embedded image XObjects and never renders a page;
-   - on a `text_images` profile, `_caption_pages()` turns each figure page into one caption and counts a failure in `images_skipped`. A caption page keeps `modality="image"` and its `image_ref`;
-   - `_chunk_pages()` splits every page with the product's chunking and its **chunk strategy**, so the list that reaches the writers holds one `FilePage` per record. `page_index` is kept, and `chunk_index` is numbered from `0` inside each page. Each record also carries `record_type` (`chunk`, `parent` or `child`) and, for a child, `parent_ref` = `<page_index>:<parent chunk_index>`. `_assign_image_chunk_indexes()` offsets each figure past the text chunks of its own page, so two records never share a Redis key. A blank page yields no chunk;
-   - `_embed_records()` fills one shared vector per record **once per tick**, before the writers run. `needs_vectors` is true when Qdrant is enabled, or when PostgreSQL stores embeddings;
+   - downloads the object to a `tempfile.NamedTemporaryFile`, then `page_yielder.iter_file_pages(..., render_pages=modality_mode == "text_images", layout=chunk_strategy in {"section", "layout"})` yields `FilePage(page_index, text, image_png)` rows (PyMuPDF for PDF, python-docx, csv, json, plain text/markdown fallback). The render branch makes one PNG of the whole PDF page at `render_dpi` (default `150`); a text format and a PDF page PyMuPDF cannot rasterise yield no image;
+   - on a `text_images` profile, `_page_image_records()` writes each PNG to `_pages/{file_key}/page-{page_index:05d}.png` in the source bucket and builds one record per page with `modality="image"`, `record_type="page"` and `image_ref = {page_index, bucket, key}`. The record keeps the page's extracted text, so the lexical and relational stores still search it. No chunking runs on that path. A page with no image keeps the ordinary text path, uses `text_embedding_model`, and counts in `pages_without_image`;
+   - `_chunk_pages(pages, size, overlap, chunk_strategy, chunk_config, similarities, contexts)` splits every page with the product's chunking, its **chunk strategy** and its `chunk_config`, so the list that reaches the writers holds one `FilePage` per record. `page_index` is kept, and `chunk_index` is numbered from `0` inside each page. Each record also carries `record_type` (`chunk`, `parent`, `child`, `window`, `sentence` or `page`) and, for a child or a sentence, `parent_ref` = `<page_index>:<parent chunk_index>`. `_assign_image_chunk_indexes()` offsets each page image past the text chunks of its own page, so two records never share a Redis key. A blank page yields no chunk;
+   - two strategies run a pass before the split: `context_aware` calls `_context_similarities()` for one embedding batch per page, and `contextual` calls `_chunk_contexts()` for one chat call per chunk;
+   - `_embed_records()` fills one shared vector per text record **once per tick**, before the writers run; `_embed_image_records()` does the same for a page-image record with `image_embedding_model`. `needs_vectors` is true when Qdrant is enabled, or when PostgreSQL stores embeddings;
    - fans out with `asyncio.gather(*[_fanout_to_destination(...) for dest in missing], return_exceptions=True)`, where each `_fanout_to_destination` offloads the synchronous writer via `asyncio.to_thread`;
    - updates the `KnowledgeProductFile` row: `destinations_synced` gains each destination that succeeded, plus `etag`, `size_bytes`, `content_hash`, `pages_indexed` and `last_synced_at`, and `status` becomes `synced` when every enabled destination holds the file, else `pending`. `pages_indexed` counts **source pages**, not chunks, so the UI `Pages` column keeps its meaning;
-   - returns `{"status", "files_processed", "files_added", "files_updated", "files_deleted", "files_unchanged", "pages_processed", "destinations_synced", "images_skipped"}`.
+   - returns `{"status", "files_processed", "files_added", "files_updated", "files_deleted", "files_unchanged", "pages_processed", "destinations_synced", "pages_without_image"}`.
 7. Per-destination writes (all synchronous, REST/driver level, no driver pooling):
    - `vector_qdrant` — reuses the tick's shared vector. It calls `QdrantVectorStore.ensure_collection(<the product's kp_<slug>_<id8> collection>, <the embedding length>, enable_sparse=False, hnsw_m=…, hnsw_ef_construct=…)`, then `upsert_batch` with one point per chunk carrying the fanout payload, whose `chunk_index` is the real chunk number. The dimension comes from the data. The writer refuses to recreate an existing collection whose dimension disagrees, because a recreate would delete every point. `hnsw_m` and `hnsw_ef_construct` are the only destination keys this branch reads.
    - `lexical_opensearch` — `PUT {index_name}` with `number_of_shards` / `number_of_replicas` / `refresh_interval` index settings. The BM25 k1 and k2 values are **not** applied to the mapping. The writer indexes one document per chunk. The document carries `file_key`, `page_index`, `chunk_index`, `content`/`text`, `source_id`, `source_locator`, `created_at`, `modality`, `sparse_model`, `bm25_k1` and `bm25_b`. Basic auth uses `opensearch_username` and `opensearch_password`.
@@ -509,30 +513,45 @@ Three behaviours are settled:
 2. **Store names stay per product.** A profile carries no store name at all. The copy assigns `kp_<slug>_<id8>` to every destination and overwrites any stored value. Two products over one profile therefore write to separate stores and keep separate ledgers.
 3. **`POST /api/knowledge-products/{id}/apply-profile` re-copies on demand.** The body may carry an `ingestion_profile_id`, and without it the product's stored link is used. A product with no link answers `422 PROFILE_REQUIRED`. The route compares the product's `pipeline_fingerprint` with the profile's. When the hash differs, every destination is purged and re-synced, because a chunking or modality change alters what is written. A change to one destination config alone purges that destination only. The route deletes the removed destination rows, updates the changed ones and inserts the new ones. It re-registers the poller and returns `{status, profile_id, profile_name, added, updated, removed, purged_files}`.
 
-The profile carries four modality columns: `modality_mode` (`text` or `text_images`, default `text`), `text_embedding_model` (one model for every destination), `caption_model` (nullable) and `image_min_pixels` (default `10000`).
+The profile carries the modality and chunking columns: `modality_mode` (`text` or `text_images`, default `text`), `text_embedding_model` (one model for every text record), `image_embedding_model` (the multimodal model, default `nvidia-embed-multimodal`), `chunk_strategy` (a native enum, default `recursive`) and `chunk_config` (the selected strategy's own settings, keyed by parameter name).
 
-| mode | what the fanout reads | vision model |
+| mode | what the fanout reads | embedding model |
 |---|---|---|
-| `text` | selectable text and tables only | none |
-| `text_images` | the same, plus one caption per embedded figure | `caption_model` |
+| `text` | selectable text and tables, cut into chunks | `text_embedding_model` |
+| `text_images` | one record per rendered page image, plus the page text | `image_embedding_model` |
 
 The vector dimension is **derived** from the embedding-model output, so no profile or destination field declares it. The fanout embeds each chunk once per tick and shares the vector with every vector destination.
 
-Profile CRUD rules: `name` is unique, and a duplicate answers `400`. `chunk_overlap` must stay below `chunk_size` on both `POST` and `PATCH`, and a violation answers `422 CHUNK_OVERLAP_TOO_LARGE`. A `text_images` profile without a caption model answers `422 CAPTION_MODEL_REQUIRED`. A supplied `destinations` list replaces the whole set. `DELETE` answers `409 PROFILE_IN_USE` with `product_count` while a product references the profile. Deleting is blocked on purpose, because the FK is `SET NULL`. A delete would leave the products with copied rows and no way to reach the profile again.
+The chunk strategy catalogue lives in `apps/api/routes/chunk_strategies.py`, and `GET /api/ingestion-profiles/chunk-strategies` serves it. The eight strategies:
+
+| UI label | stored value | settings (`profile` column or `chunk_config` key) |
+|---|---|---|
+| Recursive Chunking (default) | `recursive` | `chunk_size` 100–8000 default 1000, `chunk_overlap` 0–2000 default 120 |
+| Fixed-Size Chunking | `fixed` | the same two |
+| Structure-Aware / Document-Aware Chunking | `section` | the same two; a PDF uses the document's own layout blocks |
+| Semantic Chunking | `context_aware` | the same two, plus `semantic_threshold_type` (`standard_deviation` default, `percentile`, `interquartile`) and `semantic_threshold_amount` 0.5–3.0 default 1.0 |
+| Parent-Child / Hierarchical Chunking | `parent_child` | `chunk_size` (Parent Chunk Size), `chunk_overlap`, `child_chunk_size` 0–2000 default 0, `child_overlap` 0–500 default 0 |
+| Contextual Chunking | `contextual` | `chunk_size`, `chunk_overlap`, `context_model` (a chat model, required), `context_max_tokens` 50–500 default 100 |
+| Page-Level Chunking | `page_level` | `max_page_chars` 0–20000 default 0 |
+| Sentence-Window Chunking | `sentence_window` | `window_sentences` 1–10 default 2 |
+
+A `semantic_threshold_amount` outside the catalogue falls back to standard deviation 1.0. The retired values `sentence` and `layout` are no longer offered, but the API still accepts both, so a profile that stores one still reads, still ingests and still renders. A stored config is only checked when the caller sends one. A PATCH that changes the strategy and sends no `chunk_config` resets the config to the new strategy's defaults.
+
+Profile CRUD rules: `name` is unique, and a duplicate answers `400`. `chunk_overlap` must stay below `chunk_size` on both `POST` and `PATCH`, and a violation answers `422 CHUNK_OVERLAP_TOO_LARGE`. A supplied `chunk_config` that holds an unknown key, a value outside its range or a value outside a select's options answers `422 CHUNK_CONFIG_INVALID`. A `text_images` profile whose `image_embedding_model` is explicitly empty answers `422 IMAGE_EMBEDDING_MODEL_REQUIRED`; an absent field resolves to `MULTIMODAL_EMBEDDING_MODEL`. A supplied `destinations` list replaces the whole set. `DELETE` answers `409 PROFILE_IN_USE` with `product_count` while a product references the profile. Deleting is blocked on purpose, because the FK is `SET NULL`. A delete would leave the products with copied rows and no way to reach the profile again.
 
 The Knowledge Hub create/edit dialog no longer collects destination configuration. It asks for a name, a description, an **Ingestion Profile** select with a read-only summary, the sync mode and the MinIO sources. The schedule stays on the product. A product created before this feature has no profile and shows the `Legacy: inline config` badge. The product detail page shows `Profile: <name>`, `Chunk <size> / <overlap>`, `Chunking: <strategy>` and `Modality: Text + images` badges and an **Apply Profile** button.
 
-Chunking reads the profile through `_resolve_chunking(product)`: a product with no profile falls back to `1000 / 120`, and the overlap is clamped to `chunk_size - 1`. The strategy comes from `_resolve_chunk_strategy(product)`, which defaults to `recursive`. The modality comes from `_resolve_modality_mode(product)`. See §10.2 step 6 for where the split happens.
+Chunking reads the profile through `_resolve_chunking(product)`: a product with no profile falls back to `1000 / 120`, and the overlap is clamped to `chunk_size - 1`. The strategy comes from `_resolve_chunk_strategy(product)`, which defaults to `recursive`, and its settings from `_resolve_chunk_config(product)`. The modality comes from `_resolve_modality_mode(product)`, the text model from `_resolve_text_embedding_model(product)` and the image model from `_resolve_image_embedding_model(product)`, which falls back to `MULTIMODAL_EMBEDDING_MODEL`. See §10.2 step 6 for where the split happens.
 
 ### 10.4 Ingestion pipeline stages
 
 Every file runs six stages in one tick:
 
-1. **Text extraction** — `page_yielder.iter_file_pages()` reads PyMuPDF text for a PDF, python-docx for a DOCX, and csv, json or plain text directly. The fanout passes `render_pages=False`, so no page becomes a PNG. `FilePage.__post_init__` strips a NUL byte (`0x00`) from the page text, because PostgreSQL rejects a string that holds one.
-2. **Figure extraction** — with `include_figures=True`, each embedded PDF image XObject becomes a `FilePage` with `modality="image"` and an `image_ref` of `{page_index, image_index}`. A figure below `image_min_pixels` is dropped here, so a logo or a rule never becomes a chunk.
-3. **Captioning** — on a `text_images` profile one vision call sends the figure to `caption_model`, and the reply replaces the image bytes as the page text. The stack uses vision captions and **does not implement OCR**. A scanned page has no text layer, so `text` mode yields no chunk for it and `text_images` mode captions its page image. A failed caption drops that figure and counts in `images_skipped`.
-4. **Chunking** — `_chunk_pages()` splits every page with `chunk_size`, `chunk_overlap` and the profile's `chunk_strategy`. Each figure page then gets a `chunk_index` above the text chunks of its own page. `context_aware` runs here too: one batch embedding call per page finds the topic shifts, and the whole split runs in a worker thread.
-5. **One shared embedding pass** — `_embed_records()` calls the embedding client **once per chunk per tick** and stores the vector on the `ChunkRecord`. The Qdrant and PostgreSQL writers reuse that vector, so no chunk is embedded twice. The client's batch method, `embed_passages`, sends **at most 256 inputs per request** (`_MAX_EMBED_BATCH`), in order, because NVIDIA NIM refuses more; hitting the cap caps that one call and does not trigger the FastEmbed fallback.
+1. **Text extraction** — `page_yielder.iter_file_pages()` reads PyMuPDF text for a PDF, python-docx for a DOCX, and csv, json or plain text directly. The fanout passes `layout=True` only for the `section` strategy, which reads the document's own block boundaries, and `render_pages=False` for a `text` profile. `FilePage.__post_init__` strips a NUL byte (`0x00`) from the page text, because PostgreSQL rejects a string that holds one.
+2. **Page rendering** — on a `text_images` profile the fanout passes `render_pages=True`, and `render_dpi` keeps its default of `150`, so `get_pixmap` makes one PNG of the whole page. A PDF page that PyMuPDF cannot rasterise, and every text format, yields `image_png=None`.
+3. **Page records** — `_page_image_records()` writes each PNG to `_pages/{file_key}/page-{page_index:05d}.png` in the source bucket and builds one record per page: `modality="image"`, `record_type="page"`, the page's extracted text as `content` and `text`, and `image_ref = {page_index, bucket, key}`. Chunking does not run on this path. A page with no image takes the ordinary text path instead and counts in `pages_without_image`. The stack **does not implement OCR**: a scanned page has no text layer, so a store that searches text finds nothing for it.
+4. **Chunking** — `_chunk_pages()` splits every page with `chunk_size`, `chunk_overlap`, the profile's `chunk_strategy` and its `chunk_config`. Each page image then gets a `chunk_index` above the text chunks of its own page. Two strategies run a pass first, in a worker thread: `context_aware` makes one batch embedding call per page to find the topic shifts, and `contextual` asks a chat model for one context sentence per chunk.
+5. **One shared embedding pass** — `_embed_records()` calls the embedding client **once per text chunk per tick** and stores the vector on the `ChunkRecord`; `_embed_image_records()` does the same for a page-image record with `image_embedding_model`. The Qdrant and PostgreSQL writers reuse that vector, so no record is embedded twice. The client's batch method, `embed_passages`, sends **at most 256 inputs per request** (`_MAX_EMBED_BATCH`), in order, because NVIDIA NIM refuses more; hitting the cap caps that one call and does not trigger the FastEmbed fallback.
 6. **Fanout** — the four writers run in parallel through `asyncio.gather`, and each one reads the shared record for its text, payload and vector.
 
 ---
@@ -578,7 +597,7 @@ Shared volumes: `file_storage` (`api`, `worker`, `pathway-worker` mount it at `/
 ## 13. Verification
 - E2E: `backend/scripts/e2e_knowledge_fanout.py` (two products over one bucket, store-name isolation, a supplied store name overwritten by the derived one, add/replace/delete propagation to all four destinations, `POST /sync` returns 404) and `backend/scripts/e2e_knowledge_pause.py` (pause-all, resume-all, per-destination pause).
 - E2E profiles: `backend/scripts/e2e_ingestion_profiles.py` runs against the live API and the four stores. It proves that a profile carries no store name while the product copy gets `kp_*`. It also proves that one source page becomes many documents, and that a larger `chunk_size` yields one document. A config change through `apply-profile` moves a store, and `409 PROFILE_IN_USE` guards a delete.
-- E2E modality: `backend/scripts/e2e_ingestion_modality.py --source-id <uuid>` proves several facts. The field surface holds no connection or dimension key. The derived dimension reaches Qdrant. `text` mode stores no image document, and `text_images` stores one caption in every store. A `text_images` profile without a caption model answers `422 CAPTION_MODEL_REQUIRED`.
-- E2E chunk strategies: `backend/scripts/e2e_chunk_strategies.py --source-id <uuid>` moves one product through `section`, `parent_child`, `fixed` and `context_aware`. After each change it reads all four stores and proves the record count matches the strategy, that every child names a parent stored beside it, that a strategy change leaves no stale `record_type` behind, and that the stores agree on the count. It also proves that an unknown strategy name is a `422`.
+- E2E modality: `backend/scripts/e2e_ingestion_modality.py --source-id <uuid>` proves several facts. The field surface holds no connection or dimension key. The derived dimension reaches Qdrant. `text` mode stores no image document, and `text_images` stores one page image in the source bucket under `_pages/` and one record per page in every store, whose payload holds `modality="image"` and non-empty `text`. A `text_images` profile with an explicitly empty `image_embedding_model` answers `422 IMAGE_EMBEDDING_MODEL_REQUIRED`.
+- E2E chunk strategies: `backend/scripts/e2e_chunk_strategies.py --source-id <uuid>` moves one product through `section`, `parent_child`, `fixed`, `context_aware`, `page_level` and `sentence_window`. After each change it reads all four stores and proves the record count matches the strategy, that every child names a parent stored beside it and every sentence names a window stored beside it, that a strategy change leaves no stale `record_type` behind, and that the stores agree on the count. It also proves that an unknown strategy name is a `422`.
 - Legacy cleanup: `backend/scripts/purge_neo4j_legacy.py` deletes the `Chunk`/`Document`/`Entity` nodes written before the graph destination was removed.
-- Tests: `backend/tests/test_page_yielder.py`, `test_page_yielder_figures.py`, `test_fanout_payload.py`, `test_knowledge_destination_schemas.py`, `test_knowledge_product_files.py`, `test_connector_config_validation.py`, `test_ingestion_profile_chunking.py`, `test_ingestion_modality_resolvers.py`, `test_litellm_model_kinds.py`, `test_no_sqlite_fallback.py` and `test_source_webscrape.py`. Chunking covers `_resolve_chunking` and `_resolve_chunk_strategy` with no profile and with one, an overlap above the size, `_chunk_pages` over one long page, a blank page and three pages, and every one of the seven strategies, including that a child record's `parent_ref` resolves to a `parent` record. Run with `uv run pytest tests -q` from `rag-ingestion-manager/backend`.
+- Tests: `backend/tests/test_page_yielder.py`, `test_embedding_image_failure.py`, `test_fanout_payload.py`, `test_knowledge_destination_schemas.py`, `test_knowledge_product_files.py`, `test_connector_config_validation.py`, `test_ingestion_profile_chunking.py`, `test_ingestion_modality_resolvers.py`, `test_litellm_model_kinds.py`, `test_no_sqlite_fallback.py` and `test_source_webscrape.py`. Chunking covers `_resolve_chunking` and `_resolve_chunk_strategy` with no profile and with one, an overlap above the size, `_chunk_pages` over one long page, a blank page and three pages, and every one of the eight strategies, including that a child record's `parent_ref` resolves to a `parent` record. Run with `uv run pytest tests -q` from `rag-ingestion-manager/backend`.

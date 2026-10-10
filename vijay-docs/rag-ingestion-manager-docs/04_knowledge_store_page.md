@@ -1,6 +1,6 @@
 # 04 — Knowledge Hub Page (Knowledge Products, Fanout & Multi-Sink Visualizer)
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-09
 
 ## 1. Executive Summary & Page Purpose
 
@@ -22,10 +22,13 @@ dependency, a no-op unless `API_KEY` is configured).
 Two behaviour notes the UI labels do not make obvious:
 
 - Fanout granularity is **one record per text chunk**. `universal_fanout.py` calls `iter_file_pages()`, then
-  splits every page with `ingestion_service/utils/text_splitter.py:chunk_text()` using the product's
-  `chunk_size` and `chunk_overlap`. A product with no Ingestion Profile falls back to `1000 / 120`. `page_index`
-  keeps the source page and `chunk_index` numbers the chunks from `0` inside it. In `text_images` mode one more
-  record appears per figure caption, tagged `modality: "image"`.
+  splits every page with `ingestion_service/utils/text_splitter.py:chunk_text()` using the profile's
+  `chunk_strategy`, `chunk_size`, `chunk_overlap` and its `chunk_config`. A product with no Ingestion Profile
+  falls back to `recursive` at `1000 / 120`. `page_index` keeps the source page and `chunk_index` numbers the
+  chunks from `0` inside it. A `text_images` profile skips chunking: one record appears per document page,
+  tagged `modality: "image"` and `record_type: "page"`, and it names the stored page image in `image_ref`. The
+  vector comes from `EmbeddingClient.embed_image_png`, which raises when the model cannot answer, so the file
+  fails on its own and no wrong-dimension vector reaches the collection.
 - The pages are a control plane. They never talk to Qdrant/OpenSearch/Postgres/Redis directly. Every action is an
   HTTP call to the ingestion API or a Server-Sent Events stream from it.
 
@@ -47,7 +50,8 @@ changes (see §7).
               |  - list objects with etag + size               |
               |  - download only when a destination needs it   |
               |  - iter_file_pages() -> pages                  |
-              |  - _caption_pages() -> a caption per figure    |
+              |  - _page_image_records() -> 1 PNG + 1 record   |
+              |    per page (text_images mode only)            |
               |  - _chunk_pages() -> one record per chunk      |
               +----------------------+------------------------+
                                      |  asyncio.gather(return_exceptions=True)
@@ -84,47 +88,51 @@ them.
 ### Sink details
 
 1. **Dense Vector Store (`vector_qdrant`)** — dense HNSW similarity search.
-   - The collection is created with `enable_sparse=False` and a dimension taken from the tick's embedding batch.
-     No config value is read, because the `vector_size` field is gone.
+   - The collection is created with `enable_sparse=False` and a dimension taken from the embedding of the first
+     record in the batch. No config value is read, because the `vector_size` field is gone.
    - `hnsw_m` and `hnsw_ef_construct` from the destination config are applied at creation.
    - The writer refuses to recreate an existing collection whose dimension disagrees. It raises instead, because
      a recreate would delete every point.
-   - One point per chunk, point id = random UUID, payload = the fanout payload with the real `chunk_index`, and
-     the dense vector is the one shared by the whole tick.
+   - One point per record, point id = random UUID, payload = the fanout payload with the real `chunk_index`, and
+     the dense vector is that record's own embedding: the text model for a text record, the profile's
+     `image_embedding_model` for a page record.
    - Purge matches on both `file_key` **and** `source_id`, so two sources holding the same key cannot purge each
      other.
 2. **Sparse Vector Store (`lexical_opensearch`)** — BM25 document store.
    - The index is `PUT` with `number_of_shards` (default `1`), `number_of_replicas` (default `0`) and
      `refresh_interval` (default `"1s"`). No custom analyzer is created; `bm25_k1`, `bm25_b` and `sparse_model`
      are document metadata only.
-   - One document per chunk with `file_key`, `page_index`, `chunk_index`, `content`/`text`, `source_id`,
-     `source_locator`, `created_at`, `sparse_model`, `bm25_k1` and `bm25_b`.
+   - One document per record, with `file_key`, `page_index`, `chunk_index`, `content`/`text`, `source_id`,
+     `source_locator`, `created_at`, `modality`, `image_ref`, `record_type`, `parent_ref`, `sparse_model`,
+     `bm25_k1` and `bm25_b`.
    - Purge uses `_delete_by_query` with `file_key.keyword`/`match_phrase` **and** `source_id.keyword`. The
      `.keyword` subfield is required: both fields are dynamically mapped as `text`, and a term query against the
      analysed field matches nothing.
 3. **Relational Chunk Store (`relational_pgvector`)** — one table per product.
    - The product's schema is created with `CREATE SCHEMA IF NOT EXISTS`, and the table is `chunks` inside it:
      `id SERIAL PRIMARY KEY, file_key TEXT, source_id TEXT, page_index INT, chunk_index INT NOT NULL DEFAULT 0,
-     content TEXT, modality TEXT, embedding vector(<derived>)` when `store_embeddings` is true, plus
-     `created_at TIMESTAMPTZ DEFAULT NOW()`. One row per chunk. The `image_ref` value is not stored here.
+     modality TEXT NOT NULL DEFAULT 'text', record_type TEXT NOT NULL DEFAULT 'chunk', parent_ref TEXT,
+     content TEXT, embedding vector(<derived>)` when `store_embeddings` is true, plus
+     `created_at TIMESTAMPTZ DEFAULT NOW()`. One row per record: a chunk, or a parent, child, window, sentence
+     or page record. The `image_ref` value is not stored here.
    - The vector dimension comes from the first record that carries a vector, so no field declares it.
    - The writer creates `USING hnsw (embedding vector_cosine_ops)`. pgvector caps an HNSW index at 2000
      dimensions. Above that the writer skips the index with a warning, and a search becomes an exact scan. The
      model in this deployment returns 2048 dimensions, so the skip is the normal path.
    - `CREATE EXTENSION IF NOT EXISTS vector` runs before the table, so the destination works on a fresh database.
      The image must ship the extension; `docker-compose.yaml` uses `pgvector/pgvector:pg16`.
-   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS source_id` and `ALTER TABLE ... ADD COLUMN IF NOT EXISTS
-     chunk_index INT NOT NULL DEFAULT 0`, plus `CREATE INDEX IF NOT EXISTS`, upgrade a table made
-     by an older version.
+   - `ALTER TABLE ... ADD COLUMN IF NOT EXISTS source_id`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS
+     chunk_index INT NOT NULL DEFAULT 0`, and the same for `modality`, `record_type` and `parent_ref`, plus
+     `CREATE INDEX IF NOT EXISTS`, upgrade a table made by an older version.
    - Purge and inspect both use the same connection resolver as the writer (`pg_connection_urls`,
      `connect_pg`), which drops non-Postgres candidates. Without that a SQLite URL would be handed to
      psycopg.
 4. **Cache Store (`cache_redisvl`)** — per-chunk Redis JSON cache.
    - Chunk key `"<index_prefix>:<source_id>:<file_key>:<page_index>:<chunk_index>"`, value JSON
-     `{content, file_key, source_id, page_index, chunk_index, modality, image_ref, similarity_threshold,
-     embedding_model}`, expiry `ttl_seconds` (default `86400`). Without the chunk part every chunk of one page
-     would write the same key and only the last would survive. The caption text is the `content` value, so the
-     inspect route can read it back.
+     `{content, file_key, source_id, page_index, chunk_index, modality, image_ref, record_type, parent_ref,
+     similarity_threshold, embedding_model}`, expiry `ttl_seconds` (default `86400`). Without the chunk part every
+     record of one page would write the same key and only the last would survive. The record text is the `content`
+     value, so the inspect route can read it back.
    - With `parent_child_mapping` it also `SADD`s the key into `"<index_prefix>:<source_id>:<file_key>:children"`
      and writes `parent_key` into the payload.
    - With `raptor_summaries` it writes a 3-bullet LiteLLM summary to `"<prefix>:<source_id>:<file_key>:summary"`.
@@ -281,8 +289,8 @@ Server-Sent Events.
 |---|---|
 | `tick_start` | — |
 | `file_start` | `source_id`, `file_key`, `change` (`added` \| `updated` \| `resynced`) |
+| `page_image_missing` | `file_key`, `pages` |
 | `destination_start` | `file_key`, `destination_type` |
-| `image_caption` | `file_key`, `images_skipped` |
 | `destination_done` | `file_key`, `destination_type`, `pages` |
 | `destination_failed` | `file_key`, `destination_type`, `error` |
 | `file_synced` | `source_id`, `file_key`, `pages` |
@@ -328,13 +336,14 @@ Server-side schedule rules (`_apply_schedule`):
 - `scheduled` with neither, on a product that has no stored interval, raises `422 INTERVAL_REQUIRED`.
 - `scheduled` with neither, on a product that already has one, keeps the stored value.
 
-`DestinationConfigFields.tsx` is generic over `option.fields` and needs no change when a destination is added.
-It renders `field.group` as uppercase headers, hides `advanced: true` fields behind a per-destination
+`ConfigFields.tsx` is generic over a server-supplied field list and needs no change when a destination or a chunk
+strategy adds a field. It renders `field.group` as uppercase headers, hides `advanced: true` fields behind a
 "Show advanced settings" toggle, and maps `string`/`number`/`password`/`boolean`/`select`/`model` to inputs.
-`model` fields list the LiteLLM models filtered by `field.model_kind`, fall back to the full list when the filter
-is empty, and degrade to a free-text input when no models load. **The Knowledge Hub dialog no longer renders
-this component.** The Ingestion Profiles editor does (document 06), and that editor is what loads the LiteLLM
-model lists.
+`model` fields list the LiteLLM models filtered by `field.model_kind`, match only that kind, and degrade to a
+free-text input when nothing matches. `DestinationConfigFields.tsx` is a thin wrapper over it.
+**The Knowledge Hub dialog no longer renders this component.** The Ingestion Profiles editor does (document 06),
+and that editor is what loads the LiteLLM model lists. The editor also renders its chunk settings through
+`ConfigFields`, because the strategy spec uses the same field shape.
 
 `field.min` / `field.max` reach a number input as its `min` and `max` attributes. A cleared number field stays
 empty, so it never stores a silent `0`. `merge_destination_config()` does not clamp a value.
@@ -380,10 +389,11 @@ Every default is the optimal starting value for this deployment, and each hint s
 unassigned. `summary_model` was `gpt-4o-mini`, which the proxy does not serve, so it now comes from
 `SUMMARY_MODEL` and defaults to the small fast chat model the proxy does serve.
 
-A numeric destination field renders with `step="any"`. Without it the browser applies `step="1"` and refuses a
-fractional value, so `bm25_k1` 1.2, `bm25_b` 0.75 and `similarity_threshold` 0.85 all blocked the submit with
-"Please enter a valid value. The two nearest valid values are 1 and 2." The two chunking inputs stay
-integer-only, because the API declares them as integers.
+A numeric field renders with `step="any"`. Without it the browser applies `step="1"` and refuses a fractional
+value, so `bm25_k1` 1.2, `bm25_b` 0.75 and `similarity_threshold` 0.85 all blocked the submit with
+"Please enter a valid value. The two nearest valid values are 1 and 2." The same rule covers a fractional chunk
+setting such as `semantic_threshold_amount` 1.5, because one `ConfigFields` renders both specs. `chunk_size` and
+`chunk_overlap` stay whole numbers by their spec ranges, not by the input's `step`.
 
 ### LiteLLM model picker
 
@@ -413,16 +423,17 @@ there is nothing left to guess.
 `sparse` is the one kind the proxy cannot report. The sparse model is a fastembed model (`Qdrant/bm25`), not a
 proxy entry, so it always comes from `SPARSE_EMBEDDING_MODEL` and is merged into every response.
 
-The proxy result is cached for 60 s. The Ingestion Profiles editor renders one model field per destination, so a
-single page mount asks several times and each ask would otherwise be a fresh 45 KB round trip.
+The proxy result is cached for 60 s, because the profile editor and the product page each ask for the same 45 KB
+list on mount, and an uncached answer would repeat that round trip on every visit.
 
 When the proxy is unreachable the endpoint answers `source: "fallback"` with the models the environment names
 (`EMBEDDING_MODEL`, `SUMMARY_MODEL`, `CAPTION_MODEL`, `SPARSE_EMBEDDING_MODEL`) and a warning the Ingestion
 Profiles editor shows in amber. Those entries are classified by the kind each setting implies, not by inspecting
 the name.
 
-The response also carries `default_embedding_model` and `default_caption_model`. The Ingestion Profile editor
-uses them to preselect the deployment's models instead of the first proxy entry.
+The response also carries `default_embedding_model` and `default_image_embedding_model`. The Ingestion Profile
+editor uses the first to preselect the text embedding model on the Chunking path, and the second to preselect
+the multimodal model on the Page Images path, instead of the first proxy entry.
 
 **A caller that asks for one kind gets only that kind.** When a kind matches nothing the list is empty. It used
 to fall back to the whole list, which is how rerank and embedding models reached chat dropdowns in the first
@@ -482,12 +493,13 @@ With `destination_types=None` it purges every enabled destination.
 ### Apply Profile
 
 `POST /api/knowledge-products/{id}/apply-profile` copies the linked Ingestion Profile again. The product stores
-a `pipeline_fingerprint` at creation and at apply. The hash covers the chunk size, the overlap, the modality
-mode, the embedding model, the caption model and the image threshold.
+a `pipeline_fingerprint` at creation and at apply. The hash covers the chunk size, the overlap, the chunk
+strategy, the `chunk_config` (keys sorted), the modality mode, the text embedding model and the
+`image_embedding_model`.
 
 | what changed | what the route purges |
 |---|---|
-| the fingerprint (chunking, modality, embedding model, caption model, image threshold) | every destination |
+| the fingerprint (chunking, modality, both embedding models) | every destination |
 | one destination config only | that destination |
 
 The route then re-registers the poller, which fires one sync. So a pipeline change writes every file again.
@@ -519,26 +531,30 @@ A purge that fails is swallowed, because all four purgers catch their own errors
 | `source_id` | UUID of the linked `Source` |
 | `source_locator` / `file_key` | object key, e.g. `resumes/resume_alex.pdf` |
 | `file_name` / `original_name` / `title` | basename of the key |
-| `page_index` / `chunk_index` | the source page, and the chunk number inside that page from `0` |
-| `modality` | `"text"` for a text chunk, `"image"` for a figure caption |
-| `image_ref` | `{page_index, image_index}` on a caption, else `null` |
+| `page_index` / `chunk_index` | the source page, and the record number inside that page from `0` |
+| `modality` | `"text"` for a text record, `"image"` for a page record |
+| `image_ref` | `{page_index, bucket, key}` on a page record, else `null` |
+| `record_type` | `"chunk"`, `"parent"`, `"child"`, `"window"`, `"sentence"` or `"page"` |
+| `parent_ref` | `"<page_index>:<parent chunk_index>"` when the record has a parent, else `null` |
 | `type` | `"text"` |
-| `content` / `text` | stripped chunk text |
+| `content` / `text` | stripped record text |
 | `knowledge_product_id` | owning product UUID |
 | `created_at` | UTC ISO timestamp |
 
 Per-sink projection: **Qdrant** the full payload plus the embedding; **OpenSearch** `file_key`, `page_index`,
-`content`, `text`, `source_id`, `source_locator`, `created_at` plus `sparse_model`, `bm25_k1`, `bm25_b`;
-**PostgreSQL** `file_key`, `source_id`, `page_index`, `content` (+ `embedding`); **Redis** the JSON value plus the
-`children` set and the optional `summary`.
+`chunk_index`, `content`, `text`, `source_id`, `source_locator`, `created_at`, `modality`, `image_ref`,
+`record_type`, `parent_ref` plus `sparse_model`, `bm25_k1`, `bm25_b`; **PostgreSQL** `file_key`, `source_id`,
+`page_index`, `chunk_index`, `content`, `modality`, `record_type`, `parent_ref` (+ `embedding`); **Redis** the
+JSON value plus the `children` set, the optional `parent_key` and the optional `summary`.
 
 ### Return value
 
 `execute_universal_fanout_sync()` returns `{status, files_processed, files_added, files_updated, files_deleted,
-files_unchanged, pages_processed, destinations_synced}`. With no linked sources it returns the same shape with
-zeros and `message: "No linked MinIO source buckets to sync."`; with no enabled destination, the same with
-`message: "No destination is enabled."`. The summary also carries `images_skipped`, the number of figures whose
-caption failed. Such a figure is dropped and the text of the file still ingests.
+files_unchanged, pages_processed, pages_without_image, destinations_synced}`. With no linked sources it returns
+the same shape with zeros and `message: "No linked MinIO source buckets to sync."`; with no enabled destination,
+the same with `message: "No destination is enabled."`. `pages_without_image` counts the pages of a `text_images`
+sync that rendered no image and took the text path instead. Every writer skips a record whose text is empty, so a
+scanned page that carries no extracted text writes no destination row.
 
 ---
 
@@ -592,10 +608,10 @@ syntactically valid but unreachable sink.
 
 | destination_type | Source query | Payload |
 |---|---|---|
-| `vector_qdrant` | `GET /collections/{coll}`; `POST .../points/scroll` `{limit: 50, with_payload: true, with_vector: true}` | `collection_name`, `file_key`, `total_points`, `status`, `points[] = {id, x, y, z, payload, vector_len}`; `x/y/z` are sums of `vec[:10]`/`[10:20]`/`[20:30]`; `payload` carries `page_index`, `chunk_index`, `modality` and `image_ref` |
-| `lexical_opensearch` | `POST {url}/{index}/_search` `{size: 200, query: {match_all: {}}}` | `index_name`, `file_key`, `total_docs`, `terms[]` (top 25 from words > 3 chars), `documents[] = {id, file_key, page_index, chunk_index, content, modality, score}` |
-| `relational_pgvector` | `SELECT id, file_key, page_index, chunk_index, content, modality, created_at FROM {schema}.chunks ORDER BY id DESC LIMIT 50` + `count(*)` | `table_name` (qualified), `schema_name`, `file_key`, `total_rows`, `rows[]` (each row carries `chunk_index` and `modality`) |
-| `cache_redisvl` | `KEYS {prefix}:*`, first 200 keys with `TTL`/`TYPE`, `INFO memory` | `prefix`, `file_key`, `total_cached_keys`, `used_memory_human`, `keys[] = {key, ttl, type, value}`; the cached JSON value carries `modality` and `image_ref` |
+| `vector_qdrant` | `GET /collections/{coll}`; `POST .../points/scroll` `{limit: 50, with_payload: true, with_vector: true}` | `collection_name`, `file_key`, `total_points`, `status`, `points[] = {id, x, y, z, payload, vector_len}`; `x/y/z` are sums of `vec[:10]`/`[10:20]`/`[20:30]`; `payload` is the full fanout payload, so it carries `page_index`, `chunk_index`, `modality`, `image_ref`, `record_type` and `parent_ref` |
+| `lexical_opensearch` | `POST {url}/{index}/_search` `{size: 200, query: {match_all: {}}}` | `index_name`, `file_key`, `total_docs`, `terms[]` (top 25 from words > 3 chars), `documents[] = {id, file_key, page_index, chunk_index, content, modality, record_type, parent_ref, image_ref, score}` |
+| `relational_pgvector` | `SELECT id, file_key, page_index, chunk_index, modality, record_type, parent_ref, content, created_at FROM {schema}.chunks ORDER BY id DESC LIMIT 50` + `count(*)` | `table_name` (qualified), `schema_name`, `file_key`, `total_rows`, `rows[]` (each row carries `chunk_index`, `modality`, `record_type` and `parent_ref`) |
+| `cache_redisvl` | `KEYS {prefix}:*`, first 200 keys with `TTL`/`TYPE`, `INFO memory` | `prefix`, `file_key`, `total_cached_keys`, `used_memory_human`, `keys[] = {key, ttl, type, value}`; the cached JSON value carries `modality`, `image_ref`, `record_type` and `parent_ref` |
 
 The optional `file_key` query parameter scopes a read to one file and lifts the sample cap, so every count
 describes that file. The Qdrant scroll then filters on `file_key`, the OpenSearch search term-matches
@@ -606,8 +622,8 @@ store. A verification script needs this: the cap can hide part of one file's rec
 The Postgres branch uses the qualified `schema.chunks` name and the same connection resolver as the writer, so
 inspect reads the store the fanout wrote. The fake `cache_hit_rate: 0.88` field was removed; the Redis panel now
 shows the count of keys with a TTL, derived from the returned keys. Every store inspector returns `modality`, so
-a user can tell a caption from a text chunk. It also returns `record_type` and `parent_ref`, so a parent or a
-child chunk of the `parent_child` strategy is distinguishable from a plain chunk. The lexical list and the
+a user can tell a page record from a text record. It also returns `record_type` and `parent_ref`, so a parent, a
+child, a window or a sentence record is distinguishable from a plain chunk. The lexical list and the
 Qdrant point panel tag a record that is not a plain chunk; the relational row panel and the Redis key panel show
 the same field.
 
@@ -627,7 +643,8 @@ OpenSearch up to 1000 and Postgres up to 1000 rows for that file.
 | `hooks/useProductEvents.ts` | SSE client over `fetch` + `ReadableStream` |
 | `components/visualizers/index.ts` | `VISUALIZERS` registry and `visualizerFor(type)` |
 | `components/visualizers/DestinationVisualizerModal.tsx` | tabbed inspector, tabs derived from the registry |
-| `components/DestinationConfigFields.tsx` | generic field renderer, driven by `option.fields` |
+| `components/ConfigFields.tsx` | generic field renderer, driven by a server-supplied field list (destination or chunk strategy) |
+| `components/DestinationConfigFields.tsx` | thin wrapper over `ConfigFields` for one destination's `option.fields` |
 
 `components/AppLayout.tsx` matches `/knowledge-store/:id` and renders `KnowledgeProductPage` with the id as a
 prop, following the same `PersistentPage` + `useRouteParams` pattern as `/sources/:id`. The route is deep-linkable.
@@ -648,12 +665,21 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
   `knowledge_product_files`. `pipelines.knowledge_product_id` is the renamed foreign key.
 - `knowledge_products` carries `pipeline_fingerprint`, a hash of the chunking and modality settings.
   `apply-profile` rebuilds every destination when that hash changes.
-- Alembic head: `014_missing_model_columns` (`down_revision = 013_assistant_reasoning_patterns`). The chain runs
-  `001`…`010`, then `011_assistant_pipeline`, `012_pipeline_model_settings`, `013_assistant_reasoning_patterns`
-  and `014_missing_model_columns`. Migration `010` renamed the three tables and the index names, renamed the
-  foreign key columns, added the three schedule columns, created `knowledge_product_files`, deleted the
-  `graph_neo4j` destination rows and deleted `indexed_files` rows whose `pipeline_id IS NULL` (the fanout's old
-  state). Migration `014` added the six columns that existed only in the models.
+- Alembic head: `018_pipeline_rerank_model` (`down_revision = 017_pipeline_retrieval_settings`). The chain runs
+  `001`…`010`, then `011_assistant_pipeline`, `012_pipeline_model_settings`, `013_assistant_reasoning_patterns`,
+  `014_missing_model_columns`, `015_source_webscrape`, `016_chunk_config_page_images`,
+  `017_pipeline_retrieval_settings` and
+  `018_pipeline_rerank_model`. Migration `010` renamed
+  the three tables and the index names, renamed the foreign key columns, added the three schedule columns,
+  created `knowledge_product_files`, deleted the `graph_neo4j` destination rows and deleted `indexed_files` rows
+  whose `pipeline_id IS NULL` (the fanout's old state). Migration `014` added the six columns that existed only
+  in the models. Migration `016` adds `chunk_config` and `image_embedding_model` to `ingestion_profiles`, removes
+  the two columns the old image path used, and adds the `contextual`, `page_level` and `sentence_window` labels to
+  the native `chunk_strategy` enum type. It is PostgreSQL only, because SQLite needs no enum. Migration `017` adds
+  `pipelines.retrieve_limit`, `pipelines.rerank_enabled` and `pipelines.rerank_top_k`, the retrieval settings an
+  assistant reads on every turn; SQLite is patched by `_ensure_sqlite_columns`. Migration `018` adds
+  `pipelines.rerank_model` (VARCHAR(128), nullable), the reranker a pipeline pins; a null means the deployment's
+  `settings.reranker_model` applies. It is PostgreSQL only; SQLite is patched by `_ensure_sqlite_columns`.
 - **There is one database: PostgreSQL.** The automatic SQLite fallback in `init_db` is removed, and an
   unreachable database stops the service. If `DATABASE_URL` names SQLite on purpose, `init_db()` calls
   `_ensure_sqlite_renames(sqlite_path)` **before** `Base.metadata.create_all` — otherwise create_all makes an
@@ -675,9 +701,9 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
 - `backend/tests/test_knowledge_product_files.py` — `resolved_interval_seconds` for live, seconds, minutes, the
   default and the five-second floor; `_apply_schedule` for live clearing both intervals, seconds and minutes
   clearing each other, the `INTERVAL_REQUIRED` error, and keeping a stored interval.
-- `backend/tests/test_page_yielder_figures.py` — a PDF with one embedded figure yields a text page and one
-  `modality == "image"` page with a JPEG payload. `include_figures=False` yields one page. A high
-  `image_min_pixels` filters the figure out.
+- `backend/tests/test_page_yielder.py` — plain text, JSON and CSV yield one page each, a NUL byte is removed
+  from the page text, `render_pages` gives one PNG per page with the text beside it, `render_pages=False` leaves
+  the text alone, and `render_dpi` decides the raster size.
 - `backend/scripts/e2e_knowledge_fanout.py` — end-to-end CRUD against the live stores: two products over one
   bucket, differing store names, a supplied store name overwritten by the derived one, `POST /sync` returns 404,
   add/replace/delete propagate to all four sinks, and each product keeps its own copy.
@@ -688,7 +714,13 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
 - `backend/scripts/e2e_ingestion_profiles.py` — the store-isolation proof: a profile carries no store name, the
   product copy gets `kp_*`, and a config change through `apply-profile` moves a store.
 - `backend/scripts/e2e_ingestion_modality.py` — the modality proof: the env-only field surface, the derived
-  dimension, a `text` sync that stores no image document, and `text_images` captions present in every store.
+  dimension, a `text` sync that stores no record tagged as an image, and a `text_images` sync that stores one PNG
+  per document page under `_pages/` and one record per page with `modality == "image"`, `record_type == "page"`
+  and the page text present. The four destinations agree on the page count, and an empty `image_embedding_model`
+  is rejected at save time.
+- `backend/tests/test_fanout_payload.py` — a plain record builds the retrieval contract with `modality == "text"`
+  and a null `image_ref`; a page record carries `modality == "image"`, `record_type == "page"`, a non-empty
+  `content` and `text`, an `image_ref` key under `_pages/`, and `type == "text"`.
 
 Run them with:
 

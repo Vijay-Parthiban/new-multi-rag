@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.shared.db.models import DEFAULT_IMAGE_MIN_PIXELS
-
 logger = logging.getLogger(__name__)
 
 
@@ -15,8 +13,8 @@ logger = logging.getLogger(__name__)
 class FilePage:
     page_index: int
     text: str
-    # A rendered page PNG on the legacy Pipeline path, or a downscaled JPEG of one
-    # embedded figure when the fanout asks for figures.
+    # A rendered PNG of the whole page: what the text_images modality embeds, and
+    # what the legacy Pipeline path stores. None for every text format.
     image_png: bytes | None = None
     chunk_index: int = 0
     modality: str = "text"
@@ -41,18 +39,18 @@ def iter_file_pages(
     original_name: str,
     *,
     render_pages: bool = True,
-    include_figures: bool = False,
+    render_dpi: int = 150,
     layout: bool = False,
-    image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
 ) -> Iterator[FilePage]:
     """Yield one page at a time to limit RAM (PDF via PyMuPDF, structured formats via parsers).
 
-    ``render_pages``, ``include_figures`` and ``layout`` apply to PDFs only.
+    ``render_pages``, ``render_dpi`` and ``layout`` apply to PDFs only.
     ``render_pages`` is the Pipeline behaviour and stays the default, so the
-    existing callers do not change. The fanout passes ``render_pages=False,
-    include_figures=True``: it captions embedded figures and never needs a
-    whole-page raster. It adds ``layout=True`` for the ``layout`` chunk strategy,
-    which needs the document's own block boundaries instead of its text stream.
+    existing callers do not change. It renders one PNG of the whole page, which is
+    what the ``text_images`` modality embeds; a caller that only needs text passes
+    ``render_pages=False`` and reads rather less memory per page. It adds
+    ``layout=True`` for the structure-aware chunk strategy, which needs the
+    document's own block boundaries instead of its text stream.
     A DOCX already arrives as blank-line separated paragraphs, so that format and
     the plain-text formats need no flag.
     """
@@ -63,9 +61,8 @@ def iter_file_pages(
         yield from _iter_pdf_pages(
             path,
             render_pages=render_pages,
-            include_figures=include_figures,
+            render_dpi=render_dpi,
             layout=layout,
-            image_min_pixels=image_min_pixels,
         )
         return
 
@@ -96,35 +93,13 @@ def iter_file_pages(
     yield FilePage(page_index=0, text=text, image_png=None)
 
 
-def _figure_jpeg(doc: Any, xref: int, image_min_pixels: int) -> bytes | None:
-    """Downscaled JPEG for one embedded image, or None when it is too small.
-
-    Halves the dimensions while they exceed 1024 px, because vision-model cost
-    scales with image resolution.
-    """
-    import fitz
-
-    try:
-        pix = fitz.Pixmap(doc, xref)
-        if pix.n - pix.alpha >= 4:
-            pix = fitz.Pixmap(fitz.csRGB, pix)
-        if pix.width * pix.height < image_min_pixels:
-            return None
-        while max(pix.width, pix.height) > 1024:
-            pix.shrink(1)
-        return pix.tobytes("jpeg")
-    except Exception as exc:
-        logger.warning("pdf_figure_skipped xref=%s error=%s", xref, exc)
-        return None
-
-
 def _layout_text(page: Any) -> str:
     """Reading-order text blocks, one per layout block, blank-line separated.
 
     ``sort=True`` orders the blocks by position, so a two-column page comes out
     in reading order rather than in content-stream order. PyMuPDF groups a
     wrapped paragraph into one block and keeps a table region separate, so the
-    blank line between blocks is the layout boundary the ``layout`` chunk
+    blank line between blocks is the layout boundary the structure-aware chunk
     strategy splits on.
     """
     blocks: list[str] = []
@@ -142,9 +117,8 @@ def _iter_pdf_pages(
     path: Path,
     *,
     render_pages: bool = True,
-    include_figures: bool = False,
+    render_dpi: int = 150,
     layout: bool = False,
-    image_min_pixels: int = DEFAULT_IMAGE_MIN_PIXELS,
 ) -> Iterator[FilePage]:
     import fitz
 
@@ -154,26 +128,12 @@ def _iter_pdf_pages(
             page = doc[i]
             text = _layout_text(page) if layout else (page.get_text("text") or "")
             if render_pages:
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=render_dpi)
                 png_bytes = pix.tobytes("png")
                 yield FilePage(page_index=i, text=text, image_png=png_bytes)
                 del pix
             else:
                 yield FilePage(page_index=i, text=text)
-
-            if not include_figures:
-                continue
-            for n, info in enumerate(page.get_images(full=True)):
-                image = _figure_jpeg(doc, info[0], image_min_pixels)
-                if image is None:
-                    continue
-                yield FilePage(
-                    page_index=i,
-                    text="",
-                    image_png=image,
-                    modality="image",
-                    image_ref={"page_index": i, "image_index": n},
-                )
     finally:
         doc.close()
 

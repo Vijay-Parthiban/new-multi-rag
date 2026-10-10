@@ -84,7 +84,7 @@ class GoldenItemEvaluator:
             enabled=config.rerank_enabled,
             model=config.rerank_model,
         )
-        reranked = reranker.rerank(item.question, retrieved, config.top_k)
+        reranked = reranker.rerank(item.question, retrieved, config.effective_top_k())
         rerank_metrics = compute_rerank_metrics(
             retrieved, reranked, expected, k_values
         )

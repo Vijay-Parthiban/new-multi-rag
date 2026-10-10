@@ -2,11 +2,13 @@ import React, { useEffect, useState } from "react";
 import {
   createIngestionProfile,
   deleteIngestionProfile,
+  getChunkStrategies,
   getDestinationOptions,
   getLiteLLMModels,
   listIngestionProfiles,
   updateIngestionProfile,
   ChunkStrategy,
+  ChunkStrategySpec,
   IngestionProfile,
   KnowledgeDestinationOption,
   LiteLLMModelOption,
@@ -14,50 +16,102 @@ import {
 } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { formatChunkStrategy } from "../utils/format";
+import ConfigFields from "../components/ConfigFields";
 import DestinationConfigFields from "../components/DestinationConfigFields";
 import { IconClose, IconDatabase, IconEdit, IconPlus, IconRefresh, IconTrash } from "../components/Icons";
 
 type DestConfigMap = Record<string, { enabled: boolean; config: Record<string, unknown> }>;
 
-// The seven stored strategies. The hint under the select explains the one that is
-// chosen, because the difference is in how a boundary is picked, not in a number.
-const CHUNK_STRATEGY_OPTIONS: { value: ChunkStrategy; label: string; hint: string }[] = [
-  {
-    value: "recursive",
-    label: "Paragraph and section, packed to size (default)",
-    hint: "Splits on headings and blank lines, then packs the pieces into the size window. The original behaviour.",
-  },
-  {
-    value: "fixed",
-    label: "Fixed length",
-    hint: "Cuts a hard window every Chunk Size characters. Fast, and it ignores headings and paragraphs.",
-  },
-  {
-    value: "sentence",
-    label: "Sentence",
-    hint: "Cuts on sentence ends and packs whole sentences into the size window. No sentence is split.",
-  },
-  {
-    value: "section",
-    label: "Paragraph and section, one chunk each",
-    hint: "One chunk per heading or paragraph, of any length. A block larger than Chunk Size is cut further.",
-  },
-  {
-    value: "layout",
-    label: "Document layout (PDF blocks)",
-    hint: "Uses the PDF's own layout blocks, so a table region or a heading stays with its body. Other formats behave like the section strategy.",
-  },
-  {
-    value: "context_aware",
-    label: "Context aware (topic shifts)",
-    hint: "Groups sentences by topic, measured with the Text Embedding Model. One extra embedding call per page.",
-  },
-  {
-    value: "parent_child",
-    label: "Parent and child",
-    hint: "Stores a large parent block plus small child chunks that name it, about a third of Chunk Size each.",
-  },
-];
+// The settings of every strategy, so a switch away and back keeps what was typed.
+type StrategyConfigMap = Record<string, Record<string, unknown>>;
+
+// A profile saved before the strategy list changed still holds one of these. The
+// select shows it, so the operator can see the stored value and move off it. The
+// API still accepts both, so saving with one is allowed.
+const RETIRED_STRATEGY_LABELS: Record<string, string> = {
+  sentence: "Sentence (retired, use Sentence-Window)",
+  layout: "Document layout (retired, use Structure-Aware)",
+};
+
+// The number a spec field holds, or the fallback when the field is empty: a
+// cleared number input holds "", which must never reach the API.
+const numberFrom = (raw: unknown, fallback: number): number => {
+  const parsed = Number(raw);
+  return raw === "" || raw === null || raw === undefined || Number.isNaN(parsed) ? fallback : parsed;
+};
+
+// One value bag per strategy, seeded from the catalogue the backend serves. The
+// window fields are per strategy as well, so a strategy that has no window cannot
+// lose the window of the strategy the user last set.
+const seedStrategyConfigs = (
+  specs: ChunkStrategySpec[],
+  profile?: IngestionProfile | null
+): StrategyConfigMap => {
+  const seeded: StrategyConfigMap = {};
+  for (const spec of specs) {
+    const values: Record<string, unknown> = {};
+    for (const param of spec.params) {
+      values[param.key] = param.default ?? "";
+    }
+    if (profile && profile.chunk_strategy === spec.value) {
+      Object.assign(values, profile.chunk_config || {}, {
+        chunk_size: profile.chunk_size,
+        chunk_overlap: profile.chunk_overlap,
+      });
+    }
+    seeded[spec.value] = values;
+  }
+  if (profile && !seeded[profile.chunk_strategy]) {
+    // A strategy the catalogue no longer offers. Its stored window is kept, so a
+    // save does not quietly reset a value the operator never saw.
+    seeded[profile.chunk_strategy] = {
+      ...(profile.chunk_config || {}),
+      chunk_size: profile.chunk_size,
+      chunk_overlap: profile.chunk_overlap,
+    };
+  }
+  return seeded;
+};
+
+// The modal panel, control and hint styles. The Chunking and Page Images blocks
+// repeat them, so they live here rather than inline in each one.
+const panelStyle: React.CSSProperties = {
+  padding: "16px",
+  borderRadius: "12px",
+  background: "rgba(30, 41, 59, 0.5)",
+  border: "1px solid rgba(255, 255, 255, 0.08)",
+};
+const panelTitleStyle: React.CSSProperties = {
+  fontSize: "13px",
+  fontWeight: 700,
+  color: "#cbd5e1",
+  marginBottom: "4px",
+};
+const panelHintStyle: React.CSSProperties = {
+  fontSize: "12px",
+  color: "#94a3b8",
+  marginBottom: "12px",
+};
+const fieldLabelStyle: React.CSSProperties = {
+  display: "block",
+  fontSize: "12px",
+  color: "#94a3b8",
+  marginBottom: "6px",
+};
+const controlStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "10px 14px",
+  borderRadius: "10px",
+  background: "rgba(30, 41, 59, 0.8)",
+  border: "1px solid rgba(255, 255, 255, 0.1)",
+  color: "#f8fafc",
+  fontSize: "14px",
+};
+const fieldHintStyle: React.CSSProperties = {
+  fontSize: "11px",
+  color: "#64748b",
+  marginTop: "4px",
+};
 
 export default function IngestionProfilesPage() {
   const [profiles, setProfiles] = useState<IngestionProfile[]>([]);
@@ -72,19 +126,18 @@ export default function IngestionProfilesPage() {
   const [formName, setFormName] = useState<string>("");
   const [formDescription, setFormDescription] = useState<string>("");
   const [formEnabled, setFormEnabled] = useState<boolean>(true);
-  const [formChunkSize, setFormChunkSize] = useState<number>(1000);
-  const [formChunkOverlap, setFormChunkOverlap] = useState<number>(120);
   const [formChunkStrategy, setFormChunkStrategy] = useState<ChunkStrategy>("recursive");
+  const [configByStrategy, setConfigByStrategy] = useState<StrategyConfigMap>({});
   const [formModalityMode, setFormModalityMode] = useState<"text" | "text_images">("text");
   const [formEmbeddingModel, setFormEmbeddingModel] = useState<string>("");
-  const [formCaptionModel, setFormCaptionModel] = useState<string>("");
-  const [formImageMinPixels, setFormImageMinPixels] = useState<number>(10000);
+  const [formImageEmbeddingModel, setFormImageEmbeddingModel] = useState<string>("");
   const [destConfigs, setDestConfigs] = useState<DestConfigMap>({});
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [profileToDelete, setProfileToDelete] = useState<IngestionProfile | null>(null);
   const [deleting, setDeleting] = useState<boolean>(false);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [chunkStrategies, setChunkStrategies] = useState<ChunkStrategySpec[]>([]);
 
   const loadData = async () => {
     setLoading(true);
@@ -92,6 +145,13 @@ export default function IngestionProfilesPage() {
       const [profs, destOpts] = await Promise.all([listIngestionProfiles(), getDestinationOptions()]);
       setProfiles(profs);
       setDestinationOptions(destOpts);
+      // A call of its own, so a catalogue that fails to load still leaves the page
+      // usable instead of blanking the list.
+      try {
+        setChunkStrategies(await getChunkStrategies());
+      } catch (err: unknown) {
+        console.error("Failed to load the chunk strategy catalogue:", err);
+      }
     } catch (err: unknown) {
       console.error("Failed to load Ingestion Profiles:", err);
     } finally {
@@ -139,13 +199,11 @@ export default function IngestionProfilesPage() {
     setFormName("");
     setFormDescription("");
     setFormEnabled(true);
-    setFormChunkSize(1000);
-    setFormChunkOverlap(120);
     setFormChunkStrategy("recursive");
+    setConfigByStrategy(seedStrategyConfigs(chunkStrategies));
     setFormModalityMode("text");
     setFormEmbeddingModel("");
-    setFormCaptionModel("");
-    setFormImageMinPixels(10000);
+    setFormImageEmbeddingModel("");
     setDestConfigs(buildInitialDestConfigs(destinationOptions));
     setErrorMsg(null);
     setIsModalOpen(true);
@@ -155,7 +213,9 @@ export default function IngestionProfilesPage() {
     const response = await loadLiteLLMModels();
     const firstEmbedding = response.models.find((m) => m.kind === "embedding");
     setFormEmbeddingModel((previous) => previous || response.default_embedding_model || firstEmbedding?.id || "");
-    setFormCaptionModel((previous) => previous || response.default_caption_model || "");
+    setFormImageEmbeddingModel(
+      (previous) => previous || response.default_image_embedding_model || firstEmbedding?.id || ""
+    );
   };
 
   const openEditModal = async (profile: IngestionProfile) => {
@@ -163,13 +223,11 @@ export default function IngestionProfilesPage() {
     setFormName(profile.name);
     setFormDescription(profile.description || "");
     setFormEnabled(profile.enabled);
-    setFormChunkSize(profile.chunk_size);
-    setFormChunkOverlap(profile.chunk_overlap);
     setFormChunkStrategy(profile.chunk_strategy || "recursive");
+    setConfigByStrategy(seedStrategyConfigs(chunkStrategies, profile));
     setFormModalityMode(profile.modality_mode || "text");
     setFormEmbeddingModel(profile.text_embedding_model || "");
-    setFormCaptionModel(profile.caption_model || "");
-    setFormImageMinPixels(profile.image_min_pixels ?? 10000);
+    setFormImageEmbeddingModel(profile.image_embedding_model || "");
     setDestConfigs(buildInitialDestConfigs(destinationOptions, profile));
     setErrorMsg(null);
     setIsModalOpen(true);
@@ -178,20 +236,28 @@ export default function IngestionProfilesPage() {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    const values = configByStrategy[formChunkStrategy] || {};
+    const chunkSize = numberFrom(values["chunk_size"], 1000);
+    const chunkOverlap = numberFrom(values["chunk_overlap"], 120);
+
     if (!formName.trim()) {
       setErrorMsg("Profile name is required.");
       return;
     }
-    if (formChunkOverlap >= formChunkSize) {
+    if (chunkOverlap >= chunkSize) {
       setErrorMsg("Chunk overlap must be smaller than the chunk size.");
       return;
     }
-    if (!formEmbeddingModel) {
+    if (formModalityMode === "text" && !formEmbeddingModel) {
       setErrorMsg("Select a text embedding model.");
       return;
     }
-    if (formModalityMode === "text_images" && !formCaptionModel) {
-      setErrorMsg("Select a caption model.");
+    if (formModalityMode === "text_images" && !formImageEmbeddingModel) {
+      setErrorMsg("Select a multimodal embedding model.");
+      return;
+    }
+    if (formChunkStrategy === "contextual" && !values["context_model"]) {
+      setErrorMsg("Contextual Chunking needs a context model.");
       return;
     }
     if (!Object.values(destConfigs).some((d) => d.enabled)) {
@@ -202,17 +268,32 @@ export default function IngestionProfilesPage() {
     setSaving(true);
     setErrorMsg(null);
 
+    // Only the settings of the selected strategy travel in chunk_config. The
+    // window keys are columns of the profile itself, so they are split out here.
+    const chunkConfig: Record<string, unknown> = {};
+    for (const param of activeSpec?.params || []) {
+      if (param.scope !== "strategy") continue;
+      const raw = values[param.key];
+      if (param.type === "number") {
+        chunkConfig[param.key] = numberFrom(raw, typeof param.default === "number" ? param.default : 0);
+      } else if (raw !== "" && raw !== null && raw !== undefined) {
+        chunkConfig[param.key] = raw;
+      }
+    }
+
     const payload = {
       name: formName,
       description: formDescription,
       enabled: formEnabled,
-      chunk_size: formChunkSize,
-      chunk_overlap: formChunkOverlap,
+      chunk_size: chunkSize,
+      chunk_overlap: chunkOverlap,
       chunk_strategy: formChunkStrategy,
+      chunk_config: chunkConfig,
       modality_mode: formModalityMode,
-      text_embedding_model: formEmbeddingModel,
-      caption_model: formModalityMode === "text_images" ? formCaptionModel || null : null,
-      image_min_pixels: formImageMinPixels,
+      // Omitted on the page-image mode, so an edit keeps the stored text model
+      // and a create takes the environment default.
+      text_embedding_model: formEmbeddingModel || undefined,
+      image_embedding_model: formModalityMode === "text_images" ? formImageEmbeddingModel : null,
       destinations: Object.entries(destConfigs).map(([destination_type, val]) => ({
         destination_type,
         enabled: val.enabled,
@@ -260,10 +341,14 @@ export default function IngestionProfilesPage() {
     profile.destinations.filter((d) => d.enabled).length;
 
   const embeddingModels = litellmModels.filter((m) => m.kind === "embedding");
-  // The caption model reads a figure and writes text, so it is a vision model.
-  // It used to be picked from the chat list, which offered models that cannot
-  // accept an image.
-  const visionModels = litellmModels.filter((m) => m.kind === "vision");
+  const activeSpec = chunkStrategies.find((s) => s.value === formChunkStrategy) || null;
+  const activeValues = configByStrategy[formChunkStrategy] || {};
+  // The strategy a profile stores when the catalogue no longer offers it, so the
+  // select can show the stored value instead of a blank field.
+  const retiredStrategy =
+    chunkStrategies.length > 0 && !chunkStrategies.some((s) => s.value === formChunkStrategy)
+      ? formChunkStrategy
+      : null;
 
   const totalProfiles = profiles.length;
 
@@ -502,17 +587,21 @@ export default function IngestionProfilesPage() {
                     <span className="status-badge status-paused">
                       {enabledDestinationCount(profile)} of {profile.destinations.length} destinations
                     </span>
+                    {profile.modality_mode === "text" && (
+                      <>
+                        <span className="status-badge status-paused">
+                          Chunk {profile.chunk_size} / {profile.chunk_overlap}
+                        </span>
+                        <span className="status-badge status-paused">
+                          {formatChunkStrategy(profile.chunk_strategy)}
+                        </span>
+                      </>
+                    )}
                     <span className="status-badge status-paused">
-                      Chunk {profile.chunk_size} / {profile.chunk_overlap}
+                      {profile.modality_mode === "text_images" ? "Text + page images" : "Text only"}
                     </span>
-                    <span className="status-badge status-paused">
-                      {formatChunkStrategy(profile.chunk_strategy)}
-                    </span>
-                    <span className="status-badge status-paused">
-                      {profile.modality_mode === "text_images" ? "Text + images" : "Text only"}
-                    </span>
-                    {profile.modality_mode === "text_images" && profile.caption_model && (
-                      <span className="status-badge status-paused">Captions: {profile.caption_model}</span>
+                    {profile.modality_mode === "text_images" && profile.image_embedding_model && (
+                      <span className="status-badge status-paused">Pages: {profile.image_embedding_model}</span>
                     )}
                     {!profile.enabled && <span className="status-badge status-paused">DISABLED</span>}
                   </div>
@@ -654,6 +743,7 @@ export default function IngestionProfilesPage() {
 
             {errorMsg && (
               <div
+                role="alert"
                 style={{
                   padding: "12px 16px",
                   borderRadius: "10px",
@@ -748,174 +838,98 @@ export default function IngestionProfilesPage() {
                   />
                 </div>
 
-                {/* Chunking */}
-                <div
-                  style={{
-                    padding: "16px",
-                    borderRadius: "12px",
-                    background: "rgba(30, 41, 59, 0.5)",
-                    border: "1px solid rgba(255, 255, 255, 0.08)",
-                  }}
-                >
-                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "4px" }}>
-                    Chunking
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
-                    The strategy decides where one chunk ends and the next starts. Chunk size and overlap apply to
-                    every strategy, and to every destination.
+                {/* Pipeline Stages: how a document is read. No model is chosen here. */}
+                <div style={panelStyle}>
+                  <div style={panelTitleStyle}>Pipeline Stages</div>
+                  <div style={panelHintStyle}>
+                    How a document is read before it reaches the destination stores. The models are
+                    chosen with the chunking settings below.
                   </div>
 
-                  <div style={{ marginBottom: "16px" }}>
-                    <label
-                      htmlFor="chunk-strategy"
-                      style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                    >
-                      Chunking Strategy
+                  <div>
+                    <label htmlFor="modality-mode" style={fieldLabelStyle}>
+                      Modality
                     </label>
                     <select
-                      id="chunk-strategy"
-                      value={formChunkStrategy}
-                      onChange={(e) => setFormChunkStrategy(e.target.value as ChunkStrategy)}
-                      style={{
-                        width: "100%",
-                        padding: "10px 14px",
-                        borderRadius: "10px",
-                        background: "rgba(30, 41, 59, 0.8)",
-                        border: "1px solid rgba(255, 255, 255, 0.1)",
-                        color: "#f8fafc",
-                        fontSize: "14px",
-                      }}
+                      id="modality-mode"
+                      value={formModalityMode}
+                      onChange={(e) => setFormModalityMode(e.target.value as "text" | "text_images")}
+                      style={controlStyle}
                     >
-                      {CHUNK_STRATEGY_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
+                      <option value="text">Text only (chunks of text and tables)</option>
+                      <option value="text_images">Text with images (one record per page image)</option>
                     </select>
-                    <div style={{ fontSize: "11px", color: "#64748b", marginTop: "6px" }}>
-                      {CHUNK_STRATEGY_OPTIONS.find((o) => o.value === formChunkStrategy)?.hint}
-                    </div>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                    <div>
-                      <label
-                        htmlFor="chunk-size"
-                        style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                      >
-                        Chunk Size (characters)
-                      </label>
-                      <input
-                        id="chunk-size"
-                        type="number"
-                        min={100}
-                        max={8000}
-                        value={formChunkSize}
-                        onChange={(e) => setFormChunkSize(Number(e.target.value))}
-                        style={{
-                          width: "100%",
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          background: "rgba(30, 41, 59, 0.8)",
-                          border: "1px solid rgba(255, 255, 255, 0.1)",
-                          color: "#f8fafc",
-                          fontSize: "14px",
-                        }}
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="chunk-overlap"
-                        style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                      >
-                        Chunk Overlap (characters)
-                      </label>
-                      <input
-                        id="chunk-overlap"
-                        type="number"
-                        min={0}
-                        max={2000}
-                        value={formChunkOverlap}
-                        onChange={(e) => setFormChunkOverlap(Number(e.target.value))}
-                        style={{
-                          width: "100%",
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          background: "rgba(30, 41, 59, 0.8)",
-                          border: "1px solid rgba(255, 255, 255, 0.1)",
-                          color: "#f8fafc",
-                          fontSize: "14px",
-                        }}
-                      />
+                    <div style={fieldHintStyle}>
+                      {formModalityMode === "text"
+                        ? "Chunking applies, and every chunk is embedded with the text model."
+                        : "Every document page becomes one record, embedded from the page image, so there is nothing to chunk."}
                     </div>
                   </div>
                 </div>
 
-                {/* Pipeline Stages */}
-                <div
-                  style={{
-                    padding: "16px",
-                    borderRadius: "12px",
-                    background: "rgba(30, 41, 59, 0.5)",
-                    border: "1px solid rgba(255, 255, 255, 0.08)",
-                  }}
-                >
-                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#cbd5e1", marginBottom: "4px" }}>
-                    Pipeline Stages
-                  </div>
-                  <div style={{ fontSize: "12px", color: "#94a3b8", marginBottom: "12px" }}>
-                    How a document is read and embedded before it reaches the destination stores.
-                  </div>
+                {/* Chunking: text only, because a page-image profile stores one record per page. */}
+                {formModalityMode === "text" && (
+                  <div style={panelStyle}>
+                    <div style={panelTitleStyle}>Chunking</div>
+                    <div style={panelHintStyle}>
+                      The strategy decides where one chunk ends and the next starts. Its settings apply
+                      to every destination.
+                    </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                    <div>
-                      <label
-                        htmlFor="modality-mode"
-                        style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                      >
-                        Modality
+                    <div style={{ marginBottom: "16px" }}>
+                      <label htmlFor="chunk-strategy" style={fieldLabelStyle}>
+                        Chunking Strategy
                       </label>
                       <select
-                        id="modality-mode"
-                        value={formModalityMode}
-                        onChange={(e) => setFormModalityMode(e.target.value as "text" | "text_images")}
-                        style={{
-                          width: "100%",
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          background: "rgba(30, 41, 59, 0.8)",
-                          border: "1px solid rgba(255, 255, 255, 0.1)",
-                          color: "#f8fafc",
-                          fontSize: "14px",
-                        }}
+                        id="chunk-strategy"
+                        value={formChunkStrategy}
+                        onChange={(e) => setFormChunkStrategy(e.target.value as ChunkStrategy)}
+                        style={controlStyle}
                       >
-                        <option value="text">Text only (selectable text and tables)</option>
-                        <option value="text_images">Text with images (vision captions for figures)</option>
+                        {chunkStrategies.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                        {retiredStrategy && (
+                          <option value={retiredStrategy}>
+                            {RETIRED_STRATEGY_LABELS[retiredStrategy] || retiredStrategy}
+                          </option>
+                        )}
                       </select>
-                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                        Text only ignores images and never calls a vision model.
+                      <div style={fieldHintStyle}>
+                        {activeSpec?.description ||
+                          "This profile stores a strategy the form no longer offers. Pick one to move off it."}
                       </div>
                     </div>
-                    <div>
-                      <label
-                        htmlFor="text-embedding-model"
-                        style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                      >
+
+                    {/* The settings the selected strategy needs, rendered from the
+                        catalogue the backend serves, so a new strategy needs no
+                        change in this form. */}
+                    {activeSpec && (
+                      <ConfigFields
+                        fields={activeSpec.params}
+                        values={activeValues}
+                        models={litellmModels}
+                        onChange={(next) =>
+                          setConfigByStrategy((previous) => ({
+                            ...previous,
+                            [formChunkStrategy]: next,
+                          }))
+                        }
+                        idPrefix="chunk"
+                      />
+                    )}
+
+                    <div style={{ marginTop: "16px" }}>
+                      <label htmlFor="text-embedding-model" style={fieldLabelStyle}>
                         Text Embedding Model
                       </label>
                       <select
                         id="text-embedding-model"
                         value={formEmbeddingModel}
                         onChange={(e) => setFormEmbeddingModel(e.target.value)}
-                        style={{
-                          width: "100%",
-                          padding: "10px 14px",
-                          borderRadius: "10px",
-                          background: "rgba(30, 41, 59, 0.8)",
-                          border: "1px solid rgba(255, 255, 255, 0.1)",
-                          color: "#f8fafc",
-                          fontSize: "14px",
-                        }}
+                        style={controlStyle}
                       >
                         <option value="">Select a model</option>
                         {embeddingModels.map((m) => (
@@ -927,80 +941,51 @@ export default function IngestionProfilesPage() {
                           <option value={formEmbeddingModel}>{formEmbeddingModel}</option>
                         )}
                       </select>
-                      <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                      <div style={fieldHintStyle}>
                         One model for every store. The vector dimension comes from its output.
                       </div>
                     </div>
-
-                    {formModalityMode === "text_images" && (
-                      <>
-                        <div>
-                          <label
-                            htmlFor="caption-model"
-                            style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                          >
-                            Caption Model
-                          </label>
-                          <select
-                            id="caption-model"
-                            value={formCaptionModel}
-                            onChange={(e) => setFormCaptionModel(e.target.value)}
-                            style={{
-                              width: "100%",
-                              padding: "10px 14px",
-                              borderRadius: "10px",
-                              background: "rgba(30, 41, 59, 0.8)",
-                              border: "1px solid rgba(255, 255, 255, 0.1)",
-                              color: "#f8fafc",
-                              fontSize: "14px",
-                            }}
-                          >
-                            <option value="">Select a model</option>
-                            {visionModels.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.id}
-                              </option>
-                            ))}
-                            {formCaptionModel && !visionModels.some((m) => m.id === formCaptionModel) && (
-                              <option value={formCaptionModel}>{formCaptionModel}</option>
-                            )}
-                          </select>
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                            Vision model that writes one caption per figure. The caption is embedded as text.
-                          </div>
-                        </div>
-                        <div>
-                          <label
-                            htmlFor="image-min-pixels"
-                            style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "6px" }}
-                          >
-                            Minimum Figure Pixels
-                          </label>
-                          <input
-                            id="image-min-pixels"
-                            type="number"
-                            min={0}
-                            value={formImageMinPixels}
-                            onChange={(e) => setFormImageMinPixels(Number(e.target.value))}
-                            style={{
-                              width: "100%",
-                              padding: "10px 14px",
-                              borderRadius: "10px",
-                              background: "rgba(30, 41, 59, 0.8)",
-                              border: "1px solid rgba(255, 255, 255, 0.1)",
-                              color: "#f8fafc",
-                              fontSize: "14px",
-                            }}
-                          />
-                          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
-                            Default 10000. Figures smaller than this are skipped, so a logo or rule
-                            does not become a chunk.
-                          </div>
-                        </div>
-                      </>
-                    )}
                   </div>
-                </div>
+                )}
+
+                {/* Page Images: the text_images mode renders and embeds every page. */}
+                {formModalityMode === "text_images" && (
+                  <div style={panelStyle}>
+                    <div style={panelTitleStyle}>Page Images</div>
+                    <div style={panelHintStyle}>
+                      Every document page becomes one record, so there is nothing to chunk.
+                    </div>
+
+                    <div>
+                      <label htmlFor="image-embedding-model" style={fieldLabelStyle}>
+                        Multimodal Embedding Model
+                      </label>
+                      <select
+                        id="image-embedding-model"
+                        value={formImageEmbeddingModel}
+                        onChange={(e) => setFormImageEmbeddingModel(e.target.value)}
+                        style={controlStyle}
+                      >
+                        <option value="">Select a model</option>
+                        {embeddingModels.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id}
+                          </option>
+                        ))}
+                        {formImageEmbeddingModel &&
+                          !embeddingModels.some((m) => m.id === formImageEmbeddingModel) && (
+                            <option value={formImageEmbeddingModel}>{formImageEmbeddingModel}</option>
+                          )}
+                      </select>
+                      <div style={fieldHintStyle}>
+                        Each page is rendered to an image at 150 dpi, stored in the source bucket under
+                        _pages/, and embedded with this model. The page text rides along for the text
+                        stores. A file that renders no page image, such as a Word document, keeps text
+                        chunks and the text model instead.
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Destination Configurations */}

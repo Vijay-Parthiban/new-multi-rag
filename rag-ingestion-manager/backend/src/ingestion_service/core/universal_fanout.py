@@ -33,8 +33,11 @@ from src.ingestion_service.types import FILE_INGEST_SOURCE_TYPE
 from src.ingestion_service.utils.text_splitter import (
     ChunkPlan,
     adjacent_similarities,
+    chunk_page,
     chunk_parent_child,
+    chunk_sentence_window,
     chunk_text,
+    chunk_textual,
     sentence_splitter,
 )
 from src.ingestion_service.vector.qdrant_store import QdrantVectorStore
@@ -43,12 +46,11 @@ from src.shared.db.models import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_STRATEGY,
-    DEFAULT_IMAGE_MIN_PIXELS,
     DEFAULT_MODALITY_MODE,
     KnowledgeProduct,
     KnowledgeProductFile,
 )
-from src.shared.storage.s3_client import get_object, list_objects
+from src.shared.storage.s3_client import get_object, list_objects, put_object
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,29 @@ def _resolve_chunk_strategy(product: Any) -> str:
     return value or DEFAULT_CHUNK_STRATEGY
 
 
+def _resolve_chunk_config(product: Any) -> dict[str, Any]:
+    """The selected strategy's own settings, from this product's profile.
+
+    The catalogue in ``apps/api/routes/chunk_strategies.py`` names every key, and
+    the profile API checks the values, so this reads without validating. The
+    chunker clamps each value again, because a stored row can predate a bound.
+    """
+    profile = getattr(product, "ingestion_profile", None)
+    stored = getattr(profile, "chunk_config", None) if profile else None
+    return dict(stored or {})
+
+
+def _setting_int(config: dict[str, Any] | None, key: str, default: int) -> int:
+    """One numeric strategy setting, or the default when it is absent or unreadable."""
+    raw = (config or {}).get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
 def _context_similarities(
     pages: list[FilePage], *, model: str, settings: Any
 ) -> dict[int, list[float]]:
@@ -246,12 +271,138 @@ def _context_similarities(
     return out
 
 
+CONTEXT_PROMPT = (
+    "Place the excerpt in the page. Write one sentence of at most 30 words that says what "
+    "the excerpt is about and where it sits, so the excerpt reads on its own in a search "
+    "result. Answer with the sentence alone. Add no commentary."
+)
+
+
+def _context_sentence(
+    page_text: str, chunk: str, *, model: str, max_tokens: int, settings: Any
+) -> str:
+    """One chat call for one chunk. Raises on a transport or API error."""
+    import httpx
+
+    with httpx.Client(timeout=60.0) as client:
+        response = client.post(
+            f"{settings.litellm_base_url.rstrip('/')}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            json={
+                "model": model,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"{CONTEXT_PROMPT}\n\nPage:\n{page_text}\n\nExcerpt:\n{chunk}",
+                    }
+                ],
+            },
+        )
+        response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"]).strip()
+
+
+def _chunk_contexts(
+    pages: list[FilePage],
+    *,
+    model: str,
+    max_tokens: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    settings: Any,
+) -> dict[int, dict[int, str]]:
+    """The context sentence of every chunk, keyed by page index then chunk index.
+
+    One chat call per chunk, so a file costs as many calls as it has chunks. A page
+    that fails gives up after its first failed call, and the chunks already placed
+    keep their sentence: ``chunk_textual`` stores the plain chunk where no sentence
+    arrived, so a model outage degrades the file to Recursive Chunking instead of
+    failing it.
+    """
+    if not model:
+        logger.warning("chunk_strategy_context_skipped reason=no_model")
+        return {}
+
+    out: dict[int, dict[int, str]] = {}
+    for page in pages:
+        text = (page.text or "").strip()
+        if not text:
+            continue
+        chunks = chunk_text(text, chunk_size, chunk_overlap, "recursive")
+        placed: dict[int, str] = {}
+        for index, chunk in enumerate(chunks):
+            try:
+                placed[index] = _context_sentence(
+                    text,
+                    chunk,
+                    model=model,
+                    max_tokens=max_tokens,
+                    settings=settings,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "chunk_strategy_context_failed page=%d chunk=%d model=%s error=%s",
+                    page.page_index,
+                    index,
+                    model,
+                    exc,
+                )
+                break
+        out[page.page_index] = placed
+    return out
+
+
+def _plans_for(
+    text: str,
+    strategy: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    config: dict[str, Any] | None,
+    similarities: list[float] | None,
+    context: dict[int, str] | None,
+) -> list[ChunkPlan]:
+    """The records one page produces, whichever shape its strategy has.
+
+    Three strategies return records of more than one kind, so they have their own
+    function. The rest return one kind and go through ``chunk_text``.
+    """
+    if strategy == "parent_child":
+        return chunk_parent_child(
+            text,
+            chunk_size,
+            chunk_overlap,
+            child_size=_setting_int(config, "child_chunk_size", 0),
+            child_overlap=_setting_int(config, "child_overlap", 0),
+        )
+    if strategy == "page_level":
+        return chunk_page(text, _setting_int(config, "max_page_chars", 0))
+    if strategy == "sentence_window":
+        return chunk_sentence_window(text, _setting_int(config, "window_sentences", 2))
+    if strategy == "contextual":
+        return chunk_textual(text, chunk_size, chunk_overlap, context=context)
+    return [
+        ChunkPlan(text=chunk)
+        for chunk in chunk_text(
+            text,
+            chunk_size,
+            chunk_overlap,
+            strategy,
+            config=config,
+            similarities=similarities,
+        )
+    ]
+
+
 def _chunk_pages(
     pages: list[FilePage],
     chunk_size: int,
     chunk_overlap: int,
     strategy: str = DEFAULT_CHUNK_STRATEGY,
+    config: dict[str, Any] | None = None,
     similarities: dict[int, list[float]] | None = None,
+    contexts: dict[int, dict[int, str]] | None = None,
 ) -> list[FilePage]:
     """Split every page into chunks, one FilePage per chunk.
 
@@ -259,29 +410,26 @@ def _chunk_pages(
     inside it. A page whose text is blank yields no chunk, which is what the
     writers did with it before chunking existed.
 
-    ``modality`` and ``image_ref`` carry over, because a caption is a chunk of a
-    figure and every writer and the store payload need to know that.
+    ``modality`` and ``image_ref`` carry over, because a figure or a page image is
+    a record in its own right and every writer and the store payload need to know
+    that.
 
-    ``parent_child`` emits parent records first and child records after them, so a
-    child's ``parent_ref`` of ``<page_index>:<ordinal>`` resolves to the parent
+    ``parent_child`` emits parent records first and child records after them, and
+    ``sentence_window`` does the same with window and sentence records. A record's
+    ``parent_ref`` of ``<page_index>:<parent_ordinal>`` then resolves to the record
     whose ``chunk_index`` equals the ordinal.
     """
     out: list[FilePage] = []
     for page in pages:
-        text = page.text or ""
-        if strategy == "parent_child":
-            plans = chunk_parent_child(text, chunk_size, chunk_overlap)
-        else:
-            plans = [
-                ChunkPlan(text=chunk)
-                for chunk in chunk_text(
-                    text,
-                    chunk_size,
-                    chunk_overlap,
-                    strategy,
-                    similarities=(similarities or {}).get(page.page_index),
-                )
-            ]
+        plans = _plans_for(
+            page.text or "",
+            strategy,
+            chunk_size,
+            chunk_overlap,
+            config,
+            (similarities or {}).get(page.page_index),
+            (contexts or {}).get(page.page_index),
+        )
         for index, plan in enumerate(plans):
             out.append(
                 FilePage(
@@ -303,11 +451,11 @@ def _chunk_pages(
 
 
 def _assign_image_chunk_indexes(pages: list[FilePage]) -> list[FilePage]:
-    """Give every figure page a chunk_index above its page's text chunks.
+    """Give every image record a chunk_index above its page's text chunks.
 
-    A text page and its figures share ``page_index``, so figures must not restart
-    at zero or two records collide on the same Redis key and the same
-    ``(page_index, chunk_index)`` pair.
+    Two records that share ``(page_index, chunk_index)`` collide on one Redis key
+    and on one store row, so an image record never restarts at zero beside the
+    text chunks of the page it belongs to.
     """
     next_index: dict[int, int] = {}
     for page in pages:
@@ -326,29 +474,12 @@ def _assign_image_chunk_indexes(pages: list[FilePage]) -> list[FilePage]:
     return out
 
 
-CAPTION_PROMPT = (
-    "Describe this document image for a search index. State the figure type, every visible "
-    "label, axis name, number and table value. Answer in plain prose. Add no commentary."
-)
-
-
 def _resolve_modality_mode(product: Any) -> str:
     profile = getattr(product, "ingestion_profile", None)
     if profile is None:
         return DEFAULT_MODALITY_MODE
     mode = profile.modality_mode
     return mode.value if hasattr(mode, "value") else str(mode)
-
-
-def _resolve_caption_model(product: Any) -> str:
-    """Caption model for this product. Falls back to the environment value.
-
-    The profile API rejects ``text_images`` without a caption model, so the
-    fallback only covers a row that reached the database without that check.
-    """
-    profile = getattr(product, "ingestion_profile", None)
-    stored = profile.caption_model if profile else None
-    return stored or get_settings().caption_model
 
 
 def _resolve_text_embedding_model(product: Any) -> str:
@@ -358,77 +489,80 @@ def _resolve_text_embedding_model(product: Any) -> str:
     return stored or get_settings().embedding_model
 
 
-def _resolve_image_min_pixels(product: Any) -> int:
-    profile = getattr(product, "ingestion_profile", None)
-    stored = profile.image_min_pixels if profile else None
-    return int(stored) if stored else DEFAULT_IMAGE_MIN_PIXELS
+def _resolve_image_embedding_model(product: Any) -> str:
+    """The multimodal model a rendered page image is embedded with.
 
-
-def _caption_image(image_bytes: bytes, *, model: str, settings: Any) -> str:
-    """One vision-model caption for one figure. Raises on a transport or API error."""
-    import base64
-
-    import httpx
-
-    data_uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
-    with httpx.Client(timeout=60.0) as client:
-        response = client.post(
-            f"{settings.litellm_base_url.rstrip('/')}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={
-                "model": model,
-                "temperature": 0,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": CAPTION_PROMPT},
-                            {"type": "image_url", "image_url": {"url": data_uri}},
-                        ],
-                    }
-                ],
-            },
-        )
-        response.raise_for_status()
-        return str(response.json()["choices"][0]["message"]["content"]).strip()
-
-
-def _caption_pages(pages: list[FilePage], *, model: str, settings: Any) -> tuple[list[FilePage], int]:
-    """Replace every figure page's bytes with a caption. Returns (pages, skipped).
-
-    A figure whose caption fails is dropped and the rest of the file continues:
-    one bad figure must not fail the file.
+    Falls back to the environment value. The profile API rejects ``text_images``
+    without a model, so the fallback only covers a row that reached the database
+    without that check.
     """
-    out: list[FilePage] = []
-    skipped = 0
+    profile = getattr(product, "ingestion_profile", None)
+    stored = profile.image_embedding_model if profile else None
+    return stored or get_settings().multimodal_embedding_model
+
+
+# Every page image this fanout writes lives under this prefix inside the source
+# bucket, so the next listing can tell its own output from source content.
+PAGE_IMAGE_PREFIX = "_pages/"
+
+
+def page_image_object_key(file_key: str, page_index: int) -> str:
+    """Where one rendered page image lives inside the source bucket."""
+    return f"{PAGE_IMAGE_PREFIX}{file_key}/page-{page_index:05d}.png"
+
+
+def drop_generated_page_images(remote: dict[str, Any]) -> int:
+    """Remove the fanout's own page images from a source listing.
+
+    A page image is output, not input: it has no pages of its own, so a listing
+    that fed it back would index a PNG as text on every tick. Dropping the key here
+    also lets the delete sweep purge a row for one written before this rule
+    existed. Returns the number of keys dropped. Mutates ``remote`` in place.
+    """
+    keys = [key for key in remote if key.startswith(PAGE_IMAGE_PREFIX)]
+    for key in keys:
+        remote.pop(key)
+    return len(keys)
+
+
+async def _page_image_records(
+    pages: list[FilePage], *, bucket: str, file_key: str
+) -> tuple[list[FilePage], list[FilePage]]:
+    """Store every page image, and build one record per page.
+
+    Returns the page records and, separately, the pages that rendered no image.
+    Every text format lands in the second list, and so does a PDF page PyMuPDF
+    cannot rasterise; the caller puts those through the ordinary text path, so no
+    content is lost.
+
+    The record keeps the page's extracted text, because a lexical or relational
+    store searches text and only the vector stores read the image. ``image_ref``
+    names the stored object, which is what a later reader downloads.
+    """
+    records: list[FilePage] = []
+    without_image: list[FilePage] = []
     for page in pages:
-        if page.modality != "image" or not page.image_png:
-            out.append(page)
+        if not page.image_png:
+            without_image.append(page)
             continue
-        try:
-            caption = _caption_image(page.image_png, model=model, settings=settings)
-        except Exception as exc:
-            logger.warning(
-                "fanout_caption_failed page=%d image_ref=%s error=%s",
-                page.page_index,
-                page.image_ref,
-                exc,
-            )
-            skipped += 1
-            continue
-        if not caption:
-            skipped += 1
-            continue
-        out.append(
+        object_key = page_image_object_key(file_key, page.page_index)
+        await put_object(bucket, object_key, page.image_png)
+        records.append(
             FilePage(
                 page_index=page.page_index,
-                text=caption,
-                image_png=None,
+                text=page.text or "",
+                # The bytes are in the bucket now, so only the key travels further.
+                image_png=page.image_png,
                 modality="image",
-                image_ref=page.image_ref,
+                record_type="page",
+                image_ref={
+                    "page_index": page.page_index,
+                    "bucket": bucket,
+                    "key": object_key,
+                },
             )
         )
-    return out, skipped
+    return records, without_image
 
 
 @dataclass
@@ -437,6 +571,19 @@ class ChunkRecord:
 
     page: FilePage
     dense_vector: list[float] | None = None
+
+
+def _same_dimension(dimension: int | None, vector: list[float], model: str) -> int:
+    """The batch dimension, checked against the vector just returned."""
+    if dimension is None:
+        return len(vector)
+    if len(vector) != dimension:
+        raise RuntimeError(
+            f"The embedder returned {len(vector)}-dimension vectors after "
+            f"{dimension}-dimension ones in the same batch. Model '{model}' "
+            "answered part of the batch; the rest fell back to a local model."
+        )
+    return dimension
 
 
 def _embed_records(records: list[ChunkRecord], *, model: str, settings: Any) -> None:
@@ -458,14 +605,30 @@ def _embed_records(records: list[ChunkRecord], *, model: str, settings: Any) -> 
         if not text:
             continue
         vector = embedder.embed_passage(text)
-        if dimension is None:
-            dimension = len(vector)
-        elif len(vector) != dimension:
-            raise RuntimeError(
-                f"The embedder returned {len(vector)}-dimension vectors after "
-                f"{dimension}-dimension ones in the same batch. Model '{model}' "
-                "answered part of the batch; the rest fell back to a local model."
-            )
+        dimension = _same_dimension(dimension, vector, model)
+        record.dense_vector = vector
+
+
+def _embed_image_records(records: list[ChunkRecord], *, model: str, settings: Any) -> None:
+    """Fill ``dense_vector`` from each record's page image. One call per page.
+
+    The page text is not what is embedded here: the vector must describe the page
+    as the multimodal model sees it, which is the whole point of the modality. A
+    record with no image is skipped, so a page that fell back to the text path is
+    embedded by ``_embed_records`` with the text model instead.
+    """
+    embedder = EmbeddingClient(
+        base_url=settings.litellm_base_url,
+        api_key=settings.openai_api_key,
+        model=model,
+    )
+    dimension: int | None = None
+    for record in records:
+        image = record.page.image_png
+        if not image:
+            continue
+        vector = embedder.embed_image_png(image)
+        dimension = _same_dimension(dimension, vector, model)
         record.dense_vector = vector
 
 
@@ -517,13 +680,17 @@ async def execute_universal_fanout_sync(
     enabled_types = {d.destination_type for d in enabled_destinations}
     chunk_size, chunk_overlap = _resolve_chunking(product)
     chunk_strategy = _resolve_chunk_strategy(product)
+    chunk_config = _resolve_chunk_config(product)
+    # The contextual strategy reads these once per chunk, so they are read from the
+    # stored config once per tick.
+    context_model = str(chunk_config.get("context_model") or "")
+    context_max_tokens = min(max(_setting_int(chunk_config, "context_max_tokens", 100), 50), 500)
     linked_sources = [s.source for s in (product.sources or []) if s.source]
 
     settings = get_settings()
     modality_mode = _resolve_modality_mode(product)
-    caption_model = _resolve_caption_model(product)
     embedding_model = _resolve_text_embedding_model(product)
-    image_min_pixels = _resolve_image_min_pixels(product)
+    image_embedding_model = _resolve_image_embedding_model(product)
     # Vector work is per tick, not per destination: Qdrant always needs a vector,
     # and Postgres needs one only when its embedding column is on.
     pg_dest = all_by_type.get("relational_pgvector")
@@ -540,7 +707,7 @@ async def execute_universal_fanout_sync(
         "files_deleted": 0,
         "files_unchanged": 0,
         "pages_processed": 0,
-        "images_skipped": 0,
+        "pages_without_image": 0,
         "destinations_synced": [],
     }
 
@@ -557,7 +724,7 @@ async def execute_universal_fanout_sync(
     total_deleted = 0
     total_unchanged = 0
     total_pages = 0
-    total_images_skipped = 0
+    total_pages_without_image = 0
     destinations_synced: list[str] = []
 
     publish(product_id, "tick_start")
@@ -599,6 +766,9 @@ async def execute_universal_fanout_sync(
         # A `*_scrp.txt` object is a URL list, not content, and its run folder holds page
         # screenshots. Both stay out of the stores whether or not the source switch is on.
         drop_webscrape_control_objects(remote)
+        # The page images this fanout wrote for text_images mode live in this same
+        # bucket. They are output, not input.
+        drop_generated_page_images(remote)
 
         res = await db.execute(
             select(KnowledgeProductFile).where(
@@ -663,10 +833,11 @@ async def execute_universal_fanout_sync(
                             tmp_path,
                             mime_type=None,
                             original_name=key,
-                            render_pages=False,
-                            include_figures=modality_mode == "text_images",
-                            layout=chunk_strategy == "layout",
-                            image_min_pixels=image_min_pixels,
+                            # text_images stores one record per page, so the page
+                            # must arrive as an image. Every other mode needs the
+                            # text alone.
+                            render_pages=modality_mode == "text_images",
+                            layout=chunk_strategy in {"section", "layout"},
                         )
                     )
                 finally:
@@ -682,38 +853,63 @@ async def execute_universal_fanout_sync(
                     continue
 
                 if modality_mode == "text_images":
-                    source_pages, images_skipped = _caption_pages(
-                        source_pages, model=caption_model, settings=settings
+                    image_pages, text_pages = await _page_image_records(
+                        source_pages, bucket=source.minio_bucket, file_key=key
                     )
-                    if images_skipped:
-                        total_images_skipped += images_skipped
+                    pages = image_pages
+                    if text_pages:
+                        # A text format renders no page image, so those pages keep
+                        # the text path instead of being dropped.
+                        total_pages_without_image += len(text_pages)
                         publish(
                             product_id,
-                            "image_caption",
+                            "page_image_missing",
                             file_key=key,
-                            images_skipped=images_skipped,
+                            pages=len(text_pages),
                         )
-
-                # context_aware embeds the page's sentences to find topic shifts, so
-                # chunking can block. It runs in a thread: one batch embedding call
-                # per page, and the event loop keeps serving the other files.
-                similarities = None
-                if chunk_strategy == "context_aware":
-                    similarities = await asyncio.to_thread(
-                        _context_similarities,
+                        pages += await asyncio.to_thread(
+                            _chunk_pages,
+                            text_pages,
+                            chunk_size,
+                            chunk_overlap,
+                            chunk_strategy,
+                            chunk_config,
+                        )
+                else:
+                    # Two strategies block before chunking, and both run in a
+                    # thread so the event loop keeps serving the other files.
+                    # context_aware embeds the page's sentences to find topic
+                    # shifts; contextual asks a chat model for one sentence per
+                    # chunk.
+                    similarities = None
+                    if chunk_strategy == "context_aware":
+                        similarities = await asyncio.to_thread(
+                            _context_similarities,
+                            source_pages,
+                            model=embedding_model,
+                            settings=settings,
+                        )
+                    contexts = None
+                    if chunk_strategy == "contextual":
+                        contexts = await asyncio.to_thread(
+                            _chunk_contexts,
+                            source_pages,
+                            model=context_model,
+                            max_tokens=context_max_tokens,
+                            chunk_size=chunk_size,
+                            chunk_overlap=chunk_overlap,
+                            settings=settings,
+                        )
+                    pages = await asyncio.to_thread(
+                        _chunk_pages,
                         source_pages,
-                        model=embedding_model,
-                        settings=settings,
+                        chunk_size,
+                        chunk_overlap,
+                        chunk_strategy,
+                        chunk_config,
+                        similarities,
+                        contexts,
                     )
-
-                pages = await asyncio.to_thread(
-                    _chunk_pages,
-                    source_pages,
-                    chunk_size,
-                    chunk_overlap,
-                    chunk_strategy,
-                    similarities,
-                )
                 pages = _assign_image_chunk_indexes(pages)
                 if not pages:
                     # Every page was blank. Without this the writers get an empty
@@ -746,9 +942,30 @@ async def execute_universal_fanout_sync(
                     # A failure here reaches the per-file handler below, which
                     # leaves destinations_synced untouched so the next tick
                     # retries every destination. No store is half-written.
-                    await asyncio.to_thread(
-                        _embed_records, records, model=embedding_model, settings=settings
-                    )
+                    image_records = [r for r in records if r.page.image_png]
+                    text_records = [r for r in records if not r.page.image_png]
+                    if image_records:
+                        await asyncio.to_thread(
+                            _embed_image_records,
+                            image_records,
+                            model=image_embedding_model,
+                            settings=settings,
+                        )
+                    if text_records:
+                        await asyncio.to_thread(
+                            _embed_records, text_records, model=embedding_model, settings=settings
+                        )
+                    if image_records and text_records:
+                        # A collection holds one vector size, and these two groups
+                        # come from two models. The reader must hear it from the log
+                        # rather than from a dimension error on an unrelated file.
+                        logger.warning(
+                            "fanout_mixed_vector_models file=%s image_model=%s text_model=%s "
+                            "note=one of the two groups will fail to store",
+                            key,
+                            image_embedding_model,
+                            embedding_model,
+                        )
 
                 results = await asyncio.gather(
                     *[
@@ -874,7 +1091,7 @@ async def execute_universal_fanout_sync(
         "files_deleted": total_deleted,
         "files_unchanged": total_unchanged,
         "pages_processed": total_pages,
-        "images_skipped": total_images_skipped,
+        "pages_without_image": total_pages_without_image,
         "destinations_synced": destinations_synced,
     }
 

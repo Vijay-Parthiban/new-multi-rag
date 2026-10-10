@@ -199,10 +199,16 @@ export default function ChatPage() {
     // Seed the working copies from the chosen pipeline, and again on Reset.
     useEffect(() => {
         if (!selectedPipeline) return;
-        setOverridePromptId(selectedPipeline.prompt_template_id ?? "");
-        setOverrideGuardrailsId(selectedPipeline.guardrails_config_id ?? "");
-        setOverrideSettings(seedModelSettings(selectedPipeline.model_settings));
-    }, [selectedPipeline, resetNonce]);
+    setOverridePromptId(selectedPipeline.prompt_template_id ?? "");
+    setOverrideGuardrailsId(selectedPipeline.guardrails_config_id ?? "");
+    setOverrideSettings(seedModelSettings(selectedPipeline.model_settings));
+    // The pipeline's retrieval settings seed the panel too, so it opens on what the
+    // assistant endpoint would use for this pipeline and Reset returns to them. A
+    // record written before those columns existed reads as null, hence the fallbacks.
+    setRetrieveLimit(selectedPipeline.retrieve_limit ?? 20);
+    setRerankEnabled(selectedPipeline.rerank_enabled ?? true);
+    setTopK(selectedPipeline.rerank_top_k ?? 5);
+  }, [selectedPipeline, resetNonce]);
 
     // Scroll to bottom on new message
     useEffect(() => {
@@ -666,7 +672,16 @@ export default function ChatPage() {
     const settingsOverridden = MODEL_SETTING_FIELDS.some(
         (f) => overrideSettings[f.key] !== savedSettings[f.key],
     );
-    const isOverridden = promptOverridden || guardrailsOverridden || settingsOverridden;
+    // The retrieval numbers are seeded from the pipeline too, so a change to one of them
+    // is an override. Without this the Reset button would claim the panel already shows
+    // the saved values while a changed count sat in the box. The fallbacks mirror the
+    // seeding effect, for a record written before those columns existed.
+    const retrievalOverridden =
+        retrieveLimit !== (selectedPipeline?.retrieve_limit ?? 20) ||
+        rerankEnabled !== (selectedPipeline?.rerank_enabled ?? true) ||
+        topK !== (selectedPipeline?.rerank_top_k ?? 5);
+    const isOverridden =
+        promptOverridden || guardrailsOverridden || settingsOverridden || retrievalOverridden;
 
     // Reset re-seeds from the pipeline; it writes nothing back.
     const resetOverrides = () => setResetNonce((n) => n + 1);
@@ -946,7 +961,7 @@ export default function ChatPage() {
 
                                 <div className="chat-setting">
                                     <label className="chat-setting-label" htmlFor="chat-override-limit">
-                                        Retrieve limit
+                                        Retrieval count
                                     </label>
                                     <input
                                         id="chat-override-limit"
@@ -959,7 +974,9 @@ export default function ChatPage() {
                                         onChange={(e) => setRetrieveLimit(parseInt(e.target.value) || 1)}
                                     />
                                     <span className="chat-setting-hint">
-                                        Chunks fetched before reranking.
+                                        {rerankEnabled
+                                            ? "How many chunks the search returns, before reranking."
+                                            : "How many chunks the search returns. All of them reach the prompt."}
                                     </span>
                                 </div>
 
@@ -981,14 +998,14 @@ export default function ChatPage() {
                                 {rerankEnabled && (
                                     <div className="chat-setting">
                                         <label className="chat-setting-label" htmlFor="chat-override-chunks">
-                                            Top K (chunks)
+                                            Rerank count
                                         </label>
                                         <input
                                             id="chat-override-chunks"
                                             className="input"
                                             type="number"
                                             min={1}
-                                            max={20}
+                                            max={50}
                                             value={topK}
                                             onChange={(e) => setTopK(parseInt(e.target.value) || 1)}
                                         />

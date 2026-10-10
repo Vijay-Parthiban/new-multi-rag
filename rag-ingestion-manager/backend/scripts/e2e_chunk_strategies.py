@@ -12,7 +12,11 @@ Proves, against a running ingestion API and live destination stores:
      change reaches the stores through Apply Profile.
   6. ``context_aware`` stores records on the live embedding path, so the batch
      embedding call the strategy needs is exercised against the real proxy.
-  7. Every destination holds the same number of records for the file, so no store
+  7. ``page_level`` stores one record per page, and the record count follows the
+     page character limit the profile sets.
+  8. ``sentence_window`` stores a window record plus the sentences inside it, and
+     every sentence names a window that is present in the same store.
+  9. Every destination holds the same number of records for the file, so no store
      silently dropped a record type.
 
 Usage:
@@ -44,7 +48,9 @@ NAMESPACE_KEY = {
 FILE_KEY = "e2e_strategy_notes.txt"
 CHUNK_SIZE = 300
 CHUNK_OVERLAP = 40
-SETTLE_TIMEOUT_S = 180
+# The test product links a real source bucket, so each strategy change re-syncs that
+# whole bucket. The wait covers this file's records appearing behind the rest.
+SETTLE_TIMEOUT_S = 600
 
 # Six blocks: two headings and four paragraphs. The section strategy stores one
 # record per block, so the expected count is structural, not a guess.
@@ -64,7 +70,9 @@ DOCUMENT = "\n\n".join(BLOCKS)
 
 # The same splitter the fanout calls, so the expected counts are not guesses.
 from src.ingestion_service.utils.text_splitter import (  # noqa: E402
+    chunk_page,
     chunk_parent_child,
+    chunk_sentence_window,
     chunk_text,
     split_units,
 )
@@ -72,6 +80,12 @@ from src.ingestion_service.utils.text_splitter import (  # noqa: E402
 EXPECTED_SECTION_RECORDS = len(split_units(DOCUMENT, "section"))
 EXPECTED_FIXED_RECORDS = len(chunk_text(DOCUMENT, CHUNK_SIZE, CHUNK_OVERLAP, "fixed"))
 EXPECTED_PARENT_CHILD = chunk_parent_child(DOCUMENT, CHUNK_SIZE, CHUNK_OVERLAP)
+# The page character limit the profile sets for page_level, and the window the
+# profile sets for sentence_window.
+PAGE_LEVEL_MAX_CHARS = 200
+WINDOW_SENTENCES = 1
+EXPECTED_PAGE_LEVEL_RECORDS = len(chunk_page(DOCUMENT, PAGE_LEVEL_MAX_CHARS))
+EXPECTED_SENTENCE_WINDOW = chunk_sentence_window(DOCUMENT, WINDOW_SENTENCES)
 
 failures: list[str] = []
 
@@ -87,14 +101,25 @@ def check(condition: bool, label: str, detail: Any = None) -> None:
 def inspect(client: httpx.Client, api: str, product_id: str, dest: str) -> dict[str, Any]:
     """Read one store scoped to FILE_KEY.
 
-    The store sample cap applies to a whole store, so a per-file read has to ask
+    The store sample cap applies to a whole store, so a per-file count has to ask
     for that file or a large store hides some of its records.
+
+    The call is retried and its failure is returned, not raised: an inspect reads a
+    live store while the API also serves the fanout for a product that syncs the
+    whole bucket, and a dropped connection must not end the run.
     """
-    resp = client.get(
-        f"{api}/api/knowledge-products/{product_id}/inspect/{dest}",
-        params={"file_key": FILE_KEY},
-    )
-    return resp.json() if resp.status_code == 200 else {"error": resp.text}
+    last_error: Any = None
+    for _ in range(3):
+        try:
+            resp = client.get(
+                f"{api}/api/knowledge-products/{product_id}/inspect/{dest}",
+                params={"file_key": FILE_KEY},
+            )
+            return resp.json() if resp.status_code == 200 else {"error": resp.text}
+        except Exception as exc:
+            last_error = exc
+            time.sleep(3)
+    return {"error": f"inspect failed after 3 attempts: {last_error}"}
 
 
 def dest_file_records(dest: str, payload: dict[str, Any], file_key: str) -> list[dict[str, Any]]:
@@ -163,17 +188,24 @@ def wait_for_records(
     return {"ok": ok, "state": state}
 
 
-def wait_for_parent_child(
+def wait_for_nested_records(
     client: httpx.Client,
     api: str,
     product_id: str,
     *,
+    parent_kind: str,
+    child_kind: str,
     min_parents: int,
     min_children: int,
     timeout_s: int = SETTLE_TIMEOUT_S,
 ) -> dict[str, Any]:
-    """Poll until every destination holds parents and children, and every child
-    resolves to a parent stored beside it."""
+    """Poll until every destination holds both record kinds, and every child
+    resolves to a parent stored beside it.
+
+    ``parent_child`` stores parent and child records, and ``sentence_window``
+    stores window and sentence records. Both build the same reference, so one
+    helper covers the two.
+    """
     deadline = time.time() + timeout_s
     state: dict[str, Any] = {}
     ok = False
@@ -183,16 +215,10 @@ def wait_for_parent_child(
         for dest in DEST_TYPES:
             payload = inspect(client, api, product_id, dest)
             records = dest_file_records(dest, payload, FILE_KEY)
-            parents = [r for r in records if record_type_of(r) == "parent"]
-            children = [r for r in records if record_type_of(r) == "child"]
-            stored = {
-                f"{r.get('page_index')}:{r.get('chunk_index')}"
-                for r in parents
-            }
-            dangling = [
-                c for c in children
-                if str(c.get("parent_ref") or "") not in stored
-            ]
+            parents = [r for r in records if record_type_of(r) == parent_kind]
+            children = [r for r in records if record_type_of(r) == child_kind]
+            stored = {f"{r.get('page_index')}:{r.get('chunk_index')}" for r in parents}
+            dangling = [c for c in children if str(c.get("parent_ref") or "") not in stored]
             state[dest] = {
                 "parents": len(parents),
                 "children": len(children),
@@ -209,12 +235,27 @@ def wait_for_parent_child(
 
 
 def ledger_row(client: httpx.Client, api: str, product_id: str) -> dict[str, Any] | None:
-    resp = client.get(f"{api}/api/knowledge-products/{product_id}/files", params={"limit": 50})
-    if resp.status_code != 200:
-        return None
-    for row in resp.json().get("files", []):
-        if row.get("file_key") == FILE_KEY:
-            return row
+    """The ledger row for FILE_KEY, or None.
+
+    The route orders by ``updated_at`` and caps one page at 200 rows, and a product
+    that links a whole bucket holds more rows than one page. So the search pages
+    until it finds the row or runs out of rows.
+    """
+    offset = 0
+    while offset < 1000:
+        resp = client.get(
+            f"{api}/api/knowledge-products/{product_id}/files",
+            params={"limit": 200, "offset": offset},
+        )
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        for row in body.get("files", []):
+            if row.get("file_key") == FILE_KEY:
+                return row
+        offset += 200
+        if offset >= int(body.get("total") or 0):
+            return None
     return None
 
 
@@ -283,10 +324,23 @@ def apply_profile(client: httpx.Client, api: str, product_id: str) -> dict[str, 
 
 
 def set_strategy(
-    client: httpx.Client, api: str, profile_id: str, product_id: str, strategy: str
+    client: httpx.Client,
+    api: str,
+    profile_id: str,
+    product_id: str,
+    strategy: str,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Switch a profile's strategy and make the product re-ingest with it."""
-    resp = patch_profile(client, api, profile_id, {"chunk_strategy": strategy})
+    """Switch a profile's strategy and make the product re-ingest with it.
+
+    ``config`` carries the settings only the new strategy reads. The send replaces
+    the whole stored config, so the settings of the strategy being left leave with
+    it.
+    """
+    body: dict[str, Any] = {"chunk_strategy": strategy}
+    if config is not None:
+        body["chunk_config"] = config
+    resp = patch_profile(client, api, profile_id, body)
     if resp.status_code != 200:
         return {"error": resp.text, "status": resp.status_code}
     return apply_profile(client, api, product_id)
@@ -301,7 +355,9 @@ def main() -> int:
     api = args.base_url.rstrip("/")
     report: dict[str, Any] = {}
 
-    with httpx.Client(timeout=60.0) as client:
+    # 300s: an inspect reads four live stores, and the API also serves the fanout
+    # while the test product syncs the whole bucket.
+    with httpx.Client(timeout=300.0) as client:
         try:
             client.get(f"{api}/api/knowledge-products").raise_for_status()
         except Exception as exc:
@@ -409,10 +465,12 @@ def main() -> int:
         check("error" not in applied, "switching to parent_child re-copies and re-syncs", applied)
         expected_parents = len([p for p in EXPECTED_PARENT_CHILD if p.record_type == "parent"])
         expected_children = len([p for p in EXPECTED_PARENT_CHILD if p.record_type == "child"])
-        parent_child = wait_for_parent_child(
+        parent_child = wait_for_nested_records(
             client,
             api,
             product["id"],
+            parent_kind="parent",
+            child_kind="child",
             min_parents=expected_parents,
             min_children=expected_children,
         )
@@ -477,6 +535,77 @@ def main() -> int:
         check(
             len(set(counts.values())) == 1,
             "the four destinations agree on the context_aware record count",
+            counts,
+        )
+
+        print("\n=== 7. The page_level strategy cuts the page at its own limit ===")
+        applied = set_strategy(
+            client,
+            api,
+            profile["id"],
+            product["id"],
+            "page_level",
+            {"max_page_chars": PAGE_LEVEL_MAX_CHARS},
+        )
+        check("error" not in applied, "switching to page_level re-copies and re-syncs", applied)
+        page_level = wait_for_records(
+            client, api, product["id"], count=EXPECTED_PAGE_LEVEL_RECORDS
+        )
+        report["page_level"] = page_level["state"]
+        check(
+            page_level["ok"],
+            f"every destination holds {EXPECTED_PAGE_LEVEL_RECORDS} page records",
+            page_level["state"],
+        )
+        check(
+            PAGE_LEVEL_MAX_CHARS < len(DOCUMENT),
+            "the page limit is below the document, so the cut is exercised",
+            {"limit": PAGE_LEVEL_MAX_CHARS, "document": len(DOCUMENT)},
+        )
+        check(
+            all(state["types"] == ["chunk"] for state in page_level["state"].values()),
+            "a page_level profile stores plain chunks",
+            {d: s["types"] for d, s in page_level["state"].items()},
+        )
+
+        print("\n=== 8. The sentence_window strategy stores windows and their sentences ===")
+        applied = set_strategy(
+            client,
+            api,
+            profile["id"],
+            product["id"],
+            "sentence_window",
+            {"window_sentences": WINDOW_SENTENCES},
+        )
+        check(
+            "error" not in applied, "switching to sentence_window re-copies and re-syncs", applied
+        )
+        expected_windows = len(
+            [p for p in EXPECTED_SENTENCE_WINDOW if p.record_type == "window"]
+        )
+        expected_sentences = len(
+            [p for p in EXPECTED_SENTENCE_WINDOW if p.record_type == "sentence"]
+        )
+        sentence_window = wait_for_nested_records(
+            client,
+            api,
+            product["id"],
+            parent_kind="window",
+            child_kind="sentence",
+            min_parents=expected_windows,
+            min_children=expected_sentences,
+        )
+        report["sentence_window"] = sentence_window["state"]
+        check(
+            sentence_window["ok"],
+            f"every destination holds {expected_windows} windows and {expected_sentences} "
+            "sentences, and every sentence names a stored window",
+            sentence_window["state"],
+        )
+        counts = {d: s["parents"] + s["children"] for d, s in sentence_window["state"].items()}
+        check(
+            len(set(counts.values())) == 1,
+            "the four destinations agree on the sentence_window record count",
             counts,
         )
 

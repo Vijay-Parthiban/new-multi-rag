@@ -224,6 +224,151 @@ def test_chunk_pages_numbers_parents_before_their_children() -> None:
     assert set(kinds) == {"parent", "child"}
 
 
+def test_parent_child_honours_an_explicit_child_size() -> None:
+    """A profile that sets a child window gets it, up to half the parent size."""
+    doc = "\n\n".join(
+        " ".join(f"Sentence {n} of block {b}." for n in range(12)) for b in range(2)
+    )
+    default_children = [
+        plan for plan in chunk_parent_child(doc, 600, 40) if plan.record_type == "child"
+    ]
+    small_children = [
+        plan
+        for plan in chunk_parent_child(doc, 600, 40, child_size=100, child_overlap=20)
+        if plan.record_type == "child"
+    ]
+
+    assert all(len(plan.text) <= 300 for plan in default_children)
+    assert all(len(plan.text) <= 100 for plan in small_children)
+    assert len(small_children) > len(default_children)
+
+
+def test_semantic_breakpoint_amount_moves_the_boundary() -> None:
+    """One field, one meaning: a larger amount makes fewer, larger groups."""
+    text = ". ".join(f"Sentence number {n}" for n in range(12)) + "."
+    similarities = [0.9, 0.8, 0.7, 0.3, 0.2, 0.9, 0.8, 0.7, 0.3, 0.2, 0.9]
+    config = {"semantic_threshold_type": "percentile"}
+
+    many = chunk_text(
+        text, 8000, 0, "context_aware", similarities=similarities,
+        config={**config, "semantic_threshold_amount": 0.5},
+    )
+    few = chunk_text(
+        text, 8000, 0, "context_aware", similarities=similarities,
+        config={**config, "semantic_threshold_amount": 3.0},
+    )
+
+    assert len(many) > len(few)
+
+
+def test_semantic_threshold_falls_back_on_a_bad_stored_value() -> None:
+    """A stored value that names no measure must not fail the file."""
+    text = ". ".join(f"Sentence number {n}" for n in range(10)) + "."
+    similarities = [0.9, 0.9, 0.9, 0.05, 0.9, 0.9, 0.9, 0.9, 0.9]
+    default = chunk_text(text, 8000, 0, "context_aware", similarities=similarities)
+    broken = chunk_text(
+        text,
+        8000,
+        0,
+        "context_aware",
+        similarities=similarities,
+        config={"semantic_threshold_type": "nonsense", "semantic_threshold_amount": "x"},
+    )
+
+    assert broken == default
+
+
+def test_page_level_stores_one_record_per_page() -> None:
+    from src.ingestion_service.utils.text_splitter import chunk_page
+
+    assert len(chunk_page("A short page.")) == 1
+    assert len(chunk_page("word " * 4000)) > 1
+
+
+def test_page_level_cuts_a_long_page_on_paragraph_boundaries() -> None:
+    page = "\n\n".join(f"Paragraph {n} " + "x" * 200 for n in range(10))
+    pages = _chunk_pages(
+        [FilePage(page_index=0, text=page)], 1000, 100, "page_level", {"max_page_chars": 500}
+    )
+
+    assert len(pages) > 1
+    assert all(len(part.text) <= 600 for part in pages)
+    assert [part.chunk_index for part in pages] == list(range(len(pages)))
+
+
+def test_sentence_window_stores_windows_before_their_sentences() -> None:
+    doc = " ".join(f"Sentence number {n}." for n in range(9))
+    pages = _chunk_pages(
+        [FilePage(page_index=0, text=doc)], 1000, 0, "sentence_window", {"window_sentences": 1}
+    )
+    kinds = [page.record_type for page in pages]
+    by_index = {page.chunk_index: page for page in pages}
+    sentences = [page for page in pages if page.record_type == "sentence"]
+
+    assert kinds.count("window") == 3
+    assert len(sentences) == 9
+    assert kinds.index("sentence") > kinds.index("window")
+    for sentence in sentences:
+        parent_index = int(sentence.parent_ref.split(":")[1])
+        assert sentence.parent_ref.startswith("0:")
+        assert by_index[parent_index].record_type == "window"
+        assert sentence.text in by_index[parent_index].text
+
+
+def test_contextual_puts_the_context_sentence_in_front() -> None:
+    from src.ingestion_service.utils.text_splitter import chunk_textual
+
+    plans = chunk_textual(_DOCUMENT, 200, 0, context={0: "A resume of one engineer."})
+
+    assert plans[0].text.startswith("A resume of one engineer.\n\n")
+    assert all(plan.record_type == "chunk" for plan in plans)
+
+
+def test_contextual_without_a_context_keeps_the_recursive_chunks() -> None:
+    """A chat model that answered nothing must not fail the file."""
+    from src.ingestion_service.utils.text_splitter import chunk_textual
+
+    plain = [p.text for p in chunk_textual(_DOCUMENT, 200, 0)]
+    with_context = _chunk_pages(
+        [FilePage(page_index=0, text=_DOCUMENT)], 200, 0, "contextual", None, None, {}
+    )
+
+    assert [p.text for p in with_context] == plain
+    assert plain == chunk_text(_DOCUMENT, 200, 0)
+
+
+def test_validate_chunk_config_accepts_the_empty_config() -> None:
+    from apps.api.routes.chunk_strategies import validate_chunk_config
+
+    assert validate_chunk_config("recursive", None) == []
+    assert validate_chunk_config("recursive", {}) == []
+    assert validate_chunk_config("sentence_window", {"window_sentences": 3}) == []
+
+
+def test_validate_chunk_config_rejects_an_unknown_key_and_a_bad_range() -> None:
+    from apps.api.routes.chunk_strategies import validate_chunk_config
+
+    unknown = validate_chunk_config("sentence_window", {"bogus": 1})
+    out_of_range = validate_chunk_config("sentence_window", {"window_sentences": 99})
+    bad_select = validate_chunk_config("context_aware", {"semantic_threshold_type": "mean"})
+
+    assert unknown and "bogus" in unknown[0]
+    assert out_of_range and "Window Sentences" in out_of_range[0]
+    assert bad_select and "Breakpoint Type" in bad_select[0]
+
+
+def test_validate_chunk_config_leaves_a_retired_strategy_alone() -> None:
+    """A profile stored before the strategy list changed must still save.
+
+    ``layout`` is no longer offered, so its stored config has no catalogue to check
+    against, and refusing it would lock the row.
+    """
+    from apps.api.routes.chunk_strategies import validate_chunk_config
+
+    assert validate_chunk_config("layout", {"anything": 1}) == []
+    assert validate_chunk_config("sentence", {"anything": 1}) == []
+
+
 def test_an_unknown_strategy_raises_rather_than_chunking_silently() -> None:
     with pytest.raises(ValueError):
         split_units(_DOCUMENT, "semantic_magic")

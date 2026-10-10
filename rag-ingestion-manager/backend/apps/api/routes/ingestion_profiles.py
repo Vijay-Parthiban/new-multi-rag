@@ -20,13 +20,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.api.routes.chunk_strategies import (
+    chunk_strategy_options,
+    default_chunk_config,
+    validate_chunk_config,
+)
 from apps.api.routes.knowledge_destination_schemas import normalize_destination_payload
 from src.shared.config.settings import get_settings
 from src.shared.db.models import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_STRATEGY,
-    DEFAULT_IMAGE_MIN_PIXELS,
+    DEFAULT_IMAGE_EMBEDDING_MODEL,
     DEFAULT_MODALITY_MODE,
     ChunkStrategy,
     IngestionModality,
@@ -49,8 +54,10 @@ class IngestionProfileDestinationInput(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-# The stored column is the ChunkStrategy enum. The API takes the same seven names
-# as a Literal, so a bad value is a 422 at the edge and never reaches the column.
+# The stored column is the ChunkStrategy enum. The API takes the same names as a
+# Literal, so a bad value is a 422 at the edge and never reaches the column.
+# ``sentence`` and ``layout`` are not offered in the form any more. They stay here
+# because a profile that already stores one must still be readable and patchable.
 ChunkStrategyName = Literal[
     "recursive",
     "fixed",
@@ -59,6 +66,9 @@ ChunkStrategyName = Literal[
     "layout",
     "context_aware",
     "parent_child",
+    "contextual",
+    "page_level",
+    "sentence_window",
 ]
 
 
@@ -69,12 +79,17 @@ class IngestionProfileCreateRequest(BaseModel):
     chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=100, le=8000)
     chunk_overlap: int = Field(default=DEFAULT_CHUNK_OVERLAP, ge=0, le=2000)
     chunk_strategy: ChunkStrategyName = DEFAULT_CHUNK_STRATEGY
+    # The selected strategy's own settings. The catalogue names each key, its
+    # range and its default; validate_chunk_config enforces them.
+    chunk_config: dict[str, Any] | None = Field(default=None)
     modality_mode: Literal["text", "text_images"] = DEFAULT_MODALITY_MODE
     text_embedding_model: str = Field(
         default=settings.embedding_model, min_length=1, max_length=128
     )
-    caption_model: str | None = Field(default=settings.caption_model, max_length=128)
-    image_min_pixels: int = Field(default=DEFAULT_IMAGE_MIN_PIXELS, ge=0)
+    # Only the endpoint the profile uses, so a free-text name is fine. An empty
+    # string is rejected by _validate_modality with its own error code, which is
+    # why this field carries no min_length.
+    image_embedding_model: str | None = Field(default=None, max_length=128)
     destinations: list[IngestionProfileDestinationInput] = Field(default_factory=list)
 
 
@@ -85,10 +100,10 @@ class IngestionProfileUpdateRequest(BaseModel):
     chunk_size: int | None = Field(default=None, ge=100, le=8000)
     chunk_overlap: int | None = Field(default=None, ge=0, le=2000)
     chunk_strategy: ChunkStrategyName | None = Field(default=None)
+    chunk_config: dict[str, Any] | None = Field(default=None)
     modality_mode: Literal["text", "text_images"] | None = Field(default=None)
     text_embedding_model: str | None = Field(default=None, min_length=1, max_length=128)
-    caption_model: str | None = Field(default=None, max_length=128)
-    image_min_pixels: int | None = Field(default=None, ge=0)
+    image_embedding_model: str | None = Field(default=None, max_length=128)
     destinations: list[IngestionProfileDestinationInput] | None = Field(default=None)
 
 
@@ -128,8 +143,8 @@ def _profile_to_dict(profile: IngestionProfile, product_count: int = 0) -> dict[
             else str(profile.modality_mode or DEFAULT_MODALITY_MODE)
         ),
         "text_embedding_model": profile.text_embedding_model,
-        "caption_model": profile.caption_model,
-        "image_min_pixels": profile.image_min_pixels,
+        "image_embedding_model": profile.image_embedding_model,
+        "chunk_config": profile.chunk_config or {},
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
         "product_count": product_count,
@@ -164,26 +179,43 @@ def _chunk_error() -> HTTPException:
     )
 
 
-def _validate_chunking(chunk_size: int, chunk_overlap: int) -> None:
+def _validate_chunking(
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: str = DEFAULT_CHUNK_STRATEGY,
+    chunk_config: dict[str, Any] | None = None,
+) -> None:
     if chunk_overlap >= chunk_size:
         raise _chunk_error()
+    messages = validate_chunk_config(strategy, chunk_config)
+    if messages:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "CHUNK_CONFIG_INVALID", "message": messages[0]},
+        )
 
 
 def _validate_modality(
-    modality_mode: str, caption_model: str | None, effective_caption: str | None
+    modality_mode: str,
+    image_embedding_model: str | None,
+    effective_image_model: str | None,
 ) -> None:
-    """Reject an images profile with no caption model, at save time.
+    """Reject an images profile with no multimodal embedding model, at save time.
 
-    The fanout falls back to the environment caption model, so this is not a
-    crash guard: it tells the user now instead of silently captioning with a
-    different model.
+    An absent model resolves to the environment one, so an unset field is fine and
+    only an explicit empty string fails. The fanout embeds every page image with
+    this model, and a silent fallback to the environment value would store vectors
+    the profile does not describe.
     """
-    if modality_mode == "text_images" and not (caption_model or effective_caption):
+    if modality_mode != "text_images":
+        return
+    resolved = image_embedding_model if image_embedding_model is not None else effective_image_model
+    if not resolved:
         raise HTTPException(
             status_code=422,
             detail={
-                "code": "CAPTION_MODEL_REQUIRED",
-                "message": "modality_mode 'text_images' needs a caption_model.",
+                "code": "IMAGE_EMBEDDING_MODEL_REQUIRED",
+                "message": "modality_mode 'text_images' needs an image_embedding_model.",
             },
         )
 
@@ -237,6 +269,17 @@ async def list_ingestion_profiles(db: AsyncSession = Depends(get_db)):
     return [_profile_to_dict(p, counts.get(p.id, 0)) for p in profiles]
 
 
+@router.get("/chunk-strategies")
+async def list_chunk_strategies():
+    """The chunk strategies the profile form offers, with the settings each takes.
+
+    The form renders this list, so the strategy knowledge stays here. Declared
+    before ``/{profile_id}``: FastAPI matches routes in registration order, and a
+    path parameter would otherwise swallow this literal path.
+    """
+    return chunk_strategy_options()
+
+
 @router.post("", status_code=201)
 async def create_ingestion_profile(
     req: IngestionProfileCreateRequest, db: AsyncSession = Depends(get_db)
@@ -248,8 +291,10 @@ async def create_ingestion_profile(
             status_code=400, detail=f"Ingestion Profile '{req.name}' already exists."
         )
 
-    _validate_chunking(req.chunk_size, req.chunk_overlap)
-    _validate_modality(req.modality_mode, req.caption_model, None)
+    _validate_chunking(req.chunk_size, req.chunk_overlap, req.chunk_strategy, req.chunk_config)
+    _validate_modality(
+        req.modality_mode, req.image_embedding_model, settings.multimodal_embedding_model
+    )
 
     profile = IngestionProfile(
         name=req.name,
@@ -258,10 +303,10 @@ async def create_ingestion_profile(
         chunk_size=req.chunk_size,
         chunk_overlap=req.chunk_overlap,
         chunk_strategy=ChunkStrategy(req.chunk_strategy),
+        chunk_config=dict(req.chunk_config or {}),
         modality_mode=IngestionModality(req.modality_mode),
         text_embedding_model=req.text_embedding_model,
-        caption_model=req.caption_model or None,
-        image_min_pixels=req.image_min_pixels,
+        image_embedding_model=req.image_embedding_model or DEFAULT_IMAGE_EMBEDDING_MODEL,
     )
     db.add(profile)
     await db.flush()
@@ -317,29 +362,43 @@ async def update_ingestion_profile(
     # Validate the effective pair, so a PATCH that sends only one half is still checked.
     next_size = req.chunk_size if req.chunk_size is not None else profile.chunk_size
     next_overlap = req.chunk_overlap if req.chunk_overlap is not None else profile.chunk_overlap
-    _validate_chunking(next_size, next_overlap)
+    current_strategy = (
+        profile.chunk_strategy.value
+        if hasattr(profile.chunk_strategy, "value")
+        else str(profile.chunk_strategy or DEFAULT_CHUNK_STRATEGY)
+    )
+    next_strategy = req.chunk_strategy or current_strategy
+    if req.chunk_config is not None:
+        # Only a config the caller sends is checked, so a row that stores a key
+        # this version no longer knows cannot block an unrelated edit.
+        next_config = dict(req.chunk_config)
+    elif req.chunk_strategy is not None and req.chunk_strategy != current_strategy:
+        # The strategy moved with no settings sent. The old settings belong to the
+        # old strategy, so they are replaced by the new strategy's defaults.
+        next_config = default_chunk_config(next_strategy)
+    else:
+        next_config = dict(profile.chunk_config or {})
+
+    _validate_chunking(next_size, next_overlap, next_strategy, req.chunk_config)
     profile.chunk_size = next_size
     profile.chunk_overlap = next_overlap
-
-    if req.chunk_strategy is not None:
-        profile.chunk_strategy = ChunkStrategy(req.chunk_strategy)
+    profile.chunk_strategy = ChunkStrategy(next_strategy)
+    profile.chunk_config = next_config
 
     # Validate the effective modality pair, so a PATCH that switches to images
-    # without sending a caption model is still checked against the stored one.
+    # without sending a model is still checked against the stored one.
     current_mode = (
         profile.modality_mode.value
         if hasattr(profile.modality_mode, "value")
         else str(profile.modality_mode or DEFAULT_MODALITY_MODE)
     )
     next_mode = req.modality_mode if req.modality_mode is not None else current_mode
-    _validate_modality(next_mode, req.caption_model, profile.caption_model)
+    _validate_modality(next_mode, req.image_embedding_model, profile.image_embedding_model)
     profile.modality_mode = IngestionModality(next_mode)
     if req.text_embedding_model is not None:
         profile.text_embedding_model = req.text_embedding_model
-    if req.caption_model is not None:
-        profile.caption_model = req.caption_model or None
-    if req.image_min_pixels is not None:
-        profile.image_min_pixels = req.image_min_pixels
+    if req.image_embedding_model is not None:
+        profile.image_embedding_model = req.image_embedding_model
 
     if req.destinations is not None:
         existing_map = {d.destination_type: d for d in profile.destinations}
