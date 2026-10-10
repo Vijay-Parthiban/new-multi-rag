@@ -19,6 +19,12 @@ const GUARD_LABELS: Record<string, GuardMeta> = {
     prompt_injection: { title: "Prompt injection", tone: "security" },
     secrets_present: { title: "Secrets present", tone: "security" },
     mentions_drugs: { title: "Mentions drugs", tone: "toxic" },
+    // Rails the NeMo engine runs. Same tones as the validators they sit beside.
+    self_check_input: { title: "Input check failed", tone: "security" },
+    jailbreak_heuristics: { title: "Jailbreak attempt", tone: "security" },
+    pii_retrieval: { title: "Personal information in the sources", tone: "pii" },
+    self_check_output: { title: "Output check failed", tone: "security" },
+    self_check_facts: { title: "Answer not supported by the sources", tone: "security" },
 };
 
 /** "secrets_present" reads as "Secrets present" rather than a raw slug. */

@@ -42,6 +42,16 @@ LLM_TIMEOUT_S = float(os.environ.get("GUARDRAIL_LLM_TIMEOUT_S", "20"))
 # response body comes back empty, so give them room to answer. 512 is measured to be enough.
 LLM_MAX_TOKENS = int(os.environ.get("GUARDRAIL_LLM_MAX_TOKENS", "512"))
 
+# NeMo Guardrails is the rail engine. It is optional, exactly like a Hub validator package:
+# when the import fails the service still serves the validators below, and the catalog marks
+# every rail unavailable with this reason. The message is reported, never raised.
+try:
+    import nemoguardrails  # noqa: F401
+
+    NEMO_IMPORT_ERROR: str | None = None
+except Exception as _exc:  # noqa: BLE001 - a missing engine must not stop the service
+    NEMO_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"[:200]
+
 
 # ── LLM judges, backed by the local LiteLLM proxy ────────────────────
 
@@ -123,6 +133,29 @@ class LlmToxicLanguage(_LlmJudge):
 
 # ── Catalog ──────────────────────────────────────────────────────────
 
+# The Presidio entity types offered by the two PII guards. One list, so the validator guard
+# and the retrieval rail never drift apart.
+PII_ENTITY_OPTIONS: list[dict[str, str]] = [
+    {"id": "EMAIL_ADDRESS", "label": "Email Address"},
+    {"id": "PHONE_NUMBER", "label": "Phone Number"},
+    {"id": "CREDIT_CARD", "label": "Credit Card"},
+    {"id": "US_SSN", "label": "US SSN"},
+    {"id": "IP_ADDRESS", "label": "IP Address"},
+    {"id": "PERSON", "label": "Person Name"},
+    {"id": "LOCATION", "label": "Location"},
+    {"id": "DATE_TIME", "label": "Date / Time"},
+    {"id": "URL", "label": "URL"},
+    {"id": "DOMAIN_NAME", "label": "Domain Name"},
+    {"id": "US_PASSPORT", "label": "US Passport"},
+    {"id": "US_DRIVER_LICENSE", "label": "US Driver License"},
+    {"id": "US_BANK_NUMBER", "label": "US Bank Number"},
+    {"id": "US_ITIN", "label": "US ITIN"},
+    {"id": "IBAN_CODE", "label": "IBAN Code"},
+    {"id": "CRYPTO", "label": "Crypto Wallet"},
+    {"id": "MEDICAL_LICENSE", "label": "Medical License"},
+    {"id": "NRP", "label": "Nationality / Religion / Political group"},
+]
+
 # Each entry maps one catalog id to one real validator. `module` is imported at startup so
 # @register_validator runs; `alias` is then resolvable through get_validator_class.
 _VALIDATORS: list[dict[str, Any]] = [
@@ -175,26 +208,7 @@ _VALIDATORS: list[dict[str, Any]] = [
                 "help": "Entity types to look for. Pick from the list.",
                 "required": True,
                 "default": ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IP_ADDRESS"],
-                "options": [
-                    {"id": "EMAIL_ADDRESS", "label": "Email Address"},
-                    {"id": "PHONE_NUMBER", "label": "Phone Number"},
-                    {"id": "CREDIT_CARD", "label": "Credit Card"},
-                    {"id": "US_SSN", "label": "US SSN"},
-                    {"id": "IP_ADDRESS", "label": "IP Address"},
-                    {"id": "PERSON", "label": "Person Name"},
-                    {"id": "LOCATION", "label": "Location"},
-                    {"id": "DATE_TIME", "label": "Date / Time"},
-                    {"id": "URL", "label": "URL"},
-                    {"id": "DOMAIN_NAME", "label": "Domain Name"},
-                    {"id": "US_PASSPORT", "label": "US Passport"},
-                    {"id": "US_DRIVER_LICENSE", "label": "US Driver License"},
-                    {"id": "US_BANK_NUMBER", "label": "US Bank Number"},
-                    {"id": "US_ITIN", "label": "US ITIN"},
-                    {"id": "IBAN_CODE", "label": "IBAN Code"},
-                    {"id": "CRYPTO", "label": "Crypto Wallet"},
-                    {"id": "MEDICAL_LICENSE", "label": "Medical License"},
-                    {"id": "NRP", "label": "Nationality / Religion / Political group"},
-                ],
+                "options": PII_ENTITY_OPTIONS,
             },
         ],
     },
@@ -231,6 +245,155 @@ _VALIDATORS: list[dict[str, Any]] = [
     },
 ]
 
+# ── NeMo rails ───────────────────────────────────────────────────────
+
+# The rails the engine runs itself. A rail is not a Guardrails AI validator, so it has no
+# module and no alias: the engine implements it. `rail: True` tells the module check to ask
+# about the engine instead of a Hub package. The catalog drives the Guard Config page, so a
+# rail is configured exactly like a validator: same param schema, same on_fail options.
+RAIL_SPECS: list[dict[str, Any]] = [
+    {
+        "id": "self_check_input",
+        "label": "Self Check Input",
+        "description": "Ask a judge model whether the user message is allowed, before retrieval runs.",
+        "category": "Content Safety",
+        "phase": "input",
+        "kind": "llm",
+        "rail": True,
+        "params": [
+            {
+                "name": "policy",
+                "type": "text",
+                "label": "Policy",
+                "help": "What the message must not do. Leave empty for the default policy.",
+                "required": False,
+                "default": "",
+            },
+            {
+                "name": "model",
+                "type": "string",
+                "label": "Judge model",
+                "help": f"Leave empty to use {LLM_MODEL}. A rail spends one model call per turn.",
+                "required": False,
+                "default": "",
+            },
+        ],
+    },
+    {
+        "id": "jailbreak_heuristics",
+        "label": "Jailbreak Heuristics",
+        "description": "Catch instruction-override attempts (role play, ignore your rules, developer mode).",
+        "category": "Content Safety",
+        "phase": "input",
+        "kind": "llm",
+        "rail": True,
+        "params": [
+            {
+                "name": "policy",
+                "type": "text",
+                "label": "Policy",
+                "help": "What counts as an override attempt. Leave empty for the default policy.",
+                "required": False,
+                "default": "",
+            },
+            {
+                "name": "model",
+                "type": "string",
+                "label": "Judge model",
+                "help": f"Leave empty to use {LLM_MODEL}. This rail spends one model call per turn.",
+                "required": False,
+                "default": "",
+            },
+        ],
+    },
+    {
+        "id": "pii_retrieval",
+        "label": "PII in Retrieved Chunks",
+        "description": "Check the passages retrieved for this question. Use Repair to mask, or Block to stop the turn.",
+        "category": "Privacy",
+        "phase": "retrieval",
+        "kind": "model",
+        "rail": True,
+        "params": [
+            {
+                "name": "pii_entities",
+                "type": "string_list",
+                "label": "PII types",
+                "help": "Entity types to look for. Pick from the list.",
+                "required": False,
+                "default": ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IP_ADDRESS"],
+                "options": PII_ENTITY_OPTIONS,
+            },
+            {
+                "name": "score_threshold",
+                "type": "number",
+                "label": "Confidence",
+                "help": "Ignore a hit below this confidence. Lower finds more.",
+                "required": False,
+                "default": 0.2,
+                "min": 0.0,
+                "max": 1.0,
+            },
+        ],
+    },
+    {
+        "id": "self_check_output",
+        "label": "Self Check Output",
+        "description": "Ask a judge model whether the finished answer is allowed, before the user sees it.",
+        "category": "Content Safety",
+        "phase": "output",
+        "kind": "llm",
+        "rail": True,
+        "params": [
+            {
+                "name": "policy",
+                "type": "text",
+                "label": "Policy",
+                "help": "What the answer must not do. Leave empty for the default policy.",
+                "required": False,
+                "default": "",
+            },
+            {
+                "name": "model",
+                "type": "string",
+                "label": "Judge model",
+                "help": f"Leave empty to use {LLM_MODEL}. A rail spends one model call per turn.",
+                "required": False,
+                "default": "",
+            },
+        ],
+    },
+    {
+        "id": "self_check_facts",
+        "label": "Fact Check Against Sources",
+        "description": "Check that the answer is supported by the retrieved passages. Needs a retrieval phase with passages.",
+        "category": "Grounding",
+        "phase": "output",
+        "kind": "llm",
+        "rail": True,
+        "params": [
+            {
+                "name": "policy",
+                "type": "text",
+                "label": "Policy",
+                "help": "What counts as unsupported. Leave empty for the default policy.",
+                "required": False,
+                "default": "",
+            },
+            {
+                "name": "model",
+                "type": "string",
+                "label": "Judge model",
+                "help": f"Leave empty to use {LLM_MODEL}.",
+                "required": False,
+                "default": "",
+            },
+        ],
+    },
+]
+
+_VALIDATORS.extend(RAIL_SPECS)
+
 ON_FAIL_OPTIONS: list[dict[str, Any]] = [
     {
         "id": "noop",
@@ -262,6 +425,10 @@ def _module_state() -> dict[str, str | None]:
     """Import each validator module once. Return id -> import error, or None when it loaded."""
     state: dict[str, str | None] = {}
     for spec in _VALIDATORS:
+        if spec.get("rail"):
+            # A rail is implemented by the engine, so it needs no Hub package.
+            state[spec["id"]] = NEMO_IMPORT_ERROR
+            continue
         module = spec.get("module")
         if not module:
             state[spec["id"]] = None  # local implementation, always present
@@ -472,4 +639,58 @@ def run_validators(text: str, validators: list[dict[str, Any]], phase: str = "bo
         "blocked_by": blocked_by,
         "phase": phase,
         "results": results,
+    }
+
+
+def run_single_validator(text: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """Run one validator from the catalog over the text.
+
+    The rail engine calls this once per configured validator, so the engine decides when the
+    validator runs and what its failure does, and one validator's verdict never hides another's.
+    Returns ``validation_passed``, ``error``, ``detail`` and ``fixed_text``. ``fixed_text``
+    holds the repaired text of a ``fix`` validator, which ``run_validators`` drops because it
+    reads only the log.
+    """
+    vid = str(entry.get("id", ""))
+    if CATALOG_BY_ID.get(vid) is None:
+        raise ValueError(f"Unknown validator id: {vid}")
+
+    # Building stays outside the try: a missing package or a bad parameter is the caller's
+    # problem, not a verdict about the text.
+    guard, _ = build_guard([entry])
+
+    try:
+        outcome = guard.parse(text)
+    except Exception as exc:
+        # on_fail=exception raises instead of returning a failure. That is a block.
+        return {
+            "validation_passed": False,
+            "error": None,
+            "detail": f"{type(exc).__name__}: {exc}"[:300],
+            "fixed_text": None,
+        }
+
+    logs = guard.history.last.validator_logs if guard.history.last else []
+    if not logs:
+        return {"validation_passed": True, "error": None, "detail": None, "fixed_text": None}
+
+    result = logs[0].validation_result
+    passed = "pass" in str(result.outcome).lower()
+    message = getattr(result, "error_message", None)
+    # The judge reports a transport failure through this metadata key. Surface it as an error
+    # so it is visible, and keep the check itself as passed.
+    judge_error = (result.metadata or {}).get("judge_error") if passed else None
+
+    # A `fix` validator returns the repaired text, either as the corrected output of the parse
+    # or as fix_value on the failure itself. Most validators carry neither field.
+    fixed = getattr(result, "fix_value", None) or getattr(result, "value_override", None)
+    corrected = getattr(outcome, "validated_output", None)
+    if isinstance(corrected, str) and corrected != text:
+        fixed = corrected
+
+    return {
+        "validation_passed": passed,
+        "error": judge_error,
+        "detail": None if passed else (str(message) if message else "blocked"),
+        "fixed_text": fixed if isinstance(fixed, str) and fixed != text else None,
     }

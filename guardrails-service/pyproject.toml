@@ -9,6 +9,16 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "nltk>=3.8",
+    # The generated engine config is YAML.
+    "pyyaml",
+
+    # The rail engine. It orchestrates every guard: the three validators below run as NeMo
+    # actions, and NeMo adds the rails this project has none of (self checks, fact check,
+    # jailbreak heuristics, PII masking on the retrieved chunks).
+    "nemoguardrails>=0.21,<1.0",
+    # The provider behind `engine: openai` in the generated NeMo config. NeMo points it at
+    # the LiteLLM proxy with LITELLM_BASE_URL, so no cloud key is needed.
+    "langchain-openai",
 
     # Real Hub validators, published on public PyPI as guardrails-ai-<name>.
     # The `guardrails hub install` CLI and its private registry are deprecated.

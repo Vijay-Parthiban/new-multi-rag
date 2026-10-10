@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from generation_core import Generator
 from generation_core.prompt_builder import NO_SOURCES_ANSWER
 from rag_shared.config import Settings
-from rag_shared.types import AGENTIC_STRATEGIES, KpStrategy
+from rag_shared.types import AGENTIC_STRATEGIES, KpStrategy, RerankedChunk
 from reranker_core import Reranker, build_reranker
 from retrieval_core import Retriever
 
@@ -50,6 +50,24 @@ def _history_payload(cfg: PipelineConfig) -> list[dict[str, str]] | None:
     if not cfg.history:
         return None
     return [{"role": turn.role, "content": turn.content} for turn in cfg.history]
+
+
+# A guardrail over the retrieved passages: it returns the passages the model may read, with
+# masked text in place, or raises GuardrailBlocked to stop the turn.
+ChunkFilter = Callable[[list[RerankedChunk]], list[RerankedChunk]]
+
+
+class GuardrailBlocked(Exception):
+    """A guardrail stopped the turn before the answer was generated.
+
+    The pipeline only signals. The route owns the response, so it turns this into the same
+    blocked answer the input phase produces. ``guard`` is the catalog id of the guard that
+    blocked, which names the copy and the trace field.
+    """
+
+    def __init__(self, guard: str | None = None) -> None:
+        super().__init__(guard or "guardrail")
+        self.guard = guard or "unknown"
 
 
 class RAGPipeline:
@@ -203,6 +221,7 @@ class RAGPipeline:
         config: PipelineConfig | None = None,
         source_type: str | None = None,
         source_id: str | None = None,
+        chunk_filter: ChunkFilter | None = None,
     ) -> ChatResult:
         cfg = config or PipelineConfig()
         latency: dict[str, int] = {}
@@ -225,6 +244,11 @@ class RAGPipeline:
         t0 = time.perf_counter()
         reranked = reranker.rerank(query, retrieved, cfg.effective_top_k())
         latency["rerank"] = int((time.perf_counter() - t0) * 1000)
+
+        if chunk_filter is not None:
+            # The retrieval-phase guardrails run here: after the rerank, before the model reads
+            # the passages, so the answer is built from the text the guardrails allow.
+            reranked = chunk_filter(reranked)
 
         graded = self._grade_passages(query, reranked, cfg, latency)
         if graded is None:
@@ -274,6 +298,7 @@ class RAGPipeline:
         config: PipelineConfig | None = None,
         source_type: str | None = None,
         source_id: str | None = None,
+        chunk_filter: ChunkFilter | None = None,
     ) -> Iterator[StreamEvent]:
         """Yield status, token and done events for one chat turn.
 
@@ -304,6 +329,11 @@ class RAGPipeline:
         t0 = time.perf_counter()
         reranked = reranker.rerank(query, retrieved, cfg.effective_top_k())
         latency["rerank"] = int((time.perf_counter() - t0) * 1000)
+
+        if chunk_filter is not None:
+            # The retrieval-phase guardrails run here: after the rerank, before the model reads
+            # the passages, so the answer is built from the text the guardrails allow.
+            reranked = chunk_filter(reranked)
 
         graded = self._grade_passages(query, reranked, cfg, latency)
         if graded is None:

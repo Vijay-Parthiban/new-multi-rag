@@ -35,7 +35,7 @@ const GUARD_CARD: Record<string, { icon: string; title: string; hint: string; to
         hint: "This message contains a word or phrase that is not allowed.",
         tone: "ban",
     },
-    pii_check: {
+    detect_pii: {
         icon: "🔒",
         title: "Personal information",
         hint: "This message appears to contain personally identifiable information.",
@@ -46,6 +46,37 @@ const GUARD_CARD: Record<string, { icon: string; title: string; hint: string; to
         title: "Toxic language",
         hint: "This message was flagged for toxic or harmful language.",
         tone: "toxic",
+    },
+    // The rails the engine runs. Same tones as the validators they sit beside.
+    self_check_input: {
+        icon: "🛡️",
+        title: "Input check failed",
+        hint: "This message did not pass the guardrail input check.",
+        tone: "security",
+    },
+    jailbreak_heuristics: {
+        icon: "🕵️",
+        title: "Jailbreak attempt",
+        hint: "This message looks like an attempt to override the assistant's instructions.",
+        tone: "security",
+    },
+    pii_retrieval: {
+        icon: "📄",
+        title: "Personal information in the sources",
+        hint: "The sources retrieved for this question contain personal information.",
+        tone: "pii",
+    },
+    self_check_output: {
+        icon: "🛡️",
+        title: "Output check failed",
+        hint: "The generated answer did not pass the guardrail output check.",
+        tone: "security",
+    },
+    self_check_facts: {
+        icon: "🔗",
+        title: "Answer not supported by the sources",
+        hint: "The retrieved sources do not support the generated answer.",
+        tone: "security",
     },
 };
 
@@ -64,7 +95,8 @@ function BlockedCard({
         hint: content || "This message was blocked by a safety policy.",
         tone: "ban",
     };
-    const phaseLabel = phase === "output" ? "Response blocked" : "Input blocked";
+    const phaseLabel =
+        phase === "output" ? "Response blocked" : phase === "retrieval" ? "Sources blocked" : "Input blocked";
     return (
         <div className={`chat-blocked-card chat-blocked-card--${card.tone}`}>
             <div className="chat-blocked-card-header">

@@ -59,6 +59,96 @@ def build_validator_specs(guards: list[str], settings: dict[str, Any] | None) ->
     return specs
 
 
+def run_guardrails_phase(
+    text: str,
+    guards: list[str],
+    guardrails_url: str = "http://localhost:18000",
+    timeout_s: float = 15.0,
+    settings: dict[str, Any] | None = None,
+    *,
+    phase: str = "both",
+    query: str | None = None,
+    answer: str | None = None,
+    chunks: list[str] | None = None,
+) -> dict[str, Any]:
+    """Validate one phase against guardrails-service and return its whole answer.
+
+    Keys: `results` (one entry per guard id, each with `validation_passed`, `error`, `detail`
+    and, on the engine path, `ms`), `blocked`, `blocked_by`, `chunks` (the passages with masked
+    text, from the retrieval phase, else None) and `skipped` (the phase had nothing to run).
+
+    A transport failure or a rejected configuration reports every guard as passed with a
+    non-null `error`, so a misconfigured guard never blocks every chat turn. The trace records
+    the error.
+    """
+    if not guards:
+        return {"results": {}, "blocked": False, "blocked_by": None, "chunks": None, "skipped": True}
+
+    # A config written before the catalog existed may still name pii_check.
+    guards = [LEGACY_GUARD_IDS.get(g, g) for g in guards]
+
+    base_url = guardrails_url.rstrip("/")
+    payload: dict[str, Any] = {
+        "text": text,
+        "phase": phase,
+        "validators": build_validator_specs(guards, settings),
+    }
+    # Only send what the caller has: an empty passage list must not look like a passage list.
+    if query is not None:
+        payload["query"] = query
+    if answer is not None:
+        payload["answer"] = answer
+    if chunks:
+        payload["chunks"] = chunks
+
+    def _fail(**extra: Any) -> dict[str, Any]:
+        return {
+            "results": {guard: {**extra} for guard in guards},
+            "blocked": False,
+            "blocked_by": None,
+            "chunks": None,
+            "skipped": False,
+        }
+
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            resp = client.post(f"{base_url}/validate", json=payload)
+    except Exception as exc:
+        logger.error("Guardrails service is unreachable at %s: %s", base_url, exc)
+        return _fail(validation_passed=True, error=str(exc), detail=None)
+
+    if resp.status_code != 200:
+        detail = resp.text[:500]
+        logger.error("Guardrails service returned HTTP %s: %s", resp.status_code, detail)
+        return _fail(
+            validation_passed=True,
+            error=f"HTTP {resp.status_code}",
+            detail=detail,
+        )
+
+    try:
+        body = resp.json()
+        results = body.get("results") or {}
+    except Exception as exc:
+        logger.error("Guardrails service returned an unreadable body: %s", exc)
+        return _fail(validation_passed=True, error=str(exc), detail=None)
+
+    # Report a missing validator rather than silently treating it as passed.
+    for guard in guards:
+        results.setdefault(
+            guard,
+            {"validation_passed": True, "error": "validator missing from the response", "detail": None},
+        )
+
+    return {
+        "results": results,
+        "blocked": bool(body.get("blocked")),
+        "blocked_by": body.get("blocked_by"),
+        "chunks": body.get("chunks"),
+        "skipped": bool(body.get("skipped")),
+    }
+
+
 def run_guardrails_check(
     text: str,
     guards: list[str],
@@ -73,51 +163,7 @@ def run_guardrails_check(
     non-null `error`, so a misconfigured guard never blocks every chat turn. The trace records
     the error.
     """
-    if not guards:
-        return {}
-
-    # A config written before the catalog existed may still name pii_check.
-    guards = [LEGACY_GUARD_IDS.get(g, g) for g in guards]
-
-    base_url = guardrails_url.rstrip("/")
-    payload = {
-        "text": text,
-        "validators": build_validator_specs(guards, settings),
-    }
-
-    def _all_guards(**extra: Any) -> dict[str, dict[str, Any]]:
-        return {guard: {**extra} for guard in guards}
-
-    try:
-        with httpx.Client(timeout=timeout_s) as client:
-            resp = client.post(f"{base_url}/validate", json=payload)
-    except Exception as exc:
-        logger.error("Guardrails service is unreachable at %s: %s", base_url, exc)
-        return _all_guards(validation_passed=True, error=str(exc), detail=None)
-
-    if resp.status_code != 200:
-        detail = resp.text[:500]
-        logger.error("Guardrails service returned HTTP %s: %s", resp.status_code, detail)
-        return _all_guards(
-            validation_passed=True,
-            error=f"HTTP {resp.status_code}",
-            detail=detail,
-        )
-
-    try:
-        body = resp.json()
-        results = body.get("results") or {}
-    except Exception as exc:
-        logger.error("Guardrails service returned an unreadable body: %s", exc)
-        return _all_guards(validation_passed=True, error=str(exc), detail=None)
-
-    # Report a missing validator rather than silently treating it as passed.
-    for guard in guards:
-        results.setdefault(
-            guard,
-            {"validation_passed": True, "error": "validator missing from the response", "detail": None},
-        )
-    return results
+    return run_guardrails_phase(text, guards, guardrails_url, timeout_s, settings)["results"]
 
 
 def check_blocked(results: dict[str, dict[str, Any]]) -> tuple[bool, str | None]:

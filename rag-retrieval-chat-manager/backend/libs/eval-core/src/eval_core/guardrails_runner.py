@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from rag_shared.guardrails_client import check_blocked, run_guardrails_check
+from rag_shared.guardrails_client import check_blocked, run_guardrails_phase
 
 
 class GuardrailsEvalItem(BaseModel):
@@ -63,14 +63,28 @@ def evaluate_guardrails_item(
             expected_guard=item.expected_guard,
         )
 
-    results = run_guardrails_check(
+    answer = run_guardrails_phase(
         item.text,
         guards,
         guardrails_url,
         timeout,
         settings=settings,
+        phase=item.phase,
+        chunks=list(item.metadata.get("chunks") or []) or None,
     )
-    actual_blocked, actual_guard = check_blocked(results)
+    guard_results = answer["results"]
+
+    if answer["skipped"]:
+        # No guard in this config applies to this row's phase, so there is nothing to score.
+        return GuardrailsEvalOutcome(
+            skipped=True,
+            skip_reason=f"no guard applies to a '{item.phase}' row",
+            category=item.category,
+            expected_blocked=item.expected_blocked,
+            expected_guard=item.expected_guard,
+        )
+
+    actual_blocked, actual_guard = check_blocked(guard_results)
 
     outcome = GuardrailsEvalOutcome(
         category=item.category,
@@ -79,7 +93,7 @@ def evaluate_guardrails_item(
         actual_blocked=actual_blocked,
         actual_guard=actual_guard,
         correct_block=item.expected_blocked == actual_blocked,
-        guard_results=results,
+        guard_results=guard_results,
     )
 
     # The guard name only has to match when a block was expected and one happened.
@@ -90,7 +104,7 @@ def evaluate_guardrails_item(
     # is not mistaken for a clean pass.
     problems = [
         f"{name}: {res.get('error')}"
-        for name, res in results.items()
+        for name, res in guard_results.items()
         if res.get("error")
     ]
     if problems:

@@ -60,17 +60,26 @@ def main() -> int:
     api = Api(settings)
 
     # ── The service catalog drives the Guard Config page ─────────────
-    # The catalog holds exactly these three. The page shows what the service serves, so a
-    # validator added here appears there with no frontend change, and one removed here
-    # disappears. An exact set fails loudly on either.
-    EXPECTED_VALIDATORS = {"ban_list", "detect_pii", "toxic_language"}
+    # The catalog holds the three Guardrails AI validators and the five rails the NeMo engine
+    # runs. The page shows what the service serves, so a guard added here appears there with no
+    # frontend change, and one removed here disappears. An exact set fails loudly on either.
+    EXPECTED_VALIDATORS = {
+        "ban_list",
+        "detect_pii",
+        "toxic_language",
+        "self_check_input",
+        "jailbreak_heuristics",
+        "pii_retrieval",
+        "self_check_output",
+        "self_check_facts",
+    }
 
     status, catalog = api.request("GET", f"{api.guardrails}/catalog")
     check("catalog is served", status == 200, f"HTTP {status}")
     validators = catalog.get("validators", []) if isinstance(catalog, dict) else []
     ids_served = {v["id"] for v in validators}
     check(
-        "the catalog serves exactly the three supported validators",
+        "the catalog serves exactly the supported guards",
         ids_served == EXPECTED_VALIDATORS,
         f"served: {sorted(ids_served)}",
     )
@@ -78,10 +87,10 @@ def main() -> int:
     unavailable = [v["id"] for v in validators if not v.get("available")]
     check("every catalog validator is installed", not unavailable, ", ".join(unavailable))
 
-    with_params = [v for v in validators if v.get("params")]
+    with_params = {v["id"] for v in validators if v.get("params")}
     check(
-        "every validator exposes its parameters",
-        {v["id"] for v in with_params} == EXPECTED_VALIDATORS,
+        "every guard that takes parameters exposes them",
+        with_params == EXPECTED_VALIDATORS,
         f"{len(with_params)} with params",
     )
 
@@ -110,12 +119,22 @@ def main() -> int:
             {
                 "name": CONFIG_NAME,
                 "description": f"e2e {RUN_TAG}",
-                "guards": ["ban_list", "detect_pii", "toxic_language"],
+                # The three validators run as engine actions inside NeMo, and the two rails
+                # cover the new dataset rows. One config, so one run exercises both engines.
+                "guards": [
+                    "ban_list",
+                    "detect_pii",
+                    "toxic_language",
+                    "jailbreak_heuristics",
+                    "pii_retrieval",
+                ],
                 "mode": "both",
                 "settings": {
                     "ban_list": {"banned_words": BANNED_WORDS, "max_l_dist": 0, "on_fail": "noop"},
                     "detect_pii": {"pii_entities": PII_ENTITIES, "on_fail": "noop"},
                     "toxic_language": {"threshold": 0.5, "on_fail": "noop"},
+                    "jailbreak_heuristics": {"on_fail": "noop"},
+                    "pii_retrieval": {"pii_entities": PII_ENTITIES, "on_fail": "noop"},
                 },
             },
         )
@@ -125,7 +144,13 @@ def main() -> int:
         config_id = config["id"]
         check(
             "settings come back keyed by validator",
-            set(config["settings"]) == {"ban_list", "detect_pii", "toxic_language"},
+            set(config["settings"]) == {
+                "ban_list",
+                "detect_pii",
+                "toxic_language",
+                "jailbreak_heuristics",
+                "pii_retrieval",
+            },
             str(list(config["settings"])),
         )
         check(
@@ -158,7 +183,7 @@ def main() -> int:
         check("the bundled golden dataset seeds", status == 200, f"HTTP {status} {seeded}")
         if status != 200:
             return 1
-        check("the dataset has 12 rows", seeded.get("item_count") == 12, str(seeded))
+        check("the dataset has 14 rows", seeded.get("item_count") == 14, str(seeded))
 
         dataset_id = seeded["dataset_id"]
 
@@ -185,7 +210,7 @@ def main() -> int:
         )
         check(
             "every row was evaluated",
-            metrics.get("items_evaluated") == 12,
+            metrics.get("items_evaluated") == 14,
             str(metrics.get("items_evaluated")),
         )
         # This is the headline result: the shipped config must score perfectly on the
@@ -221,7 +246,16 @@ def main() -> int:
             "GET", f"{api.retrieval}/guardrails-evaluate/runs/{run_id}/items"
         )
         rows = items.get("items", []) if isinstance(items, dict) else []
-        check("every row is returned", len(rows) == 12, str(len(rows)))
+        check("every row is returned", len(rows) == 14, str(len(rows)))
+
+        # A miss is the interesting case, so name the row instead of leaving only a count.
+        for row in rows:
+            if not row.get("correct_block"):
+                print(
+                    f"  miss: phase={row.get('phase')} expected={row.get('expected_guard')} "
+                    f"actual={row.get('actual_guard')} text={str(row.get('text'))[:90]}",
+                    flush=True,
+                )
 
         # The bundled dataset carries one PII row with a spaced card number. The old
         # regex stub missed it, so assert specifically that it blocks.

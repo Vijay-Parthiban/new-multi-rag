@@ -3085,6 +3085,12 @@ select.input option {
   background: linear-gradient(180deg, rgba(249, 115, 22, 0.16) 0%, rgba(249, 115, 22, 0.06) 100%);
 }
 
+/* The engine's own rails: self checks and jailbreak detection. Same pink as the chip. */
+.chat-blocked-card--security {
+  border-color: rgba(236, 72, 153, 0.4);
+  background: linear-gradient(180deg, rgba(236, 72, 153, 0.16) 0%, rgba(236, 72, 153, 0.06) 100%);
+}
+
 .chat-blocked-card-header {
   display: flex;
   align-items: center;
@@ -3132,6 +3138,10 @@ select.input option {
 
 [data-theme="light"] .chat-blocked-card--toxic {
   background: linear-gradient(180deg, rgba(234, 88, 12, 0.12) 0%, rgba(234, 88, 12, 0.04) 100%);
+}
+
+[data-theme="light"] .chat-blocked-card--security {
+  background: linear-gradient(180deg, rgba(236, 72, 153, 0.12) 0%, rgba(236, 72, 153, 0.04) 100%);
 }
 
 /* Markdown + KaTeX inside assistant bubbles */

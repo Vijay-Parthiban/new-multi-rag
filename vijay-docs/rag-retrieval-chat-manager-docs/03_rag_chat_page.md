@@ -1,6 +1,6 @@
 # 03 — Interactive RAG Chat & Synthesis Page
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-10
 
 ## 1. Executive Summary & Page Purpose
 
@@ -60,7 +60,7 @@ answer over Server-Sent Events, renders cited sources, and then polls per-messag
 - Assistant messages render through `MarkdownMessage` (`react-markdown` + `remark-gfm` + `remark-math` +
   `rehype-katex`, `frontend/src/components/MarkdownMessage.tsx`). User text is rendered verbatim.
 - Source citations show **only the first 3** reranked chunks as
-  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:1266`).
+  `📄 <source_locator> (Score: <rerank_score to 2dp>)` plus an `N sources` badge (`ChatPage.tsx:1306`).
   There is no chunk inspector drawer and no chunk-index display.
 - While streaming, the pending assistant bubble shows the current `status` message with a pulsing dot, then
   the streamed markdown with a blinking cursor.
@@ -112,7 +112,7 @@ for await (const event of streamChat(
 ```
 
 The page sends the query, the session id, the selected pipeline's id, and the per-turn overrides: the
-guardrails config, the prompt template and the model settings (`ChatPage.tsx:490-508`). It does **not** send
+guardrails config, the prompt template and the model settings (`ChatPage.tsx:521-538`). It does **not** send
 `collection`, `embedding_model` or `sparse_embedding_model`, because the assistant resolves them from its
 Knowledge Product. It also does not run the image-only dense override, because an assistant has no `modality`
 field.
@@ -186,7 +186,7 @@ The config bar also shows the session indicator: a dot, plus the first 12 charac
 
 ### 3.5 The trace mode header
 
-Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:544`, `TRACE_MODE_HEADER` in `api.ts:1035`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
+Every turn the page sends carries `X-RAG-Trace-Mode: test` (`ChatPage.tsx:575`, `TRACE_MODE_HEADER` in `api.ts:1035`). The header is omitted unless `traceMode` is set, and an omitted header means production on the backend.
 
 This matters because the page and an external caller hit **the same route**. The header is the only thing that separates them in the backends, and it is what tags the row `test` on the Real Time Monitoring page. A caller that knows nothing about the header cannot label real traffic as a test. Full detail: [16 — Observability and Tracing](./16_observability_tracing.md).
 
@@ -257,7 +257,7 @@ Three leftovers went with the controls, so nothing in the page refers to a route
   how to start one.
 
 One badge remains: the page renders a `🔁 N loops` chip when `latency_ms.sc_loops > 1`
-(`ChatPage.tsx:1174-1187`). Nothing in the backend writes `sc_loops`, so the chip stays hidden with the
+(`ChatPage.tsx:1205-1218`). Nothing in the backend writes `sc_loops`, so the chip stays hidden with the
 current pipeline.
 
 ---
@@ -270,12 +270,12 @@ the OpenTelemetry context survives.
 
 | `type` | Payload keys | Emitted when |
 |---|---|---|
-| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:644`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py`). |
+| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:778`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py`). |
 | `token` | `content` | One frame per non-empty answer delta (`routes/chat.py`, `rag_core/pipeline.py`). |
 | `done` | `metadata` | The pipeline's done metadata: `answer`, `sources`, `retrieved_chunks`, `reranked_chunks`, `latency_ms` and `route: "normal"` (`rag_core/pipeline.py`). |
-| `session` | `session_id`, `message_id`, `route`, `metrics_status` | After the DB write. `route` is `blocked` on an output block, otherwise `normal` (`routes/chat.py`). |
-| `blocked` | `content`, `blocked_by_guard`, `blocked_on`, `blocked_title`, `session_id`, `message_id`, `route`, `metrics_status` | An input or an output guardrail block (`routes/chat.py`). |
-| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:795`). |
+| `session` | `session_id`, `message_id`, `route`, `metrics_status` | After the DB write. `route` is `blocked` on an input, retrieval or output block, otherwise `normal` (`routes/chat.py`). |
+| `blocked` | `content`, `blocked_by_guard`, `blocked_on`, `blocked_title`, `session_id`, `message_id`, `route`, `metrics_status` | An input, a retrieval or an output guardrail block. `blocked_on` is `input`, `retrieval` or `output` (`routes/chat.py`). |
+| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:969`). |
 
 The client splits the byte stream on `\n\n`, keeps only lines starting with `data: `, and `JSON.parse`s each
 into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`, `session_id`, `message_id`,
@@ -287,27 +287,40 @@ into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`,
 
 ## 6. Guardrail Blocking and `BlockedCard`
 
-The chat handlers run the guardrail check on the `guardrails_config_id`, for the input and for the output.
+The chat handlers run the guardrail check on the `guardrails_config_id`, for the input, for the retrieval and
+for the output.
 
 - Blocked **input**: the stored answer becomes `GUARD_BLOCK_COPY[guard]["input"]`, and the trace stores
   `latency_ms = {route: "blocked", blocked: true, blocked_by_guard, blocked_on}`. Metrics are not enqueued.
+- Blocked **retrieval**: the turn stops after the rerank and before the model reads the passages. `rag-core`
+  raises `GuardrailBlocked` (`rag_core/pipeline.py:60`) through the `chunk_filter` it runs at
+  `rag_core/pipeline.py:248,333`, and the route persists the turn and answers with
+  `GUARD_BLOCK_COPY[guard]["retrieval"]`, `latency_ms.blocked_on = "retrieval"`, empty `sources`, and no
+  memory append (`routes/chat.py:612-646`, `:864-890`). Metrics are not enqueued.
 - Blocked **output**: the streamed answer is replaced, the same blocked latency keys are merged in, and
   metrics are not enqueued.
-- `GUARD_BLOCK_COPY` covers `ban_list`, `pii_check` and `toxic_language`, each with an `input` and an `output`
-  sentence (`routes/chat.py:159`). The SSE `blocked` frame also carries `blocked_title`
-  (`"Banned keyword"` / `"Personal information"` / `"Toxic language"`, else the guard name, else
-  `"Guardrail"`).
+- Each phase that runs writes one `guardrails_traces` row. A phase with nothing applicable writes no row
+  (`routes/chat.py:429-431`).
+- `GUARD_BLOCK_COPY` covers the three validators and the five engine rails — `ban_list`, `detect_pii`,
+  `toxic_language`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`,
+  `self_check_facts` (`routes/chat.py:163`). Each has an `input` and an `output` sentence, and `pii_retrieval`
+  also has a `retrieval` sentence. When a guard id is absent from the map, `_blocked_answer` falls back to
+  `"<Phase> blocked by guardrail: <guard or 'unknown'>."` (`routes/chat.py:210-212`). The SSE `blocked` frame
+  also carries `blocked_title` (the copy map's title, else the guard name, else `"Guardrail"`).
 - The guardrails service names its guard `ban-list`, while the stored config uses `ban_list`.
   `rag_shared/guardrails_client.py` maps `_` to `-`, so the check reaches the service. Before that fix every
   check returned 404, the client read a non-200 as "passed", and no guardrail ever blocked anything.
 
-`BlockedCard` (`ChatPage.tsx:52`) maps `blocked_by_guard` to an icon, a title and a tone: `ban_list` → 🚫
-`Banned keyword`, `pii_check` → 🔒 `Personal information`, `toxic_language` → ⚠️ `Toxic language`. Any other
-guard falls back to 🛡️ with the guard name as the title. The phase label is `Response blocked` when
-`blocked_on === "output"`, otherwise `Input blocked`. The body is the server `content`, with a generic hint as
-the fallback. The CSS classes are `chat-blocked-card` and `chat-blocked-card--<tone>`. The server-supplied
-`blocked_title` is not used by the UI. A card renders whenever `m.blocked` is true or the stored trace route is
-`blocked`.
+`BlockedCard` (`ChatPage.tsx:83`) maps `blocked_by_guard` to an icon, a title and a tone: `ban_list` → 🚫
+`Banned keyword`, `detect_pii` → 🔒 `Personal information`, `toxic_language` → ⚠️ `Toxic language`. The five
+engine rails have their own cards: `self_check_input` and `self_check_output` → 🛡️ the check title,
+`jailbreak_heuristics` → 🕵️ `Jailbreak attempt`, `pii_retrieval` → 📄 `Personal information in the sources`,
+`self_check_facts` → 🔗 `Answer not supported by the sources`. Any other guard falls back to 🛡️ with the guard
+name as the title. The phase label is `Response blocked` when `blocked_on === "output"`, `Sources blocked`
+when `blocked_on === "retrieval"`, otherwise `Input blocked`. The body is the server `content`, with a
+generic hint as the fallback. The CSS classes are `chat-blocked-card` and `chat-blocked-card--<tone>`, where the
+five rails use the new `--security` or the shared `--pii` tone. The server-supplied `blocked_title` is not used
+by the UI. A card renders whenever `m.blocked` is true or the stored trace route is `blocked`.
 
 ---
 
@@ -315,8 +328,8 @@ the fallback. The CSS classes are `chat-blocked-card` and `chat-blocked-card--<t
 
 Returns `ChatResponse`: `message_id`, `session_id`, `answer`, `sources`
 (`[{source_locator, chunk_index, rerank_score}]`, taken from the reranked chunks), `trace_id` and
-`metrics_status`. Guardrails run the same way: an input block returns early with empty sources, and an output
-block rewrites the answer.
+`metrics_status`. Guardrails run the same way: an input block returns early with empty sources, a retrieval
+block returns the same shape before generation, and an output block rewrites the answer.
 
 The Chat page never calls this route. The assistant surface does: `POST /api/assistants/{slug}/chat` returns
 the same shape, and `POST /v1/assistants/{slug}/chat/completions` wraps it in the OpenAI shape. Those routes
@@ -329,8 +342,8 @@ duplicated.
 
 After a turn, the page polls `GET /chat/messages/{message_id}/metrics` every **2500 ms**, up to **40**
 attempts, and tolerates HTTP 404 for the first **8** attempts (the worker may not have created the row yet)
-(`ChatPage.tsx:363-383`). It skips polling for blocked turns and for messages whose `metrics_status` is
-`skipped` or `failed` (`ChatPage.tsx:228-239`). When a poll returns `completed`, the historical stats are
+(`ChatPage.tsx:394-414`). It skips polling for blocked turns and for messages whose `metrics_status` is
+`skipped` or `failed` (`ChatPage.tsx:262-268`). When a poll returns `completed`, the historical stats are
 refreshed.
 
 ---

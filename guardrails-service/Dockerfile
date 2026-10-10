@@ -35,6 +35,31 @@ conf.write_text(text.replace("model_name: en_core_web_lg", "model_name: en_core_
 print("presidio now uses en_core_web_sm")
 PY
 
+# NeMo's own sensitive-data rail pins en_core_web_lg too, and refuses to run without it. The
+# small model is 12 MB and finds the same pattern-based entities, so point the rail at the model
+# this image already has. It changes two literals, and fails the build if either one moves.
+RUN python - <<'PY'
+import pathlib
+import nemoguardrails
+
+actions = (
+    pathlib.Path(nemoguardrails.__file__).parent
+    / "library"
+    / "sensitive_data_detection"
+    / "actions.py"
+)
+text = actions.read_text()
+for old, new in (
+    ('is_package("en_core_web_lg")', 'is_package("en_core_web_sm")'),
+    ('"model_name": "en_core_web_lg"', '"model_name": "en_core_web_sm"'),
+):
+    if old not in text:
+        raise SystemExit(f"nemoguardrails sensitive_data_detection no longer contains {old}; update the Dockerfile")
+    text = text.replace(old, new)
+actions.write_text(text)
+print("nemoguardrails sensitive data rail now uses en_core_web_sm")
+PY
+
 RUN mkdir -p "${NLTK_DATA}" \
     && python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True)"
 
@@ -59,6 +84,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /root/.guardrailsrc /root/.guardrailsrc
 
 COPY ./config.py ./config.py
+COPY ./nemo.py ./nemo.py
 COPY ./server.py ./server.py
 
 EXPOSE 8000

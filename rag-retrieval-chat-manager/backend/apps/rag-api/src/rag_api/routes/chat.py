@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -10,15 +11,18 @@ from pydantic import BaseModel
 from rag_api.session_close import SessionNotFound, close_session
 from rag_api.trace_context import fetch_context, fetch_context_async
 from rag_core import PipelineRequest
+from rag_core.pipeline import GuardrailBlocked
 from rag_core.schemas import SessionTurn
 from rag_core.session_memory import DEFAULT_TTL_S, SessionMemory
 from rag_db.models.chat import ChatPipelineTrace
 from rag_db.repositories.chat_repository import ChatRepository
 from rag_db.repositories.guardrails_repository import GuardrailsRepository
 from rag_db.services.database import get_session_factory
+from rag_shared.chunk_utils import is_image_chunk, passage_text_for_chunk
 from rag_shared.config import Settings, get_settings
-from rag_shared.guardrails_client import run_guardrails_check, check_blocked
+from rag_shared.guardrails_client import check_blocked, run_guardrails_phase
 from rag_shared.tracing import TRACE_MODE_HEADER, normalize_trace_mode, turn_tags
+from rag_shared.types import RerankedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +175,34 @@ GUARD_BLOCK_COPY = {
         "title": "Toxic language",
         "input": "This message was blocked because it contains toxic or harmful language.",
         "output": "The generated answer was blocked because it contains toxic or harmful language.",
+    },
+    # The rails the engine runs. A rail can block in the phase it is configured for; the
+    # wording covers both directions so a turn always gets a full sentence.
+    "self_check_input": {
+        "title": "Input check failed",
+        "input": "This message was blocked because it failed the guardrail input check.",
+        "output": "The generated answer was blocked because the message that asked for it failed the guardrail input check.",
+    },
+    "jailbreak_heuristics": {
+        "title": "Jailbreak attempt",
+        "input": "This message was blocked because it looks like an attempt to override the assistant's instructions.",
+        "output": "The generated answer was blocked because the question looked like an attempt to override the assistant's instructions.",
+    },
+    "pii_retrieval": {
+        "title": "Personal information in the sources",
+        "input": "This message was blocked because the sources retrieved for it contain personal information.",
+        "output": "The generated answer was blocked because the sources retrieved for it contain personal information.",
+        "retrieval": "The sources retrieved for this question contain personal information, so no answer was generated.",
+    },
+    "self_check_output": {
+        "title": "Output check failed",
+        "input": "This message was blocked because it failed the guardrail output check.",
+        "output": "The generated answer was blocked because it failed the guardrail output check.",
+    },
+    "self_check_facts": {
+        "title": "Answer not supported by the sources",
+        "input": "This message was blocked because the answer is not supported by the retrieved sources.",
+        "output": "The generated answer was blocked because the retrieved sources do not support it.",
     },
 }
 
@@ -359,10 +391,11 @@ def _run_guardrails(
     response: str | None = None,
     chat_message_id: uuid.UUID | None = None,
     span=None,
-) -> tuple[bool, str | None, dict]:
+    chunks: list[str] | None = None,
+) -> tuple[bool, str | None, dict, list[str] | None]:
     """
-    Run guardrails validation for a given phase (input/output).
-    Returns (is_blocked, blocking_guard, guard_results).
+    Run guardrails validation for a given phase (input/retrieval/output).
+    Returns (is_blocked, blocking_guard, guard_results, masked_chunks).
     Also records a trace to the DB and sets OTEL span attributes.
     """
     from rag_shared.tracing import set_span_attr
@@ -372,21 +405,32 @@ def _run_guardrails(
         repo = GuardrailsRepository(db)
         cfg = repo.get_config(config_id)
         if not cfg:
-            return False, None, {}
+            return False, None, {}, None
 
-        # Check if this phase should be validated
-        if cfg.mode == "input" and phase != "input":
-            return False, None, {}
-        if cfg.mode == "output" and phase != "output":
-            return False, None, {}
+        # The input and output phases follow the config's mode. The retrieval phase has its own
+        # switch: the rail itself, so a config that names a retrieval rail always runs it.
+        if phase in ("input", "output"):
+            if cfg.mode == "input" and phase != "input":
+                return False, None, {}, None
+            if cfg.mode == "output" and phase != "output":
+                return False, None, {}, None
 
-        results = run_guardrails_check(
+        outcome = run_guardrails_phase(
             text,
             cfg.guards,
             settings.guardrails_url,
             settings.guardrails_timeout_s,
             settings=getattr(cfg, "settings", None) or {},
+            phase=phase,
+            query=query,
+            answer=response,
+            chunks=chunks,
         )
+        if outcome["skipped"]:
+            # No guard in this config belongs to this phase, so there is nothing to record.
+            return False, None, {}, None
+
+        results = outcome["results"]
         is_blocked, blocking_guard = check_blocked(results)
 
         repo.record_trace(
@@ -407,7 +451,53 @@ def _run_guardrails(
         if blocking_guard:
             set_span_attr(span, f"guardrails.{phase}.blocked_by", blocking_guard)
 
-    return is_blocked, blocking_guard, results
+    return is_blocked, blocking_guard, results, outcome.get("chunks")
+
+
+def _passage_text(chunk: RerankedChunk) -> str:
+    """The text a guardrail reads for one passage. An image chunk is judged by its caption."""
+    return passage_text_for_chunk(chunk) if is_image_chunk(chunk) else chunk.content
+
+
+def _retrieval_guardrail(
+    *,
+    settings: Settings,
+    config_id: uuid.UUID,
+    query: str,
+    span=None,
+) -> Callable[[list[RerankedChunk]], list[RerankedChunk]]:
+    """The retrieval-phase guardrails, as the filter the pipeline applies after the rerank.
+
+    Masked text replaces the passage content in place, so the model reads masked passages and
+    the citations keep their order. A block raises GuardrailBlocked: the pipeline cannot answer
+    a blocked turn, and the route writes the same blocked answer the input phase produces.
+    """
+
+    def _filter(chunks: list[RerankedChunk]) -> list[RerankedChunk]:
+        if not chunks:
+            return chunks
+
+        texts = [_passage_text(chunk) for chunk in chunks]
+        blocked, guard, _, masked = _run_guardrails(
+            settings=settings,
+            config_id=config_id,
+            text="\n\n".join(texts),
+            phase="retrieval",
+            query=query,
+            span=span,
+            chunks=texts,
+        )
+        if blocked:
+            raise GuardrailBlocked(guard)
+
+        if masked and len(masked) == len(chunks) and masked != texts:
+            return [
+                chunk.model_copy(update={"content": text})
+                for chunk, text in zip(chunks, masked)
+            ]
+        return chunks
+
+    return _filter
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -462,7 +552,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
     ) as span:
         # ── Guardrails: input validation ─────────────────────────
         if body.guardrails_config_id:
-            blocked, guard, _ = _run_guardrails(
+            blocked, guard, _, _ = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
                 text=body.query,
@@ -504,18 +594,62 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
                     metrics_status=metrics_status,
                 )
 
-        result = pipeline.chat(
-            body.query,
-            config=config,
-            source_type=source_type,
-            source_id=source_id,
-        )
+        try:
+            result = pipeline.chat(
+                body.query,
+                config=config,
+                source_type=source_type,
+                source_id=source_id,
+                chunk_filter=_retrieval_guardrail(
+                    settings=settings,
+                    config_id=body.guardrails_config_id,
+                    query=body.query,
+                    span=span,
+                )
+                if body.guardrails_config_id
+                else None,
+            )
+        except GuardrailBlocked as exc:
+            # A retrieval-phase guardrail stopped the turn before the model saw the passages.
+            # Same answer shape as a blocked input, and no sources: nothing was generated.
+            answer = _blocked_answer(exc.guard, "retrieval")
+            session_id, message_id, trace_id, metrics_status = _persist_chat_turn(
+                settings=settings,
+                queue=queue,
+                session_id=turn_session_id,
+                trace_mode=trace_mode,
+                source_type=source_type,
+                source_id=source_id,
+                query=body.query,
+                answer=answer,
+                retrieval_mode=config.retrieval_mode.value,
+                retrieve_limit=config.retrieve_limit,
+                rerank_enabled=config.rerank_enabled,
+                rerank_model=body.rerank_model or settings.reranker_model,
+                generation_model=generation_model,
+                save_trace=True,
+                enqueue_metrics=False,
+                latency_ms=_blocked_latency(exc.guard, "retrieval"),
+            )
+            set_span_attr(span, "langfuse.trace.output", answer)
+            set_span_attr(span, "langfuse.observation.output", answer)
+            set_span_attr(span, "output.value", answer)
+            set_span_attr(span, "langfuse.session.id", str(session_id))
+            set_span_attr(span, "langfuse.observation.metadata.message_id", str(message_id))
+            return ChatResponse(
+                message_id=message_id,
+                session_id=session_id,
+                answer=answer,
+                sources=[],
+                trace_id=trace_id,
+                metrics_status=metrics_status,
+            )
 
         # ── Guardrails: output validation ────────────────────────
         answer = result.answer
         latency_ms = dict(result.latency_ms or {})
         if body.guardrails_config_id:
-            blocked, guard, _ = _run_guardrails(
+            blocked, guard, _, _ = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
                 text=answer,
@@ -642,7 +776,7 @@ async def chat_stream(request: Request, body: ChatRequest):
             # ── Guardrails: input validation (stream) ────────────
             if body.guardrails_config_id:
                 _emit(f'data: {json.dumps({"type": "status", "message": "Checking guardrails..."})}\n\n')
-                blocked, guard, _ = _run_guardrails(
+                blocked, guard, _, _ = _run_guardrails(
                     settings=settings,
                     config_id=body.guardrails_config_id,
                     text=body.query,
@@ -699,22 +833,62 @@ async def chat_stream(request: Request, body: ChatRequest):
                 attributes=trace_attributes,
             ) as span:
                 gen = pipeline.stream_chat(
-                    body.query, config=config, source_type=source_type, source_id=source_id
+                    body.query,
+                    config=config,
+                    source_type=source_type,
+                    source_id=source_id,
+                    chunk_filter=_retrieval_guardrail(
+                        settings=settings,
+                        config_id=body.guardrails_config_id,
+                        query=body.query,
+                        span=span,
+                    )
+                    if body.guardrails_config_id
+                    else None,
                 )
 
                 final_metadata: dict = {}
-                for event in gen:
-                    if event.type == "done":
-                        final_metadata = event.metadata or {}
+                try:
+                    for event in gen:
+                        if event.type == "done":
+                            final_metadata = event.metadata or {}
 
-                    payload = {"type": event.type}
-                    if event.message:
-                        payload["message"] = event.message
-                    if event.content:
-                        payload["content"] = event.content
-                    if event.metadata:
-                        payload["metadata"] = event.metadata
-                    _emit(f"data: {json.dumps(payload)}\n\n")
+                        payload = {"type": event.type}
+                        if event.message:
+                            payload["message"] = event.message
+                        if event.content:
+                            payload["content"] = event.content
+                        if event.metadata:
+                            payload["metadata"] = event.metadata
+                        _emit(f"data: {json.dumps(payload)}\n\n")
+                except GuardrailBlocked as exc:
+                    # A retrieval-phase guardrail stopped the turn before the model saw the
+                    # passages. Same frames as a blocked input, and no sources: nothing was
+                    # generated.
+                    answer = _blocked_answer(exc.guard, "retrieval")
+                    sid, msg_id, _, _ = _persist_chat_turn(
+                        settings=settings,
+                        queue=job_queue,
+                        session_id=turn_session_id,
+                        trace_mode=trace_mode,
+                        source_type=source_type,
+                        source_id=source_id,
+                        query=body.query,
+                        answer=answer,
+                        retrieval_mode=config.retrieval_mode.value,
+                        retrieve_limit=config.retrieve_limit,
+                        rerank_enabled=config.rerank_enabled,
+                        rerank_model=body.rerank_model or settings.reranker_model,
+                        generation_model=generation_model,
+                        save_trace=True,
+                        enqueue_metrics=False,
+                        latency_ms=_blocked_latency(exc.guard, "retrieval"),
+                    )
+                    _emit(f"data: {json.dumps(_blocked_payload(content=answer, guard=exc.guard, phase='retrieval', session_id=sid, message_id=msg_id))}\n\n")
+                    _emit(
+                        f'data: {json.dumps({"type": "session", "session_id": str(sid), "message_id": str(msg_id), "route": "blocked", "metrics_status": "skipped"})}\n\n'
+                    )
+                    return
 
                 if "answer" not in final_metadata:
                     set_span_attr(span, "error", True)
@@ -731,7 +905,7 @@ async def chat_stream(request: Request, body: ChatRequest):
 
                 # ── Guardrails: output validation (stream) ───────
                 if body.guardrails_config_id:
-                    out_blocked, out_guard, _ = _run_guardrails(
+                    out_blocked, out_guard, _, _ = _run_guardrails(
                         settings=settings,
                         config_id=body.guardrails_config_id,
                         text=answer,

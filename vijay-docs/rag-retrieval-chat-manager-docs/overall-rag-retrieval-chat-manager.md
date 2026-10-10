@@ -1,9 +1,9 @@
 # Overall Architecture — RAG Retrieval & Chat Manager
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-10
 
 ## 1. System Overview
-`rag-retrieval-chat-manager` is the query, retrieval, rerank, generation, guardrail, and evaluation service of the `new-multi-rag` ecosystem. It reads the shared Qdrant collection written by `web-scrapper-workspace` / `rag-ingestion-manager`, reranks hits with a LiteLLM-hosted cross-encoder, generates answers with LiteLLM chat/vision models, delegates safety checks to the external guardrails service, and runs Ragas-based evaluation both online (per chat message) and offline (golden datasets).
+`rag-retrieval-chat-manager` is the query, retrieval, rerank, generation, guardrail, and evaluation service of the `new-multi-rag` ecosystem. It reads the shared Qdrant collection written by `web-scrapper-workspace` / `rag-ingestion-manager`, reranks hits with a LiteLLM-hosted cross-encoder, generates answers with LiteLLM chat/vision models, delegates safety checks to the external guardrails service (which runs the NeMo Guardrails rail engine), and runs Ragas-based evaluation both online (per chat message) and offline (golden datasets).
 
 Repository layout:
 - `backend/` — uv workspace, Python >= 3.12: `libs/*` (8 libraries) + `apps/rag-api` (HTTP API) + `apps/eval-worker` (RQ worker).
@@ -33,7 +33,8 @@ Repository layout:
      v                      v                       v                 v
  Qdrant :6333        LiteLLM proxy :4000      guardrails-service   Redis :6379/0
  scrape_embeddings   embeddings / rerank /    POST /validate       RQ queue "eval"
- dense + sparse      chat / vision models     (compose maps 18000)
+ dense + sparse      chat / vision models     NeMo Guardrails
+                                              (compose maps 18000)
  named vectors, RRF                                              |
      ^                      ^                                    v
      |                      |                       +----------------------------+
@@ -56,7 +57,7 @@ Repository layout:
 | Redis | container `redis` | 6379 | RQ queue `eval` only; db 0 |
 | Qdrant | container `qdrant` | 6333 | `qdrant_url` **and** `qdrant_kp_url`. One server holds the scraper's `scrape_embeddings` and every `kp_*` collection the assistants and the KP readers use |
 | LiteLLM proxy | host process | 4000 | `litellm_base_url` — embeddings, rerank, chat, vision |
-| guardrails-service | `guardrails-service/server.py` | 18000 → 8000 | compose maps `18000:8000`. `settings.guardrails_url` defaults to `http://localhost:18000`, so a host run needs no override |
+| guardrails-service | `guardrails-service/server.py` | 18000 → 8000 | Runs the NeMo Guardrails engine (`guardrails-service/nemo.py`, version 0.3.0) and the Guardrails AI validators as rails. compose maps `18000:8000`. `settings.guardrails_url` defaults to `http://localhost:18000`, so a host run needs no override |
 | web-scrapper API | `web-scrapper-workspace` | 8000 | The ingestion side owns the crawl and scrape jobs and lists them. This service does not call it |
 | rag-ingestion-manager | external | 8007 | Knowledge Products proxy target |
 | otel-collector | container `otel` | 4317 / 4318 | OTLP; compose publishes both ports, so a host run reaches the collector on `localhost:4318`. `backend/.env.local` ships `OTEL_TRACING_ENABLED=true` with that endpoint |
@@ -119,13 +120,14 @@ Two shared packages are consumed from sibling workspaces: `platform_common` (aut
 
 `routes/chat.py` → `RAGPipeline.chat()` → `RAGPipeline.rerank()` → `RAGPipeline.retrieve()`:
 
-0. **Rewrite the query** — `_effective_query()` (`libs/rag-core/src/rag_core/pipeline.py:127`) turns a follow-up into a standalone question when the session has history, and returns the question unchanged when it has none. The rewritten question drives retrieval, rerank and the prompt.
-1. **Retrieve** — `RAGPipeline.retrieve()` (`libs/rag-core/src/rag_core/pipeline.py:69`) resolves the request config and calls `Retriever.retrieve()` (`libs/retrieval-core/src/retrieval_core/retriever.py:16`), which runs `search_scrape_chunks()` (`libs/vector-core/src/vector_core/search.py:17`).
+0. **Rewrite the query** — `_effective_query()` (`libs/rag-core/src/rag_core/pipeline.py:145`) turns a follow-up into a standalone question when the session has history, and returns the question unchanged when it has none. The rewritten question drives retrieval, rerank and the prompt.
+1. **Retrieve** — `RAGPipeline.retrieve()` (`libs/rag-core/src/rag_core/pipeline.py:87`) resolves the request config and calls `Retriever.retrieve()` (`libs/retrieval-core/src/retrieval_core/retriever.py:16`), which runs `search_scrape_chunks()` (`libs/vector-core/src/vector_core/search.py:17`).
    - `mode=dense` → LiteLLM dense embedding only; `mode=sparse` → sparse BM25 embedding only; `mode=hybrid` (default, `settings.default_retrieval_mode`) → both named vectors in one Qdrant query with RRF fusion.
    - Source filters: `source_type` (`all` / `web_scrape` / `file_ingest`) and `source_id`.
-2. **Rerank** — `RAGPipeline.rerank()` (`pipeline.py:91`) builds a reranker via `build_reranker(settings, enabled=cfg.rerank_enabled, model=cfg.rerank_model)` and keeps its best `cfg.top_k` (default 5) chunks. Disabled → `NoopReranker`, and every retrieved chunk reaches the model, because `PipelineConfig.effective_top_k()` (`libs/rag-core/src/rag_core/schemas.py:62`) returns `cfg.top_k` while reranking is on and `cfg.retrieve_limit` while it is off. Latency captured as `retrieve`, `rerank`, `total` ms.
-3. **Generate** — `RAGPipeline.chat()` (`pipeline.py:199`) calls `Generator.generate(query, reranked, model=…, vision_model=…, fusion_model=…)`, which builds the RAG prompt from reranked chunks, generates the text answer, generates a vision answer for image chunks (when present), and optionally fuses both. Result: `ChatResult` with `answer`, `text_answer`, `vision_answer`, chunk counts, and per-stage latency.
-4. **Persist + enqueue** — `_persist_chat_turn()` (`routes/chat.py:272`) writes session/message/trace to Postgres and, when `ragas_enabled and chat_metrics_async`, creates a pending metrics row and enqueues `eval_worker.tasks.compute_chat_metrics` on the RQ `eval` queue (`routes/chat.py:342`).
+2. **Rerank** — `RAGPipeline.rerank()` (`pipeline.py:109`) builds a reranker via `build_reranker(settings, enabled=cfg.rerank_enabled, model=cfg.rerank_model)` and keeps its best `cfg.top_k` (default 5) chunks. Disabled → `NoopReranker`, and every retrieved chunk reaches the model, because `PipelineConfig.effective_top_k()` (`libs/rag-core/src/rag_core/schemas.py:62`) returns `cfg.top_k` while reranking is on and `cfg.retrieve_limit` while it is off. Latency captured as `retrieve`, `rerank`, `total` ms.
+   - The retrieval-phase guardrails run here. `RAGPipeline.chat()` / `stream_chat()` apply the route's `chunk_filter` (`pipeline.py:248`, `:333`) to the reranked list: `chat._retrieval_guardrail()` (`routes/chat.py:462`) masks the passage text in place, or raises `GuardrailBlocked` (`pipeline.py:60`) when the engine blocks the phase.
+3. **Generate** — `RAGPipeline.chat()` (`pipeline.py:217`) calls `Generator.generate(query, reranked, model=…, vision_model=…, fusion_model=…)`, which builds the RAG prompt from reranked chunks, generates the text answer, generates a vision answer for image chunks (when present), and optionally fuses both. Result: `ChatResult` with `answer`, `text_answer`, `vision_answer`, chunk counts, and per-stage latency.
+4. **Persist + enqueue** — `_persist_chat_turn()` (`routes/chat.py:304`) writes session/message/trace to Postgres and, when `ragas_enabled and chat_metrics_async`, creates a pending metrics row and enqueues `eval_worker.tasks.compute_chat_metrics` on the RQ `eval` queue (`routes/chat.py:375`).
 5. **Offline evaluation** — `POST /evaluate/runs` persists the run and enqueues `eval_worker.tasks.run_evaluation` (`routes/evaluate.py:565`). It resolves each retrieval setting the request omits from the deployment (`routes/evaluate.py:580`); the Offline Evaluation page sends the selected pipeline's own values. The worker scores golden items with `GoldenItemEvaluator` and stores per-item metrics.
 
 `POST /generate`, `POST /rerank`, `POST /retrieve` expose individual stages on the same pipeline.
@@ -168,12 +170,16 @@ paper's web-search fallback; it abstains when no passage passes.
 
 ## 6. Guardrails Integration Point
 
-Guardrails are **not** implemented in-process: `routes/chat.py` `_run_guardrails()` (`routes/chat.py:352`) reads a `guardrails_configs` row through `GuardrailsRepository`, then calls `run_guardrails_check(text, cfg.guards, …, timeout_s, settings)` from `rag_shared/guardrails_client.py:62`, which POSTs the whole validator list to `{guardrails_url}/validate` in one call and treats a failed `validation_passed` as blocked.
+Guardrails are **not** implemented in-process. The standalone `guardrails-service` runs the **NeMo Guardrails** engine (`guardrails-service/nemo.py`), and the three Guardrails AI validators run as rails inside it, so one engine decides when every guard runs. The service checks, it does not generate: the application writes the answer, then asks the engine whether the text may pass. `routes/chat.py` `_run_guardrails()` (`routes/chat.py:384`) reads a `guardrails_configs` row through `GuardrailsRepository`, then calls `run_guardrails_phase(text, cfg.guards, …, phase=…, query=…, answer=…, chunks=…)` from `rag_shared/guardrails_client.py:62`, which POSTs the whole guard list to `{guardrails_url}/validate` in one call and treats a failed `validation_passed` as blocked.
 
-- Input phase runs before `pipeline.chat()` (`routes/chat.py:469`); output phase runs after (`routes/chat.py:522`); config `mode` (`input` / `output`) selects which phase executes.
-- A blocked turn returns canned copy from `GUARD_BLOCK_COPY` (ban list, PII, toxic language) with span attributes `guardrails.{phase}.blocked` / `blocked_by`, and a `guardrails_traces` row is recorded.
-- `rag_shared/config.py` declares `guardrails_url` (default `http://localhost:18000`) and `guardrails_timeout_s`, so the client and the chat path read the same values. The config and the service catalog agree on the validator ids (`ban_list`, `detect_pii`, `toxic_language`), and the client sends a config guard id unchanged. It still resolves the retired `pii_check` id to `detect_pii`. The client reports a non-200 response as `validation_passed=True` with an error, so a misconfigured guard never blocks every turn.
-- Guardrail golden-dataset evaluation (`routes/guardrails_evaluate.py`) reuses the same client against the same service.
+- Three phases. **Input** runs before `pipeline.chat()` (`routes/chat.py:555`), **output** runs on the generated answer (`routes/chat.py:652`), and **retrieval** runs on the reranked passages before generation, through the pipeline's `chunk_filter`. The config `mode` (`input` / `output`) selects which turn phase executes; a rail carries its own single phase, and `_applies()` in `nemo.py` drops a guard that does not belong to the phase. A phase with nothing to run is skipped, and no trace row is written for it.
+- The service catalog serves **eight** guards: the three validators (`ban_list`, `detect_pii`, `toxic_language`, each `phase: both`) plus five NeMo rails — `self_check_input` and `jailbreak_heuristics` (input), `pii_retrieval` (retrieval) and `self_check_output` and `self_check_facts` (output) (`RAIL_SPECS` in `guardrails-service/config.py`). Every phase runs as the engine's own input rails over the text under check, with the phase deciding the flow list, because the engine only fires its output rails for a bot message it generated itself.
+- The retrieval rail uses the engine's Presidio detector: `mask sensitive data on input` for Repair (`on_fail: fix`) and `detect sensitive data on input` to block, with the entity list and the confidence threshold from the config. A masked phase returns the passages in order in the `chunks` field, and `_retrieval_guardrail()` (`routes/chat.py:462`) writes them back onto the reranked chunks with `model_copy`. A block raises `GuardrailBlocked` (`libs/rag-core/src/rag_core/pipeline.py:60`).
+- `self_check_input` and `self_check_output` are the engine's library flows, and the service supplies their prompts. `self_check_facts` and `jailbreak_heuristics` are flows this service generates, with judge actions that call the LiteLLM proxy; the fact rail scores the answer against the retrieved passages, and the jailbreak rail scores the message. Both take a `policy` and a `model` parameter. `self_check_facts` with no retrieved passages reports `skipped: no retrieval context` and does not run, so an offline row with no retrieval still passes.
+- Each result keeps `validation_passed`, `error` and `detail`, and gains `ms` — what the rail cost, from the engine's own activated-rail log. The response adds `chunks` (the retrieval phase, masked, else null), `skipped` (the phase had nothing to run) and `engine_ms`.
+- A blocked turn returns canned copy from `GUARD_BLOCK_COPY` (`routes/chat.py:163`), now covering the five new rails, with span attributes `guardrails.{phase}.blocked` / `blocked_by`, and a `guardrails_traces` row is recorded. `guard_results` is JSONB, so the new `ms` key rides along.
+- A config that names no rail takes the old path in `config.run_validators` and never builds an engine, so an existing config behaves exactly as before. The config and the catalog agree on the validator ids, and the client still resolves the retired `pii_check` id to `detect_pii`. The client reports a non-200 response, or an unreachable service, as `validation_passed=True` with an error, so a misconfigured guard never blocks every turn. `rag_shared/config.py` declares `guardrails_url` (default `http://localhost:18000`) and `guardrails_timeout_s` (`rag_shared/config.py:51,54`).
+- Guardrail golden-dataset evaluation (`routes/guardrails_evaluate.py`) and the offline runner (`libs/eval-core/src/eval_core/guardrails_runner.py`) reuse the same client. A dataset row honours its own `phase`, passes optional `metadata.chunks`, and is skipped with a reason when the config has no guard for that phase.
 
 ## 7. Persistence (`rag_db`)
 
@@ -197,7 +203,7 @@ Two points to know before you touch this layer:
 
 `init_tracing()` runs at process startup for both apps (`apps/rag-api/src/rag_api/main.py:47`, `apps/eval-worker/src/eval_worker/main.py:11`) and configures an OTLP HTTP exporter (`rag_shared/tracing.py`). The collector fans the traces out to Phoenix and Langfuse; the application names neither. Tracing is switched by `Settings.otel_tracing_enabled`, which reads `.env`, `.env.local` and the process environment. A host run reads `.env.local` last, so a `false` `OTEL_TRACING_ENABLED` there silences tracing for both test and prod turns.
 
-Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` and for the assistant routes that delegate to it (`routes/chat.py:445`), `rag.chat.stream` for the streaming path (`chat.py:684`) — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`), the OpenInference keys Phoenix reads (`openinference.span.kind`, `input.value`/`output.value`), plus `deployment.environment`, `rag.trace_mode`, `latency.*` and `rag.chunks_used`.
+Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` and for the assistant routes that delegate to it (`routes/chat.py:536`), `rag.chat.stream` for the streaming path (`chat.py:819`) — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`), the OpenInference keys Phoenix reads (`openinference.span.kind`, `input.value`/`output.value`), plus `deployment.environment`, `rag.trace_mode`, `latency.*` and `rag.chunks_used`.
 
 Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header, and **a request without the header is production**. The Chat page sets it, so a turn sent from the UI while trying a pipeline is a test turn; an integrator's caller never sets it. The mode is stored on the trace row and the Real Time Monitoring page tags each log with it.
 
@@ -213,15 +219,15 @@ A pipeline whose product has the Redis destination enabled also files each turn 
 | POST | `/retrieve` | `routes/retrieve.py:37` (marked deprecated) |
 | POST | `/rerank` | `routes/rerank.py:17` |
 | POST | `/generate` | `routes/generate.py:22` |
-| POST | `/chat` | `routes/chat.py:413` |
-| POST | `/chat/stream` | `routes/chat.py:591` — SSE (`status` / `token` / `session` / `done` / `blocked` / `error` events) |
-| GET | `/chat/messages/{message_id}/metrics` | `routes/chat.py:823` |
-| GET | `/chat/stats` | `routes/chat.py:863` |
-| GET | `/chat/sessions` | `routes/chat.py:883` |
-| GET | `/chat/sessions/{session_id}/messages` | `routes/chat.py:909` |
-| POST | `/chat/sessions/{session_id}/close` | `routes/chat.py:950` — exports the session trace and clears the memory |
-| DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:974` (204) |
-| DELETE | `/chat/messages/{message_id}` | `routes/chat.py:987` |
+| POST | `/chat` | `routes/chat.py:503` |
+| POST | `/chat/stream` | `routes/chat.py:725` — SSE (`status` / `token` / `session` / `done` / `blocked` / `error` events) |
+| GET | `/chat/messages/{message_id}/metrics` | `routes/chat.py:997` |
+| GET | `/chat/stats` | `routes/chat.py:1037` |
+| GET | `/chat/sessions` | `routes/chat.py:1057` |
+| GET | `/chat/sessions/{session_id}/messages` | `routes/chat.py:1083` |
+| POST | `/chat/sessions/{session_id}/close` | `routes/chat.py:1124` — exports the session trace and clears the memory |
+| DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:1148` (204) |
+| DELETE | `/chat/messages/{message_id}` | `routes/chat.py:1161` |
 | POST | `/evaluate/datasets`, `/evaluate/datasets/upload` | `routes/evaluate.py:194,204` |
 | POST | `/evaluate/datasets/huggingface` | `routes/evaluate.py:335` — imports the named Hugging Face dataset, no seed |
 | GET | `/evaluate/datasets`, `/evaluate/datasets/{id}`, `/evaluate/datasets/{id}/runs` | `routes/evaluate.py:370,399` and `:471` |
@@ -253,13 +259,13 @@ A pipeline whose product has the Redis destination enabled also files each turn 
 | POST | `/api/knowledge-products/{product_id}/test-connection` | `routes/knowledge.py` |
 | GET / POST | `/prompt-templates` | `routes/prompt_templates.py` — list and create |
 | GET / PUT / DELETE | `/prompt-templates/{id}` | `routes/prompt_templates.py` |
-| GET | `/api/assistants/{slug}` | `routes/assistants.py:307` — resolved configuration, no secrets |
-| POST | `/api/assistants/{slug}/chat` | `routes/assistants.py:352` — delegates to the `POST /chat` handler |
-| POST | `/api/assistants/{slug}/chat/stream` | `routes/assistants.py:363` — delegates to the `POST /chat/stream` handler |
-| GET | `/api/assistants/{slug}/sessions/{session_id}` | `routes/assistants.py:388` — reads what the session remembers |
-| DELETE | `/api/assistants/{slug}/sessions/{session_id}` | `routes/assistants.py:402` (204) — drops the memory only |
-| POST | `/api/assistants/{slug}/sessions/{session_id}/close` | `routes/assistants.py:428` — exports the session trace and drops the memory |
-| POST | `/v1/assistants/{slug}/chat/completions` | `routes/assistants.py:513` — the OpenAI chat-completions shape |
+| GET | `/api/assistants/{slug}` | `routes/assistants.py:331` — resolved configuration, no secrets |
+| POST | `/api/assistants/{slug}/chat` | `routes/assistants.py:392` — delegates to the `POST /chat` handler |
+| POST | `/api/assistants/{slug}/chat/stream` | `routes/assistants.py:403` — delegates to the `POST /chat/stream` handler |
+| GET | `/api/assistants/{slug}/sessions/{session_id}` | `routes/assistants.py:428` — reads what the session remembers |
+| DELETE | `/api/assistants/{slug}/sessions/{session_id}` | `routes/assistants.py:442` (204) — drops the memory only |
+| POST | `/api/assistants/{slug}/sessions/{session_id}/close` | `routes/assistants.py:468` — exports the session trace and drops the memory |
+| POST | `/v1/assistants/{slug}/chat/completions` | `routes/assistants.py:553` — the OpenAI chat-completions shape |
 
 ### Assistant endpoints
 A pipeline whose `rag_strategy` is `vector`, `lexical`, `hybrid`, `self_rag` or `corrective` reads one
@@ -283,7 +289,7 @@ client snippets.
 **No frontend code calls it.** Both the Knowledge Store pages use `apiFetch`, whose base is `API_URL = VITE_API_URL ?? "http://127.0.0.1:8007"`, so the browser reaches the ingestion backend directly and this router is a parallel path that nothing takes. It answers 200 when called by hand. Removing the router, or repointing the pages at it, is an open choice — see `11_knowledge_store_page.md` §6.
 
 ## 10. Key Invariants & Operational Guarantees
-1. **Safety before generation**: when a `guardrails_config_id` is supplied, input validation runs before retrieval/generation; output validation runs on the generated answer before it is persisted and returned. Guardrail checks execute only via the external guardrails service.
+1. **Safety before generation**: when a `guardrails_config_id` is supplied, input validation runs before retrieval/generation; output validation runs on the generated answer before it is persisted and returned, and a configured retrieval rail checks the passages before generation. Guardrail checks execute only via the external guardrails service, which runs the NeMo Guardrails engine.
 2. **Deterministic offline evaluation**: golden-dataset runs use the pipeline with fixed configs and default `router_enabled=False`, so metric baselines are reproducible.
 3. **Single source of retrieval truth**: this service holds read-only Qdrant access to the shared collection; ingestion writes the vectors (embedding/sparse model names must match `web-scrapper-workspace`).
 4. **End-to-end tracing**: every `/chat` request produces one `rag.chat` span tree covering retrieve → rerank → generate (and guardrails when configured), with latency attributes per stage.

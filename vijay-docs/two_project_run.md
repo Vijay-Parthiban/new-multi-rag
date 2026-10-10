@@ -1,6 +1,6 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-10-08
+**Last updated:** 2026-10-10
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
@@ -45,7 +45,7 @@ Know this table before you start. One row surprises people: **one Qdrant serves 
 | OpenSearch | 9200, 9600 | 9200, 9600 | `rag-ingestion-manager/docker-compose.yaml` | `kp_*` lexical indexes, BM25 |
 | Web scraper API | 8000 | 8000 (`scraper` profile) | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-api` | `scrape_embeddings`, the ingestion scraper path |
 | Web scraper worker | — | — | `web-scrapper-workspace`, run by `scripts/dev.sh scraper-worker` | Crawl, scrape and page-render jobs |
-| Guardrails service | 18000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | Guard checks, guard traces |
+| Guardrails service | 18000 | 8000 | `rag-ingestion-manager/docker-compose.yaml` | The NeMo Guardrails engine: guard checks, guard traces |
 | LiteLLM proxy | 4000 | 4000 | **external** container | Every chat, text embedding, image embedding and rerank call. It requires a key: `OPENAI_API_KEY`, `sk-bot` by default |
 | LiteLLM database | 5433 | 5432 | **external** container | LiteLLM's own keys and spend |
 
@@ -134,10 +134,13 @@ docker compose up -d --no-recreate guardrails-service
 `--no-recreate` matters. Without it compose rebuilds the shared PostgreSQL, Redis and Qdrant containers
 that the running stack already uses.
 
-The guardrails image needs network access the first time it is built. It installs 13 real Guardrails
-Hub validators from public PyPI and downloads the `en_core_web_sm` spaCy model from GitHub releases.
-The build takes about 13 minutes from cold; later builds reuse the pip layer and take seconds. Rebuild
-it whenever `guardrails-service/pyproject.toml`, `config.py` or `server.py` changes:
+The guardrails image needs network access the first time it is built. It installs the NeMo Guardrails
+engine, 13 real Guardrails Hub validators from public PyPI, and the `en_core_web_sm` spaCy model from
+GitHub releases. The build also patches two library files that pin the large `en_core_web_lg` model:
+Presidio's `conf/default.yaml`, and NeMo's `library/sensitive_data_detection/actions.py`. Both patches
+fail the build if the file changes shape. The build takes about 13 minutes from cold; later builds reuse
+the pip layer and take seconds. Rebuild it whenever `guardrails-service/pyproject.toml`, `config.py`,
+`nemo.py` or `server.py` changes:
 
 ```bash
 docker compose build guardrails-service && docker compose up -d guardrails-service
@@ -803,7 +806,7 @@ separate responsibilities into one file:
 | The ingestion application | `api`, `worker`, `pathway-worker`, `web`, `migrate` | It is the project's own code |
 | The shared data tier | `postgres`, `redis`, `qdrant`, `minio`, `opensearch`, `otel-collector` | The data is **born** here: MinIO holds the bytes, Qdrant the dense vectors, OpenSearch the BM25 index, Postgres the metadata, Redis the job queues and session memory |
 | The web scraper, a separate application | `scraper-api`, `scraper-worker`, `scraper-migrate` (profile `scraper`) | It fetches pages **into** the ingestion pipeline, so it sits on the producer side. Its own image, its own `crawler-db-migrate`. It normally runs on the host instead, from `web-scrapper-workspace`, so its code hot-reloads like the four other apps |
-| The guardrails service, a second separate application | `guardrails-service` | Built from `../guardrails-service`, a different folder. Both projects call it over HTTP on 18000 |
+| The guardrails service, a second separate application | `guardrails-service` | Built from `../guardrails-service`, a different folder. It runs the NeMo Guardrails engine and the Guardrails AI validators as rails. Both projects call it over HTTP on 18000 |
 
 The retrieval project is **a pure consumer**. Its compose declares only its own four services and owns
 no infrastructure at all. Its header says so: *"This project has no data tier of its own. It reads the
@@ -1189,7 +1192,7 @@ Run these after the platform is up. Each one proves a layer.
 | Infrastructure | `docker ps --format "table {{.Names}}\t{{.Status}}"` | All containers `Up` |
 | Qdrant | `curl -s -H 'api-key: qdrant' http://localhost:6333/collections` | Every `kp_*` collection, plus `scrape_embeddings` once the scraper has run. Without the header the answer is `401` |
 | OpenSearch | `curl -s "http://localhost:9200/_cat/indices?h=index"` | The `kp_*` indexes |
-| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 3 validators in its catalog |
+| Guardrails | `curl -s http://localhost:18000/health-check` | `{"status":"ok"}`. `curl -s http://localhost:18000/catalog` lists the 8 guards in its catalog: the 3 Guardrails AI validators plus 5 NeMo rails |
 | LiteLLM | `curl -s -H 'Authorization: Bearer sk-bot' http://localhost:4000/v1/model/info` | The served models with the `model_info.mode` each one reports, 21 of them. The key is `OPENAI_API_KEY`, `sk-bot` by default |
 | Ingestion API | `curl -s http://localhost:8007/api/pipelines` | A JSON array |
 | Retrieval API | `curl -s http://localhost:8001/prompt-templates` | `{"count": N, "items": [...]}` |
@@ -1225,8 +1228,14 @@ uv run pytest tests/unit/test_guardrails_runner.py -q  # 15 tests
 uv run python scripts/e2e_guardrails.py                # 34 checks
 ```
 
-The guardrails service must be rebuilt and running first. It needs about 20 seconds per run, because
-three of the twelve rows call the LLM judge.
+The guardrails service must be rebuilt and running first. It
+needs about 20 seconds per run, because three of the fourteen rows call the LLM judge.
+
+The service itself ships two plain checks, run inside the `guardrails` container:
+`docker cp guardrails-service/tests/check_nemo_rails.py guardrails:/app/check_nemo_rails.py` then
+`docker exec guardrails python /app/check_nemo_rails.py` for the rail engine, and the same with
+`check_validate_api.py` for the `/validate` contract (`GUARDRAILS_BASE=http://127.0.0.1:18000` runs it
+from the host instead).
 
 It needs one Knowledge Product with the Qdrant, OpenSearch and PostgreSQL destinations all enabled. It
 picks the product with the most enabled retrieval destinations and stops with a clear message if none has
