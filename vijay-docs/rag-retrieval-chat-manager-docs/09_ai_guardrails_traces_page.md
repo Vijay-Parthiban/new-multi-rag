@@ -116,7 +116,7 @@ The UI sends `guard`, `blocked`, `limit` and `offset`. It never sends `config_id
 | `config_name` | string \| null | resolved per row. It is `"No config"` when `config_id` is null, and `"Deleted"` when the config row no longer exists (`routes/guardrails.py:395-403`) |
 | `chat_message_id` | uuid \| null | accepted by `record_trace` but never passed by the chat call path, so it is always null for chat writes (`guardrails_repository.py:62-86`, `routes/chat.py:436-445`) |
 | `query` | string | the chat query |
-| `response` | string \| null | the generated answer. Set only by the output-phase check (`routes/chat.py:649-661`) |
+| `response` | string \| null | the generated answer. Set only by the output-phase check (`routes/chat.py:662-674`) |
 | `blocked` | bool | any guard failed |
 | `blocked_by_guard` | string \| null | first failing guard id |
 | `blocked_on` | string \| null | `"input"` / `"retrieval"` / `"output"` when blocked, else null (`routes/chat.py:443`) |

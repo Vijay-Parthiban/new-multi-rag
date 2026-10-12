@@ -38,9 +38,11 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") 
 LLM_MODEL = os.environ.get("GUARDRAIL_LLM_MODEL", "Gpt-oss-20b")
 LLM_TIMEOUT_S = float(os.environ.get("GUARDRAIL_LLM_TIMEOUT_S", "20"))
 
-# The judge models are reasoning models. A small budget is spent on reasoning tokens and the
-# response body comes back empty, so give them room to answer. 512 is measured to be enough.
-LLM_MAX_TOKENS = int(os.environ.get("GUARDRAIL_LLM_MAX_TOKENS", "512"))
+# The judge models are reasoning models: the budget must cover the reasoning chain and the
+# JSON answer, or the body comes back empty. Measured on a 5.6 KB fact-check payload, 1039
+# completion tokens, 1007 of them reasoning; 512 and 1024 both returned an empty body. 2048
+# leaves headroom for that payload. A payload much larger than that needs a larger budget.
+LLM_MAX_TOKENS = int(os.environ.get("GUARDRAIL_LLM_MAX_TOKENS", "2048"))
 
 # NeMo Guardrails is the rail engine. It is optional, exactly like a Hub validator package:
 # when the import fails the service still serves the validators below, and the catalog marks

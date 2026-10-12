@@ -270,12 +270,12 @@ the OpenTelemetry context survives.
 
 | `type` | Payload keys | Emitted when |
 |---|---|---|
-| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:778`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py`). |
+| `status` | `message` | `"Checking guardrails..."` before an input guardrail check (`routes/chat.py:791`). The pipeline also sends `"Retrieving context"` and `"Generating answer"` (`rag_core/pipeline.py`). |
 | `token` | `content` | One frame per non-empty answer delta (`routes/chat.py`, `rag_core/pipeline.py`). |
 | `done` | `metadata` | The pipeline's done metadata: `answer`, `sources`, `retrieved_chunks`, `reranked_chunks`, `latency_ms` and `route: "normal"` (`rag_core/pipeline.py`). |
 | `session` | `session_id`, `message_id`, `route`, `metrics_status` | After the DB write. `route` is `blocked` on an input, retrieval or output block, otherwise `normal` (`routes/chat.py`). |
 | `blocked` | `content`, `blocked_by_guard`, `blocked_on`, `blocked_title`, `session_id`, `message_id`, `route`, `metrics_status` | An input, a retrieval or an output guardrail block. `blocked_on` is `input`, `retrieval` or `output` (`routes/chat.py`). |
-| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:969`). |
+| `error` | `content` | Any exception in the worker, including `str(e)` (`routes/chat.py:982`). |
 
 The client splits the byte stream on `\n\n`, keeps only lines starting with `data: `, and `JSON.parse`s each
 into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`, `session_id`, `message_id`,
@@ -296,7 +296,7 @@ for the output.
   raises `GuardrailBlocked` (`rag_core/pipeline.py:60`) through the `chunk_filter` it runs at
   `rag_core/pipeline.py:248,333`, and the route persists the turn and answers with
   `GUARD_BLOCK_COPY[guard]["retrieval"]`, `latency_ms.blocked_on = "retrieval"`, empty `sources`, and no
-  memory append (`routes/chat.py:612-646`, `:864-890`). Metrics are not enqueued.
+  memory append (`routes/chat.py:625-659`, `:864-890`). Metrics are not enqueued.
 - Blocked **output**: the streamed answer is replaced, the same blocked latency keys are merged in, and
   metrics are not enqueued.
 - Each phase that runs writes one `guardrails_traces` row. A phase with nothing applicable writes no row

@@ -459,6 +459,18 @@ def _passage_text(chunk: RerankedChunk) -> str:
     return passage_text_for_chunk(chunk) if is_image_chunk(chunk) else chunk.content
 
 
+def _chunk_texts(chunks: list[Any]) -> list[str]:
+    """The passage texts for a guardrail, from chunk objects or from stored dicts.
+
+    The streaming route reads its chunks from the pipeline's metadata, which holds them as
+    stored dicts, so the two routes share one conversion here.
+    """
+    return [
+        _passage_text(chunk if isinstance(chunk, RerankedChunk) else RerankedChunk.model_validate(chunk))
+        for chunk in chunks or []
+    ]
+
+
 def _retrieval_guardrail(
     *,
     settings: Settings,
@@ -657,6 +669,8 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
                 query=body.query,
                 response=answer,
                 span=span,
+                # The fact check scores the answer against the passages it came from.
+                chunks=_chunk_texts(result.reranked_chunks),
             )
             if blocked:
                 answer = _blocked_answer(guard, "output")
@@ -913,6 +927,8 @@ async def chat_stream(request: Request, body: ChatRequest):
                         query=body.query,
                         response=answer,
                         span=span,
+                        # The fact check scores the answer against the passages it came from.
+                        chunks=_chunk_texts(reranked_chunks),
                     )
                     if out_blocked:
                         answer = _blocked_answer(out_guard, "output")
