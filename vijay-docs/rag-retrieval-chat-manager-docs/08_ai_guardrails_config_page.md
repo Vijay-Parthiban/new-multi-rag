@@ -105,11 +105,21 @@ no package. It sends the text to the LiteLLM proxy with `max_tokens` from
 CUDA libraries, so it is deliberately not installed.
 
 ### How the five rails run
-Every phase the engine runs is expressed as the engine's **input rails over the text under
-check**. The engine only fires its own output rails for a message it generated, and this
-service generates nothing, so the phase itself decides which rails go in the list. One config
-still has one rail set per phase. The context message (the output and retrieval phases) must
-come before the user message, or the engine runs no rails at all (`nemo.py:591-595`).
+Each phase takes the official slot for it, and the phase decides which rails go in that slot,
+so one config still has one rail set per phase.
+
+- The **input** phase lists its rails under `rails.input.flows` and checks the user message
+  (`$user_message`).
+- The **retrieval** phase lists `pii_retrieval` under `rails.input.flows` as well. The library's
+  own `rails.retrieval.flows` fire only when the engine computes `$relevant_chunks` itself,
+  which a check-only caller never does. The deviations table below records the measurement.
+- The **output** phase lists its rails under `rails.output.flows` and hands the answer over as
+  an `assistant` message next to the user question, so the runtime sets `$bot_message` from the
+  answer under check. A repair rail writes the checked answer back to `$bot_message`, and
+  `check_phase` returns it as `text`, which the chat route returns to the user.
+
+The context message (the output and retrieval phases) must come before the user and assistant
+messages, or the engine runs no rails at all (`nemo.py:588-605`).
 
 - `self_check_input` and `self_check_output` are the engine's library flows. The engine ships
   no prompt for either task, so `guardrails-service` supplies both prompts and appends the
@@ -130,6 +140,25 @@ so a config with them costs one call more per rail than the same config without 
 
 When a config names a rail, the three validators of that phase run as engine actions beside
 the rails, inside the same call. A config with no rail never builds an engine.
+
+### Official NeMo Guardrails patterns, and where this service deviates
+
+The service builds and extends the engine the documented way: `RailsConfig.from_content(
+yaml_content=, colang_content=)` builds one engine per config and phase; `colang_version: "1.0"`
+loads the shipped Colang 1.0 flows; `models` declares the main model and, for a rail that sets
+its own `model`, the task model that rail belongs to; `prompts` carries the task prompts the
+library does not ship; every guard runs through an action registered with `register_action`;
+the generation options `rails`, `output_vars` and `log.activated_rails` drive the call and
+supply the per-rail `ms`.
+
+Three deviations are deliberate. Each one has a measurement behind it, taken on the installed
+`nemoguardrails 0.24.1`.
+
+| Deviation | Reason |
+|---|---|
+| The retrieval phase runs the input slot with `sensitive_data_detection.input`, not `rails.retrieval.flows` with `.retrieval`. | With the chunks handed over in a context message, `rails.retrieval.flows` do not fire: `log.activated_rails` stays empty and the passages come back unmasked. The library also exposes no retrieval rail type (`RailType` has `input` and `output` only), so `check()` cannot cover it either. |
+| The Guardrails AI validators do not use `rails.config.guardrails_ai.validators` with `guardrailsai check input\|output $validator="…"`. | That integration serves 13 pre-registered names, and it refuses the turn on a failure with no repair path. This project's configs name Hub packages and its own `local/toxic_language`, carry per-guard parameters from the database, and mask PII instead of blocking (`on_fail: fix`). A registered action per guard is the library's own extension point and keeps all three behaviours (`nemo.py::_register_actions`). |
+| Output checks run once on the collected answer, not through the streaming rails (`streaming.chunk_size`, `stream_first`). | The application owns generation and streams to the client. A repair rail therefore cannot retract tokens that already left; it changes the persisted answer and the final stream frames. |
 
 ### What the catalog used to hold, and why it was cut
 
@@ -356,9 +385,9 @@ Add a rail by listing its id in `guards` and giving it a `settings` entry, the s
 ## 5. Where Guard Configs Apply During Chat
 
 - `ChatRequest.guardrails_config_id` (`uuid | None`) is the only switch. When it is absent no guardrail check runs (`routes/chat.py:34`).
-- `_run_guardrails()` loads the config by id, returns immediately if the id does not resolve, skips the phase that `mode` excludes, and returns a 4-tuple `(is_blocked, blocking_guard, guard_results, masked_chunks)` (`routes/chat.py:384-454`). It calls `run_guardrails_phase(...)` with `phase`, `query`, `answer` and `chunks`, and writes a `guardrails_traces` row for every phase that ran. A phase with nothing to run is skipped and writes no row (`routes/chat.py:429-445`).
+- `_run_guardrails()` loads the config by id, returns immediately if the id does not resolve, skips the phase that `mode` excludes, and returns a 5-tuple `(is_blocked, blocking_guard, guard_results, masked_chunks, repaired_answer)` (`routes/chat.py:384-457`). It calls `run_guardrails_phase(...)` with `phase`, `query`, `answer` and `chunks`, and writes a `guardrails_traces` row for every phase that ran. A phase with nothing to run is skipped and writes no row (`routes/chat.py:429-445`). Both output call sites return `repaired_answer` instead of the generated answer when an output rail masked it, so the user and the persisted row carry the repaired text.
 - Non-streaming `/chat`: input phase check before the pipeline call (`routes/chat.py:567-603`). The retrieval phase runs inside `pipeline.chat` through the `chunk_filter` argument (`routes/chat.py:616-624`), and a `GuardrailBlocked` from the pipeline becomes the canned answer with `blocked_on: "retrieval"` (`routes/chat.py:625-638`). The output phase check runs on the generated answer (`routes/chat.py:662-674`).
-- Streaming `/chat/stream`: emits `{"type": "status", "message": "Checking guardrails..."}` before the input check (`routes/chat.py:791`) and, on a block, a `blocked` SSE payload plus a `session` event with `route: "blocked"` (`routes/chat.py:819-823`). The retrieval phase runs through the same `chunk_filter` (`routes/chat.py:853-860`) and a block emits the same two frames (`routes/chat.py:877-904`). The output check runs on the final answer (`routes/chat.py:919-932`).
+- Streaming `/chat/stream`: emits `{"type": "status", "message": "Checking guardrails..."}` before the input check (`routes/chat.py:794`) and, on a block, a `blocked` SSE payload plus a `session` event with `route: "blocked"` (`routes/chat.py:822-826`). The retrieval phase runs through the same `chunk_filter` (`routes/chat.py:856-863`) and a block emits the same two frames (`routes/chat.py:880-907`). The output check runs on the final answer (`routes/chat.py:922-935`).
 - On a block the answer becomes `GUARD_BLOCK_COPY[guard][phase]` (`routes/chat.py:163-207`, `_blocked_answer` at `:210-212`), latency is stamped `route="blocked"`, `blocked=True`, `blocked_by_guard`, `blocked_on` (`routes/chat.py:215-221`), the turn is persisted with metrics skipped, and OTEL span attributes `guardrails.config_id`, `guardrails.{phase}.blocked`, `guardrails.{phase}.blocked_by` are set (`routes/chat.py:448-452`).
 
 ### Implementation notes (verified in the working tree)

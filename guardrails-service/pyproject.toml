@@ -14,8 +14,10 @@ dependencies = [
 
     # The rail engine. It orchestrates every guard: the three validators below run as NeMo
     # actions, and NeMo adds the rails this project has none of (self checks, fact check,
-    # jailbreak heuristics, PII masking on the retrieved chunks).
-    "nemoguardrails>=0.21,<1.0",
+    # jailbreak heuristics, PII masking on the retrieved chunks). 0.22 was a breaking release
+    # (the LLMModel protocol, LangChain out of the core dependencies, RailOutcome), so the
+    # floor is the version this service is verified against.
+    "nemoguardrails>=0.24.1,<1.0",
     # The provider behind `engine: openai` in the generated NeMo config. NeMo points it at
     # the LiteLLM proxy with LITELLM_BASE_URL, so no cloud key is needed.
     "langchain-openai",

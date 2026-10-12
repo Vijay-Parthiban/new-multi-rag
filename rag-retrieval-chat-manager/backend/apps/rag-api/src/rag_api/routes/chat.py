@@ -392,10 +392,10 @@ def _run_guardrails(
     chat_message_id: uuid.UUID | None = None,
     span=None,
     chunks: list[str] | None = None,
-) -> tuple[bool, str | None, dict, list[str] | None]:
+) -> tuple[bool, str | None, dict, list[str] | None, str | None]:
     """
     Run guardrails validation for a given phase (input/retrieval/output).
-    Returns (is_blocked, blocking_guard, guard_results, masked_chunks).
+    Returns (is_blocked, blocking_guard, guard_results, masked_chunks, repaired_answer).
     Also records a trace to the DB and sets OTEL span attributes.
     """
     from rag_shared.tracing import set_span_attr
@@ -405,15 +405,15 @@ def _run_guardrails(
         repo = GuardrailsRepository(db)
         cfg = repo.get_config(config_id)
         if not cfg:
-            return False, None, {}, None
+            return False, None, {}, None, None
 
         # The input and output phases follow the config's mode. The retrieval phase has its own
         # switch: the rail itself, so a config that names a retrieval rail always runs it.
         if phase in ("input", "output"):
             if cfg.mode == "input" and phase != "input":
-                return False, None, {}, None
+                return False, None, {}, None, None
             if cfg.mode == "output" and phase != "output":
-                return False, None, {}, None
+                return False, None, {}, None, None
 
         outcome = run_guardrails_phase(
             text,
@@ -428,7 +428,7 @@ def _run_guardrails(
         )
         if outcome["skipped"]:
             # No guard in this config belongs to this phase, so there is nothing to record.
-            return False, None, {}, None
+            return False, None, {}, None, None
 
         results = outcome["results"]
         is_blocked, blocking_guard = check_blocked(results)
@@ -451,7 +451,7 @@ def _run_guardrails(
         if blocking_guard:
             set_span_attr(span, f"guardrails.{phase}.blocked_by", blocking_guard)
 
-    return is_blocked, blocking_guard, results, outcome.get("chunks")
+    return is_blocked, blocking_guard, results, outcome.get("chunks"), outcome.get("text")
 
 
 def _passage_text(chunk: RerankedChunk) -> str:
@@ -490,7 +490,7 @@ def _retrieval_guardrail(
             return chunks
 
         texts = [_passage_text(chunk) for chunk in chunks]
-        blocked, guard, _, masked = _run_guardrails(
+        blocked, guard, _, masked, _ = _run_guardrails(
             settings=settings,
             config_id=config_id,
             text="\n\n".join(texts),
@@ -564,7 +564,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
     ) as span:
         # ── Guardrails: input validation ─────────────────────────
         if body.guardrails_config_id:
-            blocked, guard, _, _ = _run_guardrails(
+            blocked, guard, _, _, _ = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
                 text=body.query,
@@ -661,7 +661,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         answer = result.answer
         latency_ms = dict(result.latency_ms or {})
         if body.guardrails_config_id:
-            blocked, guard, _, _ = _run_guardrails(
+            blocked, guard, _, _, fixed = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
                 text=answer,
@@ -675,6 +675,9 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
             if blocked:
                 answer = _blocked_answer(guard, "output")
                 latency_ms.update(_blocked_latency(guard, "output"))
+            elif fixed:
+                # A repair rail masked the answer, so the user reads the repaired text.
+                answer = fixed
 
         set_span_attr(span, "langfuse.trace.output", answer)
         set_span_attr(span, "langfuse.observation.output", answer)
@@ -790,7 +793,7 @@ async def chat_stream(request: Request, body: ChatRequest):
             # ── Guardrails: input validation (stream) ────────────
             if body.guardrails_config_id:
                 _emit(f'data: {json.dumps({"type": "status", "message": "Checking guardrails..."})}\n\n')
-                blocked, guard, _, _ = _run_guardrails(
+                blocked, guard, _, _, _ = _run_guardrails(
                     settings=settings,
                     config_id=body.guardrails_config_id,
                     text=body.query,
@@ -919,7 +922,7 @@ async def chat_stream(request: Request, body: ChatRequest):
 
                 # ── Guardrails: output validation (stream) ───────
                 if body.guardrails_config_id:
-                    out_blocked, out_guard, _, _ = _run_guardrails(
+                    out_blocked, out_guard, _, _, out_fixed = _run_guardrails(
                         settings=settings,
                         config_id=body.guardrails_config_id,
                         text=answer,
@@ -933,6 +936,10 @@ async def chat_stream(request: Request, body: ChatRequest):
                     if out_blocked:
                         answer = _blocked_answer(out_guard, "output")
                         latency_ms.update(_blocked_latency(out_guard, "output"))
+                    elif out_fixed:
+                        # A repair rail masked the answer. The tokens already streamed, so the
+                        # persisted answer and the final frames carry the repaired text.
+                        answer = out_fixed
 
                 set_span_attr(span, "langfuse.trace.output", answer)
                 set_span_attr(span, "langfuse.observation.output", answer)

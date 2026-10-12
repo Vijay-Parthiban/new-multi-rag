@@ -49,12 +49,12 @@ Traces are stored as rows, not as an OpenTelemetry span tree.
 
 | Method | Endpoint | Returns | Evidence |
 |---|---|---|---|
-| `GET` | `/chat/sessions/{session_id}/messages` | per message: `trace {retrieval_mode, rerank_enabled, generation_model, route}`, `sources [{source_locator, chunk_index, rerank_score}]` derived from `reranked_chunks`, `metrics_status`, `blocked` / `blocked_by_guard` / `blocked_on` | `chat.py:922` |
-| `GET` | `/chat/messages/{message_id}/metrics` | staged metrics (`retrieval` / `reranker` / `generation`) plus flat `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `kendall_tau`, `mrr`, `ndcg` | `chat.py:836` |
-| `GET` | `/chat/stats` | recent assistant messages with metrics and trace config (incl. `latency_ms`) | `chat.py:876` |
-| `GET` | `/chat/sessions` | session list with message counts and preview | `chat.py:896` |
+| `GET` | `/chat/sessions/{session_id}/messages` | per message: `trace {retrieval_mode, rerank_enabled, generation_model, route}`, `sources [{source_locator, chunk_index, rerank_score}]` derived from `reranked_chunks`, `metrics_status`, `blocked` / `blocked_by_guard` / `blocked_on` | `chat.py:925` |
+| `GET` | `/chat/messages/{message_id}/metrics` | staged metrics (`retrieval` / `reranker` / `generation`) plus flat `faithfulness`, `answer_relevancy`, `context_precision`, `context_recall`, `kendall_tau`, `mrr`, `ndcg` | `chat.py:839` |
+| `GET` | `/chat/stats` | recent assistant messages with metrics and trace config (incl. `latency_ms`) | `chat.py:879` |
+| `GET` | `/chat/sessions` | session list with message counts and preview | `chat.py:899` |
 
-`route` is read out of `latency_ms["route"]` (`chat.py:937, 935`). The code writes only two values: `normal` (`chat.py:691`) and `blocked` (`chat.py:185, 209`). The stream `session` event reports `blocked` or `normal` (`chat.py:687, 790`).
+`route` is read out of `latency_ms["route"]` (`chat.py:940, 935`). The code writes only two values: `normal` (`chat.py:694`) and `blocked` (`chat.py:185, 209`). The stream `session` event reports `blocked` or `normal` (`chat.py:690, 790`).
 
 **`latency_ms` keys actually written**: `retrieve` and `rerank` (`libs/rag-core/src/rag_core/pipeline.py:110, 115`), `total` (`pipeline.py:116`), `grade`, `grounding` and `revise` for the agentic strategies (`pipeline.py:156, 181, 195`), `generate_text` / `generate_vision` / `generate_fusion` / `generate_total` (`libs/generation-core/src/generation_core/generator.py:281, 292, 306, 314`), `generate` (`pipeline.py:253`), plus `route` (`chat.py:185, 693, 728`) and `blocked`, `blocked_by_guard`, `blocked_on` (`chat.py:183-187`). No first-token / TTFT key and no per-stage span hierarchy are recorded anywhere.
 
@@ -90,7 +90,7 @@ Backend credentials for a backend are **not** read here. They live in `otel/.env
 | Span name | Where | Notes |
 |---|---|---|
 | `rag.chat` | `rag_api/routes/chat.py:446` | wraps retrieve → rerank → generate for `POST /chat` and for the assistant routes that delegate to it |
-| `rag.chat.stream` | `chat.py:698` (the main stream path) | wraps the SSE generation path |
+| `rag.chat.stream` | `chat.py:701` (the main stream path) | wraps the SSE generation path |
 | `rag.pipeline.metrics` | `tracing.py:461` via `emit_rag_pipeline_trace` | emitted by the eval worker after metrics. It is **parented under the turn's own span**, so one question stays one trace |
 
 ### Session traces

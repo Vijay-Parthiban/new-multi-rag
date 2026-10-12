@@ -231,7 +231,9 @@ def _generated_flows(rails: list[dict[str, Any]], phase: str = "input") -> list[
                 "phase": phase,
                 "flow": _guard_flow_name(guard_id, phase, _on_fail(entry)),
                 "action": RAIL_ACTIONS.get(guard_id) or flow_for_action(guard_id),
-                "variable": "$user_message",
+                # The phase decides the text under check and where a repair goes: the official
+                # output rail reads and writes `bot_message`, the input rail `user_message`.
+                "variable": "$bot_message" if phase == "output" else "$user_message",
                 # The fact check reads the passages as well as the answer.
                 "evidence": guard_id == "self_check_facts",
                 "on_fail": _on_fail(entry),
@@ -293,7 +295,11 @@ def build_content(
     config: dict[str, Any] = {
         "colang_version": "1.0",
         "models": models,
-        "rails": {"input": {"flows": flows}},
+        # The output phase takes the official output slot, where the runtime sets `bot_message`
+        # from the message under check and a repair rail writes the checked text back. The input
+        # and retrieval phases both take the input slot: the retrieval rails of the library only
+        # fire when the engine computes the chunks itself, which a check-only caller never does.
+        "rails": {"output" if phase == "output" else "input": {"flows": flows}},
     }
     if prompts:
         config["prompts"] = prompts
@@ -581,10 +587,10 @@ def _check_once(
     """Run one engine call. Returns the output variables, the rail timings and the stop rail."""
     context: dict[str, Any] = {}
     if phase == "output":
-        # The rails read these variables. `bot_message` is the answer under check, because the
-        # engine treats the user message as the text to check.
+        # The official post-hoc shape: the question is the user message and the answer to check
+        # is the assistant message, from which the runtime sets `bot_message`. The context
+        # carries what only this service knows: the passages and the facts flag.
         context = {
-            "bot_message": answer if answer is not None else text,
             "relevant_chunks": "\n\n".join(chunks),
             "check_facts": check_facts,
         }
@@ -592,7 +598,11 @@ def _check_once(
     messages: list[dict[str, Any]] = []
     if context:
         messages.append({"role": "context", "content": context})
-    messages.append({"role": "user", "content": text})
+    if phase == "output":
+        messages.append({"role": "user", "content": query or text})
+        messages.append({"role": "assistant", "content": answer if answer is not None else text})
+    else:
+        messages.append({"role": "user", "content": text})
 
     # The engine logs an action failure and then reports nothing, so its own log is the only
     # place the reason survives. The rail must fail open, and the trace must say why.
@@ -603,7 +613,7 @@ def _check_once(
         result = engine.generate(
             messages=messages,
             options={
-                "rails": ["input"],
+                "rails": ["output" if phase == "output" else "input"],
                 "output_vars": [
                     "triggered_input_rail",
                     "triggered_output_rail",
@@ -661,6 +671,7 @@ def check_phase(
             "phase": phase,
             "results": merged,
             "chunks": runs["output"]["chunks"] or runs["input"]["chunks"],
+            "text": runs["output"].get("text") or runs["input"].get("text"),
         }
 
     passages = [p for p in (chunks or []) if p]
@@ -675,6 +686,7 @@ def check_phase(
     blocked_by: str | None = None
     masked: list[str] | None = None
     guard_detail: str | None = None
+    fixed: str | None = None
 
     try:
         if phase == "retrieval":
@@ -700,6 +712,12 @@ def check_phase(
             data, timings = run["data"], run["timings"]
             blocked_by = _blocking_flow(rails, phase, data) or _flow_to_guard(rails, run["stopped"] or "")
             guard_detail = str(data.get("guard_detail") or "") or None
+            if blocked_by is None:
+                # A repair rail on this phase writes the text under check back to `bot_message`,
+                # the official output variable, so the caller returns the repaired answer.
+                repaired = str(data.get("bot_message") or "")
+                if repaired and repaired != (answer if answer is not None else text):
+                    fixed = repaired
     except Exception as exc:  # noqa: BLE001 - a rail failure must not block every turn
         logger.exception("Rail phase %s failed: %s", phase, exc)
         for rail_id in list(results):
@@ -711,6 +729,7 @@ def check_phase(
             "phase": phase,
             "results": results,
             "chunks": None,
+            "text": None,
         }
 
     # A guard whose action raised is not a verdict about the text, so it reports the reason and
@@ -756,6 +775,7 @@ def check_phase(
         "phase": phase,
         "results": results,
         "chunks": masked,
+        "text": fixed,
     }
 
 
@@ -830,6 +850,7 @@ def run_check(
             "phase": phase,
             "results": other_phase,
             "chunks": None,
+            "text": None,
             "skipped": True,
         }
 
@@ -837,6 +858,7 @@ def run_check(
     if NEMO_IMPORT_ERROR or not has_rail:
         outcome = run_validators(text, applicable, phase=phase)
         outcome["chunks"] = None
+        outcome["text"] = None
         outcome["skipped"] = False
         outcome["results"].update(other_phase)
         return outcome

@@ -82,7 +82,8 @@ def validate(body: ValidateRequest) -> dict[str, Any]:
     ``blocked_by`` names the first one. Each result carries ``validation_passed``, ``error``
     (a transport or configuration problem), ``detail`` (the failure reason) and ``ms`` (what
     the rail cost, on the engine path). ``chunks`` comes back only for the retrieval phase:
-    the passages, with any masked text in the same places.
+    the passages, with any masked text in the same places. ``text`` comes back only for an
+    output phase whose repair rail masked the answer.
     """
     if not body.validators:
         raise HTTPException(status_code=422, detail="At least one validator is required")

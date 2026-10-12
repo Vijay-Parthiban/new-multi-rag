@@ -75,14 +75,22 @@ def run_guardrails_phase(
 
     Keys: `results` (one entry per guard id, each with `validation_passed`, `error`, `detail`
     and, on the engine path, `ms`), `blocked`, `blocked_by`, `chunks` (the passages with masked
-    text, from the retrieval phase, else None) and `skipped` (the phase had nothing to run).
+    text, from the retrieval phase, else None), `text` (the answer with masked text, from an
+    output phase whose rail repairs, else None) and `skipped` (the phase had nothing to run).
 
     A transport failure or a rejected configuration reports every guard as passed with a
     non-null `error`, so a misconfigured guard never blocks every chat turn. The trace records
     the error.
     """
     if not guards:
-        return {"results": {}, "blocked": False, "blocked_by": None, "chunks": None, "skipped": True}
+        return {
+            "results": {},
+            "blocked": False,
+            "blocked_by": None,
+            "chunks": None,
+            "text": None,
+            "skipped": True,
+        }
 
     # A config written before the catalog existed may still name pii_check.
     guards = [LEGACY_GUARD_IDS.get(g, g) for g in guards]
@@ -107,6 +115,7 @@ def run_guardrails_phase(
             "blocked": False,
             "blocked_by": None,
             "chunks": None,
+            "text": None,
             "skipped": False,
         }
 
@@ -145,6 +154,7 @@ def run_guardrails_phase(
         "blocked": bool(body.get("blocked")),
         "blocked_by": body.get("blocked_by"),
         "chunks": body.get("chunks"),
+        "text": body.get("text"),
         "skipped": bool(body.get("skipped")),
     }
 

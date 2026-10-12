@@ -28,7 +28,9 @@ PII_FIX = {"id": "pii_retrieval", "params": {"pii_entities": ["EMAIL_ADDRESS"], 
 PII_BLOCK = {"id": "pii_retrieval", "params": {"pii_entities": ["EMAIL_ADDRESS"], "score_threshold": 0.2}, "on_fail": "noop"}
 JAILBREAK = {"id": "jailbreak_heuristics", "params": {}, "on_fail": "noop"}
 SELF_IN = {"id": "self_check_input", "params": {}, "on_fail": "noop"}
+DETECT_PII_FIX = {"id": "detect_pii", "params": {"pii_entities": ["EMAIL_ADDRESS"]}, "on_fail": "fix"}
 PASSAGE = "Contact rohan@example.com about the award."
+MAIL_ANSWER = "Reply to rohan@example.com about the award."
 
 FAILURES: list[str] = []
 
@@ -63,7 +65,12 @@ def main() -> int:
     check("the old path reports no passages", fast["chunks"] is None)
     check(
         "the old path matches run_validators",
-        fast == {**run_validators("the classified material", [BAN], phase="input"), "chunks": None, "skipped": False},
+        fast == {
+            **run_validators("the classified material", [BAN], phase="input"),
+            "chunks": None,
+            "text": None,
+            "skipped": False,
+        },
         str(fast),
     )
 
@@ -78,6 +85,17 @@ def main() -> int:
     check(
         "the output phase generates its own flows",
         "define flow check guard ban list output" in nemo.build_content([BAN], phase="output")[1],
+    )
+    # The official slot per phase: the output phase must not masquerade as an input phase.
+    check(
+        "the output phase takes the official output slot",
+        "rails:\n  output:\n    flows:" in nemo.build_content([BAN], phase="output")[0],
+        nemo.build_content([BAN], phase="output")[0][-200:],
+    )
+    check(
+        "the input and retrieval phases take the input slot",
+        "rails:\n  input:\n    flows:" in nemo.build_content([BAN])[0],
+        nemo.build_content([BAN])[0][-200:],
     )
     check("a rail config loads in the input rail list", "self check input" in nemo.build_content([SELF_IN])[0])
     check(
@@ -213,6 +231,26 @@ def main() -> int:
         "nothing is masked when only card numbers are configured",
         not ignored["blocked"] and not ignored["chunks"],
         str(ignored),
+    )
+
+    # ── The official output slot ─────────────────────────────────────
+    out_blocked = nemo.check_phase(
+        rails=[BAN], phase="output", text="The classified material.", query="What?", answer="The classified material."
+    )
+    check(
+        "an output phase blocks through the output rails",
+        out_blocked["blocked"] and out_blocked["blocked_by"] == "ban_list",
+        str(out_blocked),
+    )
+    out_clean = nemo.check_phase(
+        rails=[BAN], phase="output", text="The public material.", query="What?", answer="The public material."
+    )
+    check("a clean answer passes the output phase", not out_clean["blocked"] and out_clean["text"] is None, str(out_clean))
+    repaired = nemo.check_phase(rails=[DETECT_PII_FIX], phase="output", text=MAIL_ANSWER, query="Who?", answer=MAIL_ANSWER)
+    check(
+        "an output repair returns the masked answer",
+        not repaired["blocked"] and bool(repaired["text"]) and "rohan@example.com" not in str(repaired["text"]),
+        str(repaired),
     )
 
     # ── A library rail, end to end, with the judge ───────────────────

@@ -203,7 +203,7 @@ Two points to know before you touch this layer:
 
 `init_tracing()` runs at process startup for both apps (`apps/rag-api/src/rag_api/main.py:47`, `apps/eval-worker/src/eval_worker/main.py:11`) and configures an OTLP HTTP exporter (`rag_shared/tracing.py`). The collector fans the traces out to Phoenix and Langfuse; the application names neither. Tracing is switched by `Settings.otel_tracing_enabled`, which reads `.env`, `.env.local` and the process environment. A host run reads `.env.local` last, so a `false` `OTEL_TRACING_ENABLED` there silences tracing for both test and prod turns.
 
-Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` and for the assistant routes that delegate to it (`routes/chat.py:549`), `rag.chat.stream` for the streaming path (`chat.py:832`) — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`), the OpenInference keys Phoenix reads (`openinference.span.kind`, `input.value`/`output.value`), plus `deployment.environment`, `rag.trace_mode`, `latency.*` and `rag.chunks_used`.
+Chat spans are created with `rag_pipeline_span()` — `rag.chat` for `POST /chat` and for the assistant routes that delegate to it (`routes/chat.py:549`), `rag.chat.stream` for the streaming path (`chat.py:835`) — and carry Langfuse-compatible attributes (`langfuse.trace.input/output`, `langfuse.session.id`, `langfuse.observation.metadata.*`), the OpenInference keys Phoenix reads (`openinference.span.kind`, `input.value`/`output.value`), plus `deployment.environment`, `rag.trace_mode`, `latency.*` and `rag.chunks_used`.
 
 Every turn is tagged `test` or `prod` from the `X-RAG-Trace-Mode` request header, and **a request without the header is production**. The Chat page sets it, so a turn sent from the UI while trying a pipeline is a test turn; an integrator's caller never sets it. The mode is stored on the trace row and the Real Time Monitoring page tags each log with it.
 
@@ -220,14 +220,14 @@ A pipeline whose product has the Redis destination enabled also files each turn 
 | POST | `/rerank` | `routes/rerank.py:17` |
 | POST | `/generate` | `routes/generate.py:22` |
 | POST | `/chat` | `routes/chat.py:516` |
-| POST | `/chat/stream` | `routes/chat.py:738` — SSE (`status` / `token` / `session` / `done` / `blocked` / `error` events) |
-| GET | `/chat/messages/{message_id}/metrics` | `routes/chat.py:1010` |
-| GET | `/chat/stats` | `routes/chat.py:1050` |
-| GET | `/chat/sessions` | `routes/chat.py:1070` |
-| GET | `/chat/sessions/{session_id}/messages` | `routes/chat.py:1096` |
-| POST | `/chat/sessions/{session_id}/close` | `routes/chat.py:1137` — exports the session trace and clears the memory |
-| DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:1161` (204) |
-| DELETE | `/chat/messages/{message_id}` | `routes/chat.py:1174` |
+| POST | `/chat/stream` | `routes/chat.py:741` — SSE (`status` / `token` / `session` / `done` / `blocked` / `error` events) |
+| GET | `/chat/messages/{message_id}/metrics` | `routes/chat.py:1017` |
+| GET | `/chat/stats` | `routes/chat.py:1057` |
+| GET | `/chat/sessions` | `routes/chat.py:1077` |
+| GET | `/chat/sessions/{session_id}/messages` | `routes/chat.py:1103` |
+| POST | `/chat/sessions/{session_id}/close` | `routes/chat.py:1144` — exports the session trace and clears the memory |
+| DELETE | `/chat/sessions/{session_id}` | `routes/chat.py:1168` (204) |
+| DELETE | `/chat/messages/{message_id}` | `routes/chat.py:1181` |
 | POST | `/evaluate/datasets`, `/evaluate/datasets/upload` | `routes/evaluate.py:194,204` |
 | POST | `/evaluate/datasets/huggingface` | `routes/evaluate.py:335` — imports the named Hugging Face dataset, no seed |
 | GET | `/evaluate/datasets`, `/evaluate/datasets/{id}`, `/evaluate/datasets/{id}/runs` | `routes/evaluate.py:370,399` and `:471` |
