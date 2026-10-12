@@ -151,6 +151,14 @@ library does not ship; every guard runs through an action registered with `regis
 the generation options `rails`, `output_vars` and `log.activated_rails` drive the call and
 supply the per-rail `ms`.
 
+Nothing is written to disk. There is no `config.yml`, no `.co` file, no `actions.py` and no
+`prompts.yml`. `nemo.build_content()` returns the YAML and the Colang of one config row and one
+phase as two strings, `nemo._dump_colang()` generates one Colang flow per guard that needs one,
+and `nemo._register_actions()` registers the actions that those flows call. The library's own
+`.co` files supply the flows this service names instead of writing them (`self check input`,
+`self check output`, `mask sensitive data on input`). Prompt tasks live in the `prompts:` key of
+the generated YAML, which is where the library keeps them: it ships no `prompts.yml`.
+
 Three deviations are deliberate. Each one has a measurement behind it, taken on the installed
 `nemoguardrails 0.24.1`.
 
@@ -200,7 +208,7 @@ Exactly three options exist (`config.py`). `on_fail` sits beside the parameters 
 | `POST` | `/validate-config` | Check that a guard list and its parameters can be built. Runs nothing | `{"validators": [{id, params, on_fail}]}` -> `{"valid": bool, "errors": [str]}` (`server.py:64-74`) |
 | `POST` | `/validate` | Run one phase of a guard config over the text | `{"text", "phase", "query?", "answer?", "chunks?", "validators": [...]}` -> the per-guard result map plus `blocked`, `blocked_by`, `phase`, `chunks`, `skipped` and `engine_ms` (`server.py:77-108`) |
 
-These four endpoints are the whole surface of the service. `guardrails-service/pyproject.toml:6-38` lists `guardrails-ai`, the validator packages, `nemoguardrails` (the rail engine), `langchain-openai` (the `engine: openai` provider the generated config uses) and `pyyaml`.
+These four endpoints are the whole surface of the service. `guardrails-service/pyproject.toml` lists `guardrails-ai`, the validator packages, `nemoguardrails` (the rail engine) and `pyyaml`. No LangChain provider package is needed: from NeMo 0.22 the built-in OpenAI-compatible client serves `engine: openai` with `parameters.base_url`, and LangChain is opt-in through `NEMOGUARDRAILS_LLM_FRAMEWORK=langchain`.
 
 `POST /validate` rejects an empty guard list and a bad parameter with HTTP 422 and a readable message (`server.py:87-88, 99-101`). A parameter error comes from `coerce_params` (`config.py:511-534`), for example `Ban List: 'Banned words' is required` or `<id> has unknown parameters: ...`. The reply is keyed by guard id and also carries `blocked`, `blocked_by` and `phase`. On the engine path each result also carries `ms`, the time that rail took (`server.py:81-85`).
 

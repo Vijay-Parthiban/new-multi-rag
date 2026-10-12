@@ -18,9 +18,9 @@ dependencies = [
     # (the LLMModel protocol, LangChain out of the core dependencies, RailOutcome), so the
     # floor is the version this service is verified against.
     "nemoguardrails>=0.24.1,<1.0",
-    # The provider behind `engine: openai` in the generated NeMo config. NeMo points it at
-    # the LiteLLM proxy with LITELLM_BASE_URL, so no cloud key is needed.
-    "langchain-openai",
+    # No LangChain provider package is needed: from 0.22 the built-in OpenAI-compatible client
+    # serves `engine: openai` with `parameters.base_url`, and only an engine whose API is not
+    # OpenAI-compatible needs LangChain plus NEMOGUARDRAILS_LLM_FRAMEWORK=langchain.
 
     # Real Hub validators, published on public PyPI as guardrails-ai-<name>.
     # The `guardrails hub install` CLI and its private registry are deprecated.
