@@ -13,6 +13,7 @@ import {
     createGuardrailsConfig,
     updateGuardrailsConfig,
     deleteGuardrailsConfig,
+    getLiteLLMModels,
 } from "../api";
 
 const MODES = [
@@ -20,6 +21,10 @@ const MODES = [
     { id: "output", label: "Output Only" },
     { id: "both", label: "Both" },
 ] as const;
+
+/** The service's judge model. The catalog's help text names the same one, and an empty Judge
+ *  model follows it, so the select shows it as the selected default without pinning it. */
+const DEFAULT_JUDGE_MODEL = "Gpt-oss-20b";
 
 interface ItemPickerProps {
     label: string;
@@ -313,15 +318,38 @@ interface ParamFieldProps {
     param: GuardParam;
     value: unknown;
     onChange: (next: unknown) => void;
+    /** The proxy's chat models, so a rail can point its judge at one of them. */
+    models: { id: string; label: string }[];
 }
 
 /** One control per declared parameter type. The catalog decides, not the validator id. */
-function ParamField({ guard, param, value, onChange }: ParamFieldProps) {
+function ParamField({ guard, param, value, onChange, models }: ParamFieldProps) {
     const id = `gr-param-${guard.id}-${param.name}`;
     const options = param.options ?? [];
+    const stored = typeof value === "string" ? value : "";
     let control: ReactNode;
 
-    switch (param.type) {
+    // The judge model is one of the proxy's chat models. An empty setting follows the service
+    // default, so the select shows that model as the selected default without pinning it.
+    if (param.name === "model" && models.length > 0) {
+        control = (
+            <select
+                id={id}
+                className="gr-select gr-select--block"
+                value={stored || DEFAULT_JUDGE_MODEL}
+                onChange={(e) => onChange(e.target.value)}
+            >
+                <option value={DEFAULT_JUDGE_MODEL}>{DEFAULT_JUDGE_MODEL} (default)</option>
+                {models
+                    .filter((m) => m.id !== DEFAULT_JUDGE_MODEL)
+                    .map((m) => (
+                        <option key={m.id} value={m.id}>
+                            {m.label || m.id}
+                        </option>
+                    ))}
+            </select>
+        );
+    } else switch (param.type) {
         case "boolean":
             control = (
                 <label className="gr-toggle" htmlFor={id}>
@@ -352,12 +380,22 @@ function ParamField({ guard, param, value, onChange }: ParamFieldProps) {
             );
             break;
         case "text":
+            // The catalog serves the text this field means when it is empty, so the box shows the
+            // rail's own instructions instead of a blank. template_scope is different: the
+            // pipeline's prompt template supplies its scope at run time, so the box is frozen and
+            // says where the value comes from.
             control = (
                 <textarea
                     id={id}
                     className="gr-input gr-textarea"
                     rows={3}
-                    value={typeof value === "string" ? value : ""}
+                    value={param.runtime_filled ? "" : stored || param.default_policy || ""}
+                    placeholder={
+                        param.runtime_filled
+                            ? "Filled at run time from the pipeline's prompt template."
+                            : undefined
+                    }
+                    disabled={param.runtime_filled === true}
                     onChange={(e) => onChange(e.target.value)}
                 />
             );
@@ -444,15 +482,19 @@ export default function GuardrailsConfigPage() {
     // as a browser dialog rather than part of the page, and blocks the whole tab.
     const [pendingDelete, setPendingDelete] = useState<GuardrailsConfig | null>(null);
     const [deleting, setDeleting] = useState(false);
+    // The proxy's chat models, for the Judge model selects. A load failure leaves this empty and
+    // the field falls back to a text input.
+    const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
 
     const load = useCallback(async () => {
         setLoading(true);
         setCatalogError(null);
         setConfigsError(null);
-        const [guardsResult, configsResult, onFailResult] = await Promise.allSettled([
+        const [guardsResult, configsResult, onFailResult, modelsResult] = await Promise.allSettled([
             listAvailableGuards(),
             listGuardrailsConfigs(),
             listGuardOnFailOptions(),
+            getLiteLLMModels("chat"),
         ]);
         if (guardsResult.status === "fulfilled") {
             setGuards(guardsResult.value);
@@ -475,6 +517,9 @@ export default function GuardrailsConfigPage() {
         }
         if (onFailResult.status === "fulfilled" && onFailResult.value.length > 0) {
             setOnFailOptions(onFailResult.value);
+        }
+        if (modelsResult.status === "fulfilled") {
+            setChatModels(modelsResult.value);
         }
         setLoading(false);
     }, []);
@@ -783,6 +828,7 @@ export default function GuardrailsConfigPage() {
                                                 param={param}
                                                 value={(formParams[g.id] ?? {})[param.name]}
                                                 onChange={(next) => setParamValue(g.id, param.name, next)}
+                                                models={chatModels}
                                             />
                                         ))}
 

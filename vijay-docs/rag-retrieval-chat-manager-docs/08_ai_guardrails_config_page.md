@@ -105,6 +105,26 @@ no package. It sends the text to the LiteLLM proxy with `max_tokens` from
 `GUARDRAIL_LLM_MAX_TOKENS`. The upstream package needs PyTorch and several gigabytes of
 CUDA libraries, so it is deliberately not installed.
 
+### What the Policy and Judge model fields show
+
+Both parameters are optional with an empty default, so a saved config may leave them out. The
+catalog carries the text each Policy field means when it is empty (`default_policy`), and the page
+shows it in the box instead of leaving it blank: the rail's own policy bullets for the two self
+checks, and the built-in rubric for `jailbreak_heuristics` and `self_check_facts`. Editing the box
+overrides the default; leaving the shown text stores nothing, which is why an untouched field still
+follows the rail's built-in instructions.
+
+`template_scope` is different, and the page treats it so. Its policy arrives from the pipeline's
+prompt template at run time, so the catalog marks the parameter `runtime_filled: true`, the page
+freezes the box and does not send a value, and the placeholder reads "Filled at run time from the
+pipeline's prompt template."
+
+The Judge model field is a select over the proxy's chat models (`GET
+/api/knowledge-products/config/litellm-models?model_kind=chat`), with `Gpt-oss-20b` shown as the
+selected default. Staying on that default stores no value, so the rail keeps following the
+service's `GUARDRAIL_LLM_MODEL`; picking another model pins that one rail to it. If the proxy list
+cannot be read, the field falls back to a text input.
+
 ### How the six rails run
 Each phase takes the official slot for it, and the phase decides which rails go in that slot,
 so one config still has one rail set per phase.

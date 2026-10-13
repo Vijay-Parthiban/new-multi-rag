@@ -152,6 +152,10 @@ class GuardParamSpec(BaseModel):
     options: list[GuardItemOption] | None = None
     min: float | None = None
     max: float | None = None
+    # The text this parameter shows when it is left empty, and whether something else fills it at
+    # run time. The Guard Config page renders both.
+    default_policy: str = ""
+    runtime_filled: bool = False
 
 
 class GuardOption(BaseModel):

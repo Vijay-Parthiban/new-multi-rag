@@ -1459,6 +1459,12 @@ export interface GuardParam {
   options?: GuardItemOption[] | null;
   min?: number | null;
   max?: number | null;
+  /** The text the field shows when it is left empty. The catalog serves it, so the box shows
+   *  the rail's own instructions instead of a blank. */
+  default_policy?: string;
+  /** True when the value arrives at run time, as template_scope's scope does. The page freezes
+   *  the control and says so. */
+  runtime_filled?: boolean;
 }
 
 export interface GuardOption {
