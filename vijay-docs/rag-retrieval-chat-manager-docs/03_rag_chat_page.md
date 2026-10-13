@@ -301,7 +301,7 @@ for the output.
   metrics are not enqueued.
 - Each phase that runs writes one `guardrails_traces` row. A phase with nothing applicable writes no row
   (`routes/chat.py:429-431`).
-- `GUARD_BLOCK_COPY` covers the three validators and the five engine rails — `ban_list`, `detect_pii`,
+- `GUARD_BLOCK_COPY` covers the three validators and the six engine rails — `ban_list`, `detect_pii`,
   `toxic_language`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`,
   `self_check_facts` (`routes/chat.py:163`). Each has an `input` and an `output` sentence, and `pii_retrieval`
   also has a `retrieval` sentence. When a guard id is absent from the map, `_blocked_answer` falls back to
@@ -319,7 +319,7 @@ engine rails have their own cards: `self_check_input` and `self_check_output` �
 name as the title. The phase label is `Response blocked` when `blocked_on === "output"`, `Sources blocked`
 when `blocked_on === "retrieval"`, otherwise `Input blocked`. The body is the server `content`, with a
 generic hint as the fallback. The CSS classes are `chat-blocked-card` and `chat-blocked-card--<tone>`, where the
-five rails use the new `--security` or the shared `--pii` tone. The server-supplied `blocked_title` is not used
+six rails use the new `--security` or the shared `--pii` tone. The server-supplied `blocked_title` is not used
 by the UI. A card renders whenever `m.blocked` is true or the stored trace route is `blocked`.
 
 ---

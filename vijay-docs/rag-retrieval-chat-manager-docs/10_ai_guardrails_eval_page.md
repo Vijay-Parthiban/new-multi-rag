@@ -143,7 +143,7 @@ The false-negative and false-positive rows are the rows that need a config chang
 
 ## 4. Backend APIs & Contracts
 
-Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required. The catalogue holds eight guards: the three validators (`ban_list`, `detect_pii`, `local/toxic_language`) plus the five rails the NeMo engine runs (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`, `self_check_facts`).
+Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required. The catalogue holds nine guards: the three validators (`ban_list`, `detect_pii`, `local/toxic_language`) plus the six rails the NeMo engine runs (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`, `self_check_facts`).
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|

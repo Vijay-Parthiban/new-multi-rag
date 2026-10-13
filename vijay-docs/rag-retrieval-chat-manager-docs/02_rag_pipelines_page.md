@@ -15,7 +15,7 @@ An assistant holds five parts:
 | One Knowledge Product | yes | The assistant reads the stores of that product. |
 | One RAG strategy | yes | The strategy picks the store to search, or grades what the search found. |
 | One chat model | yes | The model writes the answer. |
-| One prompt template | no | The template becomes the assistant's system message. |
+| One prompt template | no | The template becomes the assistant's system message, and the behaviour NeMo Guardrails enforces on every turn. |
 | One guardrails config | no | The config checks the question and the answer. |
 
 Key facts:
@@ -89,7 +89,10 @@ Field notes:
 - **Chat Model.** The list comes from
   `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`.
 - **Prompt Template.** The template is the system message. It is not a text pass-through: the retrieved
-  passages and the question keep their own user-message shape.
+  passages and the question keep their own user-message shape. It is also the behaviour NeMo
+  Guardrails enforces: the guardrails service turns the template text into the scope rail and into
+  the self-check policy, so a pipeline with no guardrails config is still governed by what the
+  template declares. The form says so under the select.
 - **Guardrails Config.** The config id travels with the pipeline. The Chat page can override it for one
   request without editing the pipeline.
 

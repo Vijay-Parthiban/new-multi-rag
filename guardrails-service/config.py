@@ -309,6 +309,33 @@ RAIL_SPECS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "template_scope",
+        "label": "Template Scope",
+        "description": "Check the message against the scope the pipeline's prompt template declares.",
+        "category": "Topic Control",
+        "phase": "input",
+        "kind": "llm",
+        "rail": True,
+        "params": [
+            {
+                "name": "policy",
+                "type": "text",
+                "label": "Scope",
+                "help": "What this assistant is for. A pipeline's prompt template fills this in.",
+                "required": False,
+                "default": "",
+            },
+            {
+                "name": "model",
+                "type": "string",
+                "label": "Judge model",
+                "help": f"Leave empty to use {LLM_MODEL}. A rail spends one model call per turn.",
+                "required": False,
+                "default": "",
+            },
+        ],
+    },
+    {
         "id": "pii_retrieval",
         "label": "PII in Retrieved Chunks",
         "description": "Check the passages retrieved for this question. Use Repair to mask, or Block to stop the turn.",

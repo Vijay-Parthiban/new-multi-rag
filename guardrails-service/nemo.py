@@ -63,6 +63,7 @@ RAIL_FLOWS: dict[str, str] = {
 RAIL_ACTIONS: dict[str, str] = {
     "self_check_facts": "check_guard_self_check_facts",
     "jailbreak_heuristics": "check_guard_jailbreak_heuristics",
+    "template_scope": "check_guard_template_scope",
 }
 
 _JAILBREAK_RUBRIC = (
@@ -80,9 +81,17 @@ _FACTS_RUBRIC = (
     "usefulness."
 )
 
+_SCOPE_RUBRIC = (
+    "You check one user message against the scope the policy declares. The policy describes what "
+    "this assistant is for. A message is in scope only when the policy says the assistant "
+    "answers it. A message about any other subject is out of scope, however ordinary and "
+    "harmless it looks. Judge the subject, not the tone: safety is another check's job."
+)
+
 _RAIL_RUBRICS: dict[str, str] = {
     "jailbreak_heuristics": _JAILBREAK_RUBRIC,
     "self_check_facts": _FACTS_RUBRIC,
+    "template_scope": _SCOPE_RUBRIC,
 }
 
 # Above this score a rail blocks.

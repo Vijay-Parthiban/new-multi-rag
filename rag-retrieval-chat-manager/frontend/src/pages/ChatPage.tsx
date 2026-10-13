@@ -60,6 +60,12 @@ const GUARD_CARD: Record<string, { icon: string; title: string; hint: string; to
         hint: "This message looks like an attempt to override the assistant's instructions.",
         tone: "security",
     },
+    template_scope: {
+        icon: "🧭",
+        title: "Outside the assistant's scope",
+        hint: "This question is outside what this pipeline answers.",
+        tone: "security",
+    },
     pii_retrieval: {
         icon: "📄",
         title: "Personal information in the sources",

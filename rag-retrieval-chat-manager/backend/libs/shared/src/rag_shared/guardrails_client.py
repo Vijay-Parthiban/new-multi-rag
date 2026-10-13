@@ -59,6 +59,33 @@ def build_validator_specs(guards: list[str], settings: dict[str, Any] | None) ->
     return specs
 
 
+# The rails a prompt template governs. The template states how this pipeline must behave, so
+# NeMo checks every turn against it even when the pipeline carries no guardrails config.
+# `template_scope` reads the template as the scope and blocks what falls outside it. The two
+# self checks keep their own policy: template prose written for the model is a poor blocking
+# rule, and feeding it to them blocked valid in-scope answers.
+TEMPLATE_RAIL_IDS: tuple[str, ...] = ("template_scope",)
+
+
+def template_guardrails(
+    template: str | None, guards: list[str]
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """The rails a prompt template implies, for every one of them the config does not name.
+
+    The template text becomes each rail's ``policy``, which the engine appends to that rail's own
+    instructions, so the declared behaviour is what the judge checks the turn against. A config
+    that already names a rail keeps its own parameters: the explicit choice wins, and the
+    template fills the gap.
+
+    Returns the rail ids to add and their settings, in the shape a guard config stores them.
+    """
+    policy = (template or "").strip()
+    if not policy:
+        return [], {}
+    ids = [rail for rail in TEMPLATE_RAIL_IDS if rail not in guards]
+    return ids, {rail: {"policy": policy, "model": "", "on_fail": "noop"} for rail in ids}
+
+
 def run_guardrails_phase(
     text: str,
     guards: list[str],

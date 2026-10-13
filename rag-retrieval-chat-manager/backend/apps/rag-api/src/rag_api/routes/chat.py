@@ -20,7 +20,7 @@ from rag_db.repositories.guardrails_repository import GuardrailsRepository
 from rag_db.services.database import get_session_factory
 from rag_shared.chunk_utils import is_image_chunk, passage_text_for_chunk
 from rag_shared.config import Settings, get_settings
-from rag_shared.guardrails_client import check_blocked, run_guardrails_phase
+from rag_shared.guardrails_client import check_blocked, run_guardrails_phase, template_guardrails
 from rag_shared.tracing import TRACE_MODE_HEADER, normalize_trace_mode, turn_tags
 from rag_shared.types import RerankedChunk
 
@@ -32,6 +32,11 @@ router = APIRouter(tags=["chat"])
 class ChatRequest(PipelineRequest):
     session_id: uuid.UUID | None = None
     guardrails_config_id: uuid.UUID | None = None
+    # The prompt template this turn runs on. The assistant route resolves the pipeline's template
+    # into `system_prompt`; the Chat page sends the id, and the route resolves it the same way.
+    # The template is also the behaviour NeMo Guardrails enforces, whether or not a guardrails
+    # config is attached.
+    prompt_template_id: uuid.UUID | None = None
     # The assistant route fills these in when the pipeline's Knowledge Product has
     # the cache_redisvl destination enabled. Absent means the turn is stateless.
     session_memory_prefix: str | None = None
@@ -182,6 +187,11 @@ GUARD_BLOCK_COPY = {
         "title": "Input check failed",
         "input": "This message was blocked because it failed the guardrail input check.",
         "output": "The generated answer was blocked because the message that asked for it failed the guardrail input check.",
+    },
+    "template_scope": {
+        "title": "Outside the assistant's scope",
+        "input": "This message was blocked because it is outside the scope this pipeline declares.",
+        "output": "The generated answer was blocked because it went outside the scope this pipeline declares.",
     },
     "jailbreak_heuristics": {
         "title": "Jailbreak attempt",
@@ -381,10 +391,44 @@ def _persist_chat_turn(
         return sid, assistant_msg.id, trace_id, metrics_status
 
 
+def _governed(body: ChatRequest) -> bool:
+    """Is this turn checked by the guardrails service?
+
+    A pipeline with a prompt template is always checked: the template is the behaviour NeMo
+    enforces, so it governs the turn even when the pipeline carries no guardrails config, or a
+    config that holds no rail.
+    """
+    return bool(
+        body.guardrails_config_id
+        or (body.system_prompt or "").strip()
+        or body.prompt_template_id
+    )
+
+
+def _template_policy(settings: Settings, body: ChatRequest) -> str | None:
+    """The behaviour text NeMo enforces for this turn, or None when the pipeline declares none.
+
+    The assistant route resolves the pipeline's prompt template into `system_prompt`. A caller
+    that sends the template id instead, as the Chat page does, gets the same treatment here, so
+    one pipeline behaves the same on both entry points.
+    """
+    if (body.system_prompt or "").strip():
+        return body.system_prompt
+    if not body.prompt_template_id:
+        return None
+
+    from rag_db.repositories.prompt_repository import PromptRepository
+
+    session_factory = get_session_factory(settings)
+    with session_factory() as db:
+        template = PromptRepository(db).get(body.prompt_template_id)
+    return getattr(template, "content", None)
+
+
 def _run_guardrails(
     *,
     settings: Settings,
-    config_id: uuid.UUID,
+    config_id: uuid.UUID | None,
     text: str,
     phase: str,
     query: str,
@@ -392,35 +436,52 @@ def _run_guardrails(
     chat_message_id: uuid.UUID | None = None,
     span=None,
     chunks: list[str] | None = None,
+    template_policy: str | None = None,
 ) -> tuple[bool, str | None, dict, list[str] | None, str | None]:
     """
     Run guardrails validation for a given phase (input/retrieval/output).
     Returns (is_blocked, blocking_guard, guard_results, masked_chunks, repaired_answer).
     Also records a trace to the DB and sets OTEL span attributes.
+
+    The turn is checked against the guardrails config and against the pipeline's prompt template.
+    The template becomes the policy of the two self-check rails, so every pipeline that names a
+    template is governed by NeMo, config or no config.
     """
     from rag_shared.tracing import set_span_attr
 
     session_factory = get_session_factory(settings)
     with session_factory() as db:
         repo = GuardrailsRepository(db)
-        cfg = repo.get_config(config_id)
-        if not cfg:
+        cfg = repo.get_config(config_id) if config_id else None
+
+        guards = list(getattr(cfg, "guards", None) or [])
+        guard_settings = dict(getattr(cfg, "settings", None) or {})
+        mode = getattr(cfg, "mode", None) or "both"
+
+        # The pipeline's prompt template fills in whatever the config leaves out, so a pipeline
+        # with no guardrails config, or a config with no rail, is still checked against the
+        # behaviour the template declares.
+        template_ids, template_settings = template_guardrails(template_policy, guards)
+        guards.extend(template_ids)
+        guard_settings.update(template_settings)
+
+        if not guards:
             return False, None, {}, None, None
 
         # The input and output phases follow the config's mode. The retrieval phase has its own
         # switch: the rail itself, so a config that names a retrieval rail always runs it.
         if phase in ("input", "output"):
-            if cfg.mode == "input" and phase != "input":
+            if mode == "input" and phase != "input":
                 return False, None, {}, None, None
-            if cfg.mode == "output" and phase != "output":
+            if mode == "output" and phase != "output":
                 return False, None, {}, None, None
 
         outcome = run_guardrails_phase(
             text,
-            cfg.guards,
+            guards,
             settings.guardrails_url,
             settings.guardrails_timeout_s,
-            settings=getattr(cfg, "settings", None) or {},
+            settings=guard_settings,
             phase=phase,
             query=query,
             answer=response,
@@ -434,7 +495,8 @@ def _run_guardrails(
         is_blocked, blocking_guard = check_blocked(results)
 
         repo.record_trace(
-            config_id=config_id,
+            # A template-governed turn has no config row, and the column is nullable.
+            config_id=config_id if cfg else None,
             query=query,
             response=response,
             chat_message_id=chat_message_id,
@@ -446,7 +508,8 @@ def _run_guardrails(
         db.commit()
 
     if span:
-        set_span_attr(span, "guardrails.config_id", str(config_id))
+        if config_id and cfg:
+            set_span_attr(span, "guardrails.config_id", str(config_id))
         set_span_attr(span, f"guardrails.{phase}.blocked", is_blocked)
         if blocking_guard:
             set_span_attr(span, f"guardrails.{phase}.blocked_by", blocking_guard)
@@ -477,6 +540,7 @@ def _retrieval_guardrail(
     config_id: uuid.UUID,
     query: str,
     span=None,
+    template_policy: str | None = None,
 ) -> Callable[[list[RerankedChunk]], list[RerankedChunk]]:
     """The retrieval-phase guardrails, as the filter the pipeline applies after the rerank.
 
@@ -498,6 +562,7 @@ def _retrieval_guardrail(
             query=query,
             span=span,
             chunks=texts,
+            template_policy=template_policy,
         )
         if blocked:
             raise GuardrailBlocked(guard)
@@ -562,11 +627,15 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         tags=tags,
         attributes=trace_attributes,
     ) as span:
+        # The prompt template this pipeline declares, which NeMo enforces on every phase.
+        policy = _template_policy(settings, body)
+
         # ── Guardrails: input validation ─────────────────────────
-        if body.guardrails_config_id:
+        if _governed(body):
             blocked, guard, _, _, _ = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
+                template_policy=policy,
                 text=body.query,
                 phase="input",
                 query=body.query,
@@ -615,6 +684,7 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
                 chunk_filter=_retrieval_guardrail(
                     settings=settings,
                     config_id=body.guardrails_config_id,
+                    template_policy=policy,
                     query=body.query,
                     span=span,
                 )
@@ -660,10 +730,11 @@ def chat(request: Request, body: ChatRequest) -> ChatResponse:
         # ── Guardrails: output validation ────────────────────────
         answer = result.answer
         latency_ms = dict(result.latency_ms or {})
-        if body.guardrails_config_id:
+        if _governed(body):
             blocked, guard, _, _, fixed = _run_guardrails(
                 settings=settings,
                 config_id=body.guardrails_config_id,
+                template_policy=policy,
                 text=answer,
                 phase="output",
                 query=body.query,
@@ -790,12 +861,16 @@ async def chat_stream(request: Request, body: ChatRequest):
     def _run_stream() -> None:
         token = otel_context.attach(parent_otel_ctx)
         try:
+            # The prompt template this pipeline declares, which NeMo enforces on every phase.
+            policy = _template_policy(settings, body)
+
             # ── Guardrails: input validation (stream) ────────────
-            if body.guardrails_config_id:
+            if _governed(body):
                 _emit(f'data: {json.dumps({"type": "status", "message": "Checking guardrails..."})}\n\n')
                 blocked, guard, _, _, _ = _run_guardrails(
                     settings=settings,
                     config_id=body.guardrails_config_id,
+                    template_policy=policy,
                     text=body.query,
                     phase="input",
                     query=body.query,
@@ -857,6 +932,7 @@ async def chat_stream(request: Request, body: ChatRequest):
                     chunk_filter=_retrieval_guardrail(
                         settings=settings,
                         config_id=body.guardrails_config_id,
+                        template_policy=policy,
                         query=body.query,
                         span=span,
                     )
@@ -921,10 +997,11 @@ async def chat_stream(request: Request, body: ChatRequest):
                 out_guard: str | None = None
 
                 # ── Guardrails: output validation (stream) ───────
-                if body.guardrails_config_id:
+                if _governed(body):
                     out_blocked, out_guard, _, _, out_fixed = _run_guardrails(
                         settings=settings,
                         config_id=body.guardrails_config_id,
+                        template_policy=policy,
                         text=answer,
                         phase="output",
                         query=body.query,

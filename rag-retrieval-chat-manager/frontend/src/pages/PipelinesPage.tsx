@@ -455,6 +455,10 @@ function PipelineFields({
           </option>
         ))}
       </select>
+      <p className="field-hint">
+        The template is the system message for the answers and the behaviour NeMo Guardrails
+        enforces on every turn. It applies whether or not a Guardrails Config is selected.
+      </p>
 
       <label className="field-label" htmlFor={`${idPrefix}-guardrails`}>
         Guardrails Config

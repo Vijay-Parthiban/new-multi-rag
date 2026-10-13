@@ -9,9 +9,9 @@
 ## 1. Executive Summary & Page Purpose
 The **Guard Config Page** creates, edits, enables/disables and deletes `GuardrailsConfig` rows (table `guardrails_configs`, `rag_db/models/guardrails.py:13-26`). Each row selects a subset of the guards that `guardrails-service` exposes, the chat phases they apply to (`input`, `retrieval`, `output`; a validator uses `both`), and the parameters of every selected guard. The same rows are what Chat applies when a request carries `guardrails_config_id` (`routes/chat.py:34, 554, 651, 777`) and what the Guard Evaluation page scores against (`routes/guardrails_evaluate.py:253-375`).
 
-The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **eight guards**: three validators (`ban_list`, `detect_pii` and `toxic_language`) and five NeMo rails (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output` and `self_check_facts`). Only `guardrails-service/config.py` defines that list (`_VALIDATORS`, with `RAIL_SPECS` appended at `config.py:395`), so there is no second copy of it in the repository.
+The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **nine guards**: three validators (`ban_list`, `detect_pii` and `toxic_language`) and six NeMo rails (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output` and `self_check_facts`). Only `guardrails-service/config.py` defines that list (`_VALIDATORS`, with `RAIL_SPECS` appended at `config.py:395`), so there is no second copy of it in the repository.
 
-The three validators are Guardrails AI validators. The five rails are implemented by **NeMo Guardrails**, the engine inside `guardrails-service` (`guardrails-service/nemo.py`). A config that names no rail takes the older validator path in `config.run_validators` and behaves exactly as before. A config that names a rail runs the whole phase through the engine.
+The three validators are Guardrails AI validators. The six rails are implemented by **NeMo Guardrails**, the engine inside `guardrails-service` (`guardrails-service/nemo.py`). A config that names no rail takes the older validator path in `config.run_validators` and behaves exactly as before. A config that names a rail runs the whole phase through the engine.
 
 A failing guard **blocks** the turn: the answer is replaced with fixed copy from `GUARD_BLOCK_COPY` (`routes/chat.py:163-207`) rather than being redacted. A transport or configuration problem does **not** block. The client reports such a problem as `validation_passed: true` plus an `error`, and the trace records it (`rag_shared/guardrails_client.py:104-141`).
 
@@ -51,12 +51,12 @@ A failing guard **blocks** the turn: the answer is replaced with fixed copy from
 
 ### Guard catalog (`GET /guardrails/guards`)
 The catalog comes from `guardrails-service/config.py` (`_VALIDATORS` for the three validators
-and `RAIL_SPECS` for the five rails, merged at `config.py:395`) and is served by
+and `RAIL_SPECS` for the six rails, merged at `config.py:395`) and is served by
 `guardrails-service/server.py` (`GET /catalog`, `server.py:58-61`). Every entry carries
 `category`, `phase`, `kind`, the parameter schema and an `available` flag with
 `unavailable_reason` when a validator package is missing from the installation.
 
-**The catalog holds eight guards.** The Guard Config page renders whatever the catalog
+**The catalog holds nine guards.** The Guard Config page renders whatever the catalog
 serves, so it shows all eight with no frontend change. Adding an entry to `_VALIDATORS` or to
 `RAIL_SPECS` makes it appear on the page.
 
@@ -75,6 +75,7 @@ exactly one phase (`input`, `retrieval` or `output`) and runs only there.
 | `ban_list` | Ban List | `local` | both | `banned_words` (string_list, required, free text), `max_l_dist` (integer, default `0`, range 0–5) | `guardrails-ai-ban-list` |
 | `toxic_language` | Toxic Language | `llm` | both | `threshold` (number, default `0.5`, range 0–1), `model` (string, default empty) | `local/toxic_language` |
 | `self_check_input` | Self Check Input | `llm` | input | `policy` (text, optional, default empty), `model` (string, optional, default empty) | NeMo engine |
+| `template_scope` | Template Scope | `llm` | input | `policy` (text, optional, default empty), `model` (string, optional, default empty) | NeMo engine |
 | `jailbreak_heuristics` | Jailbreak Heuristics | `llm` | input | `policy` (text, optional, default empty), `model` (string, optional, default empty) | NeMo engine |
 | `self_check_output` | Self Check Output | `llm` | output | `policy` (text, optional, default empty), `model` (string, optional, default empty) | NeMo engine |
 
@@ -104,7 +105,7 @@ no package. It sends the text to the LiteLLM proxy with `max_tokens` from
 `GUARDRAIL_LLM_MAX_TOKENS`. The upstream package needs PyTorch and several gigabytes of
 CUDA libraries, so it is deliberately not installed.
 
-### How the five rails run
+### How the six rails run
 Each phase takes the official slot for it, and the phase decides which rails go in that slot,
 so one config still has one rail set per phase.
 
@@ -141,6 +142,28 @@ so a config with them costs one call more per rail than the same config without 
 When a config names a rail, the three validators of that phase run as engine actions beside
 the rails, inside the same call. A config with no rail never builds an engine.
 
+### The pipeline's prompt template governs its turns
+
+A pipeline that names a prompt template is checked by `guardrails-service` even when it carries no
+guardrails config, or a config that holds no NeMo rail. `rag_shared.guardrails_client.template_guardrails()`
+turns the template text into the `policy` of the `template_scope` rail, which decides whether a
+message is inside the scope the template declares. A rail the config already names keeps its own
+parameters, because that entry is an explicit choice and the template only fills the gap.
+
+The template governs the scope only. Its text does not become the policy of the two self-check
+rails: prose written for the model reads badly as a blocking rule, and feeding it to them blocked
+valid in-scope answers in testing. Those rails keep their own policy, which is what a config or the
+service default supplies.
+
+The route resolves the text once per turn (`routes/chat.py::_template_policy`). The assistant
+route puts the pipeline's template into `system_prompt`; a caller that sends `prompt_template_id`
+instead, which the Chat page does, gets the same treatment. A turn governed by a template alone
+writes its `guardrails_traces` row with a null `config_id`, and the traces page reads that as
+"No config".
+
+So the template does two jobs: it is the system message that shapes the answer, and it is the
+scope NeMo enforces on the question and on the answer.
+
 ### Official NeMo Guardrails patterns, and where this service deviates
 
 The service builds and extends the engine the documented way: `RailsConfig.from_content(
@@ -170,7 +193,7 @@ Three deviations are deliberate. Each one has a measurement behind it, taken on 
 
 ### What the catalog used to hold, and why it was cut
 
-The catalog held 16 validators. It now holds three validators and the five NeMo rails. The cut
+The catalog held 16 validators. It now holds three validators and the six NeMo rails. The cut
 removed `mentions_drugs`, `restrict_to_topic`, `prompt_injection`, `secrets_present`,
 `regex_match`, `valid_length`, `ends_with`, `valid_json`, `one_line`, `lowercase`, `uppercase`,
 `reading_time` and `exclude_sql_predicates`, together with the `LlmRestrictToTopic` and
@@ -222,7 +245,7 @@ The old `config.py` imported `BanList`, `DetectPII` and `ToxicLanguage` from `gu
 
 The service now installs the two packaged validators from public PyPI as `guardrails-ai-<name>`. `pyproject.toml` still lists the packages for the removed validators, so the image installs more Hub packages than the catalogue lists. The `guardrails hub install` CLI and its private registry are deprecated, and the `from guardrails.hub import X` shim is scheduled for removal (`config.py`, `pyproject.toml`).
 
-The five rails are not packages at all: `nemoguardrails` implements them, so a rail has no `module` and no `alias` in `RAIL_SPECS`. The catalog marks each of the five unavailable when the `nemoguardrails` import fails at startup (`config.py:48-53, 424-445`).
+The six rails are not packages at all: `nemoguardrails` implements them, so a rail has no `module` and no `alias` in `RAIL_SPECS`. The catalog marks each of the five unavailable when the `nemoguardrails` import fails at startup (`config.py:48-53, 424-445`).
 
 ### Deployment
 - `guardrails-service/Dockerfile:22-36` downloads the spaCy model `en_core_web_sm` (12 MB) and rewrites Presidio's `conf/default.yaml` from `en_core_web_lg` (590 MB) to the small model. The build fails if Presidio stops pinning the large model.

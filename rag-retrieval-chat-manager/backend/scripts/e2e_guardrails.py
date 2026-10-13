@@ -67,6 +67,7 @@ def main() -> int:
         "ban_list",
         "detect_pii",
         "toxic_language",
+        "template_scope",
         "self_check_input",
         "jailbreak_heuristics",
         "pii_retrieval",

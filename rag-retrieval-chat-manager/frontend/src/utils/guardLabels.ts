@@ -21,6 +21,7 @@ const GUARD_LABELS: Record<string, GuardMeta> = {
     mentions_drugs: { title: "Mentions drugs", tone: "toxic" },
     // Rails the NeMo engine runs. Same tones as the validators they sit beside.
     self_check_input: { title: "Input check failed", tone: "security" },
+    template_scope: { title: "Outside the assistant's scope", tone: "security" },
     jailbreak_heuristics: { title: "Jailbreak attempt", tone: "security" },
     pii_retrieval: { title: "Personal information in the sources", tone: "pii" },
     self_check_output: { title: "Output check failed", tone: "security" },
