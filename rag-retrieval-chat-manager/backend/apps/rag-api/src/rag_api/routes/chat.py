@@ -458,12 +458,15 @@ def _run_guardrails(
         guard_settings = dict(getattr(cfg, "settings", None) or {})
         mode = getattr(cfg, "mode", None) or "both"
 
-        # The pipeline's prompt template fills in whatever the config leaves out, so a pipeline
+        # The pipeline's prompt template fills whatever the config leaves out, so a pipeline
         # with no guardrails config, or a config with no rail, is still checked against the
         # behaviour the template declares.
-        template_ids, template_settings = template_guardrails(template_policy, guards)
+        template_ids, template_settings = template_guardrails(template_policy, guards, guard_settings)
         guards.extend(template_ids)
         guard_settings.update(template_settings)
+        # One rail, one generated flow. A repeated id would give the engine two flows with the
+        # same name, which it cannot parse, and the phase would answer 500 and fail open.
+        guards = list(dict.fromkeys(guards))
 
         if not guards:
             return False, None, {}, None, None

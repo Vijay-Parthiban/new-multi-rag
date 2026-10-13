@@ -68,22 +68,41 @@ TEMPLATE_RAIL_IDS: tuple[str, ...] = ("template_scope",)
 
 
 def template_guardrails(
-    template: str | None, guards: list[str]
+    template: str | None,
+    guards: list[str],
+    settings: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
-    """The rails a prompt template implies, for every one of them the config does not name.
+    """The rails a prompt template implies, for every one of them that has no policy of its own.
 
-    The template text becomes each rail's ``policy``, which the engine appends to that rail's own
-    instructions, so the declared behaviour is what the judge checks the turn against. A config
-    that already names a rail keeps its own parameters: the explicit choice wins, and the
-    template fills the gap.
+    The template text becomes the rail's ``policy``, which the engine appends to that rail's own
+    instructions, so the declared behaviour is what the judge checks the turn against. A rail the
+    config names with a policy keeps that policy: the explicit choice wins. A rail the config
+    names with an empty policy is filled in, because an empty scope says nothing and would leave
+    the rail inert while it still counted as configured.
 
-    Returns the rail ids to add and their settings, in the shape a guard config stores them.
+    Returns the rail ids to add and the settings to merge, in the shape a guard config stores
+    them.
     """
     policy = (template or "").strip()
     if not policy:
         return [], {}
-    ids = [rail for rail in TEMPLATE_RAIL_IDS if rail not in guards]
-    return ids, {rail: {"policy": policy, "model": "", "on_fail": "noop"} for rail in ids}
+
+    configured = settings or {}
+    add: list[str] = []
+    filled: dict[str, dict[str, Any]] = {}
+    for rail in TEMPLATE_RAIL_IDS:
+        entry = dict(configured.get(rail) or {})
+        if str(entry.get("policy") or "").strip():
+            continue
+        # A rail the config does not name has to be added; a rail it names is already in the
+        # list, and adding it again would give the engine two flows with the same name.
+        if rail not in guards:
+            add.append(rail)
+        entry["policy"] = policy
+        entry.setdefault("model", "")
+        entry.setdefault("on_fail", "noop")
+        filled[rail] = entry
+    return add, filled
 
 
 def run_guardrails_phase(

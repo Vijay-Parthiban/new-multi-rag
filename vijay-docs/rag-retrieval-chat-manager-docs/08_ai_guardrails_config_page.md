@@ -147,8 +147,10 @@ the rails, inside the same call. A config with no rail never builds an engine.
 A pipeline that names a prompt template is checked by `guardrails-service` even when it carries no
 guardrails config, or a config that holds no NeMo rail. `rag_shared.guardrails_client.template_guardrails()`
 turns the template text into the `policy` of the `template_scope` rail, which decides whether a
-message is inside the scope the template declares. A rail the config already names keeps its own
-parameters, because that entry is an explicit choice and the template only fills the gap.
+message is inside the scope the template declares. A rail the config names with a policy keeps
+that policy, because that entry is an explicit choice; a rail it names with an empty policy is
+filled in, because an empty scope says nothing and would leave the rail inert while it counted as
+configured.
 
 The template governs the scope only. Its text does not become the policy of the two self-check
 rails: prose written for the model reads badly as a blocking rule, and feeding it to them blocked

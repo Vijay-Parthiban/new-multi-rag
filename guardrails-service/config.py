@@ -36,7 +36,10 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") 
 # Gpt-oss-20b is the measured model: 18 of 18 correct in 1 to 3 seconds. Gpt-oss-120b was
 # tried and rejected, because it took 8 to 105 seconds and often timed out.
 LLM_MODEL = os.environ.get("GUARDRAIL_LLM_MODEL", "Gpt-oss-20b")
-LLM_TIMEOUT_S = float(os.environ.get("GUARDRAIL_LLM_TIMEOUT_S", "20"))
+# One judge call's own bound. A rail that sends a long text needs the headroom: the scope rail
+# sends the whole prompt template (about 1.4 KB), and its judge measured 10.4 s on a blocking
+# call. At 20 s one call timed out, and the rail then failed open with no verdict at all.
+LLM_TIMEOUT_S = float(os.environ.get("GUARDRAIL_LLM_TIMEOUT_S", "25"))
 
 # The judge models are reasoning models: the budget must cover the reasoning chain and the
 # JSON answer, or the body comes back empty. Measured on a 5.6 KB fact-check payload, 1039
