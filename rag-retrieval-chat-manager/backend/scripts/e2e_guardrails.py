@@ -44,7 +44,10 @@ class Api:
         self.retrieval = f"http://localhost:{settings.api_port}"
         self.guardrails = settings.guardrails_url.rstrip("/")
         self.headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
-        self.client = httpx.Client(timeout=300.0, headers=self.headers)
+        # 900 s, not 300: a config with several LLM rails runs them one after another, and each
+        # judge call can take 20 s or more on a loaded proxy. A shorter bound read as a product
+        # failure when it was the proxy that was slow.
+        self.client = httpx.Client(timeout=900.0, headers=self.headers)
 
     def request(self, method: str, url: str, body: dict | None = None) -> tuple[int, object]:
         response = self.client.request(method, url, json=body)
