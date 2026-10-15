@@ -1,3 +1,4 @@
+import base64
 import uuid
 
 from src.ingestion_service.core.page_yielder import FilePage
@@ -32,12 +33,13 @@ def test_build_fanout_payload_matches_retrieval_contract() -> None:
 
 
 def test_build_fanout_payload_tags_a_page_image_record() -> None:
-    """A text_images page keeps its text and names the stored page image.
+    """A text_images page carries its text and its rendered page bytes.
 
-    The four writers skip a record with no text, so the payload must carry the page
-    text as well as the image key, and the retrieval consumers read `type`, so it
-    stays "text" with the modality as the additive field.
+    The readers that hold text only - the sources panel, the judge - read
+    `content`, and the vision reader rebuilds the image from `image_base64`. `type`
+    is what tells a page image from a chunk, so a record with bytes says "image".
     """
+    png = b"\x89PNG\r\n\x1a\n fake page bytes"
     page = FilePage(
         page_index=1,
         text="Quarterly capacity rose by 12 percent.",
@@ -49,6 +51,7 @@ def test_build_fanout_payload_tags_a_page_image_record() -> None:
             "bucket": "resumes",
             "key": "_pages/reports/q3.pdf/page-00001.png",
         },
+        image_png=png,
     )
 
     payload = _build_fanout_payload(
@@ -62,6 +65,31 @@ def test_build_fanout_payload_tags_a_page_image_record() -> None:
     assert payload["record_type"] == "page"
     assert payload["image_ref"]["key"].startswith("_pages/reports/q3.pdf/")
     assert payload["chunk_index"] == 0
-    assert payload["type"] == "text"
+    assert payload["type"] == "image"
+    assert payload["mime_type"] == "image/png"
+    assert payload["image_base64"] == base64.b64encode(png).decode("ascii")
+    # The page text stays, because a reader with no vision model still has it.
     assert payload["content"] == "Quarterly capacity rose by 12 percent."
     assert payload["text"] == payload["content"]
+
+
+def test_page_image_record_without_bytes_stays_text() -> None:
+    """A page that rendered no image keeps the record every reader handles."""
+    page = FilePage(
+        page_index=0,
+        text="Plain markdown page",
+        chunk_index=0,
+        modality="image",
+        record_type="page",
+    )
+
+    payload = _build_fanout_payload(
+        source_id=uuid.uuid4(),
+        product_id=uuid.uuid4(),
+        file_key="notes/readme.md",
+        page=page,
+    )
+
+    assert payload["type"] == "text"
+    assert payload["image_base64"] is None
+    assert payload["mime_type"] is None

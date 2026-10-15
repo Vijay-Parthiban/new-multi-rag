@@ -63,7 +63,7 @@ settings = get_settings()
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 
 
-def _profile_modality_mode(profile: IngestionProfile) -> str:
+def profile_modality_mode(profile: IngestionProfile) -> str:
     mode = profile.modality_mode
     return mode.value if hasattr(mode, "value") else str(mode or DEFAULT_MODALITY_MODE)
 
@@ -266,7 +266,7 @@ def _product_to_dict(product: KnowledgeProduct, counters: dict[str, int] | None 
         # A product with no profile reports the fallback the fanout uses, so the
         # UI never has to guess.
         "modality_mode": (
-            _profile_modality_mode(product.ingestion_profile)
+            profile_modality_mode(product.ingestion_profile)
             if product.ingestion_profile
             else DEFAULT_MODALITY_MODE
         ),
@@ -453,7 +453,7 @@ def _pipeline_fingerprint(profile: IngestionProfile | None) -> str:
             # sort_keys, so two equal configs that differ only in key order do not
             # read as a change and needlessly purge every destination.
             json.dumps(profile.chunk_config or {}, sort_keys=True),
-            _profile_modality_mode(profile),
+            profile_modality_mode(profile),
             profile.text_embedding_model or "",
             profile.image_embedding_model or "",
         )

@@ -10,13 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.api.routes.knowledge_products import (
+    profile_modality_mode,
     product_chunk_strategy,
     product_text_embedding_model,
 )
 from src.file_manager.core.errors import ConflictError, NotFoundError, ValidationError
 from src.ingestion_service.utils.validation import validate_description, validate_qdrant_collection
 from src.shared.config.settings import get_settings
-from src.shared.db.models import IndexModality, JobStatus, KnowledgeProduct, Pipeline, PipelineRun, PipelineSource, RagStrategy, IndexedFile
+from src.shared.db.models import DEFAULT_MODALITY_MODE, IndexModality, JobStatus, KnowledgeProduct, Pipeline, PipelineRun, PipelineSource, RagStrategy, IndexedFile
 from src.shared.db.session import get_db
 from src.shared.queue.client import enqueue_pipeline_run, enqueue_sync_run
 
@@ -32,10 +33,13 @@ STRATEGY_DESTINATION = {
     "vector": "vector_qdrant",
     "lexical": "lexical_opensearch",
     "relational": "relational_pgvector",
+    # The page-image strategy reads the page vectors and nothing else: the other
+    # stores hold the text those records no longer carry.
+    "image_vision": "vector_qdrant",
 }
 # Ordered as the create form shows them. "hybrid" needs two stores, so it is
 # handled separately from the single-store strategies above.
-ASSISTANT_STRATEGIES = ("vector", "lexical", "hybrid", "self_rag", "corrective")
+ASSISTANT_STRATEGIES = ("vector", "lexical", "hybrid", "self_rag", "corrective", "image_vision")
 # The reasoning patterns run on any retrieval mode, so they only need one store.
 ASSISTANT_PATTERN_STRATEGIES = ("self_rag", "corrective")
 HYBRID_DESTINATIONS = ("vector_qdrant", "lexical_opensearch")
@@ -43,7 +47,7 @@ RETRIEVAL_DESTINATION_TYPES = tuple(STRATEGY_DESTINATION.values())
 
 _STRATEGY_LITERAL = Literal[
     "naive", "sparse", "hybrid", "multimodal", "metadata", "vector", "lexical",
-    "self_rag", "corrective",
+    "self_rag", "corrective", "image_vision",
 ]
 
 
@@ -202,6 +206,18 @@ def _pipeline_to_dict(p: Pipeline) -> dict:
                 "status": product.status,
                 "chunk_strategy": product_chunk_strategy(product),
                 "text_embedding_model": product_text_embedding_model(product),
+                # The retrieval manager picks the query embedding model and the
+                # strategy list from these two, so both travel with the product.
+                "modality_mode": (
+                    profile_modality_mode(product.ingestion_profile)
+                    if product.ingestion_profile
+                    else DEFAULT_MODALITY_MODE
+                ),
+                "image_embedding_model": (
+                    product.ingestion_profile.image_embedding_model
+                    if product.ingestion_profile
+                    else None
+                ),
                 "destinations": [
                     {
                         "destination_type": d.destination_type,

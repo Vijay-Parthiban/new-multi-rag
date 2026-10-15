@@ -41,7 +41,7 @@ from rag_db.services.database import get_session_factory
 from rag_core.schemas import ModelSettings
 from rag_shared.config import Settings
 from rag_shared.tracing import TRACE_MODE_HEADER, normalize_trace_mode
-from rag_shared.types import SearchMode
+from rag_shared.types import KpStrategy, SearchMode
 
 from rag_api.routes.chat import ChatRequest, ChatResponse, chat, chat_stream
 
@@ -187,7 +187,8 @@ async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
             },
         )
 
-    destinations = (pipeline.get("knowledge_product") or {}).get("destinations") or []
+    product = pipeline.get("knowledge_product") or {}
+    destinations = product.get("destinations") or []
     stores = stores_for_product(destinations)
     try:
         resolve_strategy(pipeline["rag_strategy"], stores)
@@ -202,7 +203,7 @@ async def _resolve_assistant(request: Request, slug: str) -> dict[str, Any]:
         )
 
     pipeline["_stores"] = stores
-    pipeline["_strategies"] = strategies_for_product(destinations)
+    pipeline["_strategies"] = strategies_for_product(destinations, product.get("modality_mode"))
     pipeline["_session_memory"] = session_memory_for_product(destinations)
     return pipeline
 
@@ -264,6 +265,14 @@ async def _build_chat_request(
     # The pipeline owns the retrieval settings. A request that names one overrides it
     # for that turn, and the deployment's value is the last fallback, for a record the
     # ingestion side wrote before those columns existed.
+    # A page-image product embeds the question with the multimodal model that made
+    # its page vectors, not with the text model.
+    image_vision = pipeline["rag_strategy"] == KpStrategy.IMAGE_VISION
+    product_embedding_model = (
+        (product.get("image_embedding_model") or product.get("text_embedding_model"))
+        if image_vision
+        else product.get("text_embedding_model")
+    ) or settings.embedding_model
     return ChatRequest(
         query=body.query,
         session_id=body.session_id,
@@ -280,7 +289,11 @@ async def _build_chat_request(
         top_k=_resolved_setting(pipeline, body.top_k, "rerank_top_k", settings.rerank_top_k),
         generation_model=pipeline.get("chat_model") or settings.chat_model,
         collection=stores.qdrant_collection,
-        embedding_model=product.get("text_embedding_model") or settings.embedding_model,
+        embedding_model=product_embedding_model,
+        # The page-image strategy answers from the images, so the model this
+        # pipeline selected is the vision model. Without it the deployment's
+        # vision model applies.
+        vision_model=((pipeline.get("chat_model") or None) if image_vision else None),
         system_prompt=_system_prompt_for(settings, pipeline, body.prompt_template_id),
         # Absent when this pipeline has no saved settings, which leaves the
         # service defaults in charge.

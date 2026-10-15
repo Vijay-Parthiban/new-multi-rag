@@ -9,6 +9,25 @@ from rag_db.models.chat import ChatMessage, ChatMessageMetrics, ChatPipelineTrac
 from rag_db.sanitize import strip_null_bytes
 
 
+def _drop_image_bytes(chunks: list) -> list:
+    """The chunk dicts with the image payload removed.
+
+    A page-image chunk carries its page PNG so the vision model can read it. A
+    stored trace keeps the page text: the bytes would add megabytes to a JSON
+    column, and to every response that reads it.
+    """
+    out: list = []
+    for chunk in chunks or []:
+        if not isinstance(chunk, dict):
+            out.append(chunk)
+            continue
+        metadata = dict(chunk.get("metadata") or {})
+        metadata.pop("image_base64", None)
+        metadata.pop("image", None)
+        out.append({**chunk, "metadata": metadata})
+    return out
+
+
 class ChatRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -66,8 +85,8 @@ class ChatRepository:
             rerank_enabled=rerank_enabled,
             rerank_model=rerank_model,
             generation_model=generation_model,
-            retrieved_chunks=strip_null_bytes(retrieved_chunks),
-            reranked_chunks=strip_null_bytes(reranked_chunks),
+            retrieved_chunks=strip_null_bytes(_drop_image_bytes(retrieved_chunks)),
+            reranked_chunks=strip_null_bytes(_drop_image_bytes(reranked_chunks)),
             latency_ms=strip_null_bytes(latency_ms),
             trace_mode=trace_mode,
             otel_trace_id=otel_trace_id,

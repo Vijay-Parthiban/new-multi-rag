@@ -57,6 +57,9 @@ class RagStrategy(str, enum.Enum):
     # See rag_core.reflection on the retrieval side.
     SELF_RAG = "self_rag"
     CORRECTIVE = "corrective"
+    # Reads the page-image vectors of a text-with-images product and answers from
+    # the images themselves. It needs the vector store and no other.
+    IMAGE_VISION = "image_vision"
 
 
 class IndexModality(str, enum.Enum):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+from qdrant_client.http.exceptions import UnexpectedResponse
 from rag_shared.config import Settings
 from rag_shared.types import AGENTIC_STRATEGIES, KpStores, KpStrategy
 from vector_core import search_scrape_chunks
@@ -56,7 +57,10 @@ class KpRetriever:
         if strategy in AGENTIC_STRATEGIES:
             # The pattern is the caller's business; it only needs chunks.
             strategy = _base_mode_for(stores)
-        if strategy == KpStrategy.VECTOR:
+        if strategy in (KpStrategy.VECTOR, KpStrategy.IMAGE_VISION):
+            # A page-image product reads the same dense vectors. What differs is
+            # the model that embedded the query and what the answer is written
+            # from, and both are the caller's decision.
             return self._vector(query, stores, limit, embedding_model)
         if strategy == KpStrategy.LEXICAL:
             return search_lexical_index(
@@ -85,13 +89,25 @@ class KpRetriever:
         limit: int,
         embedding_model: str | None,
     ) -> list[dict[str, object]]:
-        return search_scrape_chunks(
-            self._settings,
-            query_text=query,
-            limit=limit,
-            mode=_KP_VECTOR_MODE,
-            source_type="all",
-            collection=stores.qdrant_collection,
-            embedding_model=embedding_model,
-            qdrant_url=self._settings.qdrant_kp_url or self._settings.qdrant_url,
-        )
+        try:
+            return search_scrape_chunks(
+                self._settings,
+                query_text=query,
+                limit=limit,
+                mode=_KP_VECTOR_MODE,
+                source_type="all",
+                collection=stores.qdrant_collection,
+                embedding_model=embedding_model,
+                qdrant_url=self._settings.qdrant_kp_url or self._settings.qdrant_url,
+            )
+        except UnexpectedResponse as exc:
+            # A product that has not synced has no collection yet, which the same
+            # answer as an empty one: no hits. The lexical reader treats a missing
+            # index the same way, so a turn says it found no sources instead of
+            # surfacing a raw store error.
+            if exc.status_code == 404:
+                logger.warning(
+                    "kp_collection_missing collection=%s", stores.qdrant_collection
+                )
+                return []
+            raise

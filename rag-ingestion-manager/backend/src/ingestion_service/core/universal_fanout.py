@@ -12,6 +12,7 @@ Adding a destination means adding one writer and one purger to ``_WRITERS`` and
 """
 
 import asyncio
+import base64
 import hashlib
 import logging
 import re
@@ -149,7 +150,12 @@ def _build_fanout_payload(
     page: FilePage,
 ) -> dict[str, Any]:
     file_name = Path(file_key).name
-    content = (page.text or "").strip()
+    page_text = (page.text or "").strip()
+    # A page-image record keeps its page text in `content`, so every text-shaped
+    # reader (the sources panel, the judge's context) still reads words. The bytes
+    # ride in `image_base64`, which `image_data_uri` rebuilds on the reader side.
+    is_page_image = page.modality == "image" and bool(page.image_png)
+    content = page_text
     return {
         "source_type": FILE_INGEST_SOURCE_TYPE,
         "source_id": str(source_id),
@@ -166,11 +172,15 @@ def _build_fanout_payload(
         # strategy. parent_ref resolves to the parent record in the same file.
         "record_type": page.record_type,
         "parent_ref": page.parent_ref,
-        # A caption is text, so type stays "text" and every existing retrieval
-        # consumer keeps working. modality is additive.
-        "type": "text",
+        # A page image is type "image", which is how a reader tells it apart and
+        # sends the bytes to a vision model. Its text stays in `text`.
+        "type": "image" if is_page_image else "text",
         "content": content,
-        "text": content,
+        "text": page_text,
+        "image_base64": (
+            base64.b64encode(page.image_png).decode("ascii") if is_page_image else None
+        ),
+        "mime_type": "image/png" if is_page_image else None,
         "knowledge_product_id": str(product_id),
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -689,6 +699,11 @@ async def execute_universal_fanout_sync(
 
     settings = get_settings()
     modality_mode = _resolve_modality_mode(product)
+    # A text-with-images product keeps one vector per page, in Qdrant. The
+    # multimodal model that made those vectors is the only reader, and the other
+    # stores search text, which these records no longer carry as their content.
+    if modality_mode == "text_images":
+        enabled_types = enabled_types & {"vector_qdrant"}
     embedding_model = _resolve_text_embedding_model(product)
     image_embedding_model = _resolve_image_embedding_model(product)
     # Vector work is per tick, not per destination: Qdrant always needs a vector,
@@ -944,6 +959,14 @@ async def execute_universal_fanout_sync(
                     # retries every destination. No store is half-written.
                     image_records = [r for r in records if r.page.image_png]
                     text_records = [r for r in records if not r.page.image_png]
+                    # A text-with-images product embeds the pages that rendered no
+                    # image with the multimodal model too: one collection holds one
+                    # vector space, so both groups must come from one model.
+                    text_model = (
+                        image_embedding_model
+                        if modality_mode == "text_images"
+                        else embedding_model
+                    )
                     if image_records:
                         await asyncio.to_thread(
                             _embed_image_records,
@@ -953,9 +976,9 @@ async def execute_universal_fanout_sync(
                         )
                     if text_records:
                         await asyncio.to_thread(
-                            _embed_records, text_records, model=embedding_model, settings=settings
+                            _embed_records, text_records, model=text_model, settings=settings
                         )
-                    if image_records and text_records:
+                    if image_records and text_records and image_embedding_model != text_model:
                         # A collection holds one vector size, and these two groups
                         # come from two models. The reader must hear it from the log
                         # rather than from a dimension error on an unrelated file.
@@ -1288,7 +1311,10 @@ def _write_qdrant(
 
     points = []
     for record in records:
-        if not (record.page.text or "").strip():
+        # A page image is a record in its own right, and a scanned page has no text
+        # layer at all. Its texture is the whole point of the page-image mode, so
+        # the text rule that drops an empty chunk must not drop it.
+        if not (record.page.text or "").strip() and not record.page.image_png:
             continue
         if record.dense_vector is None:
             # Vector work is skipped only when no enabled destination needs a
@@ -1323,7 +1349,11 @@ def _write_qdrant(
         # mismatch at this point means the embedder changed under us.
         recreate_on_mismatch=False,
     )
-    qdrant.upsert_batch(points)
+    # A request carries a few points at a time. A page-image record holds its page
+    # PNG, so a 23-page scan is about 11 MB in one call: enough for a client
+    # timeout, and the retry then blocks the caller for minutes.
+    for start in range(0, len(points), 4):
+        qdrant.upsert_batch(points[start : start + 4])
     logger.info(
         "qdrant_fanout_complete collection=%s points_count=%d vector_size=%d",
         collection_name,

@@ -38,6 +38,10 @@ STRATEGY_LABELS: dict[str, tuple[str, str]] = {
         "Corrective",
         "Grades each passage and answers only from the relevant ones, or says the sources do not cover it",
     ),
+    KpStrategy.IMAGE_VISION: (
+        "Image Vision RAG",
+        "Finds the page images this product indexed and answers from them with a vision model",
+    ),
 }
 
 # Which of the two kinds a strategy belongs to, for the grouped picker.
@@ -45,12 +49,14 @@ RETRIEVAL_STRATEGIES: tuple[str, ...] = (
     KpStrategy.VECTOR,
     KpStrategy.LEXICAL,
     KpStrategy.HYBRID,
+    KpStrategy.IMAGE_VISION,
 )
 
 # A single-store strategy reads exactly this destination.
 STRATEGY_DESTINATION: dict[str, str] = {
     KpStrategy.VECTOR: KpDestination.VECTOR,
     KpStrategy.LEXICAL: KpDestination.LEXICAL,
+    KpStrategy.IMAGE_VISION: KpDestination.VECTOR,
 }
 
 # cache_redisvl is not here on purpose: it caches answers, it does not hold a
@@ -113,8 +119,17 @@ def session_memory_for_product(destinations: list[dict[str, Any]]) -> tuple[str,
     return str(prefix), int(config.get("ttl_seconds") or DEFAULT_TTL_S)
 
 
-def strategies_for_product(destinations: list[dict[str, Any]]) -> list[str]:
-    """The strategies this product's enabled destinations can serve."""
+def strategies_for_product(
+    destinations: list[dict[str, Any]], modality_mode: str | None = None
+) -> list[str]:
+    """The strategies this product's enabled destinations can serve.
+
+    A text-with-images product serves exactly one strategy. Its content is the
+    page images it indexed, so the text modes would read stores the fanout never
+    wrote, and the page-image mode is the only one that answers from them.
+    """
+    if modality_mode == "text_images":
+        return [KpStrategy.IMAGE_VISION]
     enabled = _enabled_types(destinations)
     strategies: list[str] = []
     if KpDestination.VECTOR in enabled:
@@ -148,7 +163,11 @@ def resolve_strategy(strategy: str, stores: KpStores) -> None:
     if strategy not in STRATEGY_LABELS:
         raise StrategyUnavailable(strategy, ["an unknown strategy"])
     missing: list[str] = []
-    if strategy in (KpStrategy.VECTOR, KpStrategy.HYBRID) and not stores.qdrant_collection:
+    if strategy in (
+        KpStrategy.VECTOR,
+        KpStrategy.HYBRID,
+        KpStrategy.IMAGE_VISION,
+    ) and not stores.qdrant_collection:
         missing.append(KpDestination.VECTOR)
     if strategy in (KpStrategy.LEXICAL, KpStrategy.HYBRID) and not stores.opensearch_index:
         missing.append(KpDestination.LEXICAL)

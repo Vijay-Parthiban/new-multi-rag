@@ -16,6 +16,24 @@ from rag_shared.types import KpStores, SearchMode
 logger = logging.getLogger(__name__)
 
 
+def _dump_chunks(chunks: list) -> list[dict]:
+    """The chunks as plain dicts, with the image payload left out.
+
+    A page-image chunk carries its page PNG so the vision model can read it. A
+    stored row keeps the page text: the bytes would add megabytes to a run's rows
+    and to every response that reads them.
+    """
+    dumped: list[dict] = []
+    for chunk in chunks or []:
+        record = chunk.model_dump()
+        metadata = dict(record.get("metadata") or {})
+        metadata.pop("image_base64", None)
+        metadata.pop("image", None)
+        record["metadata"] = metadata
+        dumped.append(record)
+    return dumped
+
+
 def emit_otel_synthetic_trace(
     session_id: str,
     message_id: str,
@@ -142,6 +160,14 @@ def run_evaluation(run_id: str) -> None:
         rerank_model=config_data.get("rerank_model"),
         top_k=config_data.get("top_k", settings.rerank_top_k),
         generation_model=config_data.get("generation_model"),
+        # The page-image strategy answers from the images, so for it the run's
+        # generation model is also its vision model. Without this the deployment's
+        # vision model answers instead, which is not the model the pipeline named.
+        vision_model=(
+            config_data.get("generation_model")
+            if config_data.get("rag_strategy") == "image_vision"
+            else None
+        ),
         collection=config_data.get("collection"),
         embedding_model=config_data.get("embedding_model"),
         sparse_embedding_model=config_data.get("sparse_embedding_model"),
@@ -228,9 +254,9 @@ def run_evaluation(run_id: str) -> None:
                     eval_repo = EvaluationRepository(db)
                     eval_repo.save_run_item_result(
                         run_item_id,
-                        retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
+                        retrieved_chunks=_dump_chunks(result.retrieved_chunks),
                         retrieval_metrics=result.retrieval_metrics,
-                        reranked_chunks=[c.model_dump() for c in result.reranked_chunks],
+                        reranked_chunks=_dump_chunks(result.reranked_chunks),
                         rerank_metrics=result.rerank_metrics,
                         generated_answer=result.generated_answer,
                         generation_metrics=result.generation_metrics,
@@ -267,7 +293,7 @@ def run_evaluation(run_id: str) -> None:
                         answer=result.generated_answer,
                         latency_ms=latency_ms,
                         scores=combined_scores,
-                        retrieved_chunks=[c.model_dump() for c in result.retrieved_chunks],
+                        retrieved_chunks=_dump_chunks(result.retrieved_chunks),
                         trace_info=trace_info
                     )
 

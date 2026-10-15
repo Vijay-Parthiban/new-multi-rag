@@ -67,6 +67,10 @@ class KpStrategy(StrEnum):
     HYBRID = "hybrid"
     SELF_RAG = "self_rag"
     CORRECTIVE = "corrective"
+    # Reads a text-with-images product: its vectors came from rendered pages, a
+    # text question embedded with the multimodal model finds them, and a vision
+    # model reads the pages the search returned.
+    IMAGE_VISION = "image_vision"
 
 
 # The generation patterns. Each needs a retrieval mode underneath, so a product

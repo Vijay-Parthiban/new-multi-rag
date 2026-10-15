@@ -440,6 +440,11 @@ export const RAG_STRATEGY_LABELS: Record<
     description: "Grades each passage and answers only from the relevant ones, or says the sources do not cover it",
     kind: "pattern",
   },
+  image_vision: {
+    label: "Image Vision RAG",
+    description: "Finds the page images this product indexed and answers from them with a vision model",
+    kind: "retrieval",
+  },
 };
 
 /** The heading each group of the picker carries. */
@@ -475,7 +480,11 @@ export function enabledRetrievalDestinations(
  */
 export function strategiesForDestinations(
   destinations: PipelineDestinationSummary[] | undefined,
+  modalityMode?: string | null,
 ): string[] {
+  // A text-with-images product serves one strategy: its content is the page
+  // images it indexed, so the text modes would read stores it never wrote.
+  if (modalityMode === "text_images") return ["image_vision"];
   const enabled = enabledRetrievalDestinations(destinations);
   const strategies: string[] = [];
   if (enabled.has("vector_qdrant")) strategies.push("vector");
@@ -583,6 +592,9 @@ export interface KnowledgeProduct {
   updated_at?: string;
   sources: KnowledgeProductSource[];
   destinations: KnowledgeDestinationConfig[];
+  /** `text_images` makes the fanout index one page image per record. */
+  modality_mode?: string | null;
+  image_embedding_model?: string | null;
   pipelines?: PipelineRecord[];
   files_total: number;
   files_synced: number;

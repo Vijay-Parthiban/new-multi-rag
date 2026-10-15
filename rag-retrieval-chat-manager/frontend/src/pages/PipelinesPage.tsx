@@ -276,6 +276,7 @@ function PipelineFields({
   guardrails,
   chatModels,
   rerankModels,
+  visionModels,
   loadingProducts,
   idPrefix,
   onNameRef,
@@ -289,13 +290,18 @@ function PipelineFields({
   chatModels: { id: string; label: string }[];
   /** The models the proxy reports with mode `rerank`. */
   rerankModels: { id: string; label: string }[];
+  /** The models the proxy reports with mode `vision`, for the page-image strategy. */
+  visionModels: { id: string; label: string }[];
   loadingProducts: boolean;
   idPrefix: string;
   onNameRef?: (el: HTMLInputElement | null) => void;
   showErrors: boolean;
 }) {
   const product = products.find((p) => p.id === draft.knowledgeProductId) ?? null;
-  const strategies = strategiesForDestinations(product?.destinations);
+  const strategies = strategiesForDestinations(product?.destinations, product?.modality_mode);
+  // The page-image strategy answers from the images, so its model list is the
+  // vision-capable one and its reranker is the multimodal one.
+  const isImageVision = draft.ragStrategy === "image_vision";
   const enabledTypes = enabledRetrievalDestinations(product?.destinations);
   const destinations = (product?.destinations ?? []).filter((d) => enabledTypes.has(d.destination_type));
 
@@ -316,7 +322,7 @@ function PipelineFields({
       ...draft,
       knowledgeProductId: id,
       // The old strategy may need a store the new product does not have.
-      ragStrategy: strategiesForDestinations(next?.destinations)[0] ?? "",
+      ragStrategy: strategiesForDestinations(next?.destinations, next?.modality_mode)[0] ?? "",
     });
   }
 
@@ -479,7 +485,7 @@ function PipelineFields({
       </select>
 
       <label className="field-label" htmlFor={`${idPrefix}-model`}>
-        Chat Model
+        {isImageVision ? "Multimodal chat model" : "Chat Model"}
       </label>
       <select
         id={`${idPrefix}-model`}
@@ -491,13 +497,19 @@ function PipelineFields({
         <option value="" disabled>
           Select a model…
         </option>
-        {chatModels.map((m) => (
+        {(isImageVision ? visionModels : chatModels).map((m) => (
           <option key={m.id} value={m.id}>
             {m.label || m.id}
           </option>
         ))}
       </select>
       {fieldError(chatModelError, draft.chatModel.length > 0)}
+      {isImageVision ? (
+        <p className="field-hint">
+          This model reads the page images the search returned. The question is embedded with the
+          product's own multimodal model, so the question and the pages land in one space.
+        </p>
+      ) : null}
 
       <fieldset style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
         <legend className="field-label">Retrieval &amp; reranking</legend>
@@ -545,7 +557,7 @@ function PipelineFields({
         {draft.rerankEnabled ? (
           <>
             <label className="field-label" htmlFor={`${idPrefix}-rerank-model`}>
-              Reranker model
+              {isImageVision ? "Multimodal reranker model" : "Reranker model"}
             </label>
             <select
               id={`${idPrefix}-rerank-model`}
@@ -564,7 +576,9 @@ function PipelineFields({
             <p className="field-hint" id={`${idPrefix}-rerank-model-hint`}>
               {rerankModels.length === 0
                 ? "The LiteLLM proxy serves no rerank model, so the deployment's own reranker applies."
-                : "Which model reorders the chunks. Service default is the deployment's reranker."}
+                : isImageVision
+                  ? "A multimodal reranker scores the page images themselves against the question. Service default is the deployment's reranker."
+                  : "Which model reorders the chunks. Service default is the deployment's reranker."}
             </p>
 
             <label className="field-label" htmlFor={`${idPrefix}-rerank-top-k`}>
@@ -649,6 +663,8 @@ export default function PipelinesPage() {
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
   /** The proxy's rerank models, for the pipeline's reranker picker. */
   const [rerankModels, setRerankModels] = useState<{ id: string; label: string }[]>([]);
+  // The models the proxy reports with mode `vision`, for the page-image strategy.
+  const [visionModels, setVisionModels] = useState<{ id: string; label: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -679,13 +695,14 @@ export default function PipelinesPage() {
         return fallback;
       });
 
-    const [pipes, prods, tpls, grds, models, rerankers] = await Promise.all([
+    const [pipes, prods, tpls, grds, models, rerankers, vision] = await Promise.all([
       capture(listPipelines(), [] as PipelineRecord[]),
       capture(listKnowledgeProducts(), [] as KnowledgeProduct[]),
       capture(listPromptTemplates(), { count: 0, items: [] as PromptTemplate[] }),
       capture(listGuardrailsConfigs(), { count: 0, items: [] as GuardrailsConfig[] }),
       capture(getLiteLLMModels("chat"), [] as { id: string; label: string }[]),
       capture(getLiteLLMModels("rerank"), [] as { id: string; label: string }[]),
+      capture(getLiteLLMModels("vision"), [] as { id: string; label: string }[]),
     ]);
 
     setPipelines(pipes);
@@ -694,6 +711,7 @@ export default function PipelinesPage() {
     setGuardrails(grds.items ?? []);
     setChatModels(models);
     setRerankModels(rerankers);
+    setVisionModels(vision);
     setError(firstError === undefined ? null : describeError(firstError));
     setLoading(false);
   }, []);
@@ -1074,6 +1092,7 @@ export default function PipelinesPage() {
                 guardrails={guardrails}
                 chatModels={chatModels}
                 rerankModels={rerankModels}
+                visionModels={visionModels}
                 loadingProducts={loading}
                 idPrefix="create"
                 showErrors={showErrors}
@@ -1285,6 +1304,7 @@ export default function PipelinesPage() {
               guardrails={guardrails}
               chatModels={chatModels}
               rerankModels={rerankModels}
+              visionModels={visionModels}
               loadingProducts={loading}
               idPrefix="edit"
               showErrors={editShowErrors}

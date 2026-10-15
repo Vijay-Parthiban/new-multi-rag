@@ -28,6 +28,12 @@ def image_data_uri(chunk: ChunkLike) -> str | None:
 
 def passage_text_for_chunk(chunk: ChunkLike) -> str:
     if is_image_chunk(chunk):
+        # A page-image record keeps its page text in content, and that reads far
+        # better as a caption than the file name. A record that carries only bytes
+        # has no text to offer, so its name stands in.
+        content = chunk.content.strip()
+        if content and not content.startswith("data:image/"):
+            return content
         return chunk.title or chunk.source_locator or f"Image chunk {chunk.chunk_index}"
     return chunk.content
 
