@@ -1,6 +1,6 @@
 # 14 — Assistant Pipelines & Callable Endpoints
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-19
 
 ## 1. Executive Summary & What an Assistant Is
 
@@ -174,10 +174,10 @@ wrote before the four columns existed carries no value, so the deployment settin
 **A disabled reranker sends the whole retrieval to the model.** When `rerank_enabled` is `false`, every
 chunk the search returned reaches the answering model, and `rerank_top_k` selects nothing.
 `PipelineConfig.effective_top_k()` returns `top_k` while reranking is on and `retrieve_limit` while it
-is off (`libs/rag-core/src/rag_core/schemas.py:62-69`). Every rerank call site uses it:
-`RAGPipeline.rerank()` (`libs/rag-core/src/rag_core/pipeline.py:114`), `RAGPipeline.chat()`
-(`pipeline.py:226`), `RAGPipeline.stream_chat()` (`pipeline.py:305`) and
-`GoldenItemEvaluator.evaluate_item` (`libs/eval-core/src/eval_core/runner.py:87`).
+is off (`libs/rag-core/src/rag_core/schemas.py`). Every rerank call site uses it:
+`RAGPipeline.rerank()`, `RAGPipeline.chat()` and `RAGPipeline.stream_chat()`. An offline evaluation
+row reaches the same rule through `RAGPipeline.chat`, because `GoldenItemEvaluator.evaluate_item` no
+longer builds a reranker itself.
 
 ```bash
 curl -X GET http://127.0.0.1:8001/api/assistants/resume-assistant

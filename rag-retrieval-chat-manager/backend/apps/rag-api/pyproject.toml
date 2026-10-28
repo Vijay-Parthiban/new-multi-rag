@@ -15,6 +15,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "redis>=5.0",
     "rq>=2.0",
+    "minio>=7.2",
 ]
 
 [tool.uv.sources]

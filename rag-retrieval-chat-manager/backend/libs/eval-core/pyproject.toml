@@ -15,6 +15,9 @@ dependencies = [
     "ragas>=0.4",
     "datasets>=3.0",
     "scipy>=1.11",
+    "pandas>=2.0",
+    "pyarrow>=15",
+    "openpyxl>=3.1",
 ]
 
 [tool.uv.sources]

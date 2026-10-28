@@ -17,12 +17,14 @@ from eval_core.dataset_schema import (
     GoldenDatasetPayload,
     parse_golden_dataset_csv,
     parse_golden_dataset_json,
+    parse_golden_dataset_jsonl,
 )
 from eval_core.ragas_client import TRIAD_METRICS
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
 from rag_shared.config import Settings, get_settings
+from rag_shared.types import KpStrategy
 
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
 
@@ -72,6 +74,11 @@ class EvalRunConfig(BaseModel):
     # The LLM-as-judge for the RAGAS metrics. Empty means the service default
     # (`settings.ragas_judge_model`), so an existing caller keeps today's behaviour.
     judge_model: str | None = None
+    # The pipeline whose session memory this run drives. The page sends the slug; the route
+    # resolves the handle, so the Redis namespace never leaves the server.
+    pipeline_slug: str | None = None
+    session_memory_prefix: str | None = None
+    session_memory_ttl_s: int | None = None
 
 
 class CreateEvalRunRequest(BaseModel):
@@ -140,6 +147,9 @@ class DatasetSummary(BaseModel):
     dataset_id: uuid.UUID
     name: str
     description: str | None = None
+    # "single_turn" or "multi_turn". The page reads it to decide whether the selected
+    # pipeline may run this dataset.
+    kind: str = "single_turn"
     item_count: int
     created_at: str | None = None
 
@@ -147,6 +157,7 @@ class DatasetSummary(BaseModel):
 class CreateDatasetResponse(BaseModel):
     dataset_id: uuid.UUID
     name: str
+    kind: str = "single_turn"
     item_count: int
     replaced: bool
 
@@ -173,6 +184,7 @@ def _import_dataset_from_payload(
             dataset = repo.import_dataset(
                 name=payload.name,
                 description=payload.description,
+                kind=payload.kind,
                 items=[item.model_dump() for item in payload.items],
                 replace=replace,
             )
@@ -182,10 +194,12 @@ def _import_dataset_from_payload(
         db.commit()
         dataset_id = dataset.id
         name = dataset.name
+        kind = dataset.kind
 
     return CreateDatasetResponse(
         dataset_id=dataset_id,
         name=name,
+        kind=kind,
         item_count=item_count,
         replaced=replace,
     )
@@ -203,7 +217,7 @@ def create_dataset(
 
 @router.post("/datasets/upload", response_model=CreateDatasetResponse)
 async def upload_dataset(
-    file: UploadFile = File(..., description="Golden dataset .csv or .json file"),
+    file: UploadFile = File(..., description="Golden dataset .csv, .json or .jsonl file"),
     replace: bool = Query(False),
     name: str | None = Query(
         None,
@@ -214,11 +228,11 @@ async def upload_dataset(
     ),
     settings: Settings = Depends(get_settings),
 ) -> CreateDatasetResponse:
-    """Upload a golden dataset as CSV or JSON (multipart/form-data)."""
+    """Upload a golden dataset as CSV, JSON or JSONL (multipart/form-data)."""
     filename = (file.filename or "").strip()
     lower = filename.lower()
-    if not lower.endswith((".json", ".csv")):
-        raise HTTPException(status_code=422, detail="file must be a .csv or .json file")
+    if not lower.endswith((".json", ".jsonl", ".csv")):
+        raise HTTPException(status_code=422, detail="file must be a .csv, .json or .jsonl file")
 
     raw = await file.read()
     if not raw.strip():
@@ -232,6 +246,14 @@ async def upload_dataset(
             payload = parse_golden_dataset_csv(raw, name=dataset_name)
         except (ValidationError, ValueError, UnicodeDecodeError) as exc:
             raise HTTPException(status_code=422, detail=f"Invalid dataset CSV: {exc}") from exc
+    elif lower.endswith(".jsonl"):
+        # One JSON object per line, the shape RAGAS's `to_jsonl` writes. It is the only
+        # lossless interchange for a list-valued field, which a CSV cell cannot carry.
+        dataset_name = (name or "").strip() or Path(filename).stem or "Uploaded JSONL"
+        try:
+            payload = parse_golden_dataset_jsonl(raw, name=dataset_name)
+        except (ValidationError, ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid dataset JSONL: {exc}") from exc
     else:
         try:
             payload = parse_golden_dataset_json(raw)
@@ -387,6 +409,7 @@ def list_datasets(
                 dataset_id=dataset.id,
                 name=dataset.name,
                 description=dataset.description,
+                kind=dataset.kind,
                 item_count=repo.count_dataset_items(dataset.id),
                 created_at=_dt_iso(dataset.created_at),
             )
@@ -411,6 +434,7 @@ def get_dataset(dataset_id: uuid.UUID, settings: Settings = Depends(get_settings
             dataset_id=dataset.id,
             name=dataset.name,
             description=dataset.description,
+            kind=dataset.kind,
             item_count=repo.count_dataset_items(dataset.id),
             created_at=_dt_iso(dataset.created_at),
         )
@@ -563,7 +587,7 @@ def get_pipeline_defaults(request: Request) -> PipelineDefaultsResponse:
 
 
 @router.post("/runs", response_model=CreateEvalRunResponse)
-def create_eval_run(request: Request, body: CreateEvalRunRequest) -> CreateEvalRunResponse:
+async def create_eval_run(request: Request, body: CreateEvalRunRequest) -> CreateEvalRunResponse:
     from rag_db.repositories.evaluation_repository import EvaluationRepository
     from rag_db.services.database import get_session_factory
 
@@ -571,22 +595,45 @@ def create_eval_run(request: Request, body: CreateEvalRunRequest) -> CreateEvalR
     queue = request.app.state.queue
     session_factory = get_session_factory(settings)
 
+    # The page-image strategy answers from page images. Retrieval-to-generation scoring reads
+    # text passages, so it has nothing to measure for that strategy. The page freezes its run
+    # button for the same reason; this is the authority.
+    if body.config.rag_strategy == KpStrategy.IMAGE_VISION:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "STRATEGY_NOT_EVALUABLE",
+                "message": "Image Vision RAG is not supported by offline evaluation.",
+            },
+        )
+
     # The pipeline's own retrieval settings, resolved once here. Resolving before the
     # store means the saved config names the numbers that actually ran, which is what
     # the run detail, the stage attribution and the rerank verdict all read.
-    config = body.config.model_copy(
-        update={
-            "retrieval_mode": body.config.retrieval_mode or DEFAULT_RETRIEVAL_MODE,
-            "retrieve_limit": body.config.retrieve_limit or settings.retrieve_limit,
-            "rerank_enabled": (
-                body.config.rerank_enabled
-                if body.config.rerank_enabled is not None
-                else settings.reranker_enabled
-            ),
-            "rerank_model": body.config.rerank_model or settings.reranker_model,
-            "top_k": body.config.top_k or settings.rerank_top_k,
-        }
-    )
+    updates: dict[str, Any] = {
+        "retrieval_mode": body.config.retrieval_mode or DEFAULT_RETRIEVAL_MODE,
+        "retrieve_limit": body.config.retrieve_limit or settings.retrieve_limit,
+        "rerank_enabled": (
+            body.config.rerank_enabled
+            if body.config.rerank_enabled is not None
+            else settings.reranker_enabled
+        ),
+        "rerank_model": body.config.rerank_model or settings.reranker_model,
+        "top_k": body.config.top_k or settings.rerank_top_k,
+    }
+
+    if body.config.pipeline_slug:
+        # The pipeline's session memory, resolved here so the Redis namespace never leaves
+        # the server. A pipeline whose Knowledge Product has no enabled Redis destination
+        # leaves the run stateless, which is all a single-turn dataset needs.
+        from rag_api.routes.assistants import _resolve_assistant
+
+        pipeline = await _resolve_assistant(request, body.config.pipeline_slug)
+        memory = pipeline.get("_session_memory")
+        if memory:
+            updates["session_memory_prefix"], updates["session_memory_ttl_s"] = memory
+
+    config = body.config.model_copy(update=updates)
 
     with session_factory() as db:
         repo = EvaluationRepository(db)

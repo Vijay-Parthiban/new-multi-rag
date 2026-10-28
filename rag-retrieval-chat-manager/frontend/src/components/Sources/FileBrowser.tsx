@@ -253,7 +253,9 @@ export default function FileBrowser({
     (e: KeyboardEvent<HTMLTableRowElement>, file: SourceFileEntry, index: number) => {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        void handleDelete(file);
+        // The delete control is hidden when the caller forbids it. The key path must
+        // agree, or Enter on a read-only browser destroys an object.
+        if (allowDelete || propOnDelete) void handleDelete(file);
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         const next = document.querySelector<HTMLTableRowElement>(
@@ -268,7 +270,7 @@ export default function FileBrowser({
         prev?.focus();
       }
     },
-    [handleDelete],
+    [handleDelete, allowDelete, propOnDelete],
   );
 
   /* ── Render ── */

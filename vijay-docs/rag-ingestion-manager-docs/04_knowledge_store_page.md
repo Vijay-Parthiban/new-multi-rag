@@ -665,11 +665,11 @@ and one registry entry. A type with no visualizer renders `No visualizer for <ty
   `knowledge_product_files`. `pipelines.knowledge_product_id` is the renamed foreign key.
 - `knowledge_products` carries `pipeline_fingerprint`, a hash of the chunking and modality settings.
   `apply-profile` rebuilds every destination when that hash changes.
-- Alembic head: `018_pipeline_rerank_model` (`down_revision = 017_pipeline_retrieval_settings`). The chain runs
+- Alembic head: `019_image_vision_strategy` (`down_revision = 018_pipeline_rerank_model`). The chain runs
   `001`…`010`, then `011_assistant_pipeline`, `012_pipeline_model_settings`, `013_assistant_reasoning_patterns`,
   `014_missing_model_columns`, `015_source_webscrape`, `016_chunk_config_page_images`,
-  `017_pipeline_retrieval_settings` and
-  `018_pipeline_rerank_model`. Migration `010` renamed
+  `017_pipeline_retrieval_settings`, `018_pipeline_rerank_model` and
+  `019_image_vision_strategy`, which adds the `image_vision` value to the `rag_strategy` enum. Migration `010` renamed
   the three tables and the index names, renamed the foreign key columns, added the three schedule columns,
   created `knowledge_product_files`, deleted the `graph_neo4j` destination rows and deleted `indexed_files` rows
   whose `pipeline_id IS NULL` (the fanout's old state). Migration `014` added the six columns that existed only

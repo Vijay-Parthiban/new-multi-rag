@@ -5,7 +5,8 @@
 ## 1. Executive Summary & Page Purpose
 
 The Prompts page (`frontend/src/pages/PromptsPage.tsx`, sidebar label "Prompts", route `/prompts`)
-manages **prompt templates**. A prompt template is the system message an assistant pipeline attaches.
+manages **prompt templates**. A prompt template is the system message an assistant pipeline attaches,
+and the behaviour NeMo Guardrails checks a governed turn against.
 
 The template becomes the system message of the generated answer. The retrieved passages and the user
 question are sent separately, in their own user message. There are **no `{context}` or `{question}`
@@ -17,7 +18,7 @@ Generation reads the template here:
 | Item | Path |
 |---|---|
 | Message builder | `backend/libs/generation-core/src/generation_core/prompt_builder.py` |
-| Signature | `build_rag_prompt(query, chunks, *, system_prompt=None)` |
+| Signature | `build_rag_prompt(query, chunks, *, system_prompt=None, history=None)`; with history, the system message gains a session-instruction paragraph |
 | Fallback | `system_prompt or RAG_SYSTEM_PROMPT` |
 | Constant | `RAG_SYSTEM_PROMPT`, same file |
 
@@ -195,7 +196,8 @@ The check script `backend/scripts/e2e_assistant_pipelines.py` runs this path.
      -d '{"name": "One Word", "description": "Answers in one word.", "content": "Answer in exactly one word."}'
    ```
    The response carries the `id`.
-2. Attach it to a pipeline on the ingestion service.
+2. Attach it to a pipeline on the ingestion service, or override it for one turn with `prompt_template_id`
+   in an assistant chat request. The Chat page sends that override on every turn.
    ```bash
    curl -X PATCH http://localhost:8007/api/pipelines/<pipeline-id> \
      -H 'Content-Type: application/json' \

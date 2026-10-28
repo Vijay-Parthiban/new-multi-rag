@@ -1,6 +1,6 @@
 # Running the complete platform — `two_project_run.md`
 
-**Last updated:** 2026-10-10
+**Last updated:** 2026-10-19
 
 This document is the single run guide for the whole `new-multi-rag` workspace: both backends, both
 frontends, and every dependency. Follow it top to bottom on a new machine. Sections 2 to 4 are
@@ -1248,7 +1248,7 @@ npx tsc --noEmit
 npx vite build
 ```
 
-**Schema heads.** Ingestion: `014_missing_model_columns`. Retrieval: `005_soft_delete`. Confirm with
+**Schema heads.** Ingestion: `019_image_vision_strategy`. Retrieval: `007_dataset_profiles`. Confirm with
 `uv run alembic current` from the matching `backend` directory, or read the `alembic_version` table.
 
 ---

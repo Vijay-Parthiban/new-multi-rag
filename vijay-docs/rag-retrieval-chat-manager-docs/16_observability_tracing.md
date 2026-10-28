@@ -121,7 +121,8 @@ Every pipeline gets one trace per Q/A turn, with no configuration. The root span
 | `openinference.span.kind` | `CHAIN` |
 | `deployment.environment`, `rag.trace_mode` | `test` or `prod` |
 | `session.id`, `langfuse.session.id` | The session, when one exists |
-| `rag.message_id` | The stored assistant message id |
+| `rag.message_id` | The stored assistant message id, set on `rag.pipeline.metrics`; the turn span carries it as `langfuse.observation.metadata.message_id` |
+| `guardrails.config_id`, `guardrails.<phase>.blocked`, `guardrails.<phase>.blocked_by` | The rail check the turn ran and what it decided |
 | `gen_ai.request.model` | The chat model |
 | `rag.pipeline.*`, `rag.knowledge_product.*` | Scalars and JSON for both records |
 | `langfuse.trace.metadata.*` | Filterable copies of the pipeline and Knowledge Product fields |

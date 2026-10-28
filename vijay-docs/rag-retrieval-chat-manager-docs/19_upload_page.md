@@ -11,7 +11,7 @@ The retrieval frontend mounts one upload page at `/upload`. It writes files into
 | Route | `/upload` |
 | Component | `pages/UploadPage.tsx` |
 | Mount | `isUpload = path === "/upload"` (`AppLayout.tsx:120`), rendered in a `PersistentPage` (`AppLayout.tsx:186-188`) |
-| Sidebar entry | none. The sidebar links 10 entries and this is not one of them (`AppLayout.tsx:24-35`) |
+| Sidebar entry | none. The sidebar links 11 entries and this is not one of them (`AppLayout.tsx:25-37`) |
 
 The page has two targets. The source target writes objects into an existing MinIO source bucket. The folder target writes files into a folder workspace through the legacy chunked upload.
 

@@ -44,7 +44,7 @@ Parsed by `eval_core/guardrails_dataset_schema.py:8-29`:
 | `items[].expected_blocked` | bool | `false` | |
 | `items[].expected_guard` | string \| null | `null` | compared against the actual blocking validator |
 | `items[].category` | string \| null | `null` | used for the per-category scores |
-| `items[].metadata` | object | `{}` | stored, not scored. A `chunks` key (`list[str]`) is passed to the retrieval phase, so a row can feed the retrieved-passage rails (`eval_core/guardrails_runner.py:73`) |
+| `items[].metadata` | object | `{}` | stored, not scored. A `chunks` key (`list[str]`) is passed to every phase, so a row can feed the retrieval rail and the output fact check (`eval_core/guardrails_runner.py:74`) |
 
 The field names match the stored columns and the bundled dataset, and the parser also accepts a bare JSON array of items (`parse_guardrails_golden_json`, `guardrails_dataset_schema.py:25-29`).
 
@@ -143,7 +143,7 @@ The false-negative and false-positive rows are the rows that need a config chang
 
 ## 4. Backend APIs & Contracts
 
-Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required. The catalogue holds nine guards: the three validators (`ban_list`, `detect_pii`, `local/toxic_language`) plus the six rails the NeMo engine runs (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`, `self_check_facts`).
+Router: `routes/guardrails_evaluate.py`, prefix `/guardrails-evaluate` (`rag_api/main.py:84`; frontend base `http://127.0.0.1:8001`, `frontend/src/api.ts:7`, client `frontend/src/guardrailsEvalApi.ts`). Global API key required. The catalogue holds nine guards: the three validators (`ban_list`, `detect_pii`, `local/toxic_language`) plus the six rails the NeMo engine runs (`self_check_input`, `jailbreak_heuristics`, `template_scope`, `pii_retrieval`, `self_check_output`, `self_check_facts`).
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
@@ -219,7 +219,7 @@ The page never produced a real score before these four backend fixes. Each one i
 4. `repo.list_run_items()` did not exist at all. It was added, so `GET /runs/{run_id}/items` works (`guardrails_evaluation_repository.py:165-172`).
 
 ### Verification assets
-- `scripts/e2e_guardrails.py` (new) runs the whole surface against the live stack and prints its own tally (`scripts/e2e_guardrails.py`). It expects the eight-guard catalog, seeds the 14-row dataset, and its config includes `jailbreak_heuristics` and `pii_retrieval`.
+- `scripts/e2e_guardrails.py` (new) runs the whole surface against the live stack and prints its own tally (`scripts/e2e_guardrails.py`). It expects the nine-guard catalog, seeds the 14-row dataset, and its config includes `jailbreak_heuristics` and `pii_retrieval`.
 - `tests/unit/test_guardrails_runner.py` (new) covers the confusion matrix, the skipped-row rule, the phase/mode rule and the category buckets (`tests/unit/test_guardrails_runner.py`).
 - On the bundled golden dataset (14 items) the sync run returns accuracy, precision, recall, f1 and guard_match_rate of `1.0`, with 9 true positives and 5 true negatives.
 - The retrieval unit suite exists and is not re-run by this document. This document does not state its pass or fail counts.

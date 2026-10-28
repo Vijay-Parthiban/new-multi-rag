@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,10 +16,25 @@ class GoldenDataset(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "single_turn" or "multi_turn". A multi-turn dataset's rows carry `turns`, and the
+    # evaluation page reads this to decide whether the selected pipeline may run it.
+    kind: Mapped[str] = mapped_column(String, nullable=False, server_default="single_turn")
+    # The Dataset Fabric profile this upload belongs to, or NULL on a dataset imported the
+    # old way through the Offline Evaluation page.
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("dataset_profiles.id"), nullable=True, index=True
+    )
+    # Where the uploaded file lives in MinIO. Empty on a dataset created from a JSON body.
+    storage_bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_format: Mapped[str | None] = mapped_column(String, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     items: Mapped[list["GoldenDatasetItem"]] = relationship(back_populates="dataset")
     runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="dataset")
+    profile: Mapped["DatasetProfile | None"] = relationship(back_populates="datasets")  # noqa: F821
 
 
 class GoldenDatasetItem(Base):
@@ -30,6 +45,9 @@ class GoldenDatasetItem(Base):
     question: Mapped[str] = mapped_column(Text, nullable=False)
     ground_truth_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     expected_sources: Mapped[list] = mapped_column(JSONB, default=list)
+    # The user turns of a conversation, in order, or NULL on a single-turn row. The
+    # evaluator replays them; the assistant turns live in `metadata.expected_turns`.
+    turns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

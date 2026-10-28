@@ -5,7 +5,9 @@ import PageHeader from "../components/PageHeader";
 import TriadPanel from "../components/TriadPanel";
 import {
   createEvaluationRun,
-  deleteGoldenDataset,
+  DatasetKind,
+  DatasetProfile,
+  DatasetProfileFile,
   destinationStoreLabel,
   EvalPipelineDefaults,
   EvalRunItemRow,
@@ -14,24 +16,41 @@ import {
   RunDiagnosis,
   getEvalPipelineDefaults,
   getEvaluationRun,
+  getAssistant,
   getLiteLLMModels,
-  GoldenDatasetSummary,
-  HF_EVAL_CORPUS,
-  HF_EVAL_DATASET,
-  importHuggingFaceDataset,
+  listDatasetProfiles,
   listDatasetRuns,
   listEvaluationRunItems,
-  listGoldenDatasets,
   listGuardrailsConfigs,
   listPipelines,
   listPromptTemplates,
   PipelineRecord,
   PromptTemplate,
-  uploadGoldenDataset,
 } from "../api";
 import { formatRelativeTime } from "../utils/format";
 
 const PAGE_SIZE = 10;
+
+// The strategies this page can score. Retrieval-to-generation metrics read text passages;
+// the page-image strategy answers from page images, so it has nothing for them to read. The
+// route refuses it as well, so this is the copy and the frozen button, not the only gate.
+const EVALUABLE_STRATEGIES: readonly string[] = ["vector", "lexical", "hybrid", "self_rag", "corrective"];
+
+// Named once, so the check and the message can never disagree about which strategy it is.
+const VISION_STRATEGY = "image_vision";
+
+const VISION_BLOCK_MESSAGE =
+  "Image Vision RAG cannot be evaluated offline. Retrieval-to-generation scoring reads text passages, and this pipeline answers from page images. Pick a vector, keyword, hybrid, self-reflective or corrective pipeline.";
+
+// The two radios the page offers. A kind the selected profile does not hold is frozen,
+// not hidden, so the page says which dataset is missing.
+const KIND_LABEL: Record<DatasetKind, string> = {
+  single_turn: "Only Single turn",
+  multi_turn: "Only Multi-Turn",
+};
+
+const MEMORY_BLOCK_MESSAGE =
+  "This dataset holds multi-turn conversations, and the selected pipeline has no session memory. Enable a Redis destination on its Knowledge Product, or pick a single-turn dataset.";
 
 function formatMetric(value: unknown): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "—";
@@ -451,12 +470,18 @@ function PipelineSummary({
   defaults,
   templates,
   guardrails,
+  memoryEnabled,
+  memoryTtl,
+  memoryReason,
 }: {
   pipeline: PipelineRecord;
   stores: PipelineStores;
   defaults: EvalPipelineDefaults | null;
   templates: PromptTemplate[];
   guardrails: GuardrailsConfig[];
+  memoryEnabled: boolean | null;
+  memoryTtl: number | null;
+  memoryReason: string | null;
 }) {
   const product = pipeline.knowledge_product;
   const model = pipeline.model_settings;
@@ -482,6 +507,14 @@ function PipelineSummary({
     ["Guardrails", guardrailsName],
     ["Knowledge product", product?.name || "none"],
     ["Modality", pipeline.modality || "text"],
+    [
+      // Stated before a dataset is picked, because it is what decides whether a multi-turn
+      // dataset can run at all.
+      "Memory",
+      memoryEnabled
+        ? `enabled · ${memoryTtl ?? "—"} s TTL`
+        : `none · ${memoryReason ?? "the Knowledge Product has no enabled Redis destination"}`,
+    ],
     [
       "Chunking",
       `${product?.chunk_strategy || "—"} · ${pipeline.chunk_size} size / ${pipeline.chunk_overlap} overlap`,
@@ -543,8 +576,11 @@ function PipelineSummary({
 }
 
 export default function GoldenEvaluationsPage() {
-  const [datasets, setDatasets] = useState<GoldenDatasetSummary[]>([]);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
+  // Only the profiles linked to the selected pipeline appear here. A profile with no
+  // pipeline is authored in Dataset Fabric and is not runnable from this page.
+  const [profiles, setProfiles] = useState<DatasetProfile[]>([]);
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [kind, setKind] = useState<DatasetKind>("single_turn");
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [pipelineId, setPipelineId] = useState("");
   // The retrieval settings a run uses. They come from the deployment, not from this
@@ -568,17 +604,19 @@ export default function GoldenEvaluationsPage() {
     return d && "stage_counts" in d ? d : null;
   }, [selectedRun]);
   const [runItems, setRunItems] = useState<EvalRunItemRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
   const [rowsToTest, setRowsToTest] = useState(5);
-  const [hfBusy, setHfBusy] = useState(false);
-  const [uploadBusy, setUploadBusy] = useState(false);
   // Empty means the service default judge. The dropdown still offers "Service default" so
   // the choice is visible rather than implicit.
   const [judgeModel, setJudgeModel] = useState("");
   const [judgeModels, setJudgeModels] = useState<{ id: string; label: string }[]>([]);
+  // Whether the selected pipeline's Knowledge Product has session memory, and why not. Null
+  // while the answer is unknown, which is not the same as a definite "none".
+  const [memoryEnabled, setMemoryEnabled] = useState<boolean | null>(null);
+  const [memoryTtl, setMemoryTtl] = useState<number | null>(null);
+  const [memoryReason, setMemoryReason] = useState<string | null>(null);
 
   const selectedPipeline = useMemo(
     () => pipelines.find((p) => p.id === pipelineId) || null,
@@ -587,18 +625,87 @@ export default function GoldenEvaluationsPage() {
 
   // What the selected pipeline actually reads, and how large the selected set is.
   const stores = useMemo(() => pipelineStores(selectedPipeline), [selectedPipeline]);
-  const selectedDataset = useMemo(
-    () => datasets.find((d) => d.dataset_id === selectedDatasetId) ?? null,
-    [datasets, selectedDatasetId],
+  const selectedProfile = useMemo(
+    () => profiles.find((p) => p.id === profileId) ?? null,
+    [profiles, profileId],
   );
-  const selectedDatasetCount = selectedDataset?.item_count ?? 0;
 
-  const loadDatasets = useCallback(async () => {
-    const items = await listGoldenDatasets();
-    setDatasets(items);
-    setSelectedDatasetId((prev) => {
-      if (prev && items.some((d) => d.dataset_id === prev)) return prev;
-      return items[0]?.dataset_id ?? null;
+  // The newest upload of each kind. The API returns them newest first, so the first match
+  // is the dataset a run uses.
+  const datasetsByKind = useMemo(() => {
+    const map: Record<DatasetKind, DatasetProfileFile[]> = { single_turn: [], multi_turn: [] };
+    for (const file of selectedProfile?.datasets ?? []) {
+      (map[file.kind] ?? map.single_turn).push(file);
+    }
+    return map;
+  }, [selectedProfile]);
+
+  const chosenDataset = datasetsByKind[kind][0] ?? null;
+  const selectedDatasetId = chosenDataset?.dataset_id ?? null;
+  const selectedDatasetCount = chosenDataset?.row_count ?? 0;
+
+  // A run cannot sample more rows than the chosen upload holds. Clamping here keeps the
+  // input, the copy and the button label on the number the worker will actually run.
+  useEffect(() => {
+    if (selectedDatasetCount > 0) {
+      setRowsToTest((current) => Math.min(current, selectedDatasetCount));
+    }
+  }, [selectedDatasetCount]);
+
+  // A multi-turn run drives the pipeline's session memory, so the page has to know whether
+  // the selected pipeline has one. Only an assistant pipeline can: the memory lives on its
+  // Knowledge Product's Redis destination, and no other pipeline reads a product at all.
+  useEffect(() => {
+    let cancelled = false;
+    const slug = selectedPipeline?.slug;
+    if (!selectedPipeline?.is_assistant || !slug) {
+      setMemoryEnabled(false);
+      setMemoryTtl(null);
+      setMemoryReason("This pipeline is not an assistant pipeline, so it has no session memory.");
+      return;
+    }
+    void getAssistant(slug)
+      .then((config) => {
+        if (cancelled) return;
+        setMemoryEnabled(config.session_memory?.enabled ?? false);
+        setMemoryTtl(config.session_memory?.ttl_seconds ?? null);
+        setMemoryReason(config.session_memory?.reason ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // An unreachable probe must not block a single-turn run, so it reads as "no memory".
+        setMemoryEnabled(false);
+        setMemoryTtl(null);
+        setMemoryReason("Could not read this pipeline's session memory setting.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPipeline]);
+
+  // The two reasons a run is refused, each computed before the button is pressed.
+  const strategy = selectedPipeline?.rag_strategy ?? "";
+  const strategyBlocked = Boolean(selectedPipeline) && !EVALUABLE_STRATEGIES.includes(strategy);
+  const datasetBlocked = kind === "multi_turn" && memoryEnabled === false;
+  const blockMessage = strategyBlocked
+    ? strategy === VISION_STRATEGY
+      ? VISION_BLOCK_MESSAGE
+      : `This page cannot evaluate the '${strategy}' strategy. Pick a vector, keyword, hybrid, self-reflective or corrective pipeline.`
+    : datasetBlocked
+      ? MEMORY_BLOCK_MESSAGE
+      : null;
+
+  const loadProfiles = useCallback(async (slug: string | null) => {
+    if (!slug) {
+      setProfiles([]);
+      setProfileId(null);
+      return;
+    }
+    const items = await listDatasetProfiles(slug);
+    setProfiles(items);
+    setProfileId((prev) => {
+      if (prev && items.some((p) => p.id === prev)) return prev;
+      return items[0]?.id ?? null;
     });
   }, []);
 
@@ -612,19 +719,24 @@ export default function GoldenEvaluationsPage() {
   }, []);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       const pipes = await listPipelines();
       setPipelines(pipes);
       setPipelineId((prev) => prev || pipes[0]?.id || "");
-      await loadDatasets();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load golden evaluations");
     } finally {
-      setLoading(false);
     }
-  }, [loadDatasets]);
+  }, []);
+
+  // A run reads a profile, and a profile is linked to one pipeline. So the list follows the
+  // selected pipeline, and a profile with no pipeline never appears.
+  useEffect(() => {
+    void loadProfiles(selectedPipeline?.slug ?? null).catch((err) =>
+      setError(err instanceof Error ? err.message : "Failed to load dataset profiles"),
+    );
+  }, [selectedPipeline?.slug, loadProfiles]);
 
   useEffect(() => {
     void refresh();
@@ -731,50 +843,6 @@ export default function GoldenEvaluationsPage() {
 
 
 
-  /** Upload a golden dataset file. CSV and JSON both work. */
-  async function onUploadDataset(file: File) {
-    setUploadBusy(true);
-    setError(null);
-    try {
-      const res = await uploadGoldenDataset(file, { replace: true });
-      await loadDatasets();
-      setSelectedDatasetId(res.dataset_id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not upload the dataset");
-    } finally {
-      setUploadBusy(false);
-    }
-  }
-
-  /** Fetch the built-in evaluation set from the Hub and select it. */
-  async function onImportHfDataset() {
-    setHfBusy(true);
-    setError(null);
-    try {
-      const res = await importHuggingFaceDataset(true);
-      await loadDatasets();
-      setSelectedDatasetId(res.dataset_id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not import the evaluation set");
-    } finally {
-      setHfBusy(false);
-    }
-  }
-
-  async function onDeleteDataset(datasetId: string) {
-    if (!window.confirm("Delete this dataset and all related evaluation runs?")) return;
-    setBusy(true);
-    try {
-      await deleteGoldenDataset(datasetId);
-      if (selectedDatasetId === datasetId) setSelectedDatasetId(null);
-      await loadDatasets();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function onStartRun() {
     if (!selectedDatasetId || !selectedPipeline) {
       setError("Select a dataset and pipeline first");
@@ -804,6 +872,10 @@ export default function GoldenEvaluationsPage() {
         // The pipeline's own chat model. Without it the service default applies, and the
         // service default is a model the proxy does not serve.
         generation_model: selectedPipeline.chat_model,
+        // The slug, not the store names: the route resolves the pipeline's session memory
+        // from it, so a multi-turn run drives the memory a live turn would drive. The Redis
+        // namespace never leaves the server.
+        pipeline_slug: selectedPipeline.slug,
         collection: stores.collection,
         embedding_model: stores.embedding,
         sparse_embedding_model: stores.sparse,
@@ -865,7 +937,17 @@ export default function GoldenEvaluationsPage() {
           { label: "Offline Evaluation" },
         ]}
         actions={
-          <button type="button" className="btn btn-secondary" onClick={() => void refresh()} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              // The pipeline list and the profiles both change outside this page, so one
+              // click has to reload both or a profile made in Dataset Fabric never appears.
+              void refresh();
+              void loadProfiles(selectedPipeline?.slug ?? null);
+            }}
+            disabled={busy}
+          >
             Refresh
           </button>
         }
@@ -880,85 +962,87 @@ export default function GoldenEvaluationsPage() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
         <div className="panel">
           <div className="panel-header" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-            <h3 className="panel-title">Evaluation set</h3>
-            <label
-              className="btn btn-sm"
-              style={{ cursor: uploadBusy ? "default" : "pointer", margin: 0 }}
-            >
-              {uploadBusy ? "Uploading…" : "Upload CSV or JSON"}
-              <input
-                type="file"
-                accept=".csv,.json,text/csv,application/json"
-                style={{ display: "none" }}
-                disabled={uploadBusy}
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  // Clear the input so choosing the same file twice fires onChange again.
-                  e.target.value = "";
-                  if (file) void onUploadDataset(file);
-                }}
-              />
-            </label>
+            <h3 className="panel-title">Dataset profile</h3>
             <button
               type="button"
-              className="btn btn-sm"
-              onClick={() => void onImportHfDataset()}
-              disabled={hfBusy}
+              className="btn btn-sm btn-ghost"
+              onClick={() => navigate("/dataset-fabric")}
             >
-              {hfBusy ? "Importing…" : "Refresh from Hugging Face"}
+              Manage in Dataset Fabric
             </button>
           </div>
           <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
-            <div className="alert alert-warn" style={{ fontSize: "0.8rem", margin: 0 }}>
-              <strong>This set asks about the Hugging Face documentation.</strong> Its questions are
-              answerable only from the companion corpus <code>{HF_EVAL_CORPUS}</code>. A pipeline
-              whose Knowledge Product does not hold that corpus retrieves nothing, so every score
-              reads near zero. That measures the corpus, not the pipeline. Questions come from{" "}
-              <code>{HF_EVAL_DATASET}</code>.
-            </div>
-            {loading ? (
-              <p className="muted">Loading datasets…</p>
-            ) : datasets.length === 0 ? (
-              <p className="muted">
-                No datasets yet. Upload a golden dataset as CSV or JSON.
+            {profiles.length === 0 ? (
+              <p className="muted" style={{ margin: 0, fontSize: "0.85rem", lineHeight: 1.5 }}>
+                {selectedPipeline?.slug
+                  ? "No dataset profile is linked to this pipeline. Create one in Dataset Fabric and link it to this pipeline."
+                  : "Select a pipeline to see the dataset profiles linked to it."}
               </p>
             ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.35rem" }}>
-                {datasets.map((ds) => (
-                  <li key={ds.dataset_id}>
-                    <button
-                      type="button"
-                      className={`btn btn-sm ${selectedDatasetId === ds.dataset_id ? "btn-primary" : "btn-ghost"}`}
-                      style={{ width: "100%", justifyContent: "space-between", display: "flex" }}
-                      onClick={() => setSelectedDatasetId(ds.dataset_id)}
-                    >
-                      <span>
-                        {ds.name}{" "}
-                        <span className="muted">({ds.item_count} items)</span>
-                      </span>
-                      <span
-                        className="muted"
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void onDeleteDataset(ds.dataset_id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.stopPropagation();
-                            void onDeleteDataset(ds.dataset_id);
-                          }
-                        }}
-                        title="Delete dataset"
-                      >
-                        Delete
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
+                Dataset profile
+                <select
+                  className="input"
+                  value={profileId ?? ""}
+                  onChange={(e) => setProfileId(e.target.value)}
+                >
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
+
+            {selectedProfile?.description && (
+              <p className="muted" style={{ margin: 0, fontSize: "0.78rem", lineHeight: 1.5 }}>
+                {selectedProfile.description}
+              </p>
+            )}
+
+            <div style={{ display: "grid", gap: "0.5rem" }}>
+              {(Object.keys(KIND_LABEL) as DatasetKind[]).map((option) => {
+                const files = datasetsByKind[option];
+                const available = files.length > 0;
+                const checked = kind === option && available;
+                return (
+                  <label
+                    key={option}
+                    style={{
+                      display: "flex",
+                      gap: "0.5rem",
+                      alignItems: "flex-start",
+                      padding: "0.5rem 0.6rem",
+                      borderRadius: 6,
+                      border: `1px solid ${checked ? "var(--accent, #6366f1)" : "var(--border)"}`,
+                      opacity: available ? 1 : 0.5,
+                      cursor: available ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="dataset-kind"
+                      value={option}
+                      checked={checked}
+                      disabled={!available || !selectedProfile}
+                      onChange={() => setKind(option)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span style={{ display: "grid", gap: "0.1rem" }}>
+                      <span style={{ fontSize: "0.85rem" }}>{KIND_LABEL[option]}</span>
+                      <span className="muted" style={{ fontSize: "0.72rem" }}>
+                        {available
+                          ? `${files[0].row_count ?? "?"} ${
+                              files[0].row_count === 1 ? "row" : "rows"
+                            } · ${files[0].filename ?? "dataset"}`
+                          : "Not uploaded for this profile"}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -989,6 +1073,9 @@ export default function GoldenEvaluationsPage() {
                 defaults={pipelineDefaults}
                 templates={templates}
                 guardrails={guardrails}
+                memoryEnabled={memoryEnabled}
+                memoryTtl={memoryTtl}
+                memoryReason={memoryReason}
               />
             )}
             <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
@@ -997,7 +1084,7 @@ export default function GoldenEvaluationsPage() {
                 className="input"
                 type="number"
                 min={1}
-                max={200}
+                max={selectedDatasetCount > 0 ? selectedDatasetCount : 200}
                 value={rowsToTest}
                 onChange={(e) => setRowsToTest(Math.max(1, Number(e.target.value) || 1))}
                 style={{ width: 110 }}
@@ -1010,8 +1097,8 @@ export default function GoldenEvaluationsPage() {
             {/* The retrieval settings are not controls. A run measures the pipeline above as it
                 stands, so the route resolves the mode, the chunk limit, the rerank switch and
                 top-k from the deployment, and the summary above states them. The evaluator runs
-                retrieve -> rerank -> generate and scores each stage; it has no router and no
-                self-corrective loop. */}
+                through RAGPipeline.chat, which is the path a live turn takes, so the
+                self-reflective and corrective branches are scored rather than skipped. */}
             <label className="muted" style={{ display: "grid", gap: "0.25rem", maxWidth: 320 }}>
               LLM-as-a-judge (optional)
               <select
@@ -1032,10 +1119,15 @@ export default function GoldenEvaluationsPage() {
               retrieval scores. A stronger judge is slower and costs more; the same judge across
               two runs is what makes their scores comparable.
             </p>
+            {blockMessage && (
+              <div className="alert alert-warn" style={{ fontSize: "0.8rem", margin: 0 }}>
+                {blockMessage}
+              </div>
+            )}
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy || !selectedDatasetId || !pipelineId}
+              disabled={busy || !selectedDatasetId || !pipelineId || strategyBlocked || datasetBlocked}
               onClick={() => void onStartRun()}
             >
               {busy ? "Running…" : `Run evaluation on ${rowsToTest} row${rowsToTest === 1 ? "" : "s"}`}

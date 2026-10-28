@@ -6,7 +6,7 @@ import uuid
 
 from eval_core.chat_metrics import compute_chat_pipeline_metrics, flatten_chat_metrics
 from eval_core.runner import GoldenItem, GoldenItemEvaluator
-from rag_core import PipelineConfig
+from rag_core import DEFAULT_TTL_S, PipelineConfig, SessionMemory
 from rag_db.repositories.chat_repository import ChatRepository
 from rag_db.repositories.evaluation_repository import EvaluationRepository
 from rag_db.services.database import get_session_factory
@@ -153,6 +153,19 @@ def run_evaluation(run_id: str) -> None:
         eval_repo.mark_run_running(run_uuid)
         db.commit()
 
+    # An assistant pipeline reads its Knowledge Product's stores. The strategy and the store
+    # names travel together: with a strategy the pipeline reads those stores, and without one
+    # it reads the legacy scrape collection, which is a different corpus.
+    kp_strategy = config_data.get("rag_strategy")
+    kp_stores = None
+    if kp_strategy and (config_data.get("collection") or config_data.get("opensearch_index")):
+        kp_stores = KpStores(
+            qdrant_collection=config_data.get("collection"),
+            opensearch_index=config_data.get("opensearch_index"),
+            pg_schema=config_data.get("pg_schema"),
+            pg_table=config_data.get("pg_table"),
+        )
+
     config = PipelineConfig(
         retrieval_mode=SearchMode(config_data.get("retrieval_mode", "hybrid")),
         retrieve_limit=config_data.get("retrieve_limit", settings.retrieve_limit),
@@ -171,23 +184,20 @@ def run_evaluation(run_id: str) -> None:
         collection=config_data.get("collection"),
         embedding_model=config_data.get("embedding_model"),
         sparse_embedding_model=config_data.get("sparse_embedding_model"),
-        rag_mode=config_data.get("rag_mode", "normal"),
-        self_corrective_max_loops=int(config_data.get("self_corrective_max_loops", 3)),
+        # The strategy picks the store the run reads and, for self_rag and corrective, the
+        # grading and revision the pipeline performs on what that store returned.
+        strategy=kp_strategy,
+        stores=kp_stores,
     )
-    # The offline evaluator runs retrieve -> rerank -> generate and scores each stage. It has
-    # no router and no self-corrective loop: those belong to the chat path, and passing them
-    # here used to raise on every item.
-    # An assistant pipeline reads its Knowledge Product's stores. The strategy and the store
-    # names travel together: with a strategy the evaluator reads those stores, and without one
-    # it reads the legacy scrape collection, which is a different corpus.
-    kp_strategy = config_data.get("rag_strategy")
-    kp_stores = None
-    if kp_strategy and (config_data.get("collection") or config_data.get("opensearch_index")):
-        kp_stores = KpStores(
-            qdrant_collection=config_data.get("collection"),
-            opensearch_index=config_data.get("opensearch_index"),
-            pg_schema=config_data.get("pg_schema"),
-            pg_table=config_data.get("pg_table"),
+
+    # The pipeline's own session memory, resolved from the run config. Absent for a
+    # single-turn run and for a pipeline whose Knowledge Product has no Redis destination.
+    session_memory = None
+    if config_data.get("session_memory_prefix"):
+        session_memory = SessionMemory(
+            settings,
+            prefix=config_data["session_memory_prefix"],
+            ttl_s=config_data.get("session_memory_ttl_s") or DEFAULT_TTL_S,
         )
 
     k_values = config_data.get("k_values", [1, 3, 5, 10])
@@ -201,6 +211,7 @@ def run_evaluation(run_id: str) -> None:
                 "question": item.question,
                 "ground_truth_answer": item.ground_truth_answer or "",
                 "expected_sources": item.expected_sources or [],
+                "turns": item.turns or None,
                 "metadata": item.metadata_ or {},
             }
             for item in raw_items
@@ -239,15 +250,15 @@ def run_evaluation(run_id: str) -> None:
                     expected_sources=item["expected_sources"],
                     label=item["metadata"].get("label"),
                     category=item["metadata"].get("category"),
+                    turns=item["turns"],
                     metadata=item["metadata"],
                 )
                 result = evaluator.evaluate_item(
                     golden,
                     config,
                     k_values,
-                    strategy=kp_strategy,
-                    stores=kp_stores,
                     judge_model=config_data.get("judge_model"),
+                    session_memory=session_memory,
                 )
 
                 with session_factory() as db:

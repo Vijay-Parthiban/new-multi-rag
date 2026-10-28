@@ -9,7 +9,7 @@
 ## 1. Executive Summary & Page Purpose
 The **Guard Config Page** creates, edits, enables/disables and deletes `GuardrailsConfig` rows (table `guardrails_configs`, `rag_db/models/guardrails.py:13-26`). Each row selects a subset of the guards that `guardrails-service` exposes, the chat phases they apply to (`input`, `retrieval`, `output`; a validator uses `both`), and the parameters of every selected guard. The same rows are what Chat applies when a request carries `guardrails_config_id` (`routes/chat.py:34, 554, 651, 777`) and what the Guard Evaluation page scores against (`routes/guardrails_evaluate.py:253-375`).
 
-The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **nine guards**: three validators (`ban_list`, `detect_pii` and `toxic_language`) and six NeMo rails (`self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output` and `self_check_facts`). Only `guardrails-service/config.py` defines that list (`_VALIDATORS`, with `RAIL_SPECS` appended at `config.py:395`), so there is no second copy of it in the repository.
+The page is **catalog-driven**. The form is generated from `GET /guardrails/guards`, which proxies the catalog of `guardrails-service`. The catalog holds **nine guards**: three validators (`ban_list`, `detect_pii` and `toxic_language`) and six NeMo rails (`self_check_input`, `jailbreak_heuristics`, `template_scope`, `pii_retrieval`, `self_check_output` and `self_check_facts`). Only `guardrails-service/config.py` defines that list (`_VALIDATORS`, with `RAIL_SPECS` appended at `config.py:395`), so there is no second copy of it in the repository.
 
 The three validators are Guardrails AI validators. The six rails are implemented by **NeMo Guardrails**, the engine inside `guardrails-service` (`guardrails-service/nemo.py`). A config that names no rail takes the older validator path in `config.run_validators` and behaves exactly as before. A config that names a rail runs the whole phase through the engine.
 
@@ -57,7 +57,7 @@ and `RAIL_SPECS` for the six rails, merged at `config.py:395`) and is served by
 `unavailable_reason` when a validator package is missing from the installation.
 
 **The catalog holds nine guards.** The Guard Config page renders whatever the catalog
-serves, so it shows all eight with no frontend change. Adding an entry to `_VALIDATORS` or to
+serves, so it shows all nine with no frontend change. Adding an entry to `_VALIDATORS` or to
 `RAIL_SPECS` makes it appear on the page.
 
 `kind` has three values:
@@ -147,13 +147,13 @@ messages, or the engine runs no rails at all (`nemo.py:588-605`).
   configured `policy` to the one that belongs to the rail.
 - `jailbreak_heuristics` and `self_check_facts` are flows this service generates, with a judge
   action behind each. Both take a `policy` and a `model`. The fact check scores the answer
-  against the retrieved passages (`$relevant_chunks`), so it needs the retrieval phase with
-  passages. With no passages it reports `skipped: no retrieval context` and does not block.
+  against the passages the output phase receives from the reranked chunks. With no passages it
+  reports `skipped: no retrieval context` and does not block.
 - `pii_retrieval` uses the engine's own Presidio rail with the configured `pii_entities` list
   and `score_threshold`. `on_fail: fix` masks the passages before the model reads them.
   `on_fail: noop` blocks the turn.
 
-The four LLM rails (`self_check_input`, `jailbreak_heuristics`, `self_check_output`,
+The five LLM rails (`self_check_input`, `jailbreak_heuristics`, `template_scope`, `self_check_output`,
 `self_check_facts`) take an optional `model` parameter. Leave it empty to use
 `GUARDRAIL_LLM_MODEL` (`Gpt-oss-20b` by default). Each of them spends one model call per turn,
 so a config with them costs one call more per rail than the same config without it.
@@ -437,7 +437,7 @@ Add a rail by listing its id in `guards` and giving it a `settings` entry, the s
 
 ## 5. Where Guard Configs Apply During Chat
 
-- `ChatRequest.guardrails_config_id` (`uuid | None`) is the only switch. When it is absent no guardrail check runs (`routes/chat.py:34`).
+- `ChatRequest.guardrails_config_id` (`uuid | None`) is the switch. A `system_prompt` or a `prompt_template_id` also governs the turn: `_governed()` returns true for any of the three (`routes/chat.py:394-405`).
 - `_run_guardrails()` loads the config by id, returns immediately if the id does not resolve, skips the phase that `mode` excludes, and returns a 5-tuple `(is_blocked, blocking_guard, guard_results, masked_chunks, repaired_answer)` (`routes/chat.py:384-457`). It calls `run_guardrails_phase(...)` with `phase`, `query`, `answer` and `chunks`, and writes a `guardrails_traces` row for every phase that ran. A phase with nothing to run is skipped and writes no row (`routes/chat.py:429-445`). Both output call sites return `repaired_answer` instead of the generated answer when an output rail masked it, so the user and the persisted row carry the repaired text.
 - Non-streaming `/chat`: input phase check before the pipeline call (`routes/chat.py:567-603`). The retrieval phase runs inside `pipeline.chat` through the `chunk_filter` argument (`routes/chat.py:616-624`), and a `GuardrailBlocked` from the pipeline becomes the canned answer with `blocked_on: "retrieval"` (`routes/chat.py:625-638`). The output phase check runs on the generated answer (`routes/chat.py:662-674`).
 - Streaming `/chat/stream`: emits `{"type": "status", "message": "Checking guardrails..."}` before the input check (`routes/chat.py:794`) and, on a block, a `blocked` SSE payload plus a `session` event with `route: "blocked"` (`routes/chat.py:822-826`). The retrieval phase runs through the same `chunk_filter` (`routes/chat.py:856-863`) and a block emits the same two frames (`routes/chat.py:880-907`). The output check runs on the final answer (`routes/chat.py:922-935`).
@@ -446,6 +446,6 @@ Add a rail by listing its id in `guards` and giving it a `settings` entry, the s
 ### Implementation notes (verified in the working tree)
 - Config guard ids are the catalog ids (`ban_list`, `detect_pii`, `toxic_language`, `self_check_input`, ...). The client renames the legacy PII guard id to `detect_pii` before it builds the request (`rag_shared/guardrails_client.py:12,88`), so a config written before the catalog existed keeps working.
 - A non-200 from the service becomes `{"validation_passed": true, "error": "HTTP <code>", "detail": <body>}` (`rag_shared/guardrails_client.py:104-141`). A guard with no result in the response gets `"validator missing from the response"` as its `error` (`rag_shared/guardrails_client.py:137-141`). Both fail open rather than blocking every chat turn.
-- `GUARD_BLOCK_COPY` is keyed by the eight current guard ids (`ban_list`, `detect_pii`, `toxic_language`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`, `self_check_facts`) (`routes/chat.py:163-207`). A block by any of them returns its own friendly copy from `_blocked_answer`, and the `pii_retrieval` entry also carries a `retrieval` string (`routes/chat.py:195`). The retired PII id is renamed to `detect_pii` before the lookup, so the block text is correct.
+- `GUARD_BLOCK_COPY` is keyed by the nine current guard ids (`ban_list`, `detect_pii`, `toxic_language`, `template_scope`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`, `self_check_facts`) (`routes/chat.py:168-218`). A block by any of them returns its own friendly copy from `_blocked_answer`, and the `pii_retrieval` entry also carries a `retrieval` string (`routes/chat.py:195`). The retired PII id is renamed to `detect_pii` before the lookup, so the block text is correct.
 - The retrieval rail masks instead of blocking when its `on_fail` is `fix`: `_retrieval_guardrail` puts the masked passage text back in place, so the citations keep their order (`routes/chat.py:475-504`).
 - `settings.guardrails_url` defaults to `http://localhost:18000` and `settings.guardrails_timeout_s` defaults to `15.0` (`rag_shared/config.py:51,54`). The timeout rose from 5.0 s because each LLM judge needs about a second, and a rail adds one more model call.

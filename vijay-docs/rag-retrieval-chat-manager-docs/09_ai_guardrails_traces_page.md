@@ -11,7 +11,7 @@ The **Guard Traces Page** is the audit ledger of guardrail checks. Every time `_
 
 Each row is a **phase run**, not a chat turn: an input+output config on one message produces two rows, and a row is written for passed checks as well as blocked ones. A phase the config has no guard for is skipped and writes no row.
 
-The guards the rows name are the eight catalog entries: `ban_list`, `detect_pii` and `toxic_language` (`phase: both`), `self_check_input` and `jailbreak_heuristics` (input), `pii_retrieval` (retrieval), and `self_check_output` and `self_check_facts` (output). For their parameters: the four LLM rails take a `policy` and a `model`, and `pii_retrieval` takes `pii_entities` and `score_threshold`. A trace never stores those parameters, only the verdict and the `ms` of each guard that ran.
+The guards the rows name are the nine catalog entries: `ban_list`, `detect_pii` and `toxic_language` (`phase: both`), `self_check_input`, `jailbreak_heuristics` and `template_scope` (input), `pii_retrieval` (retrieval), and `self_check_output` and `self_check_facts` (output). For their parameters: the five LLM rails take a `policy` and a `model`, and `pii_retrieval` takes `pii_entities` and `score_threshold`. A trace never stores those parameters, only the verdict and the `ms` of each guard that ran.
 
 ---
 
@@ -124,7 +124,7 @@ The UI sends `guard`, `blocked`, `limit` and `offset`. It never sends `config_id
 | `created_at` | ISO 8601 string \| null | write time |
 
 ### Per-guard verdicts (`guard_results`)
-Keys are the config's guard ids. Values come from the guardrails-service `/validate` response: `validation_passed` (bool), `error` (a transport or configuration problem), `detail` (`null` when passed, otherwise the failure reason) and, on the engine path, `ms` (an integer, the milliseconds that rail took) (`guardrails-service/config.py`, `guardrails-service/nemo.py:727-750`). The page reads only `validation_passed` (`GuardrailsTracesPage.tsx:75,93,562`), `detail` (`:570`) and `error` (`:571-572`). The frontend types are `GuardResult` and `GuardrailsTrace` (`frontend/src/api.ts:1508-1528`). `GuardResult` declares only the first three fields; `ms` rides along in the JSONB value unread.
+Keys are the config's guard ids, plus any rail the pipeline's prompt template adds (`template_scope`). Values come from the guardrails-service `/validate` response: `validation_passed` (bool), `error` (a transport or configuration problem), `detail` (`null` when passed, otherwise the failure reason) and, on the engine path, `ms` (an integer, the milliseconds that rail took) (`guardrails-service/config.py`, `guardrails-service/nemo.py:727-750`). The page reads only `validation_passed` (`GuardrailsTracesPage.tsx:75,93,562`), `detail` (`:570`) and `error` (`:571-572`). The frontend types are `GuardResult` and `GuardrailsTrace` (`frontend/src/api.ts:1508-1528`). `GuardResult` declares only the first three fields; `ms` rides along in the JSONB value unread.
 
 ```json
 {

@@ -110,7 +110,7 @@ The created source has `connector_type` null and zero connectors. Nothing feeds 
 
 The server then:
 
-1. Deletes every `KnowledgeProductSource` and `PipelineSource` link of the source (`sources.py:474-475`).
+1. Deletes every `KnowledgeProductSource`, `PipelineSource` and `SourceScrapeFile` link of the source (`sources.py:513`).
 2. Deletes the local folder for a local source, or the whole MinIO bucket for a bucket source (`sources.py:476-492`).
 3. Deletes the source row, commits, stops the poller, and answers `{"status": "deleted", "id": ...}` (`sources.py:493-497`).
 

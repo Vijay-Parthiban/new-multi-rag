@@ -1,20 +1,25 @@
 # 06 — Offline Evaluation & Golden Datasets Page
 
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-20
 
 ## 1. Executive Summary & Page Purpose
 The **Offline Evaluation** page (`frontend/src/pages/GoldenEvaluationsPage.tsx`, route `/golden-evaluations`, nav label "Offline Evaluation") benchmarks **one pipeline configuration** against a golden question/answer dataset stored in Postgres. The operator picks a pipeline, picks how many rows to run, starts a run, and reads aggregate and per-question scores split into three stages: **retrieval**, **reranking**, **generation**.
 
-The page was reworked on 2026-09-23 around a built-in evaluation set, and again on 2026-10-08 so that a run measures the selected pipeline as it stands:
+The page was reworked on 2026-09-23 around a built-in evaluation set, on 2026-10-08 so that a run measures the selected pipeline as it stands, and on 2026-10-16 so that it scores every RAG strategy and gates a multi-turn dataset behind the pipeline's session memory:
 
 - **The set** is imported from the Hugging Face Hub once, through `POST /evaluate/datasets/huggingface`: **65** question/answer pairs drawn from the Hugging Face documentation (`m-ric/huggingface_doc_qa_eval`). It is stored as an ordinary golden dataset, so a run against it is an ordinary run and its rows appear in the dataset list.
-- **Rows to test** samples N rows at random, default **5**. The page sends **no seed**, so each run draws a fresh sample (`GoldenEvaluationsPage.tsx:814`). The backend accepts a `seed`, but the page never sets it.
+- **Three upload forms**: `.csv`, `.json` and `.jsonl`. The loader accepts the project's own field names and either framework's (`user_input`, `reference`, `reference_contexts`/`context`, `input`, `expected_output`), so a dataset from RAGAS or DeepEval loads with no renaming.
+- **Two dataset kinds**, `single_turn` and `multi_turn`, derived from the rows. A multi-turn row carries a `turns` JSON array; a run replays those turns through the pipeline's **real session memory**. A file may not mix the two kinds.
+- **Rows to test** samples N rows at random, default **5**. The page sends **no seed**, so each run draws a fresh sample. The backend accepts a `seed`, but the page never sets it.
 - **The pipeline picker** fills in the pipeline's own configuration: its strategy, its chat model and sampling settings, its prompt template, its guardrails config, its Knowledge Product's store names, its embedding model, its chunking and its retrieval settings. The panel below the picker states all of it, read only. The evaluator reads those stores, so the run measures that pipeline rather than the service defaults.
+- **The run goes through `RAGPipeline.chat`**, not a direct retrieve → rerank → generate call. That is what makes `self_rag` and `corrective` measurable at all: their grading and revision live in the pipeline.
+- **Two gates freeze the run button.** `image_vision` cannot be scored offline, because retrieval-to-generation metrics read text passages. A multi-turn dataset needs a pipeline whose Knowledge Product has an enabled Redis destination.
 - **The retrieval settings come from the pipeline.** The page sends the selected pipeline's `retrieve_limit`, `rerank_enabled`, `rerank_model` and `top_k` (the pipeline's `rerank_top_k`) with every run. The `rerank_model` value is the pipeline's pinned model, or null when it pins none. The page sends no retrieval mode, so `POST /evaluate/runs` resolves that from the deployment. A null `rerank_model` also falls back to the deployment's `settings.reranker_model`. A caller that sends none of the four settings gets the deployment values. The run panel shows the values the next run will use.
+- **The page sends `pipeline_slug`**, so the route can resolve the pipeline's session-memory handle server-side. The Redis namespace never reaches the browser.
 
 > **The set and the corpus must match.** Every question in the built-in set is answerable only from `A-Roucher/huggingface_doc`, the corpus it was generated from. A pipeline whose Knowledge Product does not hold that corpus retrieves nothing: every retrieval metric reads 0.0 and the generated answer names the file it did read instead. That measures the corpus, not the pipeline. The page states this beside the control.
 
-The dataset panel carries an upload control. It accepts a `.json` file or a `.csv` file, and an optional dataset name. The Strategy / RAG Mode / Max Loops selects were removed on 2026-09-23, and the Retrieval / Chunk limit / Rerank controls on 2026-10-08: the offline evaluator runs `retrieve → rerank → generate`, it has no router and no self-corrective loop, and the retrieval settings belong to the pipeline, so none of those controls changed the pipeline being measured.
+The dataset panel carries an upload control. It accepts `.csv`, `.json` and `.jsonl`, and an optional dataset name. The Strategy / RAG Mode / Max Loops selects were removed on 2026-09-23, and the Retrieval / Chunk limit / Rerank controls on 2026-10-08: the retrieval settings belong to the pipeline, so none of those controls changed the pipeline being measured.
 
 A run can name its own judge model through the **LLM-as-a-judge (optional)** dropdown in the run panel; the empty option reads **Service default**. Keep the same judge for two runs you intend to compare: the judge is what makes their scores comparable.
 
@@ -22,7 +27,7 @@ The run aggregate also carries a **per-category breakdown**. The **Metrics by Ca
 
 It is not the live-metrics page: `pages/EvaluationsPage.tsx` serves `/evaluations` ("Real Time Monitoring") from chat metrics. No `/evaluations/offline` or `/evaluations/golden` route exists; `App.tsx` only keeps the `/directories*` legacy redirects.
 
-All requests go to the RAG API (`VITE_RAG_API_URL`, default `http://127.0.0.1:8001`) whose `/evaluate` router is registered in `rag_api/main.py:80`. Every route is behind the API-key dependency (`rag_api/main.py:64`); the frontend sends `X-API-Key` (`frontend/src/api.ts:13`).
+All requests go to the RAG API (`VITE_RAG_API_URL`, default `http://127.0.0.1:8001`) whose `/evaluate` router is registered in `rag_api/main.py`. Every route is behind the API-key dependency; the frontend sends `X-API-Key` (`frontend/src/api.ts`).
 
 ---
 
@@ -90,8 +95,8 @@ level.
 +--------------------+-----------------------------------------------------------------------+
 | Stage              | Metric keys actually produced                                         |
 +--------------------+-----------------------------------------------------------------------+
-| 1. Retrieval       | precision, recall, hit, mrr                                           |
-|    (formula-based) | Computed at k = 5.                                                    |
+| 1. Retrieval       | precision, recall, hit, mrr, and effective_query when the query   |
+|    (formula-based) | was rewritten. Computed at k = 5.                                  |
 | 2. Reranking       | mrr_before, mrr_after, mrr (= mrr_after), mrr_delta,                  |
 |                    | mrr_before_at_k, kendall_tau, ndcg (k = 5)                            |
 | 3. Generation      | context_relevance, response_groundedness, answer_relevancy (the       |
@@ -104,9 +109,12 @@ level.
 Sources: `eval_core/retrieval_metrics.py`, `eval_core/rerank_metrics.py`,
 `eval_core/ragas_client.py` (`calculate_generation_ragas_async`, `calculate_triad_async`).
 
+- **How a row runs.** `evaluate_item` calls `RAGPipeline.chat` — the path a live turn takes — then scores the result. `self_rag` and `corrective` are measurable only because of that: their grading and revision live in the pipeline, and the previous direct `Retriever` → reranker → `Generator` sequence never reached them. A multi-turn row replays its user turns through the pipeline's session memory first (`_run_conversation`), one `chat` call per turn and a `clear` in a `finally`. Detail: `13_golden_dataset_requirements.md` §2.
+- **A strategy can abstain.** When the corrective grader rejects every passage, the pipeline answers `NO_RELEVANT_PASSAGES_ANSWER` with an empty `reranked_chunks`. Every RAGAS metric and the triad need contexts, so that row stores only `behavior_match` and `keypoint_coverage`. That is a correct reading of a refusal, not a failed row.
 - **Source matching** is name-substring based after normalization (file basename, or URL netloc + path) plus an optional exact `page` comparison: `eval_core/source_match.py`.
-- `context_precision` / `context_recall` exist in `calculate_retrieval_ragas_async` (`ragas_client.py`) but the offline runner never calls it — `GoldenItemEvaluator.evaluate_item` calls `compute_generation_ragas_metrics` and `compute_triad_metrics`, never the retrieval function (`eval_core/runner.py`). Offline run items therefore contain no context precision/recall values.
-- Generation metrics are skipped (empty dict) when `ragas_enabled` is false, the answer is blank, or there are no contexts (`ragas_client.py`). The triad follows the same gate, since all three metrics read the answer or the contexts. The two custom metrics are not RAGAS metrics, so they still compute.
+- `context_precision` / `context_recall` exist in `calculate_retrieval_ragas_async` (`ragas_client.py`) but no offline path calls it. Offline run items therefore contain no context precision/recall values.
+- Generation metrics are skipped (empty dict) when `ragas_enabled` is false, the answer is blank, or there are no contexts (`ragas_client.py`). The triad follows the same gate. The two custom metrics are not RAGAS metrics, so they still compute.
+- **The judge gets an 8192-token output budget** (`JUDGE_MAX_TOKENS`). Every RAGAS metric answers in structured JSON; at 4096 a five-passage row truncated `AnswerCorrectness` and RAGAS reported the metric as failed, so the key was silently absent from that row and from the run mean. Pinned by `tests/unit/test_ragas_judge_budget.py`.
 - Judge model and transport: `settings.ragas_judge_model` through the LiteLLM proxy (`LITELLM_PROXY` / `LITELLM_BASE_URL` env, else `settings.litellm_base_url`, `/v1` appended). A run can override the judge with `EvalRunConfig.judge_model`; the value is stored in the run `config`.
 - **Custom generation metrics (not RAGAS)**: `behavior_match` is `1.0` when the answer behaves as the row's `expected_behavior` says it should (a `refuse_or_abstain` row wants an abstention, every other row wants a real answer). `keypoint_coverage` is the fraction of the row's `keypoints_covered` present in the answer, matched on the value side for a `label=value` entry. Rows whose keypoints are bare tags are not measurable, so the key is absent rather than `0.0`.
 
@@ -144,33 +152,63 @@ Payload schema (`eval_core/dataset_schema.py`):
 |---|---|---|
 | `name` | yes | non-blank after strip; must be unique per dataset |
 | `description` | no | free text |
+| `kind` | no | **derived from the rows and overwritten.** `single_turn` or `multi_turn` |
 | `items` | yes | must contain at least one entry |
-| `items[].question` | yes | non-blank after strip |
+| `items[].question` | yes\* | non-blank after strip. \*Not required when the row carries `turns`: it is derived from the last user turn |
 | `items[].ground_truth_answer` | no | used as the RAGAS reference for accuracy / answer correctness |
 | `items[].expected_sources` | no | list of strings or `{ "name": ..., "page": ... }` objects |
-| `items[].metadata` | no | arbitrary object; `metadata.category` drives the RAGAS skip rule and the drill-down filter, `metadata.label` feeds the same skip rule |
+| `items[].turns` | no | `[{role, content}, ...]`. Roles are `user` and `assistant`; at least one `user` turn is required |
+| `items[].metadata` | no | arbitrary object; `metadata.question_type` drives the category roll-up and the drill-down filter, `metadata.expected_behavior` and `metadata.keypoints_covered` drive the two custom metrics |
 
-Legacy aliases accepted and normalized on import (`dataset_schema.py`): `query` → `question`, `response` → `ground_truth_answer`, `source` (string, list or object) → `expected_sources`. Source entries without a usable name are dropped.
+**Aliases** (`_COLUMN_ALIASES` in `dataset_schema.py`) accept the project names and either framework's, in this precedence order:
 
-**CSV upload.** `/evaluate/datasets/upload` also takes a `.csv` file. The reference file is `backend/tcs_policies_golden_dataset.csv`, 22 rows. Header lookup ignores case and spaces.
+| Field | Accepted names |
+|---|---|
+| question | `question`, `user_input`, `input`, `query` |
+| answer | `ground_truth_answer`, `reference`, `expected_output`, `expected_outcome` |
+| reference | `reference_context`, `reference_contexts`, `context` |
+| sources | `source_doc_id`, `expected_sources`, `source` |
+| turns | `turns`, `conversation`, `messages` |
+
+Two spellings of one field must agree, or the file fails with `question and user_input disagree; keep one`. `response` is deliberately **not** an answer alias: for RAGAS it is the model's own output.
+
+**A dataset holds one kind.** A file mixing a row with `turns` and a row without fails with `a dataset cannot mix single-turn and multi-turn rows`, which is the same rule RAGAS and DeepEval enforce.
+
+**Three upload forms.** `/evaluate/datasets/upload` takes `.csv`, `.json` and `.jsonl`.
+
+CSV, single-turn — the reference file is `backend/tcs_policies_golden_dataset.csv`, 22 rows. Header lookup ignores case and spaces.
 
 | CSV column | Maps to |
 |---|---|
-| `question` | `question` (required. A file with no `question` column gives `422`) |
-| `ground_truth_answer` | the RAGAS `reference` |
-| `source_doc_id` | `expected_sources`, semicolon-separated. `N/A`, `NONE` or `-` means no source |
-| `reference_context` | the gold context; a value that starts with `NONE` is absent and is dropped |
+| `question` (or an alias) | `question` — required unless the file carries `turns` |
+| `ground_truth_answer` (or an alias) | the RAGAS `reference` |
+| `source_doc_id` (or an alias) | `expected_sources`, `;`- or `,`-separated. `N/A`, `NONE`, `-`, `null` or empty means no source |
+| `reference_context` (or an alias) | the gold context; a value starting with `NONE` is absent and is dropped |
+| `turns` (or an alias) | a JSON array of `{role, content}` objects in one quoted cell |
 | every other column | the item `metadata` JSONB |
 
 Every other column (`id`, `question_type`, `expected_behavior`, `keypoints_covered`, `difficulty`, `notes`) lands in `metadata`, so adding a CSV column needs no migration. A CSV has no name field, so the filename stem becomes the dataset name and `?name=` overrides it.
 
+CSV, multi-turn — one row per conversation, no `question` column:
+
+```csv
+id,question_type,source_doc_id,turns
+M002,coreference,resume3.pdf,"[{""role"": ""user"", ""content"": ""Which company does Rohan Sinha work for now?""},{""role"": ""user"", ""content"": ""What is his title there?""}]"
+```
+
+`.jsonl` is one object per line, the shape RAGAS's `to_jsonl()` writes and the only lossless form for a list-valued field.
+
+**Two sample datasets** ship in `resumes/`, ten rows each: `resume_single_turn_golden.csv` and `resume_multi_turn_golden.csv`, built from the six resume PDFs in that folder.
+
 Upload rules (`rag_api/routes/evaluate.py`):
 
-- `.json` or `.csv` uploads; anything else → `422 file must be a .csv or .json file`.
+- `.json`, `.jsonl` or `.csv` uploads; anything else → `422 file must be a .csv, .json or .jsonl file`.
 - Empty bytes → `422 uploaded file is empty`.
-- Malformed or schema-violating JSON → `422 Invalid dataset JSON: <pydantic error>`.
-- A CSV with no `question` column → `422`.
-- A dataset whose `name` already exists → `409 Dataset '<name>' already exists`, unless `?replace=true` is passed, in which case the existing dataset, its items and its runs are deleted first (`evaluation_repository.py`).
+- Malformed or schema-violating content → `422 Invalid dataset JSON|CSV|JSONL: <detail>`.
+- A CSV with no `question` and no `turns` column → `422`.
+- A dataset whose `name` already exists → `409 Dataset '<name>' already exists`, unless `?replace=true` is passed, in which case the existing dataset, its items and its runs are deleted first.
+
+Full schema contract, including the framework compatibility table and the `source_doc_id` convention: `13_golden_dataset_requirements.md`.
 
 ---
 
@@ -178,8 +216,8 @@ Upload rules (`rag_api/routes/evaluate.py`):
 
 | Method | Endpoint | Description | Request / Response |
 |---|---|---|---|
-| `POST` | `/evaluate/datasets` | Creates a golden dataset from a JSON body | `GoldenDatasetPayload` → `CreateDatasetResponse` |
-| `POST` | `/evaluate/datasets/upload` | Uploads a golden dataset file (multipart `file`, query `replace`, `name`) | `CreateDatasetResponse` |
+| `POST` | `/evaluate/datasets` | Creates a golden dataset from a JSON body | `GoldenDatasetPayload` → `CreateDatasetResponse` (carries `kind`) |
+| `POST` | `/evaluate/datasets/upload` | Uploads a golden dataset file: `.csv`, `.json` or `.jsonl` (multipart `file`, query `replace`, `name`) | `CreateDatasetResponse` |
 | `GET` | `/evaluate/datasets` | Lists datasets, newest first (`limit` 1–100, default 50) | `DatasetListResponse` |
 | `GET` | `/evaluate/datasets/{dataset_id}` | Single dataset summary | `DatasetSummary` (404 `Dataset not found`) |
 | `DELETE` | `/evaluate/datasets/{dataset_id}` | Deletes dataset, its items, and its runs/run items | `204`, or 404 |
@@ -190,7 +228,15 @@ Upload rules (`rag_api/routes/evaluate.py`):
 | `GET` | `/evaluate/runs/{run_id}/items` | Per-item scores, answers, sources, error | `EvalRunItemsResponse` |
 | `GET` | `/evaluate/stats` | Recent runs across all datasets (`limit` 1–100, default 20) | `EvaluationStatsResponse` |
 
-`EvalRunConfig` (`evaluate.py:36-74`) — the run parameters. The first five are the pipeline's own retrieval settings. `POST /evaluate/runs` takes the ones the caller names and resolves the rest from the deployment before it stores the run, exactly as a live assistant turn does. The Offline Evaluation page sends `retrieve_limit`, `rerank_enabled`, `rerank_model` and `top_k` from the selected pipeline, and leaves `retrieval_mode` to the deployment. It sends the pipeline's pinned `rerank_model`, or null when the pipeline pins none, so the deployment's `settings.reranker_model` applies then. The stored config then names the values that ran.
+`EvalRunConfig` — the run parameters. The first five are the pipeline's own retrieval settings. `POST /evaluate/runs` takes the ones the caller names and resolves the rest from the deployment before it stores the run, exactly as a live assistant turn does. The Offline Evaluation page sends `retrieve_limit`, `rerank_enabled`, `rerank_model`, `top_k` and `pipeline_slug` from the selected pipeline, and leaves `retrieval_mode` to the deployment. It sends the pipeline's pinned `rerank_model`, or null when the pipeline pins none, so the deployment's `settings.reranker_model` applies then. The stored config then names the values that ran.
+
+**`POST /evaluate/runs` is `async def` and does three things before it enqueues:**
+
+1. **Refuses the page-image strategy.** `rag_strategy == "image_vision"` returns `422` with `detail = {"code": "STRATEGY_NOT_EVALUABLE", "message": "Image Vision RAG is not supported by offline evaluation."}`. Retrieval-to-generation metrics read text passages, and that strategy answers from page images. The page freezes its button for the same reason; the route is the authority.
+2. **Resolves the retrieval settings** from the request, then the deployment.
+3. **Resolves the session-memory handle.** When `pipeline_slug` is set, the route calls the existing `_resolve_assistant(request, slug)` and reads `pipeline["_session_memory"]`, the `(prefix, ttl)` tuple `session_memory_for_product` returns. Both go into the stored config. An unknown slug propagates that route's `404 ASSISTANT_NOT_FOUND`. A product with no enabled Redis destination leaves the run stateless.
+
+The Redis namespace never leaves the server: the page sends a slug, not a prefix.
 
 | Field | Default | Resolved to |
 |---|---|---|
@@ -201,6 +247,9 @@ Upload rules (`rag_api/routes/evaluate.py`):
 | `top_k` | `null` | the pipeline's `rerank_top_k`; `settings.rerank_top_k` (5) when the caller sends none |
 | `generation_model` | `null` | the selected pipeline's `chat_model` on the page; the service default without one |
 | `judge_model` | `null` | `settings.ragas_judge_model`. The page offers **Service default** for it |
+| `pipeline_slug` | `null` | the page sends the selected pipeline's slug. The route resolves the session-memory prefix and TTL from it |
+| `session_memory_prefix` | `null` | **written by the route** from `session_memory_for_product`. Never sent by a caller |
+| `session_memory_ttl_s` | `null` | **written by the route**, beside the prefix |
 
 The rest are run options the caller sets, with the defaults of `EvalRunConfig`:
 
@@ -283,8 +332,10 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 - The API builds one RQ `Queue` at startup with `default_timeout = settings.rq_default_timeout` (3600 s) (`rag_api/main.py`).
 - `POST /evaluate/runs` enqueues `eval_worker.tasks.run_evaluation` with the run id (`evaluate.py`).
 - Worker process: `eval_worker.main.run()` initialises tracing and runs `Worker([settings.rq_eval_queue])` with `with_scheduler=False` (`apps/eval-worker/src/eval_worker/main.py`).
-- `run_evaluation` (`eval_worker/tasks.py`): marks the run `running`, rebuilds a `PipelineConfig` from the stored run config, iterates the dataset items (creating a run item, invoking the evaluator, persisting the result), then aggregates and marks the run `completed`. Any exception escaping the loop marks the run `failed` and re-raises; a per-item exception is caught, written to that item as `failed`, and the loop continues.
+- `run_evaluation` (`eval_worker/tasks.py`): marks the run `running`, rebuilds a `PipelineConfig` from the stored run config — now including **`strategy`** and **`stores`**, so the evaluator cannot be told two different strategies — then reads the dataset items **including `turns`**, builds one `SessionMemory` for the whole run when the config carries a prefix, and calls `evaluate_item(..., session_memory=...)` per row. It then aggregates and marks the run `completed`. Any exception escaping the loop marks the run `failed` and re-raises; a per-item exception is caught, written to that item as `failed`, and the loop continues.
+- `strategy` and `stores` ride the `PipelineConfig` now, exactly as a live turn supplies them. The `rag_mode` and `self_corrective_max_loops` arguments are gone: they were never `PipelineConfig` fields, so pydantic silently dropped them and they looked load-bearing while doing nothing.
 - The same queue also carries live chat metric jobs (`eval_worker.tasks.compute_chat_metrics`), and the RAG API exposes the equivalent per-message metrics endpoint separately (`rag_api/routes/chat.py`).
+- A row costs one pipeline answer plus eight to ten judge calls. **Per-row time is dominated by the judge model**: about 400 s per row with a large reasoning model, well under a minute with `cc-deepseek-v4-flash`. Keep that in mind when choosing `sample_size`.
 
 ---
 
@@ -295,19 +346,20 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 |  Offline Evaluation                                                                           |
 |  Pick a pipeline configuration, run a random sample of the evaluation set, read the scores     |
 +-----------------------------------------------------+-----------------------------------------+
-|  Evaluation set         [ Refresh from Hugging Face ] |  Run                                  |
-|  != This set asks about the Hugging Face            |  Pipeline configuration                 |
-|     documentation. Its questions are answerable     |  (name · strategy · knowledge product)  |
-|     only from A-Roucher/huggingface_doc ...=        |  Strategy, chat model, sampling         |
-|  [ Upload CSV or JSON ]                            |  Prompt template, guardrails            |
-|  - HF Doc QA (65 items)                       Delete |  Product, modality, chunking            |
-|                                                     |  Retrieval: dense · 20 chunks read      |
-|                                                     |  · rerank on (bge-reranker-v2-m3), top 5 |
-|                                                     |  reach the prompt (read only)           |
-|                                                     |  Dense / lexical / relational stores    |
+|  Dataset profile      [ Manage in Dataset Fabric ] |  Run                                  |
+|  ( resume_screening                     v )        |  Pipeline configuration                 |
+|  Purpose: single-hop checks on the resumes.         |  (name · strategy · knowledge product)  |
+|  (*) Only Single turn   10 rows · resume_single...  |  Strategy, chat model, sampling         |
+|  ( ) Only Multi-Turn    not uploaded (frozen)       |  Prompt template, guardrails            |
+|  A kind the profile does not hold is dimmed, never  |  Product, modality                      |
+|  hidden, so the page says which upload is missing.  |  Memory: enabled · 86400 s TTL          |
+|                                                     |  Chunking, retrieval, the three stores  |
 |                                                     |  Rows to test [ 5 ]                     |
-|                                                     |  5 of 65 rows, chosen at random         |
+|                                                     |  5 of 10 rows, chosen at random         |
 |                                                     |  LLM-as-a-judge [ Service default ]     |
+|                                                     |  +-----------------------------------+  |
+|                                                     |  | (a gate banner, when one applies) |  |
+|                                                     |  +-----------------------------------+  |
 |                                                     |  [ Run evaluation on 5 rows ]           |
 +-----------------------------------------------------+-----------------------------------------+
 |  Runs (10 per page, server-side skip/limit paging)                                            |
@@ -327,13 +379,36 @@ POST /evaluate/runs ──▶ run.status = "queued"   (created in DB, job pushed
 +-----------------------------------------------------------------------------------------------+
 ```
 
-Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the evaluation-set panel (upload
-control for `.json` or `.csv`), the run panel (including the judge-model dropdown and the Retrieval
-line, which reads the selected pipeline), the runs table
-and paging, the triad panel, the detail link, the rubric table and the "Metrics by Category" panel.
-Rubric thresholds are 0.85 / 0.65.
+Sources: `GoldenEvaluationsPage.tsx` — page size 10, the header, the dataset-profile panel (the
+profile dropdown filtered to the selected pipeline, and the two kind radios), the run panel (including
+the judge-model dropdown, the Memory row and the gate banner), the runs table and paging, the triad
+panel, the detail link, the rubric table and the "Metrics by Category" panel. Rubric thresholds are
+0.85 / 0.65.
+
+**The dataset selection is profile-driven since 2026-10-20.** The page lists no datasets and has no
+upload control; both live on `/dataset-fabric` (`20_dataset_fabric_page.md`). The dropdown holds the
+profiles whose `pipeline_slug` equals the selected pipeline's slug, and a profile with no pipeline
+never appears. Selecting a profile offers *Only Single turn* and *Only Multi-Turn*; an option whose
+dataset was never uploaded is frozen and reads `Not uploaded for this profile`. The chosen upload is
+the newest one of that kind, and *Rows to test* is bounded by its `row_count`. A run still sends
+`dataset_id`, so the routes, the worker and the metrics are unchanged.
+
+**Two gates freeze the run button.** Both are computed before the button is pressed, and one
+`alert alert-warn` states which one applies:
+
+| Gate | Condition | Copy |
+|---|---|---|
+| Strategy | `!EVALUABLE_STRATEGIES.includes(pipeline.rag_strategy)` | `Image Vision RAG cannot be evaluated offline. Retrieval-to-generation scoring reads text passages, and this pipeline answers from page images. Pick a vector, keyword, hybrid, self-reflective or corrective pipeline.` |
+| Memory | `kind === "multi_turn" && memoryEnabled === false` | `This dataset holds multi-turn conversations, and the selected pipeline has no session memory. Enable a Redis destination on its Knowledge Product, or pick a single-turn dataset.` |
+
+`EVALUABLE_STRATEGIES` is `["vector", "lexical", "hybrid", "self_rag", "corrective"]`; the page
+carries it as a module constant, and the route is the authority. A pipeline that is not an assistant,
+or whose probe fails, reads as "no memory" with a stated reason, so a single-turn run is never
+blocked by the probe.
 
 The run panel's **Retrieval** line reads the selected pipeline's own values: its chunk count, its rerank switch, its reranker model and its top count. The reranker model reads the pipeline's pinned model when it has one, else the deployment's. The retrieval mode comes from the deployment. When the pipeline has reranking off, the line reads `rerank off, all of them reach the prompt`.
+
+**The Memory row** sits after Modality and reads `enabled · 86400 s TTL` or `none · <reason>`. It is stated before a dataset is picked, because it decides whether a multi-turn dataset can run at all.
 
 **The triad panel** (`components/TriadPanel.tsx`) draws the three scores with a bar each, the
 threshold colouring (>=0.70 pass, 0.50-0.70 warn, below that fail), the run's reading sentence, and
@@ -353,7 +428,7 @@ both the run response and the row list, so the triad, the stage chips and the ro
 the worker writes each row. The detail page polls every 5 s (`EvalRunDetailPage.tsx:22`). The timer
 stops as soon as the run reads `completed` or `failed`.
 
-The Strategy, Classifier, RAG Mode and Max Loops controls are gone: the offline evaluator runs `retrieve → rerank → generate` and has no router and no self-corrective loop, so they changed nothing.
+The Strategy, Classifier, RAG Mode and Max Loops controls are gone. The evaluator now runs the pipeline's own strategy through `RAGPipeline.chat`, so `self_rag` and `corrective` do run their grading and revision; what is still absent is the router and any user-facing control over them. A run names the strategy through the selected pipeline, not through a form field.
 
 ### What the 2026-09-28 refactor moved
 
@@ -432,6 +507,49 @@ The page could not produce a result before this date. Every one of these fails *
 
 Still true:
 
-- `generation_metrics` for offline items hold only RAGAS keys, so `generation_metrics.route` and `generation_metrics.sc_iterations` never exist. The runs table shows the route from the stored run config instead, and the offline pages have no CRAG loop expander (`GoldenEvaluationsPage.tsx`, `EvalRunDetailPage.tsx`).
+- `generation_metrics` for offline items hold only RAGAS keys, so `generation_metrics.route` and `generation_metrics.sc_iterations` never exist. The runs table shows the route from the stored run config instead, and the offline pages have no CRAG loop expander.
 - The run progress denominator is the **dataset** size, not the sample, so a 3-row sample of 65 reports `3/65`. Cosmetic, but it reads as a stalled run.
-- Offline runs share the `eval` queue with per-message chat metrics on a single worker. A backlog of `compute_chat_metrics` jobs starves them; 78 pending jobs at roughly 4m40s each is about six hours. Offline runs need their own queue or more workers.
+- Offline runs share the `eval` queue with per-message chat metrics on a single worker. A backlog of `compute_chat_metrics` jobs starves them. Offline runs need their own queue or more workers.
+
+## 11. Strategy coverage and multi-turn runs, 2026-10-16
+
+Three defects, each of which made a paper claim untrue:
+
+| Defect | Effect | Fix |
+|---|---|---|
+| The evaluator called `Retriever` → reranker → `Generator` directly, never `RAGPipeline.chat` | `self_rag` and `corrective` scored identically to plain `vector`, because their grading and revision live in the pipeline and the direct path never reached them | `evaluate_item` calls `pipeline.chat` and `_score` the result; `strategy` and `stores` ride the `PipelineConfig` |
+| No dataset could hold a conversation, and nothing drove session memory | A follow-up question was searched as a pronoun | `turns` on the row, `kind` on the dataset, `_run_conversation` replaying turns through the pipeline's real Redis memory |
+| Nothing stopped an `image_vision` run | A run completed with a near-empty generation block and no explanation | `422 STRATEGY_NOT_EVALUABLE` in the route, a frozen button and a stated reason on the page |
+
+**Until this change, a strategy sweep was meaningless.** Every strategy produced the same numbers as
+`vector`, because the code under test was the same. The five-strategy sweep now reflects the pipeline.
+
+**Repeatable check.** `scripts/seed_resume_strategy_pipelines.py` makes the five pipelines (see
+`13_golden_dataset_requirements.md` §7), and `verify_strategies.py`-style runs should confirm that the
+`retrieval`, `reranker`, `generation` and `categories` blocks are all non-empty for each strategy. A
+run whose `generation` block is empty means the judge failed, not that the strategy abstained.
+
+## 12. Judge output budget and missing scores, 2026-10-19
+
+**Symptom.** `accuracy` was absent from every row, and `faithfulness` from most, while
+`answer_relevancy`, `context_relevance` and `response_groundedness` were present. A run's
+`mean_accuracy` was simply missing, and the generation block looked thinner than the code promised.
+
+**Cause.** RAGAS asks the judge for structured JSON — a claim list, a statement list, a verdict per
+item. No `max_tokens` was passed, so the proxy's default truncated that JSON. RAGAS reports a
+truncated answer as a failed metric, and `_score_value` drops a failed metric's key. The aggregate
+mean then covered only the rows that happened to fit.
+
+Measured on a real five-passage resume row: `AnswerCorrectness` needs about 5,200 output tokens. At
+4,096 the proxy returned `finish_reason: "length"`; at 8,192 it returned `"stop"`.
+
+**Fix.** `JUDGE_MAX_TOKENS = 8192` in `eval_core/ragas_client.py`, passed to `llm_factory` by
+`build_ragas_llm`. Pinned by `tests/unit/test_ragas_judge_budget.py`.
+
+**A missing score is not a zero, and that is by design.** A failed metric leaves its key out, so the
+mean covers exactly the rows that scored. That behaviour is retained; the defect was the truncation,
+not the omission.
+
+**Restart the worker after a change to `eval_core`.** The RQ worker loads its modules once at
+startup. A worker started before the edit keeps the old code and its runs keep the truncation, with
+no error in the log.

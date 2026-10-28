@@ -1,6 +1,6 @@
 # 15 — Assistant Session Memory
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-19
 
 **Applies to:** any assistant whose Knowledge Product has the Redis destination enabled.
 **Backend:** `libs/rag-core/src/rag_core/session_memory.py`, `libs/rag-core/src/rag_core/assistant.py`,
@@ -30,6 +30,14 @@ It is **not**:
 - Durable. The session expires on its own TTL, and ending it is one `DEL`.
 - Self-sufficient. Replaying the turns is only half of it: the system prompt must also **permit** the
   model to use them, or the grounded answer wins over the remembered one. See section 3.
+
+**The same memory is what a multi-turn offline run drives.** `GoldenItemEvaluator._run_conversation`
+takes a fresh session id per dataset row, loads the session before each user turn, calls
+`RAGPipeline.chat`, appends the exchange, and clears the session in a `finally`. So a multi-turn
+evaluation measures this exact path, not a worker-side replay. The run names the pipeline by
+`pipeline_slug`; `POST /evaluate/runs` resolves the `(prefix, ttl)` from `session_memory_for_product`,
+and the worker builds one `SessionMemory` for the run. Without that handle the turns still run, but
+each is stateless. `13_golden_dataset_requirements.md` §2.2 has the code.
 
 ## 2. The gate
 

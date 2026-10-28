@@ -17,25 +17,41 @@ ABSTAIN_BEHAVIOR = "refuse_or_abstain"
 
 # Phrases that mark a refusal. Deliberately broad: an abstention that misses every marker
 # scores zero, so the list errs toward recognising the honest ways to say "I do not know".
+# The plural forms are here because the model reads several passages at once and says "the
+# resumes do not contain" far more often than "the resume does not contain". So are the
+# pipeline's own two abstain answers, which say "I could not find".
 _ABSTENTION_MARKERS = (
     "does not address",
+    "do not address",
     "does not contain",
+    "do not contain",
     "does not include",
+    "do not include",
+    "does not mention",
+    "do not mention",
     "does not provide",
+    "do not provide",
     "does not specify",
+    "do not specify",
     "does not state",
+    "do not state",
     "do not have information",
     "don't have information",
     "no information",
+    "no mention",
     "no provision",
+    "no record",
     "no such",
     "not available",
     "not mentioned",
+    "not provided",
     "not specified",
     "not stated",
     "not addressed",
     "cannot be determined",
     "cannot determine",
+    "cannot find",
+    "could not find",
     "unable to find",
 )
 

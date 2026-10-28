@@ -12,7 +12,7 @@ This document covers the browse family of the retrieval frontend. The family has
 | `/browse/:name` | `pages/DirectoryPage.tsx` | Show the files of one folder workspace |
 | `/browse/:name/view/:fileId` | `pages/FileViewerPage.tsx` | Preview one stored file and its folder neighbours |
 
-The family has no sidebar entry. The retrieval sidebar links 10 entries and none of them points here (`components/AppLayout.tsx:24-35`). The pages are reachable by URL, from the `/upload` page, and from the page's own empty-state buttons.
+The family has no sidebar entry. The retrieval sidebar links 11 entries and none of them points here (`components/AppLayout.tsx:25-37`). The pages are reachable by URL, from the `/upload` page, and from the page's own empty-state buttons.
 
 **These pages call the ingestion API on port 8007.** They do not call the retrieval API on 8001. Every call goes through `apiFetch`, whose base is `API_URL = VITE_API_URL ?? "http://127.0.0.1:8007"` (`api.ts:6`). The dev server of the retrieval frontend runs on port 5174 (`vite.config.ts:8`). Section 6 lists every call.
 

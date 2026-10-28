@@ -145,6 +145,7 @@ class EvaluationRepository:
         name: str,
         description: str | None,
         items: list[dict],
+        kind: str = "single_turn",
         replace: bool = False,
     ) -> GoldenDataset:
         existing = self.get_dataset_by_name(name)
@@ -153,13 +154,14 @@ class EvaluationRepository:
                 raise ValueError(f"Dataset '{name}' already exists")
             self.delete_dataset(existing.id)
 
-        dataset = self.create_dataset(name=name, description=description)
+        dataset = self.create_dataset(name=name, description=description, kind=kind)
         for item in items:
             self.add_dataset_item(
                 dataset.id,
                 question=item["question"],
                 ground_truth_answer=item.get("ground_truth_answer"),
                 expected_sources=item.get("expected_sources") or [],
+                turns=item.get("turns") or None,
                 metadata=item.get("metadata") or {},
             )
         return dataset
@@ -365,8 +367,26 @@ class EvaluationRepository:
         self,
         name: str,
         description: str | None = None,
+        *,
+        kind: str = "single_turn",
+        profile_id: uuid.UUID | None = None,
+        storage_bucket: str | None = None,
+        storage_key: str | None = None,
+        original_filename: str | None = None,
+        source_format: str | None = None,
+        row_count: int | None = None,
     ) -> GoldenDataset:
-        dataset = GoldenDataset(name=name, description=description)
+        dataset = GoldenDataset(
+            name=name,
+            description=description,
+            kind=kind,
+            profile_id=profile_id,
+            storage_bucket=storage_bucket,
+            storage_key=storage_key,
+            original_filename=original_filename,
+            source_format=source_format,
+            row_count=row_count,
+        )
         self._session.add(dataset)
         self._session.flush()
         return dataset
@@ -378,6 +398,7 @@ class EvaluationRepository:
         question: str,
         ground_truth_answer: str | None,
         expected_sources: list,
+        turns: list | None = None,
         metadata: dict | None = None,
     ) -> GoldenDatasetItem:
         item = GoldenDatasetItem(
@@ -385,6 +406,7 @@ class EvaluationRepository:
             question=question,
             ground_truth_answer=ground_truth_answer,
             expected_sources=expected_sources,
+            turns=turns,
             metadata_=metadata or {},
         )
         self._session.add(item)

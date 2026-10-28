@@ -17,6 +17,14 @@ SKIP_PRECISION_RECALL_CATEGORIES = frozenset({"out_of_corpus", "unanswerable"})
 
 _ragas_openai_client: AsyncOpenAI | None = None
 
+# The output budget for one judge call. Every RAGAS metric answers in structured JSON, and
+# the longest answer is a claim list or a statement list, one entry per sentence of the
+# passages. Measured on the resume corpus: a five-passage row with a three-sentence answer
+# needs about 5200 tokens for AnswerCorrectness, so 4096 truncated it and the metric
+# failed. A failure reads as a missing score rather than a wrong one, which is why this
+# looked like an intermittent judge problem instead of a budget problem.
+JUDGE_MAX_TOKENS = 8192
+
 
 def _ragas_litellm_proxy_url(settings: "Settings") -> str:
     return (
@@ -67,12 +75,20 @@ def build_ragas_openai_client(settings: "Settings"):
 
 
 def build_ragas_llm(settings: "Settings", judge_model: str | None = None):
-    """The judge LLM. A run may name its own model; otherwise the service default holds."""
+    """The judge LLM. A run may name its own model; otherwise the service default holds.
+
+    `max_tokens` is set because every RAGAS metric answers in structured JSON: a claim
+    list, a statement list, a verdict per item. A provider that defaults to a small output
+    budget truncates that JSON, and RAGAS then reports the metric as failed rather than
+    as a wrong score. That is why a run could store faithfulness for one row and none for
+    the next row of the same dataset. 4096 leaves room for the longest list a row produces.
+    """
     from ragas.llms import llm_factory
 
     return llm_factory(
         judge_model or settings.ragas_judge_model,
         client=build_ragas_openai_client(settings),
+        max_tokens=JUDGE_MAX_TOKENS,
     )
 
 

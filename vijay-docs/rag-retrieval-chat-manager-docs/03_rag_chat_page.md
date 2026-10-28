@@ -144,7 +144,7 @@ the plain retrieval path only.
 | `rerank_enabled` | The settings-panel Rerank checkbox, seeded from the pipeline's `rerank_enabled` (true when the record carries none). |
 | `top_k` | The settings-panel Rerank count, seeded from the pipeline's `rerank_top_k` (5 when the record carries none). |
 | `guardrails_config_id` | The selected guardrails config id, omitted when `None`. |
-| `prompt_template_id` | The selected prompt template id, omitted when empty. An override for this turn only. |
+| `prompt_template_id` | The selected prompt template id, omitted when empty. It overrides for this turn only; a request that names none runs the pipeline's stored template on the assistant path. |
 | `model_settings` | The model-settings overrides from the form (`temperature`, `top_p`, `top_k`, `max_tokens`). |
 | `pipeline_id` | The selected pipeline's id. Names the pipeline for the trace; the backend reads the records itself |
 | `collection`, `embedding_model`, `sparse_embedding_model` | Legacy path only, copied from the record. |
@@ -287,8 +287,8 @@ into a `ChatStreamEvent` whose declared fields are `type`, `message`, `content`,
 
 ## 6. Guardrail Blocking and `BlockedCard`
 
-The chat handlers run the guardrail check on the `guardrails_config_id`, for the input, for the retrieval and
-for the output.
+The chat handlers run the guardrail check on the `guardrails_config_id`. A prompt template also governs a
+turn: the template feeds the `template_scope` rail, so the input phase runs even with no config.
 
 - Blocked **input**: the stored answer becomes `GUARD_BLOCK_COPY[guard]["input"]`, and the trace stores
   `latency_ms = {route: "blocked", blocked: true, blocked_by_guard, blocked_on}`. Metrics are not enqueued.
@@ -302,14 +302,13 @@ for the output.
 - Each phase that runs writes one `guardrails_traces` row. A phase with nothing applicable writes no row
   (`routes/chat.py:429-431`).
 - `GUARD_BLOCK_COPY` covers the three validators and the six engine rails — `ban_list`, `detect_pii`,
-  `toxic_language`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`, `self_check_output`,
-  `self_check_facts` (`routes/chat.py:163`). Each has an `input` and an `output` sentence, and `pii_retrieval`
+  `toxic_language`, `template_scope`, `self_check_input`, `jailbreak_heuristics`, `pii_retrieval`,
+  `self_check_output`, `self_check_facts` (`routes/chat.py:168`). Each has an `input` and an `output` sentence, and `pii_retrieval`
   also has a `retrieval` sentence. When a guard id is absent from the map, `_blocked_answer` falls back to
   `"<Phase> blocked by guardrail: <guard or 'unknown'>."` (`routes/chat.py:210-212`). The SSE `blocked` frame
   also carries `blocked_title` (the copy map's title, else the guard name, else `"Guardrail"`).
-- The guardrails service names its guard `ban-list`, while the stored config uses `ban_list`.
-  `rag_shared/guardrails_client.py` maps `_` to `-`, so the check reaches the service. Before that fix every
-  check returned 404, the client read a non-200 as "passed", and no guardrail ever blocked anything.
+- The client sends catalog ids such as `ban_list` unchanged, and the service builds a flow name from them by
+  replacing `_` with a space, so the id reaches the right rail.
 
 `BlockedCard` (`ChatPage.tsx:83`) maps `blocked_by_guard` to an icon, a title and a tone: `ban_list` → 🚫
 `Banned keyword`, `detect_pii` → 🔒 `Personal information`, `toxic_language` → ⚠️ `Toxic language`. The five
@@ -438,8 +437,9 @@ Images are **never uploaded from the chat UI**. They travel with the retrieval r
    question."` (`prompt_builder.py`).
 5. **A vision answer cannot stream.** With image chunks present, `generate_stream` makes one blocking call and
    yields the whole answer as a single `token` event. A text-only turn streams normally.
-6. `vision_model` and `fusion_model` are accepted overrides on `ChatRequest`, but the chat UI never sets them.
-   Only an API client can pass `generation_model`, `vision_model` or `fusion_model`.
+6. `vision_model` and `fusion_model` are accepted overrides on `ChatRequest`. On an `image_vision`
+   assistant the route itself sets `vision_model` to the pipeline's chat model and embeds the question with
+   the product's `image_embedding_model`. The chat UI never sets either field.
 
 ---
 

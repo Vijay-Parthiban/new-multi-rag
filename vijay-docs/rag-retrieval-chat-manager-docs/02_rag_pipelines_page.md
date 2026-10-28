@@ -6,7 +6,7 @@
 
 The **Pipelines page** (`frontend/src/pages/PipelinesPage.tsx`, route `/pipelines`) creates and inspects
 assistant records. The **page** keeps the name **Pipelines**. The **record** is a pipeline. The record is an
-**assistant** when its `rag_strategy` is `vector`, `lexical`, `hybrid`, `self_rag` or `corrective`.
+**assistant** when its `rag_strategy` is `vector`, `lexical`, `hybrid`, `self_rag`, `corrective` or `image_vision`.
 
 An assistant holds five parts:
 
@@ -29,8 +29,9 @@ Key facts:
 - The `description` is the record's stored summary. The form hint for the field reads
   `Shown as the assistant's name in chat.` The Chat page's pipeline selector lists `{name} ({rag_strategy})`,
   so the name is what a chat user reads there.
-- On load the page reads five lists in parallel: `listPipelines`, `listKnowledgeProducts`,
-  `listPromptTemplates`, `listGuardrailsConfigs` and `getLiteLLMModels("chat")`. One failed call does not
+- On load the page reads seven lists in parallel: `listPipelines`, `listKnowledgeProducts`,
+  `listPromptTemplates`, `listGuardrailsConfigs`, and `getLiteLLMModels` for the `chat`, `rerank` and
+  `vision` kinds. One failed call does not
   blank the page. The first failure shows in an `.alert-error` above the form.
 
 The page has two header actions: **Create Pipeline** (primary) and **Refresh** (secondary). Creating,
@@ -67,7 +68,7 @@ twelve controls while the reranker is off and fourteen while it is on.
 Field notes:
 
 - **Knowledge Product.** The option list holds only products with at least one enabled retrieval destination
-  (`vector_qdrant`, `lexical_opensearch` or `relational_pgvector`). Each option reads
+  (`vector_qdrant` or `lexical_opensearch`; `relational_pgvector` no longer counts). Each option reads
   `{name} — {n} destinations`. Below the select the page renders one chip per enabled destination, with the
   store name from `destinationStoreLabel` (`frontend/src/api.ts:492`). While the list loads, the form is
   disabled and the hint reads `Loading knowledge products…`.
@@ -87,12 +88,14 @@ Field notes:
   explains that the product decides the list and that Hybrid needs both the vector and the keyword store.
   No strategy was lost: each product in the live database yields every strategy it can serve when selected.
 - **Chat Model.** The list comes from
-  `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`.
+  `GET /api/knowledge-products/config/litellm-models?model_kind=chat` on port `8007`. With the
+  `image_vision` strategy the field is labelled `Multimodal chat model` and lists
+  `model_kind=vision` instead.
 - **Prompt Template.** The template is the system message. It is not a text pass-through: the retrieved
   passages and the question keep their own user-message shape. It is also the behaviour NeMo
-  Guardrails enforces: the guardrails service turns the template text into the scope rail and into
-  the self-check policy, so a pipeline with no guardrails config is still governed by what the
-  template declares. The form says so under the select.
+  Guardrails enforces: the guardrails service feeds the template text to the `template_scope` rail,
+  so a pipeline with no guardrails config is still governed by what the template declares. The two
+  self checks keep their own policy. The form says so under the select.
 - **Guardrails Config.** The config id travels with the pipeline. The Chat page can override it for one
   request without editing the pipeline.
 
@@ -115,6 +118,7 @@ wraps the retrieval mode the product can serve and adds a grading step before th
 | `hybrid` | `Hybrid` | Qdrant dense vectors and OpenSearch BM25, fused by reciprocal rank fusion (k = 60) | `vector_qdrant` **and** `lexical_opensearch` |
 | `self_rag` | `Self-reflective` | Grades each passage, then checks the answer is grounded and rewrites it once if not | any retrieval destination |
 | `corrective` | `Corrective` | Grades each passage and answers only from the relevant ones, or says the sources do not cover it | any retrieval destination |
+| `image_vision` | `Image Vision RAG` | The page vectors the fanout wrote from each page image; answers from those images | `vector_qdrant`, where the page records live |
 
 A pattern reads `hybrid` when both the Qdrant and the OpenSearch store exist, and the single available
 store otherwise. Both patterns drop each passage that scores below `relevance_threshold` (default `0.5`)
@@ -125,7 +129,8 @@ Four rules decide the option list:
 1. `Hybrid` appears only when both the Qdrant and the OpenSearch destination are enabled. It reads both
    rankings, so one destination is not enough.
 2. `Self-reflective` and `Corrective` appear when the product has at least one enabled retrieval
-   destination. Each one wraps a retrieval mode, so one store is enough.
+   destination. Each one wraps a retrieval mode, so one store is enough. A text-with-images product
+   serves only `image_vision`, so neither pattern appears for it.
 3. `cache_redisvl` serves no strategy. That store caches answers. It does not hold a searchable copy of the
    chunks.
 4. The store names come from the Knowledge Product's destination config: `collection_name` for

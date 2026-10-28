@@ -878,6 +878,8 @@ export interface GoldenDatasetSummary {
   dataset_id: string;
   name: string;
   description: string | null;
+  /** "single_turn" or "multi_turn". A multi-turn dataset needs a pipeline with session memory. */
+  kind: string;
   item_count: number;
   created_at: string | null;
 }
@@ -1101,16 +1103,133 @@ export async function listGoldenDatasets(limit = 50): Promise<GoldenDatasetSumma
   return res.items || [];
 }
 
+// ── Dataset Fabric ─────────────────────────────────────────────────────────
+
+export type DatasetKind = "single_turn" | "multi_turn";
+
+export interface DatasetProfileFile {
+  dataset_id: string;
+  kind: DatasetKind;
+  filename: string | null;
+  format: string | null;
+  row_count: number | null;
+  bucket: string | null;
+  key: string | null;
+  created_at: string | null;
+}
+
+export interface DatasetProfile {
+  id: string;
+  name: string;
+  description: string | null;
+  /** NULL means "yet to be linked with a RAG pipeline". */
+  pipeline_slug: string | null;
+  pipeline_name: string | null;
+  knowledge_product_id: string | null;
+  knowledge_product_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Newest first. */
+  datasets: DatasetProfileFile[];
+}
+
+export interface DatasetPreviewItem {
+  question: string;
+  ground_truth_answer: string | null;
+  expected_sources: unknown[];
+  turns: { role: string; content: string }[] | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface DatasetPreview {
+  dataset_id: string;
+  profile_id: string;
+  filename: string | null;
+  kind: DatasetKind;
+  row_count: number | null;
+  bucket: string | null;
+  key: string | null;
+  items: DatasetPreviewItem[];
+}
+
+/** Every profile, or only the ones linked to one pipeline. */
+export async function listDatasetProfiles(pipelineSlug?: string | null): Promise<DatasetProfile[]> {
+  const query = pipelineSlug ? `?pipeline_slug=${encodeURIComponent(pipelineSlug)}` : "";
+  return ragFetch<DatasetProfile[]>(`/api/dataset-profiles${query}`);
+}
+
+export async function createDatasetProfile(body: {
+  name: string;
+  description?: string | null;
+  pipeline_slug?: string | null;
+}): Promise<DatasetProfile> {
+  return ragFetch<DatasetProfile>("/api/dataset-profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateDatasetProfile(
+  profileId: string,
+  body: { name?: string; description?: string | null; pipeline_slug?: string | null },
+): Promise<DatasetProfile> {
+  return ragFetch<DatasetProfile>(`/api/dataset-profiles/${profileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteDatasetProfile(profileId: string): Promise<void> {
+  await ragFetch(`/api/dataset-profiles/${profileId}`, { method: "DELETE" });
+}
+
+/**
+ * Upload one dataset into a profile's section.
+ *
+ * Accepts `.csv`, `.json`, `.jsonl`, `.xlsx` and `.parquet`. The server refuses a file whose
+ * rows do not match `kind`, so a multi-turn file cannot land in the single-turn section.
+ */
+export async function uploadProfileDataset(
+  profileId: string,
+  file: File,
+  kind: DatasetKind,
+): Promise<DatasetProfileFile> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", kind);
+  return ragFetch<DatasetProfileFile>(`/api/dataset-profiles/${profileId}/datasets`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function previewProfileDataset(
+  profileId: string,
+  datasetId: string,
+): Promise<DatasetPreview> {
+  return ragFetch<DatasetPreview>(`/api/dataset-profiles/${profileId}/datasets/${datasetId}`);
+}
+
+export async function deleteProfileDataset(
+  profileId: string,
+  datasetId: string,
+): Promise<void> {
+  await ragFetch(`/api/dataset-profiles/${profileId}/datasets/${datasetId}`, { method: "DELETE" });
+}
+
 /**
  * Upload a golden dataset.
  *
- * Accepts `.csv` and `.json`. A JSON file carries its own name; a CSV file has nowhere to
- * put one, so `name` overrides it and the file's stem is the fallback.
+ * Accepts `.csv`, `.json` and `.jsonl`. A JSON file carries its own name; a CSV file has
+ * nowhere to put one, so `name` overrides it and the file's stem is the fallback. JSONL is
+ * one object per line, which is the only form that carries a list-valued field intact.
  */
 export async function uploadGoldenDataset(
   file: File,
   opts: { replace?: boolean; name?: string } = {},
-): Promise<{ dataset_id: string; name: string; item_count: number; replaced: boolean }> {
+): Promise<{ dataset_id: string; name: string; kind: string; item_count: number; replaced: boolean }> {
   const form = new FormData();
   form.append("file", file);
   const params = new URLSearchParams();
@@ -1243,6 +1362,11 @@ export async function createEvaluationRun(
     router_mode?: string | null;
     /** The LLM-as-judge for RAGAS. Omit to use the service default. */
     judge_model?: string | null;
+    /**
+     * The pipeline whose session memory this run drives. The route resolves the Redis
+     * namespace from it, so a multi-turn run uses the same memory a live turn would.
+     */
+    pipeline_slug?: string | null;
   }
 ): Promise<{ run_id: string; status: string }> {
   return ragFetch<{ run_id: string; status: string }>("/evaluate/runs", {
@@ -1398,6 +1522,17 @@ export interface AssistantConfig {
   };
   prompt_template_id: string | null;
   guardrails_config_id: string | null;
+  /**
+   * Whether this pipeline's Knowledge Product has an enabled Redis destination.
+   *
+   * This is the whole gate on multi-turn evaluation: a multi-turn run drives this memory,
+   * so a pipeline without one can only run a single-turn dataset.
+   */
+  session_memory: {
+    enabled: boolean;
+    ttl_seconds: number | null;
+    reason: string | null;
+  };
   endpoints: { chat: string; chat_stream: string; openai_base_url: string };
 }
 

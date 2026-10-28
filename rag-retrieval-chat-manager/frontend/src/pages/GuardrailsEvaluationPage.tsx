@@ -387,7 +387,7 @@ export default function GuardrailsEvaluationPage() {
           <h3>No golden dataset yet</h3>
           <p>
             This repository ships a golden set at <code>golden/guardrails-dataset.json</code>. It has
-            12 items over 4 categories: clean, ban_list, pii and toxic. Load it into the database,
+            14 items over 5 categories: clean, ban_list, pii, toxic and jailbreak. Load it into the database,
             then run a config against it.
           </p>
           <button

@@ -1,8 +1,11 @@
 # 13 — Golden Dataset Evaluation Requirements
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-19
 
-Implementation contract for offline golden-dataset evaluation in `rag-retrieval-chat-manager`. Every field below is taken from `eval_core/dataset_schema.py`, `routes/evaluate.py`, `eval_core/runner.py` and the evaluation repositories.
+Implementation contract for offline golden-dataset evaluation in `rag-retrieval-chat-manager`. Every
+field below is taken from `eval_core/dataset_schema.py`, `eval_core/runner.py`,
+`apps/rag-api/src/rag_api/routes/evaluate.py`, `apps/eval-worker/src/eval_worker/tasks.py` and the
+evaluation repository.
 
 ## 1. Golden Dataset Schema & Upload
 
@@ -10,24 +13,69 @@ Implementation contract for offline golden-dataset evaluation in `rag-retrieval-
 
 | Field | Type | Required | Default | Validation |
 |---|---|---|---|---|
-| `name` | string | yes | — | must be non-blank after `strip()`; error `name must not be empty` |
+| `name` | string | yes | — | non-blank after `strip()`; error `name must not be empty` |
 | `description` | string \| null | no | `null` | — |
-| `items` | array | yes | — | must contain at least one entry; error `items must contain at least one entry` |
+| `kind` | `"single_turn"` \| `"multi_turn"` | no | derived | **never stored from the file.** `kind_from_items` sets it from the rows and overwrites whatever the caller sent |
+| `items` | array | yes | — | at least one entry; error `items must contain at least one entry` |
 
 Item object:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `question` | string | yes | — | non-blank after `strip()`; error `question must not be empty` |
-| `ground_truth_answer` | string \| null | no | `null` | passed to RAGAS `AnswerCorrectness` when non-empty |
-| `expected_sources` | array | no | `[]` | normalized downstream into `{name, page?}` objects |
-| `metadata` | object | no | `{}` | free-form; this is where `category` and `label` must live |
+| `question` | string | yes\* | — | non-blank after `strip()`. \*Not required at the file level when `turns` is present: the loader derives it from the last user turn |
+| `ground_truth_answer` | string \| null | no | `null` | the RAGAS `reference`; feeds `faithfulness` and `answer_correctness`/`accuracy` |
+| `expected_sources` | array | no | `[]` | normalized into `{name, page?}` objects |
+| `turns` | array \| null | no | `null` | `[{role, content}, ...]`. A row with turns is a conversation |
+| `metadata` | object | no | `{}` | free-form. `question_type`, `category`, `label`, `expected_behavior`, `keypoints_covered` all live here |
 
-The dataset `name` is unique in the database; re-uploading an existing name without `replace=true` fails with `409 Dataset '<name>' already exists`.
+Turn validation, from `GoldenTurnPayload` and the `turns_are_well_formed` validator:
 
-### 1.2 Accepted JSON Formats
+* a `role` outside `{user, assistant}` → `turn role must be user or assistant`
+* an empty `content` → `turn content must not be empty`
+* `turns` with no `user` turn → `turns must contain at least one user turn`
 
-Both the current `query`/`response`/`source` form and the legacy `question`/`ground_truth_answer`/`expected_sources` form are accepted:
+`record_the_assistant_turns` copies every assistant turn into `metadata["expected_turns"]` as
+`[{"content": ...}]` when the row does not carry that key. The assistant turns are what the
+conversation aimed at; the run replays the user turns only.
+
+A dataset holds one kind of row. A file that mixes a row with `turns` and a row without fails with
+`a dataset cannot mix single-turn and multi-turn rows`. RAGAS and DeepEval both refuse that mixture,
+so the rule holds for a file either framework generates.
+
+The dataset `name` is unique in the database; re-uploading an existing name without `replace=true`
+fails with `409 Dataset '<name>' already exists`.
+
+### 1.2 Column and field aliases
+
+One alias table serves the CSV, the JSON body and the JSONL path, so a file either framework
+generates loads with no renaming. Precedence is left to right, canonical name first.
+
+| Canonical field | Accepted names, in precedence order |
+|---|---|
+| `question` | `question`, `user_input`, `input`, `query` |
+| `ground_truth_answer` | `ground_truth_answer`, `reference`, `expected_output`, `expected_outcome` |
+| `reference_context` | `reference_context`, `reference_contexts`, `context` |
+| `source_doc_id` | `source_doc_id`, `expected_sources`, `source` |
+| `turns` | `turns`, `conversation`, `messages` |
+
+`_COLUMN_ALIASES` in `dataset_schema.py` is the whole declaration. Three consequences:
+
+* **Header order does not matter.** Each canonical field resolves to the first alias present in the
+  file's header set.
+* **Two spellings of one field must agree.** A file carrying both `question` and `user_input` parses
+  while they match and fails with `question and user_input disagree; keep one` when they do not. The
+  same rule covers every aliased field.
+* **`response` is not an alias.** For RAGAS it is the model's own answer, and reading it as the
+  reference would score a run against itself. In a CSV it lands in `metadata`; in a JSON body the
+  older paper format still uses it as the answer when no answer field is present.
+
+`retrieved_contexts`, `actual_output`, `retrieval_context`, `rubrics` and `rubric` are not aliased
+either. They are a run's outputs, so they fall through to `metadata` and measure nothing.
+
+### 1.3 Accepted JSON Formats
+
+A JSON body and a `.json` file take the same shapes. `_normalize_item` runs as a `before` validator
+on `GoldenDatasetPayload`, so `POST /evaluate/datasets` and a file upload accept the same fields.
 
 ```json
 {
@@ -38,79 +86,143 @@ Both the current `query`/`response`/`source` form and the legacy `question`/`gro
       "query": "What is RAG?",
       "source": [{ "name": "document.pdf", "page": 3 }],
       "response": "RAG stands for Retrieval Augmented Generation...",
-      "metadata": { "category": "Direct Answer" }
+      "metadata": { "question_type": "single_hop" }
     },
     {
-      "query": "What is DSA?",
+      "user_input": "What is DSA?",
+      "reference": "DSA stands for Data Structures and Algorithms...",
+      "reference_contexts": ["A short passage."],
       "source": ["https://geeksforgeeks.org/dsa-tutorial"],
-      "response": "DSA stands for Data Structures and Algorithms...",
       "metadata": { "category": "Indirect Answer" }
     }
   ]
 }
 ```
 
-Field mapping and `source` normalization:
+Normalization rules:
 
-* `query` → `question`; `response` → `ground_truth_answer`.
-* `source` may be a single string, a single object, or an array of strings/objects. Objects use `name` (or the alias `source`) as the locator; `page` is coerced to `int` and silently dropped when it is absent, empty, or not castable.
-* Entries whose name is blank are dropped; a `source` array that normalizes to nothing yields `expected_sources: []`.
-* In the legacy form (`question` present, `query` absent), `expected_sources` is passed through but a list of plain strings is still converted to `{name}` objects.
-* An item-level `category` key is **not** a schema field and is not copied anywhere. Category and label must be nested under `metadata` — the runner reads `metadata.label` and `metadata.category`, and the item drill-down API returns `metadata.category` as `category`.
+* `source` may be a single string, a single object, or an array of either. Objects use `name` (or the
+  alias `source`) as the locator; `page` is coerced to `int` and dropped when absent, empty or not
+  castable. Entries with a blank name are dropped.
+* `reference_contexts` may be a list; a list is joined into one string with a blank line between the
+  parts, so a RAGAS field round-trips.
+* An item-level `category` or `question_type` key is **not** a schema field. Put them under
+  `metadata`: the category roll-up reads `metadata.question_type` (falling back to
+  `metadata.category`), and the item drill-down returns `metadata.category` as `category`.
+* Normalizing an already-normalized payload changes nothing, which is what lets the upload path and
+  the model validator both run.
 
-### 1.3 Accepted CSV Format
+A **multi-turn** JSON item puts the conversation in `turns`, or — for a RAGAS `MultiTurnSample` —
+in `user_input` as a list of message objects. A list in `user_input` is read as the turns, and the
+question becomes the last user turn. The two shapes are equivalent.
 
-`POST /evaluate/datasets/upload` accepts a `.csv` file as well as `.json`. The reference file is `rag-retrieval-chat-manager/backend/tcs_policies_golden_dataset.csv` (22 rows).
+### 1.4 Accepted CSV Format
 
-Column mapping (header lookup is case-insensitive and ignores spaces):
+`POST /evaluate/datasets/upload` accepts `.csv`, `.json` and `.jsonl`. The reference single-turn CSV
+is `rag-retrieval-chat-manager/backend/tcs_policies_golden_dataset.csv` (22 rows).
+
+Column mapping (header lookup ignores case and surrounding spaces):
 
 | CSV column | Maps to | Notes |
 |---|---|---|
-| `question` | `question` | required. A file without this column is rejected with `422` |
-| `ground_truth_answer` | `ground_truth_answer` (the RAGAS `reference`) | optional |
-| `source_doc_id` | `expected_sources` | semicolon- or comma-separated list. `N/A`, `NONE` or `-` means no source |
-| `reference_context` | the gold context | a value that starts with `NONE` is treated as absent and dropped |
-| every other column (`id`, `question_type`, `expected_behavior`, `keypoints_covered`, `difficulty`, `notes`) | `metadata` | stored under its own key in the item `metadata` JSONB |
+| `question` (or an alias) | `question` | required **unless** the file carries `turns` |
+| `ground_truth_answer` (or an alias) | `ground_truth_answer` | the RAGAS `reference` |
+| `source_doc_id` (or an alias) | `expected_sources` | `;`- or `,`-separated. `N/A`, `NONE`, `-`, `null` or empty means no source |
+| `reference_context` (or an alias) | the gold context, stored in `metadata.reference_context` | a value starting with `NONE` is dropped |
+| `turns` (or an alias) | the conversation | a JSON array of `{role, content}` objects in one cell |
+| every other column (`id`, `question_type`, `expected_behavior`, `keypoints_covered`, `difficulty`, `notes`) | `metadata` | stored under its own key |
 
 Because any unknown column lands in `metadata` JSONB, adding a CSV column needs **no** migration.
 
-### The `source_doc_id` convention — read this before authoring a dataset
+**The `turns` cell.** It is JSON, so the cell must be quoted in the CSV and its inner quotes doubled:
 
-This column is the only reference the retrieval and reranking metrics have. **A value that
-does not match an ingested file name makes every reference-based metric read zero**, with
-no error: `hit`, `recall`, `precision`, `mrr` and `ndcg` all come back `0.0` while the
-`generation` block still scores normally.
+```csv
+id,question_type,source_doc_id,turns
+M002,coreference,resume3.pdf,"[{""role"": ""user"", ""content"": ""Which company does Rohan Sinha work for now?""},{""role"": ""user"", ""content"": ""What is his title there?""}]"
+```
+
+Parsing rules for one multi-turn row:
+
+* A cell that is not a JSON array, or an array holding a non-object, fails with
+  `turns must be a JSON array of {role, content} objects`.
+* **`question` is derived from the last user turn** when the file has no question column or the cell
+  is empty. A file that supplies both must supply a matching value, or
+  `question must match the last user turn of turns`. The derived question is what the generation
+  metrics score; the earlier turns are replayed to produce the context.
+* A row with no resolvable question is skipped, exactly as an empty single-turn row is.
+
+**Two sample datasets** ship in the repository root under `resumes/`, ten rows each:
+`resume_single_turn_golden.csv` (4 single-hop, 2 multi-hop, 1 comparative, 1 edge case, 2
+out-of-corpus) and `resume_multi_turn_golden.csv` (10 conversations: `follow_up`, `coreference`,
+`multi_turn_multi_hop`). Every answer, keypoint and source is traceable to a page of one of the six
+PDFs in that folder.
+
+### 1.5 Accepted JSONL
+
+`.jsonl` is one JSON object per line, the shape RAGAS's `EvaluationDataset.to_jsonl()` writes. It is
+the only lossless interchange for a list-valued field: a CSV cell is text, so `reference_contexts`
+comes back as a string and pydantic rejects it. Each line runs through the same `_normalize_item`.
+
+```jsonl
+{"user_input": "Who approved the policy?", "reference": "The Board of Directors.", "reference_contexts": ["The board approved it."]}
+{"user_input": [{"role": "user", "content": "Which company does Rohan Sinha work for now?"}, {"role": "user", "content": "What is his title there?"}], "reference": "Senior Software Engineer at Google."}
+```
+
+A line that is not an object fails with `JSONL line <n> must be an object`. The dataset name comes
+from the filename stem or `?name=`.
+
+### 1.6 Framework compatibility
+
+| Framework | Shape | How it loads |
+|---|---|---|
+| RAGAS `SingleTurnSample` | `user_input`, `reference`, `reference_contexts` | CSV, JSON body or JSONL, through the alias table |
+| RAGAS `MultiTurnSample` | `user_input` as a list of `{role, content}` | JSON body or JSONL; CSV via a `turns` cell |
+| RAGAS `EvaluationDataset.to_jsonl()` | one sample per line | `.jsonl` upload |
+| DeepEval `Golden` | `input`, `expected_output`, `context` | CSV or JSON body, through the alias table |
+| DeepEval `ConversationalGolden` | `turns` | CSV `turns` cell, JSON body, or JSONL |
+
+`EvaluationDataset.from_list` accepts the project's single-turn rows after mapping them to the RAGAS
+names; the test `test_the_single_turn_dataset_is_valid_for_ragas` proves it on the shipped dataset.
+`from_csv` cannot round-trip a list-valued field, so JSONL is the interchange for those.
+
+Neither synthesizer is implemented. Only the schema is compatible.
+
+### 1.7 The `source_doc_id` convention — read this before authoring a dataset
+
+This column is the only reference the retrieval and reranking metrics have. **A value that does not
+match an ingested file name makes every reference-based metric read zero**, with no error: `hit`,
+`recall`, `precision`, `mrr` and `ndcg` all come back `0.0` while the `generation` block still scores
+normally.
 
 Three rules:
 
-1. **Name the ingested file, not a label of your own.** The matcher compares the value
-   against the chunk's `source_locator`, `title`, `metadata.file_name`, `metadata.url` and
+1. **Name the ingested file, not a label of your own.** The matcher compares the value against the
+   chunk's `source_locator`, `title`, `metadata.file_name`, `metadata.url` and
    `metadata.source_locator`, reduced to a basename, by bidirectional substring. So
-   `TCS-Global-Whistle-Blower-Policy.pdf` matches; a shorthand such as `WB` does not, and
-   never can, because nothing in the corpus carries that string.
-2. **A `_p<page>` suffix from a CSV does not set a page.** The suffix splits into
-   `{name, page}` only for a plain-string source (`parse_expected_sources`,
-   `source_match.py:36-76`). A CSV row reaches the matcher as a dict, because `_split_sources`
-   (`dataset_schema.py:130-137`) emits `{"name": "<value>"}`, and the dict branch keeps the
-   whole name and sets `page=None`. So `TCS-Global-Whistle-Blower-Policy.pdf_p3` matches the
-   chunk whose file name is `TCS-Global-Whistle-Blower-Policy.pdf` (the suffixed name is a
-   substring of it) and the page is ignored. The fix belongs in `_split_sources`, which should
-   emit plain strings, or in `parse_expected_sources`, which should split a dict's `name` with
-   `_PAGE_SUFFIX` too.
-3. **A page, when one is set, is 1-based against `metadata.page_index`.** The JSON form can
-   send `{name, page}`, and that value does apply. A chunk at `page_index: 2` is page `3`, so
-   it matches `page: 3` and not `2`.
+   `Resume-1.pdf` matches; a shorthand such as `WB` does not, and never can, because nothing in the
+   corpus carries that string.
+2. **A `_p<page>` suffix from a CSV does not set a page.** The suffix splits into `{name, page}` only
+   for a plain-string source (`parse_expected_sources`). A CSV row reaches the matcher as a dict,
+   because `_split_sources` emits `{"name": "<value>"}` and the dict branch keeps the whole name with
+   `page=None`. So `Resume-1.pdf_p3` matches the chunk whose file name is `Resume-1.pdf` and the page
+   is ignored. The JSON form can send `{name, page}` and that value does apply.
+3. **A page, when one is set, is 1-based against `metadata.page_index`.** A chunk at `page_index: 2`
+   is page `3`.
 
-Separate multiple sources with a semicolon or a comma. `N/A`, `NONE` or `-` means no source and is
-left alone.
+Separate multiple sources with a semicolon or a comma.
 
 ```
 Q003,procedural_howto,...,TCS-Global-Whistle-Blower-Policy.pdf_p3,...
-Q019,comparative_cross_document,...,TCS-Global-Whistle-Blower-Policy.pdf_p1;TCS-Global-Policy-Corporate-Social-Responsibility.pdf_p7,...
+Q019,comparative_cross_document,...,TCS-Global-Whistle-Blower-Policy.pdf_p1;CSV_p7,...
 ```
 
-**Check the column before running anything.** Each distinct value must appear in the
-corpus, or the run will report a zero retrieval block:
+**Check the column before running anything.**
+
+```bash
+cut -d, -f6 resumes/resume_single_turn_golden.csv | tr ';' '\n' | sort -u
+```
+
+Compare that list with the corpus:
 
 ```bash
 docker exec rag-ingestion-manager-qdrant-1 sh -c \
@@ -119,58 +231,187 @@ docker exec rag-ingestion-manager-qdrant-1 sh -c \
   | grep -o '"file_name":"[^"]*"' | sort -u
 ```
 
-Compare that list with `cut -d, -f6 file.csv`.
+A CSV carries no `name` field. The upload uses the filename stem, and `?name=` overrides it. A JSON
+upload uses the file's own `name`, and `?name=` overrides that too.
 
-A CSV carries no `name` field. The upload uses the filename stem as the dataset name, and the optional `?name=` query parameter overrides it. A JSON upload uses the file's own name, and `?name=` overrides that too (`routes/evaluate.py:214-216`).
-
-### 1.4 Upload & Import API
+### 1.8 Upload & Import API
 
 | Method | Path | Request | Response | Errors |
 |---|---|---|---|---|
-| `POST` | `/evaluate/datasets` | JSON body = dataset payload; query `replace` (bool, default false) | `{dataset_id, name, item_count, replaced}` | `409` duplicate name without replace; `422` schema errors |
-| `POST` | `/evaluate/datasets/upload` | multipart form, field `file` (`.json` or `.csv`); query `replace` (bool, default false), `name` (string; overrides the dataset name for CSV and JSON alike) | same as above | `422 file must be a .csv or .json file`; `422 uploaded file is empty`; `422 Invalid dataset JSON: <detail>`; `422 Invalid dataset CSV: <detail>`; `409` duplicate; `422` JSON body that is not an object |
-| `POST` | `/evaluate/datasets/huggingface` | optional JSON body `{replace: bool}` (default false) | same as above | `502 DATASET_EMPTY` when the Hub returns no usable rows |
-| `GET` | `/evaluate/datasets?limit=N` | `limit` 1–100, default 50 | `{limit, count, items[{dataset_id, name, description, item_count, created_at}]}` | `422 limit must be between 1 and 100` |
-| `GET` | `/evaluate/datasets/{dataset_id}` | — | one dataset summary | `404 Dataset not found` |
-| `DELETE` | `/evaluate/datasets/{dataset_id}` | — | `204`, no body | `404 Dataset not found` |
+| `POST` | `/evaluate/datasets` | JSON body = dataset payload; query `replace` (default false) | `{dataset_id, name, kind, item_count, replaced}` | `409` duplicate without replace; `422` schema errors, including a mixed-kind file |
+| `POST` | `/evaluate/datasets/upload` | multipart field `file` (`.csv`, `.json`, `.jsonl`); query `replace`, `name` | same, with `kind` | `422 file must be a .csv, .json or .jsonl file`; `422 uploaded file is empty`; `422 Invalid dataset CSV\|JSON\|JSONL: <detail>`; `409` duplicate |
+| `POST` | `/evaluate/datasets/huggingface` | optional `{replace: bool}` | same | `502 DATASET_EMPTY` |
+| `GET` | `/evaluate/datasets?limit=N` | `limit` 1–100, default 50 | `{limit, count, items[{dataset_id, name, description, kind, item_count, created_at}]}` | `422 limit must be between 1 and 100` |
+| `GET` | `/evaluate/datasets/{dataset_id}` | — | one summary, with `kind` | `404 Dataset not found` |
+| `DELETE` | `/evaluate/datasets/{dataset_id}` | — | `204` | `404` |
 
-The Hugging Face import reads the dataset `m-ric/huggingface_doc_qa_eval` (`HF_DATASET`, `routes/evaluate.py:226`) through the Hub rows API and stores it as the golden dataset `HF Doc QA`. The companion corpus is `A-Roucher/huggingface_doc`, so a pipeline can answer these questions only when its Knowledge Product holds that corpus.
+`kind` is on every dataset response, because the page needs it to decide whether the selected
+pipeline may run that dataset.
 
-Uploads must end in `.json` or `.csv` (case-insensitive) and decode as UTF-8; the whole dataset is replaced when `replace=true` (existing dataset, its runs and run items are deleted first).
+The Hugging Face import reads `m-ric/huggingface_doc_qa_eval` through the Hub rows API and stores it
+as `HF Doc QA`. Its companion corpus is `A-Roucher/huggingface_doc`.
 
 ---
 
 ## 2. Evaluation Core (`eval-core`)
 
-* **Formula-based metrics (Retrieval & Reranking)** — no LLM-as-a-judge is used for the retrieval/rerank stages. `GoldenItemEvaluator.evaluate_item` computes them directly from chunk metadata.
-* **Match base**: a retrieved chunk matches a golden source when one of `source_locator`, `title`, `metadata.file_name`, `metadata.url`, `metadata.source_locator` matches the source `name` (URL normalized to netloc + path with `www.` stripped and trailing `/` trimmed; non-URL values reduced to their basename; bidirectional substring match), and — when the source carries a page — the chunk page (`metadata.page_index` + 1, else `page_number`, `page`, `page_num`, `page_label`) equals it. A source **string** ending in `_p<digits>` is split into `{name, page}` at parse time, but a source **object** is not; the CSV path produces objects, so a page suffix on a CSV upload is ignored and matching falls back to the file name (`source_match.py:36-76`, `dataset_schema.py:130-137`). **A name that matches nothing makes every metric in this block `0.0` with no error** — see §1.3.
-* **Calculation logic** (`compute_retrieval_metrics`, fixed `k = 5`):
-  * **`precision`**: relevant chunks within the top 5 divided by the number of chunks in the top 5.
-  * **`recall`**: expected sources matched within the top 5 divided by the total number of expected sources.
-  * **`hit`**: `1.0` when any expected source appears in the top 5, else `0.0`.
-  * **`mrr`**: `1 / rank` of the first relevant chunk over the full retrieved list.
-* **Reranking** (`compute_rerank_metrics`, same `k = 5` for NDCG): `mrr_before`, `mrr_after`, `mrr` (alias of `mrr_after`), `mrr_delta`, `mrr_before_at_k` (the pre-rerank list cut to the reranker's depth), `kendall_tau` (order agreement between the pre- and post-rerank lists, `None` when fewer than two chunk ids are shared) and `ndcg`.
-* **LLM metrics (Generation)** — RAGAS via the LiteLLM judge: `faithfulness` against the post-rerank contexts, `answer_relevancy` from question + answer, and — when `ground_truth_answer` is non-empty — `answer_correctness` (also stored as `accuracy`, same value).
-* **RAG triad (Generation)** — three RAGAS scores merged into the same `generation_metrics` block by `runner.py:127`: `context_relevance` (question + contexts), `response_groundedness` (answer + contexts) and `answer_relevancy` (question + answer). `diagnose()` (`eval_core/attribution.py`) turns them into a stage reading with `PASS_MARK = 0.7` and `RERANK_LOSS_MARGIN = 0.05`. `GET /evaluate/runs/{id}/items` returns the scores as `triad` and the reading as `diagnosis`. See `12_evaluation_metrics_reference.md` for the full rules.
-* **Custom metrics (Generation)** — two metrics that RAGAS does not provide, computed in-process with no judge model and merged into the same `generation_metrics` block:
-  * **`behavior_match`**: `1.0` when the answer behaves as the row's `expected_behavior` says it should. A `refuse_or_abstain` row wants an abstention; every other row wants a real answer.
-  * **`keypoint_coverage`**: the fraction of `keypoints_covered` present in the answer. The runner matches a `label=value` entry on the value side, and a comma-separated value needs every part. Rows whose keypoints are bare tags (`mode1;mode2`) are not measurable, so the key is **absent** rather than `0.0`. This keeps a row that was never measurable out of the mean.
-* **Judge model** — `EvalRunConfig.judge_model` overrides the RAGAS judge for one run. `null` or empty means the service default `settings.ragas_judge_model`. The run stores the value in `evaluation_runs.config`. The same judge across two runs is what makes their scores comparable.
-* `k_values` is accepted by both metric functions but not used; the `self_corrective_max_loops` / `rag_mode` run settings are not applied by the runner.
+### 2.1 A run goes through the real pipeline
+
+`GoldenItemEvaluator.evaluate_item(item, config, k_values, *, judge_model=None, session_memory=None)`
+calls **`RAGPipeline.chat`**, which is the path a live turn takes:
+
+```python
+if item.turns:
+    result = self._run_conversation(item, config, session_memory)
+else:
+    result = self._pipeline.chat(item.question, config=config)
+return self._score(result, item, k_values, judge_model)
+```
+
+This is what makes the `self_rag` and `corrective` strategies measurable. Their grading and revision
+lives inside `RAGPipeline`:
+
+| Step | What it does | Applies to |
+|---|---|---|
+| `_effective_query` | rewrites a follow-up into a standalone question when `config.history` is present | every strategy, when the run has memory |
+| `retrieve` | reads the store the strategy names | every strategy |
+| `rerank` | reorders and cuts to `config.effective_top_k()` | every strategy |
+| `_grade_passages` | `grade_relevance` drops passages below the threshold, and returns `None` when none survives | `self_rag`, `corrective` |
+| `generate` | builds the prompt from the reranked passages and the history | every strategy |
+| `_review_answer` | `answer_is_grounded`; a definite ungrounded verdict rewrites the answer once | `self_rag` |
+
+Two consequences a reader must know:
+
+* **A corrective abstention scores a nearly empty generation block.** When `grade_relevance` keeps
+  nothing, `ChatResult` carries `NO_RELEVANT_PASSAGES_ANSWER` with an empty `reranked_chunks`. The
+  RAGAS metrics and the triad both skip a row with no contexts, so `generation_metrics` holds only
+  the two custom metrics. That is the correct reading of a refusal, not a failure.
+* The evaluator no longer calls `Retriever`, `build_reranker` or `Generator` itself. Those imports are
+  gone from `runner.py`.
+
+### 2.2 A multi-turn run drives the pipeline's own session memory
+
+`_run_conversation(item, config, memory)` replays the user turns, one `pipeline.chat` call each:
+
+```python
+session_id = str(uuid.uuid4())
+try:
+    for turn in item.turns or []:
+        if turn.get("role") != "user":
+            continue
+        if memory is not None:
+            config.history = memory.load(session_id)
+        last = self._pipeline.chat(turn["content"], config=config)
+        if memory is not None:
+            memory.append(session_id, [SessionTurn("user", turn["content"]),
+                                       SessionTurn("assistant", last.answer)])
+finally:
+    memory.clear(session_id)   # a failing clear is logged, not raised
+```
+
+This is the same protocol a live turn uses (`routes/chat.py`), so the Redis path under test is the
+production one. A run **without** memory still replays the turns, but each one is stateless, so only
+the truth of the final answer changes. The final turn's `ChatResult` is what `_score` reads.
+
+The session id is fresh per row, so two rows can never share a conversation, and `clear` runs in a
+`finally`, so a failed row leaves no key behind. A Redis outage makes the conversation stateless for
+the duration; `SessionMemory` fails soft on read and write, and only `clear` can raise, which the
+`finally` catches.
+
+### 2.3 Formula-based metrics (retrieval and reranking)
+
+No LLM-as-a-judge is used for these stages. Fixed `k = 5`.
+
+* **`precision`**: relevant chunks within the top 5 divided by the chunks in the top 5.
+* **`recall`**: expected sources matched within the top 5 divided by the number of expected sources.
+* **`hit`**: `1.0` when any expected source appears in the top 5.
+* **`mrr`**: `1 / rank` of the first relevant chunk over the full retrieved list.
+* **Reranking**: `mrr_before`, `mrr_after`, `mrr` (alias of `mrr_after`), `mrr_delta`,
+  `mrr_before_at_k` (the pre-rerank list cut to the reranker's depth), `kendall_tau` (`None` with
+  fewer than two shared chunk ids) and `ndcg`.
+
+The score stores one extra key in the retrieval block: **`effective_query`**, the standalone question
+a session turn was rewritten into, or absent when the question was searched as written. It is a
+string, so the aggregate means skip it. It is the only record of whether a follow-up reached
+retrieval as a pronoun.
+
+### 2.4 Generation metrics
+
+RAGAS, through the LiteLLM judge, merged into one `generation_metrics` block:
+
+* `faithfulness` against the post-rerank contexts.
+* `answer_relevancy` from question + answer.
+* `answer_correctness` (also stored as `accuracy`) when `ground_truth_answer` is non-empty.
+* The triad via `compute_triad_metrics`: `context_relevance`, `response_groundedness` and
+  `answer_relevancy`. All three need no reference, so all three run on an unanswerable row.
+  `include_answer_relevancy=False` on the generation call, because the triad already scores it from
+  the same inputs.
+
+**The judge output budget.** `JUDGE_MAX_TOKENS = 8192` (`ragas_client.py`) is passed to `llm_factory`
+for every metric. Every RAGAS metric answers in structured JSON, and a five-passage row with a
+three-sentence answer needs about 5,200 tokens for `AnswerCorrectness`; at 4,096 the proxy returns
+`finish_reason: "length"` and RAGAS reports the metric as failed. **A failed metric leaves its key
+out**, so the aggregate mean silently covers only the rows that scored. That is why a run could store
+`faithfulness` for one row and none for the next. `tests/unit/test_ragas_judge_budget.py` pins the
+budget at 8192 or above.
+
+### 2.5 Custom metrics (no judge model)
+
+* **`behavior_match`**: `1.0` when the answer behaves as the row's `expected_behavior` says. A
+  `refuse_or_abstain` row wants an abstention; every other row wants a real answer.
+* **`keypoint_coverage`**: the fraction of `keypoints_covered` present in the answer. A
+  `label=value` entry is matched on the value side; a comma-separated value needs every part. A row
+  whose keypoints are bare tags is not measurable, so the key is **absent** rather than `0.0`.
+
+The abstention markers cover the plural forms and the pipeline's own two refusal answers, because a
+model reading five passages says "the resumes do not contain" far more often than "the resume does
+not contain". Without `could not find` in the marker list, `NO_RELEVANT_PASSAGES_ANSWER` scored
+`behavior_match = 0` on exactly the rows that abstained correctly.
+
+### 2.6 Judge model
+
+`EvalRunConfig.judge_model` overrides the judge for one run. `null` means
+`settings.ragas_judge_model`. The run stores the value. Keep one judge across two runs if you intend
+to compare them.
+
+`k_values` is accepted by both metric functions and not used. `rag_mode` and
+`self_corrective_max_loops` are no longer read: `strategy` selects the behaviour.
 
 ---
 
 ## 3. Database Layer (`rag_db`)
 
-* **Schema** (`rag_db/models/evaluation.py`): `GoldenDataset` (unique `name`, optional `description`), `GoldenDatasetItem` (`question`, optional `ground_truth_answer`, `expected_sources` JSONB, `metadata` JSONB), `EvaluationRun` (`dataset_id`, `status`, `config` JSONB, `aggregate_metrics` JSONB, `started_at`/`completed_at`), `EvaluationRunItem` (`run_id`, `dataset_item_id`, `status`, `retrieved_chunks`, `retrieval_metrics`, `reranked_chunks`, `rerank_metrics`, `generated_answer`, `generation_metrics`, `error_message`).
-* **Aggregation (`aggregate_run_metrics`)**: averages the numeric metrics of all `completed` items per stage and stores the run `config` alongside them, plus `item_count`:
+* **Schema** (`rag_db/models/evaluation.py`):
+  * `GoldenDataset` — `name` (unique), `description`, **`kind`** (`String`, NOT NULL,
+    `server_default="single_turn"`).
+  * `GoldenDatasetItem` — `question` (NOT NULL), `ground_truth_answer`, `expected_sources` JSONB,
+    **`turns`** (JSONB, nullable), `metadata` JSONB.
+  * `EvaluationRun` — `dataset_id`, `status`, `config` JSONB, `aggregate_metrics` JSONB, timing.
+  * `EvaluationRunItem` — the two chunk lists, the three metric blocks, `generated_answer`,
+    `error_message`.
+* **Migrations**: head is `007_dataset_profiles`, which adds the Dataset Fabric profile table and
+  six columns on `golden_datasets` (`profile_id`, `storage_bucket`, `storage_key`,
+  `original_filename`, `source_format`, `row_count`). `006_golden_dataset_kind_and_turns` has
+  `down_revision = "005"`. It adds
+  `golden_datasets.kind` (server default `single_turn`, which backfills every existing dataset
+  correctly) and `golden_dataset_items.turns`, and drops both on downgrade. Revision `005` remains
+  `005_soft_delete`. Tested as an upgrade → downgrade → upgrade round trip.
+* **Repository** (`evaluation_repository.py`): `import_dataset(..., kind=...)` and
+  `add_dataset_item(..., turns=...)` carry the two new values. `create_dataset(name, description,
+  *, kind="single_turn")`.
+* **Aggregation (`aggregate_run_metrics`)** averages every numeric key of every `completed` item and
+  prefixes it with `mean_`:
   * `retrieval`: `mean_precision`, `mean_recall`, `mean_hit`, `mean_mrr`.
-  * `reranker`: `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`, `mean_mrr_before_at_k`, `mean_ndcg`, `mean_kendall_tau`.
-  * `generation`: `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`, `mean_answer_correctness`, `mean_context_relevance`, `mean_response_groundedness`, `mean_behavior_match`, `mean_keypoint_coverage`.
+  * `reranker`: `mean_mrr_before`, `mean_mrr_after`, `mean_mrr`, `mean_mrr_delta`,
+    `mean_mrr_before_at_k`, `mean_ndcg`, `mean_kendall_tau`.
+  * `generation`: whichever of `mean_faithfulness`, `mean_answer_relevancy`, `mean_accuracy`,
+    `mean_answer_correctness`, `mean_context_relevance`, `mean_response_groundedness`,
+    `mean_behavior_match`, `mean_keypoint_coverage` the rows produced.
+  * `categories`: keyed by `metadata.question_type`, falling back to `metadata.category`. Rows with
+    neither are left out rather than grouped under a made-up label.
   * Runs without completed items return empty stage blocks with `item_count: 0`.
-  * **Per-category breakdown**: the payload also carries a `categories` block keyed by the row's `question_type` from `metadata` (falling back to `metadata.category`). Each entry holds its own `retrieval` / `reranker` / `generation` blocks of `mean_*` values plus `item_count`. One overall mean hides a strategy that is strong on single-hop lookups and weak on multi-hop reasoning.
-* **Pagination helpers**: `count_runs_for_dataset(dataset_id)` and `list_runs_for_dataset(dataset_id, skip, limit)` (newest first); `get_run_progress(run_id)` returns `items_total` (dataset size), `items_completed` and `items_failed`.
-* **Item status flow**: `pending` on creation → `completed` via `save_run_item_result` or `failed` via `fail_run_item` (message stored in `error_message`); the run itself is `queued` → `running` → `completed` (with aggregates) or `failed` (with `aggregate_metrics = {"error": ...}`).
+* **Status flow**: item `pending` → `completed` | `failed`; run `queued` → `running` → `completed`
+  (with aggregates) or `failed` (`aggregate_metrics = {"error": ...}`).
 
 ---
 
@@ -178,77 +419,166 @@ Uploads must end in `.json` or `.csv` (case-insensitive) and decode as UTF-8; th
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| `POST` | `/evaluate/datasets` | dataset payload JSON; `?replace=` | `CreateDatasetResponse` |
-| `POST` | `/evaluate/datasets/upload` | multipart `file`; `?replace=` | `CreateDatasetResponse` |
-| `POST` | `/evaluate/datasets/huggingface` | optional body `{replace}`; imports `m-ric/huggingface_doc_qa_eval` | `CreateDatasetResponse` |
-| `GET` | `/evaluate/datasets` | `?limit=` (1–100, default 50) | `{limit, count, items[]}` |
+| `POST` | `/evaluate/datasets` | dataset payload; `?replace=` | `CreateDatasetResponse` |
+| `POST` | `/evaluate/datasets/upload` | multipart `file` (`.csv`/`.json`/`.jsonl`); `?replace=`, `?name=` | `CreateDatasetResponse` |
+| `POST` | `/evaluate/datasets/huggingface` | `{replace}` | `CreateDatasetResponse` |
+| `GET` | `/evaluate/datasets` | `?limit=` | `{limit, count, items[]}` |
 | `GET` | `/evaluate/datasets/{id}` | — | `DatasetSummary` |
 | `DELETE` | `/evaluate/datasets/{id}` | — | `204` |
-| `GET` | `/evaluate/datasets/{id}/runs` | `?skip=` (≥0, default 0), `?limit=` (1–100, default 20) | `{items: [EvaluationRunStatItem], count}` |
-| `GET` | `/evaluate/runs/{id}/items` | — | `{run_id, count, items: [EvalRunItemResponse]}` |
+| `GET` | `/evaluate/datasets/{id}/runs` | `?skip=`, `?limit=` | `{items, count}` |
+| `GET` | `/evaluate/runs/{id}/items` | — | `{run_id, count, items[]}` |
 | `POST` | `/evaluate/runs` | `{dataset_id, config: EvalRunConfig}` | `{run_id, status: "queued"}` |
 | `GET` | `/evaluate/runs/{id}` | — | `EvalRunResponse` |
-| `GET` | `/evaluate/stats` | `?limit=` (1–100, default 20) | `{limit, count, items[]}` |
+| `GET` | `/evaluate/pipeline-defaults` | — | `PipelineDefaultsResponse` |
+| `GET` | `/evaluate/stats` | `?limit=` | `{limit, count, items[]}` |
 
-Run/item response keys:
+### 4.1 `EvalRunConfig`
 
-* `EvalRunResponse` / `EvaluationRunStatItem`: `run_id`, `dataset_id`, `status`, `config`, `aggregate_metrics`, `error_message` (populated from `aggregate_metrics.error` only when the run failed), `progress {items_total, items_completed, items_failed}`, `created_at`, `started_at`, `completed_at`. `EvalRunResponse` also carries `diagnosis`, whose `triad` key holds the mean of each triad metric, read from the stored per-row metrics when the response is built.
-* `EvalRunItemResponse`: `item_id`, `dataset_item_id`, `status`, `question`, `expected_sources`, `ground_truth_answer`, `generated_answer`, `retrieval_metrics`, `rerank_metrics`, `generation_metrics`, `category` (from `metadata.category`), `error_message`, `triad` (the three triad scores on their own), `diagnosis` (the stage the row points at), `retrieved_chunks` and `reranked_chunks` (what the retriever returned and what survived the reranker).
+| Field | Default | Notes |
+|---|---|---|
+| `retrieval_mode` | `null` | resolved to `"dense"` |
+| `retrieve_limit` | `null` | the pipeline's value, else `settings.retrieve_limit` |
+| `rerank_enabled` | `null` | the pipeline's value, else `settings.reranker_enabled` |
+| `rerank_model` | `null` | the pipeline's pinned model, else `settings.reranker_model` |
+| `top_k` | `null` | the pipeline's `rerank_top_k`, else `settings.rerank_top_k` |
+| `generation_model` | `null` | the page sends the pipeline's `chat_model` |
+| `judge_model` | `null` | `settings.ragas_judge_model` when empty |
+| `pipeline_slug` | `null` | **the pipeline whose session memory this run drives** |
+| `session_memory_prefix` | `null` | **written by the route, not the caller** |
+| `session_memory_ttl_s` | `null` | **written by the route, not the caller** |
+| `rag_strategy` | `null` | the store names travel with the strategy |
+| `collection`, `opensearch_index`, `pg_schema`, `pg_table` | `null` | the pipelog's Knowledge Product stores |
+| `embedding_model`, `sparse_embedding_model` | `null` | the product's models |
+| `k_values` | `[1,3,5,10]` | accepted; unused |
+| `sample_size` | `null` | 1–500. A random sample |
+| `seed` | `null` | stored with the run; the page sends none |
+| `rag_mode` | `"normal"` | accepted; unused since the strategy selects the behaviour |
+| `self_corrective_max_loops` | `3` | accepted; unused |
+| `router_enabled` | `false` | accepted; unused |
 
-**Config & pipeline propagation** — `EvalRunConfig` fields and defaults:
+### 4.2 `POST /evaluate/runs`
 
-| Field | Default |
-|---|---|
-| `retrieval_mode` | `"hybrid"` |
-| `retrieve_limit` | `20` |
-| `rerank_enabled` | `true` |
-| `rerank_model` | `null` |
-| `top_k` | `5` |
-| `generation_model` | `null` |
-| `judge_model` | `null` — the RAGAS judge for this run. Empty uses `settings.ragas_judge_model` |
-| `k_values` | `[1, 3, 5, 10]` (accepted; not used by the metric functions) |
-| `collection` | `null` |
-| `embedding_model` | `null` |
-| `sparse_embedding_model` | `null` |
-| `rag_strategy` | `null` — the assistant strategy; with the store names below it makes the runner read the Knowledge Product's stores |
-| `opensearch_index` | `null` |
-| `pg_schema` | `null` |
-| `pg_table` | `null` |
-| `sample_size` | `null` — 1 to 500. A random sample of that many rows |
-| `seed` | `null` — stored with the run when set |
-| `rag_mode` | `"normal"` (`"normal"` \| `"self_corrective"`) |
-| `self_corrective_max_loops` | `3` |
-| `router_enabled` | `false` |
+The handler is `async def` and does three things before it enqueues:
 
-`POST /evaluate/runs` persists this config as the run's `config` JSONB and enqueues `eval_worker.tasks.run_evaluation`. The frontend sends `retrieval_mode`, `retrieve_limit`, `rerank_enabled`, `collection`, `embedding_model`, `sparse_embedding_model`, `rag_strategy`, `opensearch_index`, `pg_schema`, `pg_table`, `sample_size`, `generation_model` (the selected pipeline's `chat_model`) and `judge_model` (`GoldenEvaluationsPage.tsx:636-654`). It sends **no** `rerank_model`, no `top_k`, no `router_mode`, no `rag_mode` and no `seed`, so those keys keep their defaults. In particular, no `seed` means a run draws a fresh sample every time. The API key is enforced globally for this app (`verify_api_key`): accepted via the `X-API-Key` header or the `api_key` query parameter, no-op when `API_KEY` is empty, and bypassed for `/health`, `/docs`, `/openapi.json`, `/redoc`.
+1. **Refuses the page-image strategy.** A run whose `rag_strategy` is `image_vision` returns
+   `422` with `detail = {"code": "STRATEGY_NOT_EVALUABLE", "message": "Image Vision RAG is not
+   supported by offline evaluation."}`. The page freezes its button for the same reason; the route is
+   the authority.
+2. **Resolves the pipeline's retrieval settings** from the request, then the deployment.
+3. **Resolves the session-memory handle.** When `pipeline_slug` is set, the route calls the existing
+   `_resolve_assistant(request, slug)` and reads `pipeline["_session_memory"]`, which is the
+   `(prefix, ttl)` tuple `session_memory_for_product` returns. Both values go into the stored config.
+   An unknown slug propagates the `404 ASSISTANT_NOT_FOUND` that route already raises. A product with
+   no enabled Redis destination leaves the run stateless, which is all a single-turn run needs.
 
-The runner has no router and no self-corrective loop. `run_evaluation` calls `evaluator.evaluate_item(golden, config, k_values, strategy=…, stores=…, judge_model=…)` (`tasks.py:218-225`), which matches the runner's signature, and it reads `latency_ms` with `getattr(result, "latency_ms", None) or {}` (`tasks.py:253`). Each item runs retrieve → rerank → generate once and is stored.
+The Redis namespace never leaves the server: the page sends a slug, not a prefix.
 
----
-
-## 5. Frontend (`rag-retrieval-chat-manager/frontend`)
-
-* **API client (`api.ts`)**: golden-dataset calls go through `ragFetch` (`RAG_API_URL`, default `http://127.0.0.1:8001`). `ragFetch` detects `FormData` and deletes any `Content-Type` header before the request so the browser can set the multipart boundary; `uploadGoldenDataset` appends the file as the `file` form field and only appends `?replace=true` when requested. The control accepts a `.json` or `.csv` file. For a CSV it can also send `?name=`.
-* **Page**: `GoldenEvaluationsPage.tsx` is mounted in `components/AppLayout.tsx` (persistent page) with the navigation item `Offline Evaluation` at `/golden-evaluations`. `App.tsx` only contains legacy `/directories*` redirects and the catch-all `AppLayout`; no route is registered there for this page.
-* **Dataset panel**: lists datasets with `listGoldenDatasets()` (item counts shown), selects one on click, uploads via `uploadGoldenDataset(file, replace)`, imports the built-in Hugging Face set via `importHuggingFaceDataset(true)`, and deletes via `deleteGoldenDataset(id)`. The upload control accepts `.json` and `.csv`.
-* **New Run panel**: loads pipeline configurations with `listPipelines()` and, on submit, derives the run stores with `pipelineStores` (`GoldenEvaluationsPage.tsx:392-423`): it reads the selected pipeline's Knowledge Product destinations for `collection` (vector), `opensearch_index` (lexical), `pg_schema` and `pg_table` (relational), and its `text_embedding_model` and `sparse_embedding_model` for `embedding_model` and `sparse_embedding_model`. When the pipeline has no Knowledge Product, it falls back to the pipeline's own `qdrant_collection`, `embedding_model` and `sparse_embedding_model`. The controls are: a pipeline selector, retrieval mode (`dense` / `sparse` / `hybrid`), chunk limit (`retrieve_limit`), a Rerank checkbox (`rerank_enabled`), a rows-to-test number (default 5, sent as `sample_size`), and an `LLM-as-a-judge (optional)` dropdown (`judge_model`) whose first option is `Service default` and whose other options come from the same LiteLLM catalog the Pipelines page uses. The page sends no `router_mode`, no `rag_mode` and no `seed`, so each run draws a fresh sample. There is no user-facing generation-model or `k_values` control: the run sends the selected pipeline's `chat_model` as `generation_model`, and `k_values` keeps its default. The selected pipeline's collection, embedding and sparse values are echoed under the selector.
-* **Runs list**: `listDatasetRuns(datasetId, {skip, limit})` with a fixed client page size of 10 and footer `◀` / `▶` buttons driven by the returned `count`; the run table shows each run's config summary (retrieval mode, limit, rerank state, generation model, route).
-* **Results (click a run to open)**: the page keeps the runs list visible and only renders run details for the selected run. There are **no result tabs**. The page renders, in this order:
-  * `TriadPanel`, fed by `selectedRun.diagnosis` — the triad means and the named failing stage.
-  * An `Open full run details` button that routes to `/golden-evaluations/runs/:id`.
-  * `OverallKpis` — a stage selector (`Retrieval` / `Reranker` / `Generation`) over `aggregate_metrics.retrieval/reranker/generation`, with a `Chart` toggle that draws the same numbers as a canvas bar chart.
-  * `Metrics by Category` — one block per key of `aggregate_metrics.categories`, each with its own retrieval, reranker and generation KPIs and `item_count`.
-  * `Evaluation Rubric` — a table that buckets per-item scores (Reranking from `rerank_metrics.ndcg`; Generation from `generation_metrics.faithfulness` / `accuracy` / `answer_relevancy`).
-  * Per-question rows come from the run-detail route, which calls `listEvaluationRunItems(runId)` and shows each row's triad, diagnosis and retrieved passages.
+The API key is enforced globally (`verify_api_key`): `X-API-Key` header or `api_key` query parameter
+on every route except `/health`, `/docs`, `/openapi.json`, `/redoc`.
 
 ---
 
-## 6. Key Files
+## 5. Worker (`eval_worker`)
 
-* **Chunk metadata**: `backend/libs/shared/src/rag_shared/types.py` → `RetrievedChunk` (`source_locator`, `title`, `metadata`, `chunk_index`, `retrieval_score`); `RerankedChunk` extends it with `rerank_score`.
-* **Dataset schema**: `backend/libs/eval-core/src/eval_core/dataset_schema.py` → payload models, validators and format normalization.
-* **Evaluation core**: `backend/libs/eval-core/src/eval_core/runner.py` (`GoldenItemEvaluator`), `source_match.py` (golden-to-chunk matching), `retrieval_metrics.py` and `rerank_metrics.py` (pure metric formulas), `ragas_client.py` (LLM-judge metrics), `chat_metrics.py` (live-chat staging).
-* **Worker**: `backend/apps/eval-worker/src/eval_worker/tasks.py` → `run_evaluation` (per-item loop, persistence, aggregation).
-* **Database**: `backend/libs/database/src/rag_db/models/evaluation.py`, `repositories/evaluation_repository.py`.
-* **API**: `backend/apps/rag-api/src/rag_api/routes/evaluate.py`.
-* **Frontend**: `frontend/src/api.ts` (`ragFetch`, golden-dataset client functions), `frontend/src/pages/GoldenEvaluationsPage.tsx`, `frontend/src/components/AppLayout.tsx` (mount + nav).
+`run_evaluation(run_id)`:
+
+1. Mark the run `running`.
+2. Build one `PipelineConfig` from the stored config: retrieval settings, `generation_model`,
+   `vision_model` (a `image_vision` record still maps its generation model to the vision model),
+   `collection`, the embedding models, **`strategy=config["rag_strategy"]`** and
+   **`stores=KpStores(...)`** built from the collection and index names.
+3. Build one `SessionMemory(settings, prefix=config["session_memory_prefix"], ttl_s=...)` when the
+   config carries a prefix, and pass it to every item.
+4. Read each dataset item, **including `turns`**, and pass `turns=` into `GoldenItem`.
+5. Call `evaluator.evaluate_item(golden, config, k_values, judge_model=..., session_memory=...)`.
+6. Persist the four per-item values, emit the OTel span, then aggregate and mark the run `completed`.
+   A per-item exception is written to that item as `failed` and the loop continues.
+
+`strategy` and `stores` ride the `PipelineConfig` now, exactly as they do for a live turn, so the
+evaluator cannot be told two different strategies. The `rag_mode` and `self_corrective_max_loops`
+arguments are gone: they were never `PipelineConfig` fields, so pydantic silently dropped them.
+
+`EvalItemResult` carries no `latency_ms`; the worker reads it with
+`getattr(result, "latency_ms", None) or {}`.
+
+---
+
+## 6. Frontend (`rag-retrieval-chat-manager/frontend`)
+
+* **API client (`api.ts`)**: `uploadGoldenDataset(file, {replace, name})` returns
+  `{dataset_id, name, kind, item_count, replaced}`. `GoldenDatasetSummary` carries `kind`.
+  `createEvaluationRun(datasetId, config)` accepts `pipeline_slug`. `getAssistant(slug)` is the
+  existing assistant-config call; the page uses it for the memory fact and adds no second helper.
+* **Page**: `GoldenEvaluationsPage.tsx` at `/golden-evaluations`, nav label **Offline Evaluation**.
+* **Two module constants** carry the strategy policy:
+
+  ```ts
+  const EVALUABLE_STRATEGIES = ["vector", "lexical", "hybrid", "self_rag", "corrective"];
+  const VISION_STRATEGY = "image_vision";
+  ```
+
+* **Memory probe.** An effect keyed on the selected pipeline calls `getAssistant(slug)` when the
+  pipeline is an assistant with a slug, and reads `session_memory.enabled`, `.ttl_seconds` and
+  `.reason`. Any other pipeline reads as "no memory" with a stated reason. A failed probe also reads
+  as "no memory", so a single-turn run is never blocked by it.
+* **Two gates**, computed before the button is pressed:
+
+  ```ts
+  const strategyBlocked = !EVALUABLE_STRATEGIES.includes(pipeline.rag_strategy);
+  const datasetBlocked = selectedDataset?.kind === "multi_turn" && memoryEnabled === false;
+  ```
+
+  The run button is `disabled` on either. One `alert alert-warn` states which one applies: the
+  Image Vision copy names the strategies to pick instead, and the memory copy names the Redis
+  destination and the single-turn alternative.
+* **`PipelineSummary`** gained a **Memory** row, after Modality: `enabled · 86400 s TTL` or
+  `none · <reason>`. It is stated before a dataset is picked, because it decides whether a multi-turn
+  dataset can run at all.
+* **Dataset list** shows the kind beside the count: `(10 items · multi-turn)`.
+* **Upload control** accepts `.csv`, `.json` and `.jsonl`.
+* **The run carries `pipeline_slug`**, so the route can resolve the memory handle. It also sends the
+  pipeline's retrieval settings, its chat model, its stores and the judge.
+* Results: `TriadPanel`, then `OverallKpis` with the stage selector, `Metrics by Category`, the
+  `Evaluation Rubric` distribution, then `Open full run details` → `/golden-evaluations/runs/:id`
+  (`EvalRunDetailPage.tsx`, polls every 5 s).
+
+---
+
+## 7. Seed script
+
+`rag-retrieval-chat-manager/backend/scripts/seed_resume_strategy_pipelines.py` makes the five
+pipelines offline evaluation can score, over one Knowledge Product.
+
+* `--product <name-or-id>`, default: the first product whose name contains `resume`.
+* Enables the product's `cache_redisvl` destination when it has none, with `ttl_seconds: 86400`. The
+  update replaces the whole destination list, so every existing destination travels back with the new
+  one. `session_memory_for_product` reads exactly `config["index_prefix"]` and
+  `config["ttl_seconds"]`.
+* Creates one assistant pipeline per strategy — `vector`, `lexical`, `hybrid`, `self_rag`,
+  `corrective` — named `<Product> · <Label>` with slug `<product-slug>-<strategy>`, copying the chat
+  and embedding models of a pipeline already over that product.
+* Re-runnable: an existing slug or name is `PATCH`ed, not duplicated. It deletes nothing.
+* A strategy the product cannot serve is reported as `SKIP <strategy>: <reason>` and the rest are
+  created. `lexical` needs OpenSearch and `hybrid` needs both stores.
+
+Run it with `uv run python scripts/seed_resume_strategy_pipelines.py` against the live stack.
+
+---
+
+## 8. Key Files
+
+* **Dataset schema**: `backend/libs/eval-core/src/eval_core/dataset_schema.py` — payload models,
+  `_COLUMN_ALIASES`, `_normalize_item`, `parse_golden_dataset_csv`, `parse_golden_dataset_json`,
+  `parse_golden_dataset_jsonl`.
+* **Evaluation core**: `runner.py` (`GoldenItemEvaluator`, `_run_conversation`, `_score`),
+  `source_match.py`, `retrieval_metrics.py`, `rerank_metrics.py`, `ragas_client.py`
+  (`JUDGE_MAX_TOKENS`), `custom_metrics.py`, `attribution.py`.
+* **Worker**: `apps/eval-worker/src/eval_worker/tasks.py` → `run_evaluation`.
+* **Database**: `models/evaluation.py`, `repositories/evaluation_repository.py`,
+  `alembic/versions/006_golden_dataset_kind_and_turns.py`.
+* **API**: `apps/rag-api/src/rag_api/routes/evaluate.py`.
+* **Frontend**: `frontend/src/api.ts`, `frontend/src/pages/GoldenEvaluationsPage.tsx`,
+  `frontend/src/pages/EvalRunDetailPage.tsx`, `frontend/src/components/TriadPanel.tsx`.
+* **Datasets**: `resumes/resume_single_turn_golden.csv`, `resumes/resume_multi_turn_golden.csv`.
+* **Tests**: `tests/unit/test_golden_dataset_universal_schema.py`,
+  `tests/unit/test_custom_metrics.py`, `tests/unit/test_ragas_judge_budget.py`.

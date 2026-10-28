@@ -72,6 +72,26 @@ def test_tolerates_header_case_and_spacing():
     assert payload.items[0].ground_truth_answer == "A."
 
 
+def test_recognises_the_plural_and_pipeline_abstain_wordings():
+    """A model reading several resumes says "do not contain", not "does not contain".
+
+    The last case is the pipeline's own answer when nothing retrieved is relevant, which
+    has to count as an abstention or every unanswerable row scores zero for a reason that
+    has nothing to do with the pipeline.
+    """
+    assert behavior_match(ABSTAIN_BEHAVIOR, "The provided resumes do not contain a salary.") == 1.0
+    assert behavior_match(ABSTAIN_BEHAVIOR, "The resumes do not mention any salary.") == 1.0
+    assert (
+        behavior_match(
+            ABSTAIN_BEHAVIOR,
+            "I could not find any relevant sources in the knowledge base to answer this question.",
+        )
+        == 1.0
+    )
+    # A real answer still fails the row.
+    assert behavior_match(ABSTAIN_BEHAVIOR, "His salary is 9 lakhs.") == 0.0
+
+
 def test_behavior_match_rewards_the_expected_behavior():
     assert behavior_match(ABSTAIN_BEHAVIOR, REFUSAL) == 1.0
     assert behavior_match(ABSTAIN_BEHAVIOR, "The fine is 50000 rupees.") == 0.0

@@ -108,7 +108,7 @@ with a comment explaining why, and the page re-reads immediately afterwards.
 |---|---|
 | `Refresh` on the list | `PATCH {}` for **every** product via `Promise.allSettled`, then `GET /api/knowledge-products` |
 | `Refresh` on the detail page | `PATCH {}` for that product, then `GET /{id}` and `GET /{id}/files` |
-| Revisiting `/knowledge-store` | `GET /api/knowledge-products` only — a display refresh, no sync |
+| Revisiting `/knowledge-store` | `listKnowledgeProducts()` and `getDestinationOptions()` — a display refresh, no sync |
 | Detail page, every 5 s | `GET /{id}` and `GET /{id}/files`, so the timeline keeps moving even when the SSE stream reconnects |
 | Opening the detail page | one immediate load, then the 5 s interval |
 
@@ -294,7 +294,7 @@ requests and 4xx/5xx responses.
 | All four `Inspect Store` panels | live contents (Qdrant points, OpenSearch terms, Postgres rows, Redis keys and TTLs) |
 | `Refresh` on the list | issues `PATCH` then `GET /api/knowledge-products` |
 | `Refresh` on the detail page | issues `OPTIONS` -> `PATCH` -> `GET /{id}` -> `GET /{id}/files` |
-| Revisit after leaving to `/prompts` | issues `GET /api/knowledge-products` |
+| Revisit after leaving to `/prompts` | issues `GET /api/knowledge-products` and `GET /api/knowledge-products/destinations/options` |
 | All 12 retrieval routes swept | 12 of 12 clean |
 | Production build (`vite preview`) | detail page clean, live ticks rendering |
 

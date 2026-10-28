@@ -32,6 +32,7 @@ def test_upload_dataset_json_file(mock_session_factory, mock_repo_cls, client):
     mock_dataset = MagicMock()
     mock_dataset.id = dataset_id
     mock_dataset.name = "scrape-corpus-golden"
+    mock_dataset.kind = "single_turn"
 
     mock_repo = MagicMock()
     mock_repo.import_dataset.return_value = mock_dataset
@@ -60,6 +61,7 @@ def test_create_dataset_json_body(mock_session_factory, mock_repo_cls, client):
     mock_dataset = MagicMock()
     mock_dataset.id = dataset_id
     mock_dataset.name = "scrape-corpus-golden"
+    mock_dataset.kind = "single_turn"
 
     mock_repo = MagicMock()
     mock_repo.import_dataset.return_value = mock_dataset

@@ -13,8 +13,8 @@ The page loads live values. On mount it sends three requests in parallel: the Kn
 
 ```
 +-------------------------------------------------------------------------------------------------------------+
-| Sidebar (AppLayout.tsx:24-35): Retrieval & Chat | Overview | Knowledge Store | Pipelines | Chat | Prompts |  |
-|   Real Time Monitoring | Offline Evaluation | Guard Config | Guard Traces | Guard Evaluation                |
+| Sidebar (AppLayout.tsx:25-37): Overview | Knowledge Store | Pipelines | Chat | Prompts | Real Time          |
+|   Monitoring | Dataset Fabric | Offline Evaluation | Guard Config | Guard Traces | Guard Evaluation         |
 +-------------------------------------------------------------------------------------------------------------+
 | PageHeader: "Retrieval & Chat Overview"                                                                     |
 |   "Manage RAG pipelines, synthesize answers, monitor retrieval latency, and evaluate model performance."    |
@@ -94,5 +94,5 @@ Every card renders a fetched or derived value, so a failing service leaves its o
 2. **Pipeline parameter tuning**: card → `/pipelines` (`AppLayout.tsx:191`) for retrieval settings, rerank toggle, top-k, and generator/vision/fusion models.
 3. **Prompt editing**: card → `/prompts` (`AppLayout.tsx:199`), backed by the retrieval API's prompt-template routes (`/prompt-templates`).
 4. **Knowledge Store**: card → `/knowledge-store` (`AppLayout.tsx:183`), a view-only list of the Knowledge Products owned by the ingestion manager on port 8007; a product card's `View` button opens the read-only detail page at `/knowledge-store/:id`.
-5. **Quality monitoring**: card → `/evaluations` (`AppLayout.tsx:203`) reading per-message Ragas metrics via `/chat/stats` and `/chat/messages/{id}/metrics`.
+5. **Quality monitoring**: card → `/evaluations` (`AppLayout.tsx:203`), reading per-turn Ragas metrics from `GET /chat/stats` only. The `/chat/messages/{id}/metrics` call belongs to the Chat page.
 6. **Safety policy auditing**: card → `/guardrails/config` (`AppLayout.tsx:215`) for ban lists, PII checks, and toxic-language guards used by the chat guardrail phases.
