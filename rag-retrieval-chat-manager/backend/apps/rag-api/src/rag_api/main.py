@@ -16,6 +16,7 @@ from generation_core import Generator
 from rag_api.routes import (
     assistants,
     chat,
+    dataset_feedback,
     dataset_profiles,
     evaluate,
     generate,
@@ -23,6 +24,7 @@ from rag_api.routes import (
     guardrails_evaluate,
     health,
     knowledge,
+    otlp,
     prompts,
     prompt_templates,
     rerank,
@@ -80,6 +82,8 @@ def create_app() -> FastAPI:
     app.include_router(assistants.router)
     app.include_router(evaluate.router)
     app.include_router(dataset_profiles.router)
+    app.include_router(dataset_feedback.router)
+    app.include_router(otlp.router)
     app.include_router(prompts.router)
     app.include_router(prompt_templates.router)
     app.include_router(guardrails.router)

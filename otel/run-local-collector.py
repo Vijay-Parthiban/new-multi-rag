@@ -58,6 +58,11 @@ def load_env():
     # same backend the Docker collector would. To use a local Phoenix instead, set
     # PHOENIX_OTLP_ENDPOINT=http://localhost:6006 and blank PHOENIX_AUTH_HEADER.
     env["OTEL_DEBUG_VERBOSITY"] = "detailed"  # log every exported span
+    # The host binary reaches rag-api on loopback, not through host.docker.internal.
+    endpoint = env.get("FEEDBACK_OTLP_ENDPOINT", "")
+    env["FEEDBACK_OTLP_ENDPOINT"] = (
+        endpoint.replace("host.docker.internal", "127.0.0.1") if endpoint else "http://127.0.0.1:8001/otlp"
+    )
     return env
 
 

@@ -1,10 +1,9 @@
 """Store an uploaded golden dataset in MinIO.
 
-A dataset profile that names a pipeline writes into that Knowledge Product's document
-bucket, so the dataset sits beside the corpus it grades. A profile with no pipeline writes
-into one shared bucket. The route resolves the bucket and this module does the I/O, which
-keeps the ingestion service the only place that knows how a Knowledge Product maps to a
-bucket.
+A dataset is never written into a Knowledge Product's document bucket. The ingestion
+service indexes every object it finds in that bucket, so a dataset there becomes corpus and
+is chunked into that product's destinations. Every dataset goes into `dataset_fabric_bucket`
+instead, which no source points at. The dataset row records the bucket and key it used.
 
 ponytail: the MinIO SDK is synchronous, so each call goes through `asyncio.to_thread`.
 An upload is a few megabytes and the request waits for it; a queue would add a status the
@@ -18,7 +17,6 @@ import io
 import logging
 from pathlib import Path
 
-import httpx
 from minio import Minio
 from minio.error import S3Error
 from rag_shared.config import Settings
@@ -68,49 +66,14 @@ def _client(settings: Settings) -> Minio:
     )
 
 
-async def resolve_bucket(settings: Settings, knowledge_product_id: str | None) -> str:
-    """The bucket that holds this profile's files.
+def resolve_bucket(settings: Settings) -> str:
+    """The bucket that holds every dataset file.
 
-    A linked profile uses the first document bucket of its Knowledge Product. A product
-    with no source yet, or a product the ingestion service no longer has, falls back to the
-    shared bucket; the dataset row records which one was used, so the page never guesses.
+    One bucket, never a Knowledge Product's. The ingestion service lists a Knowledge
+    Product bucket whole, so a dataset placed there is read as a document, chunked and
+    embedded into that product's destinations. No source points at this bucket.
     """
-    if not knowledge_product_id:
-        return settings.dataset_fabric_bucket
-
-    base = settings.ingestion_service_url.rstrip("/")
-    headers = {"X-API-Key": settings.api_key} if settings.api_key else {}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{base}/api/knowledge-products/{knowledge_product_id}", headers=headers
-            )
-    except httpx.RequestError as exc:
-        raise DatasetStorageError(
-            f"Cannot reach the ingestion service to resolve the bucket: {exc}"
-        ) from exc
-
-    if response.status_code == 404:
-        logger.warning("knowledge product gone, using the shared bucket kp=%s", knowledge_product_id)
-        return settings.dataset_fabric_bucket
-    if response.status_code != 200:
-        raise DatasetStorageError(
-            "The ingestion service refused the Knowledge Product read: "
-            f"{response.status_code} {response.text[:200]}"
-        )
-
-    sources = response.json().get("sources") or []
-    buckets = sorted(
-        {
-            str(source["minio_bucket"])
-            for source in sources
-            if source.get("minio_bucket") and not str(source["minio_bucket"]).startswith("local-")
-        }
-    )
-    if not buckets:
-        logger.info("knowledge product has no document bucket kp=%s", knowledge_product_id)
-        return settings.dataset_fabric_bucket
-    return buckets[0]
+    return settings.dataset_fabric_bucket
 
 
 def _sync_put(settings: Settings, bucket: str, key: str, data: bytes, content_type: str) -> None:

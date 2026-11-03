@@ -1,10 +1,10 @@
-# OpenTelemetry Collector — fans every span out to Phoenix and Langfuse.
+# OpenTelemetry Collector — fans every span out to Phoenix and Langfuse, and every chat turn to rag-api.
 #
 # Credentials live in otel/.env, which is gitignored. Copy otel/.env.example and fill it in.
 #
-# Two exporters are active: Phoenix and Langfuse. Both take OTLP over HTTP. OTLP/HTTP is not
-# optional for either of them here: Langfuse does not accept gRPC at all, and Phoenix Cloud is
-# reached over HTTP on /v1/traces.
+# Three exporters are active: Phoenix, Langfuse, and rag-api (Dataset Feedback). All take OTLP over
+# HTTP. OTLP/HTTP is not optional for Phoenix or Langfuse here: Langfuse does not accept gRPC at
+# all, and Phoenix Cloud is reached over HTTP on /v1/traces.
 #
 # Adding a platform means adding one exporter and naming it in the traces pipeline below.
 # Arize AX and Grafana Cloud are kept as worked examples further down.
@@ -39,6 +39,14 @@ processors:
       - key: service.namespace
         value: ${env:OTEL_SERVICE_NAMESPACE}
         action: upsert
+
+  # Keeps only the two turn spans for the feedback pipeline. rag-api ignores any other
+  # span anyway, so removing this processor is safe if a collector build lacks `filter`.
+  filter/rag_turns:
+    error_mode: ignore
+    traces:
+      span:
+        - name != "rag.chat" and name != "rag.chat.stream"
 
   # Last in every pipeline. Without it the collector exports one span at a time.
   batch:
@@ -95,6 +103,20 @@ exporters:
       max_interval: 30s
       max_elapsed_time: 300s
 
+  # Dataset Feedback. rag-api's OTLP receiver (POST <endpoint>/v1/traces). JSON, because
+  # the receiver reads JSON; the exporter's default gzip is accepted.
+  otlp_http/feedback:
+    endpoint: ${env:FEEDBACK_OTLP_ENDPOINT:-http://host.docker.internal:8001/otlp}
+    encoding: json
+    headers:
+      X-API-Key: ${env:FEEDBACK_API_KEY:-}
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
   # ── Extension examples. Uncomment the exporter AND add it to the traces pipeline. ──
   #
   # Arize AX is a different product from Phoenix: gRPC, and it authenticates with api_key
@@ -135,6 +157,13 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
       exporters: [debug, otlp_http/phoenix, otlp_http/langfuse]
+
+    # Dataset Feedback. A separate pipeline because `filter` is per pipeline, and Phoenix
+    # and Langfuse must keep every span.
+    traces/feedback:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/rag_turns, batch]
+      exporters: [otlp_http/feedback]
 
     # Declared so a stray metrics or logs export does not fail the collector outright.
     # Neither Phoenix nor Langfuse accepts them, so they currently go to the debug exporter.

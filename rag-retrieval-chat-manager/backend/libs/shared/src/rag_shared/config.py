@@ -87,10 +87,11 @@ class Settings(BaseSettings):
     eval_worker_concurrency: int = 2
     eval_default_k: int = 5
 
-    # Dataset Fabric files. An uploaded dataset is written to MinIO: a profile linked to a
-    # pipeline writes into that Knowledge Product's document bucket, and a profile with no
-    # pipeline writes into `dataset_fabric_bucket`. The values match the ingestion service,
-    # because both processes read the same MinIO.
+    # Dataset Fabric files. Every dataset is written to `dataset_fabric_bucket` and never to
+    # a Knowledge Product bucket: the ingestion service indexes every object in a product
+    # bucket, so a dataset there would be chunked into that product's destinations. No source
+    # points at this bucket. The values match the ingestion service, because both processes
+    # read the same MinIO.
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"

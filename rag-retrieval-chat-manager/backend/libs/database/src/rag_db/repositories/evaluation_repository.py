@@ -166,12 +166,27 @@ class EvaluationRepository:
             )
         return dataset
 
+    def get_dataset_item(self, item_id: uuid.UUID) -> GoldenDatasetItem | None:
+        return self._session.get(GoldenDatasetItem, item_id)
+
     def list_dataset_items(self, dataset_id: uuid.UUID) -> list[GoldenDatasetItem]:
         return (
             self._session.query(GoldenDatasetItem)
             .filter(GoldenDatasetItem.dataset_id == dataset_id)
+            # Insertion order. `created_at` is set per row, so an edit cannot move a row.
+            .order_by(GoldenDatasetItem.created_at, GoldenDatasetItem.id)
             .all()
         )
+
+    def source_session_ids(self, dataset_id: uuid.UUID) -> set[str]:
+        """The chat sessions already turned into rows of this dataset (Dataset Feedback)."""
+        column = GoldenDatasetItem.metadata_["source_session_id"].as_string()
+        rows = (
+            self._session.query(column)
+            .filter(GoldenDatasetItem.dataset_id == dataset_id, column.is_not(None))
+            .all()
+        )
+        return {row[0] for row in rows}
 
     def create_run(self, dataset_id: uuid.UUID, config: dict) -> EvaluationRun:
         run = EvaluationRun(dataset_id=dataset_id, status="queued", config=config)
@@ -408,6 +423,9 @@ class EvaluationRepository:
             expected_sources=expected_sources,
             turns=turns,
             metadata_=metadata or {},
+            # One transaction gives every row the same `now()`, which leaves the order
+            # undefined and lets an edited row jump in the file. This fixes it per row.
+            created_at=datetime.now(timezone.utc),
         )
         self._session.add(item)
         self._session.flush()

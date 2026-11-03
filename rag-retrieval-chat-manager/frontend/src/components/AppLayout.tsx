@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconChat, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconEvaluation } from "./Icons";
+import { IconChat, IconChevronRight, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconEvaluation, IconSparkles } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
@@ -12,6 +12,7 @@ import EvaluationsPage from "../pages/EvaluationsPage";
 import EvalRunDetailPage from "../pages/EvalRunDetailPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
 import DatasetFabricPage from "../pages/DatasetFabricPage";
+import DatasetFeedbackPage from "../pages/DatasetFeedbackPage";
 import PromptsPage from "../pages/PromptsPage";
 import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
 import GuardrailsTracesPage from "../pages/GuardrailsTracesPage";
@@ -30,6 +31,7 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/prompts", label: "Prompts", icon: IconPrompts },
   { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
   { to: "/dataset-fabric", label: "Dataset Fabric", icon: IconBucket },
+  { to: "/dataset-feedback", label: "Dataset Feedback", icon: IconSparkles },
   { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
   { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
   { to: "/guardrails/traces", label: "Guard Traces", icon: IconGuardrails },
@@ -108,12 +110,27 @@ function useTheme() {
   return { theme, toggle };
 }
 
+/**
+ * The sidebar keeps its own collapsed state, so it survives a page reload and stays
+ * collapsed while the user moves between pages.
+ */
+function useSidebar() {
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "1");
+
+  useEffect(() => {
+    localStorage.setItem("sidebar-collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
+
+  return { collapsed, toggle: () => setCollapsed((prev) => !prev) };
+}
+
 export default function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const path = location.pathname;
   const params = useRouteParams(path);
   const { theme, toggle: toggleTheme } = useTheme();
+  const { collapsed, toggle: toggleSidebar } = useSidebar();
 
   const isHome = path === "/";
   const isBrowseExact = path === "/browse" || path === "/directories";
@@ -125,6 +142,7 @@ export default function AppLayout() {
   const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
   const isDatasetFabric = path === "/dataset-fabric";
+  const isDatasetFeedback = path === "/dataset-feedback";
   const isGoldenEvaluations = path === "/golden-evaluations";
   // The run detail page lives under the evaluation page, so it must be matched before the
   // exact comparison below and must not also switch the evaluation page on.
@@ -138,12 +156,27 @@ export default function AppLayout() {
   const isKnowledgeProduct = params.type === "knowledge-product";
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <NavLink to="/" className="sidebar-brand" end>
-          <IconIngestion className="brand-icon" />
-          <span>Retrieval & Chat</span>
-        </NavLink>
+    <div className={`shell${collapsed ? " shell--collapsed" : ""}`}>
+      <aside className="sidebar" id="app-sidebar" aria-label="Workspace">
+        <div className="sidebar-head">
+          <NavLink to="/" className="sidebar-brand" end title="Overview">
+            <IconIngestion className="brand-icon" />
+            <span className="sidebar-label">Retrieval & Chat</span>
+          </NavLink>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <span className="sidebar-toggle-glyph">
+              <IconChevronRight size={14} />
+            </span>
+          </button>
+        </div>
 
         <nav className="sidebar-nav" aria-label="Main">
           <p className="sidebar-section">Workspace</p>
@@ -152,19 +185,26 @@ export default function AppLayout() {
               key={to}
               to={to}
               end={end}
+              title={collapsed ? label : undefined}
+              aria-label={label}
               className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
             >
               <Icon className="sidebar-link-icon" />
-              {label}
+              <span className="sidebar-label">{label}</span>
             </NavLink>
           ))}
         </nav>
 
         {/* Theme Toggle */}
         <div style={{ padding: "0.75rem 0.625rem" }}>
-          <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            title="Toggle theme"
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
             <span className="theme-toggle-icon">{theme === "dark" ? "☀️" : "🌙"}</span>
-            {theme === "dark" ? "Light Mode" : "Dark Mode"}
+            <span className="sidebar-label">{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
           </button>
         </div>
       </aside>
@@ -208,6 +248,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isDatasetFabric}>
           <DatasetFabricPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isDatasetFeedback}>
+          <DatasetFeedbackPage />
         </PersistentPage>
 
         <PersistentPage visible={isGoldenEvaluations}>

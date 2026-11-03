@@ -58,6 +58,8 @@
   --shadow-glow: 0 0 20px rgba(56, 139, 253, 0.15);
 
   --sidebar-width: 256px;
+  /* The icon rail a collapsed sidebar narrows to. */
+  --sidebar-width-collapsed: 72px;
 
   font-family: var(--font-sans);
   line-height: 1.5;
@@ -377,21 +379,74 @@ a:hover {
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
   z-index: 10;
+  transition: width 0.2s ease;
+}
+
+/* Brand and the collapse button share one row. */
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.875rem 0.5rem 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border-muted);
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 1.125rem 1.25rem 1rem;
+  min-width: 0;
+  flex: 1;
   font-weight: 700;
   font-size: 1.05rem;
   color: var(--text-primary);
   text-decoration: none;
-  border-bottom: 1px solid var(--border-muted);
   letter-spacing: -0.01em;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
+}
+
+.sidebar-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sidebar-toggle:hover {
+  background: var(--bg-glass-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sidebar-toggle-glyph {
+  display: inline-flex;
+  transition: transform 0.2s ease;
+}
+
+/* Expanded: the chevron points left, which is the direction the rail collapses to. */
+.sidebar-toggle[aria-expanded="true"] .sidebar-toggle-glyph {
+  transform: rotate(180deg);
+}
+
+.sidebar-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-brand:hover {
@@ -483,6 +538,53 @@ a:hover {
   border-radius: 999px;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+/* ── Collapsed: an icon rail. Labels leave the flow; each link keeps its title. ── */
+.shell--collapsed .sidebar {
+  width: var(--sidebar-width-collapsed);
+}
+
+.shell--collapsed .sidebar-head {
+  justify-content: center;
+  padding: 0.875rem 0.5rem;
+}
+
+/* The first nav item is Overview, which is what the brand points at, so the rail
+   needs only the toggle here. */
+.shell--collapsed .sidebar-brand {
+  display: none;
+}
+
+.shell--collapsed .sidebar-label,
+.shell--collapsed .sidebar-section {
+  display: none;
+}
+
+.shell--collapsed .sidebar-nav {
+  padding: 0.875rem 0.5rem 1.5rem;
+}
+
+.shell--collapsed .sidebar-link {
+  justify-content: center;
+  gap: 0;
+  padding: 0.55rem 0;
+}
+
+.shell--collapsed .sidebar-link:hover:not(.disabled) {
+  transform: none;
+}
+
+.shell--collapsed .theme-toggle {
+  justify-content: center;
+  padding: 0.5rem 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-toggle-glyph {
+    transition: none;
+  }
 }
 
 .shell-body {
@@ -6104,7 +6206,7 @@ select.input option {
   height: 100%;
   overflow-y: auto;
   padding: 1.25rem;
-  background: var(--bg-canvas);
+  background: var(--bg-default);
   border-left: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
   animation: grDrawerIn 200ms ease-out;
@@ -7408,9 +7510,9 @@ select.input option {
   gap: 0.75rem;
 }
 
+/* The dataset grows with the page; the pager keeps a page of rows in view, so the table
+   needs no second scrollbar of its own. */
 .fabric-viewer-scroll {
-  max-height: min(62vh, 640px);
-  overflow: auto;
   border-top: 1px solid var(--border-muted);
 }
 
@@ -7469,3 +7571,253 @@ select.input option {
 
 .fabric-type { display: block; color: var(--text-secondary); }
 .fabric-type + .fabric-meta { display: block; margin-top: 0.15rem; }
+
+
+/* ══════════════════════════════════════════════
+   Dataset Feedback
+   ══════════════════════════════════════════════ */
+
+.dfb-grid {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .dfb-grid { grid-template-columns: 1fr; }
+}
+
+.dfb-controls { display: grid; gap: 0.6rem; padding: 0 0.75rem 0.75rem; }
+
+/* Mode filter: native radios, so the arrow keys work. The label says the mode in text. */
+.dfb-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  padding: 2px;
+  gap: 2px;
+}
+
+.dfb-seg-opt { position: relative; display: block; }
+
+.dfb-seg-opt input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.dfb-seg-opt span {
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.dfb-seg-opt:hover span { color: var(--text-primary); }
+.dfb-seg-opt input:checked + span { background: var(--accent-subtle); color: var(--accent-emphasis); }
+.dfb-seg-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.dfb-search { position: relative; }
+.dfb-search > svg { position: absolute; left: 0.7rem; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.dfb-search .input { padding-left: 2.1rem; min-height: 44px; }
+
+.dfb-list {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0 0.5rem 0.5rem;
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+}
+
+.dfb-item {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+  min-height: 56px;
+  padding: 0.6rem 0.7rem;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.dfb-item:hover { background: var(--bg-glass-hover); }
+.dfb-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dfb-item--active { background: var(--accent-subtle); border-color: var(--border-glow); }
+
+.dfb-item-q {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.dfb-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+
+.dfb-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1rem;
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+}
+
+.dfb-turn { display: flex; flex-direction: column; gap: 0.6rem; transition: opacity 0.15s ease; }
+.dfb-turn--dim { opacity: 0.45; }
+
+.dfb-turn-head { display: flex; align-items: center; gap: 0.75rem; padding: 0 0.25rem; }
+
+.dfb-grade {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 32px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dfb-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.dfb-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-inset);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dfb-src b { font-weight: 600; color: var(--accent-emphasis); font-variant-numeric: tabular-nums; }
+
+.dfb-src-x {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.dfb-src-x:hover { background: var(--bg-glass-hover); color: var(--text-primary); }
+.dfb-src-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.dfb-readonly {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.dfb-turns { padding-left: 1.8rem; display: grid; gap: 0.35rem; }
+
+.dfb-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem; }
+
+.dfb-grade input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.dfb-grade input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dfb-turn, .dfb-item, .dfb-seg-opt span { transition: none; }
+}
+
+/* ── Pager under a dataset table ── */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--border-muted);
+}
+
+.pager-actions { display: flex; align-items: center; gap: 0.5rem; }
+
+/* ── Row editor drawer ── */
+.dfb-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(2, 6, 16, 0.55);
+}
+
+.dfb-drawer {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  height: 100%;
+  background: var(--bg-canvas);
+  border-left: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  animation: dfb-slide-in 0.18s ease-out;
+}
+
+.dfb-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.dfb-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.1rem 1.5rem;
+}
+
+.dfb-drawer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1.1rem;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg-subtle);
+}
+
+@keyframes dfb-slide-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dfb-drawer { animation: none; }
+}

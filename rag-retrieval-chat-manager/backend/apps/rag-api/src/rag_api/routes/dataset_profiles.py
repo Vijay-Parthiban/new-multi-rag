@@ -12,10 +12,16 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import httpx
-from eval_core.dataset_schema import UPLOAD_FORMATS, parse_golden_dataset_file
+from eval_core.dataset_schema import (
+    UPLOAD_FORMATS,
+    GoldenDatasetItemPayload,
+    dataset_items_to_jsonl,
+    parse_golden_dataset_file,
+)
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 
@@ -79,11 +85,23 @@ class DatasetProfileUpdate(BaseModel):
 
 
 class DatasetItemPreview(BaseModel):
+    id: uuid.UUID
     question: str
     ground_truth_answer: str | None = None
     expected_sources: list[Any] = Field(default_factory=list)
     turns: list[Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetItemUpdate(BaseModel):
+    """A partial row edit. Only the keys the caller sends change."""
+
+    question: str | None = None
+    ground_truth_answer: str | None = None
+    expected_sources: list[Any] | None = None
+    turns: list[Any] | None = None
+    question_type: str | None = None
+    expected_behavior: Literal["answer_from_corpus", "refuse_or_abstain"] | None = None
 
 
 class DatasetPreviewRead(BaseModel):
@@ -152,6 +170,19 @@ async def _pipeline_snapshot(settings: Settings, slug: str) -> tuple[str | None,
     return pipeline.get("name"), product.get("id"), product.get("name")
 
 
+def _dataset_to_read(dataset) -> DatasetFileRead:
+    return DatasetFileRead(
+        dataset_id=dataset.id,
+        kind=dataset.kind,
+        filename=dataset.original_filename,
+        format=dataset.source_format,
+        row_count=dataset.row_count,
+        bucket=dataset.storage_bucket,
+        key=dataset.storage_key,
+        created_at=dataset.created_at,
+    )
+
+
 def _profile_to_read(profile) -> DatasetProfileRead:
     datasets = sorted(
         profile.datasets or [], key=lambda d: d.created_at or datetime.min, reverse=True
@@ -166,20 +197,92 @@ def _profile_to_read(profile) -> DatasetProfileRead:
         knowledge_product_name=profile.knowledge_product_name,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
-        datasets=[
-            DatasetFileRead(
-                dataset_id=dataset.id,
-                kind=dataset.kind,
-                filename=dataset.original_filename,
-                format=dataset.source_format,
-                row_count=dataset.row_count,
-                bucket=dataset.storage_bucket,
-                key=dataset.storage_key,
-                created_at=dataset.created_at,
-            )
-            for dataset in datasets
-        ],
+        datasets=[_dataset_to_read(dataset) for dataset in datasets],
     )
+
+
+def _sources(values: list[Any]) -> list[dict[str, Any]]:
+    """`["a.pdf", {"name": "b.pdf", "page": 3}]` as the stored shape. Blanks are dropped."""
+    out: list[dict[str, Any]] = []
+    for value in values:
+        if isinstance(value, str):
+            name, page = value.strip(), None
+        elif isinstance(value, dict):
+            name = str(value.get("name") or "").strip()
+            page = value.get("page")
+        else:
+            continue
+        if not name:
+            continue
+        if any(existing["name"] == name for existing in out):
+            continue
+        entry: dict[str, Any] = {"name": name}
+        if page not in (None, ""):
+            entry["page"] = page
+        out.append(entry)
+    return out
+
+
+def _item_preview(item) -> DatasetItemPreview:
+    return DatasetItemPreview(
+        id=item.id,
+        question=item.question,
+        ground_truth_answer=item.ground_truth_answer,
+        expected_sources=item.expected_sources or [],
+        turns=item.turns,
+        metadata=item.metadata_ or {},
+    )
+
+
+async def store_snapshot(settings, db, repo, dataset, *, profile_id, kind) -> None:
+    """Rewrite the dataset's canonical JSONL object and point the row at it.
+
+    The file is written before the commit, so no row exists without the snapshot it
+    belongs to. The previous object is deleted after the commit, which is also what takes
+    a file out of a Knowledge Product bucket an older build wrote into. Call this after
+    the item rows are written; it commits the row changes itself.
+    """
+    # `list_dataset_items` returns insertion order, so the file keeps the same row order
+    # after an edit.
+    rows = repo.list_dataset_items(dataset.id)
+    data = dataset_items_to_jsonl(
+        {
+            "question": i.question,
+            "ground_truth_answer": i.ground_truth_answer,
+            "expected_sources": i.expected_sources or [],
+            "turns": i.turns,
+            "metadata": i.metadata_ or {},
+        }
+        for i in rows
+    )
+    stem = Path(dataset.original_filename).stem if dataset.original_filename else f"{kind}_feedback"
+    filename = f"{stem}.jsonl"
+    bucket = resolve_bucket(settings)
+    new_key = object_key(str(profile_id), kind, filename)
+    old_bucket, old_key = dataset.storage_bucket, dataset.storage_key
+
+    try:
+        await put_dataset(settings, bucket=bucket, key=new_key, data=data, filename=filename)
+    except DatasetStorageError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail={"code": "STORAGE_UNAVAILABLE", "message": str(exc)}
+        ) from exc
+
+    dataset.storage_bucket = bucket
+    dataset.storage_key = new_key
+    dataset.original_filename = filename
+    dataset.source_format = "jsonl"
+    dataset.row_count = repo.count_dataset_items(dataset.id)
+    try:
+        db.commit()
+    except Exception:
+        if new_key != old_key:
+            await delete_stored_file(settings, bucket=bucket, key=new_key)
+        raise
+
+    if old_key and (old_bucket, old_key) != (bucket, new_key):
+        await delete_stored_file(settings, bucket=old_bucket, key=old_key)
 
 
 # ── Profiles ───────────────────────────────────────────────────────────────
@@ -360,15 +463,9 @@ async def upload_dataset(
         profile = DatasetProfileRepository(db).get(profile_id)
         if not profile:
             raise HTTPException(status_code=404, detail="Dataset profile not found.")
-        knowledge_product_id = profile.knowledge_product_id
         profile_name = profile.name
 
-    try:
-        bucket = await resolve_bucket(settings, knowledge_product_id)
-    except DatasetStorageError as exc:
-        raise HTTPException(
-            status_code=503, detail={"code": "STORAGE_UNAVAILABLE", "message": str(exc)}
-        ) from exc
+    bucket = resolve_bucket(settings)
 
     key = object_key(str(profile_id), kind, filename)
     try:
@@ -444,17 +541,110 @@ def preview_dataset(
             row_count=dataset.row_count or len(items),
             bucket=dataset.storage_bucket,
             key=dataset.storage_key,
-            items=[
-                DatasetItemPreview(
-                    question=item.question,
-                    ground_truth_answer=item.ground_truth_answer,
-                    expected_sources=item.expected_sources or [],
-                    turns=item.turns,
-                    metadata=item.metadata_ or {},
-                )
-                for item in items
-            ],
+            items=[_item_preview(item) for item in items],
         )
+
+
+@router.patch(
+    "/{profile_id}/datasets/{dataset_id}/items/{item_id}", response_model=DatasetItemPreview
+)
+async def update_dataset_item(
+    request: Request,
+    profile_id: uuid.UUID,
+    dataset_id: uuid.UUID,
+    item_id: uuid.UUID,
+    body: DatasetItemUpdate,
+) -> DatasetItemPreview:
+    """Edit one row of a dataset.
+
+    The canonical JSONL object is rewritten, so the file and the rows always agree.
+    """
+    from rag_db.repositories.evaluation_repository import EvaluationRepository
+
+    settings = _settings(request)
+    sent = body.model_fields_set
+    with _session_factory(settings)() as db:
+        repo = EvaluationRepository(db)
+        dataset = repo.get_dataset(dataset_id)
+        if not dataset or dataset.profile_id != profile_id:
+            raise HTTPException(status_code=404, detail="Dataset not found in this profile.")
+        item = repo.get_dataset_item(item_id)
+        if not item or item.dataset_id != dataset_id:
+            raise HTTPException(status_code=404, detail="Dataset row not found.")
+
+        question = body.question if "question" in sent else item.question
+        answer = (
+            body.ground_truth_answer
+            if "ground_truth_answer" in sent
+            else item.ground_truth_answer
+        )
+        sources = (
+            body.expected_sources
+            if "expected_sources" in sent
+            else (item.expected_sources or [])
+        )
+        turns = body.turns if "turns" in sent else item.turns
+
+        metadata = dict(item.metadata_ or {})
+        if "question_type" in sent:
+            label = (body.question_type or "").strip()
+            if label:
+                metadata["question_type"] = label
+            else:
+                metadata.pop("question_type", None)
+        if body.expected_behavior:
+            metadata["expected_behavior"] = body.expected_behavior
+        # An abstain row has no reference to score against, so it holds neither.
+        if metadata.get("expected_behavior") == "refuse_or_abstain":
+            answer, sources = None, []
+
+        if dataset.kind == "single_turn" and turns:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "KIND_MISMATCH", "message": "A single-turn row cannot hold turns."},
+            )
+        if dataset.kind == "multi_turn" and not turns:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "KIND_MISMATCH", "message": "A multi-turn row needs its turns."},
+            )
+        # The row's question is its last user turn: derived when the turns change without
+        # a question, and when the question arrives empty.
+        question = (question or "").strip()
+        if turns and ("question" not in sent or not question):
+            question = next(
+                (
+                    str(turn.get("content") or "")
+                    for turn in reversed(turns)
+                    if turn.get("role") == "user"
+                ),
+                question,
+            )
+
+        try:
+            payload = GoldenDatasetItemPayload.model_validate(
+                {
+                    "question": question,
+                    "ground_truth_answer": answer,
+                    "expected_sources": _sources(sources),
+                    "turns": turns,
+                    "metadata": metadata,
+                }
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": "INVALID_ROW", "message": str(exc)}
+            ) from exc
+
+        item.question = payload.question
+        item.ground_truth_answer = payload.ground_truth_answer
+        item.expected_sources = payload.expected_sources
+        # JSONB needs plain dicts; the payload holds validated models.
+        item.turns = [turn.model_dump() for turn in payload.turns] if payload.turns else None
+        item.metadata_ = payload.metadata
+        db.flush()
+        await store_snapshot(settings, db, repo, dataset, profile_id=profile_id, kind=dataset.kind)
+        return _item_preview(item)
 
 
 @router.delete("/{profile_id}/datasets/{dataset_id}", status_code=204)

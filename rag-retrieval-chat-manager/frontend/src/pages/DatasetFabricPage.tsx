@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import PageHeader from "../components/PageHeader";
+import Pager from "../components/Pager";
 import {
   IconBucket,
   IconChevronRight,
@@ -66,6 +67,9 @@ export default function DatasetFabricPage() {
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [preview, setPreview] = useState<DatasetPreview | null>(null);
+  // The viewer shows one page of rows; the header states the full count.
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<DatasetKind | null>(null);
@@ -97,6 +101,11 @@ export default function DatasetFabricPage() {
     }
     return map;
   }, [selected]);
+
+  // One page of the open dataset. Every row is reachable; the count stays the file's own.
+  const previewRows = preview?.items ?? [];
+  const pageCount = Math.max(1, Math.ceil(previewRows.length / PAGE_SIZE));
+  const pageRows = previewRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,6 +139,7 @@ export default function DatasetFabricPage() {
   // The viewer opens below the grid, so bring it into view without a jump.
   useEffect(() => {
     if (!preview) return;
+    setPage(0);
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     viewerRef.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
   }, [preview]);
@@ -684,10 +694,8 @@ export default function DatasetFabricPage() {
                 <span className="fabric-chip">{KIND_LABEL[preview.kind]}</span>
               </div>
               <span className="fabric-meta">
-                {preview.items.length} {preview.items.length === 1 ? "row" : "rows"} shown
-                {preview.row_count !== null && preview.row_count !== preview.items.length
-                  ? ` of ${preview.row_count}`
-                  : ""}
+                {preview.row_count ?? preview.items.length}{" "}
+                {(preview.row_count ?? preview.items.length) === 1 ? "row" : "rows"}
                 {preview.bucket ? ` · ${preview.bucket}` : ""}
               </span>
             </div>
@@ -705,58 +713,68 @@ export default function DatasetFabricPage() {
           {preview.items.length === 0 ? (
             <p className="panel-empty muted">This dataset holds no rows.</p>
           ) : (
-            <div className="fabric-viewer-scroll">
-              <table className="fabric-table">
-                <colgroup>
-                  <col style={{ width: "7%" }} />
-                  <col style={{ width: "30%" }} />
-                  <col style={{ width: "37%" }} />
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "10%" }} />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th scope="col" className="fabric-th-num">
-                      #
-                    </th>
-                    <th scope="col">Question</th>
-                    <th scope="col">Ground truth</th>
-                    <th scope="col">Type</th>
-                    <th scope="col" className="fabric-th-num">
-                      Sources
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.items.map((item, index) => {
-                    const category =
-                      typeof item.metadata?.question_type === "string"
-                        ? String(item.metadata.question_type).replace(/_/g, " ")
-                        : "";
-                    return (
-                      <tr key={index}>
-                        <td className="fabric-td-num">{index + 1}</td>
-                        <td className="fabric-cell">{item.question || "—"}</td>
-                        <td className="fabric-cell fabric-cell--muted">
-                          {item.ground_truth_answer || "—"}
-                        </td>
-                        <td className="fabric-cell fabric-cell--muted">
-                          <span className="fabric-type">
-                            {item.turns
-                              ? `${item.turns.length} turn${item.turns.length === 1 ? "" : "s"}`
-                              : "Single"}
-                          </span>
-                          {category && <span className="fabric-meta">{category}</span>}
-                        </td>
-                        <td className="fabric-td-num">
-                          {item.expected_sources.length > 0 ? item.expected_sources.length : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="fabric-viewer-scroll">
+                <table className="fabric-table">
+                  <colgroup>
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "30%" }} />
+                    <col style={{ width: "37%" }} />
+                    <col style={{ width: "16%" }} />
+                    <col style={{ width: "10%" }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th scope="col" className="fabric-th-num">
+                        #
+                      </th>
+                      <th scope="col">Question</th>
+                      <th scope="col">Ground truth</th>
+                      <th scope="col">Type</th>
+                      <th scope="col" className="fabric-th-num">
+                        Sources
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageRows.map((item, index) => {
+                      const category =
+                        typeof item.metadata?.question_type === "string"
+                          ? String(item.metadata.question_type).replace(/_/g, " ")
+                          : "";
+                      return (
+                        <tr key={item.id}>
+                          <td className="fabric-td-num">{page * PAGE_SIZE + index + 1}</td>
+                          <td className="fabric-cell">{item.question || "—"}</td>
+                          <td className="fabric-cell fabric-cell--muted">
+                            {item.ground_truth_answer || "—"}
+                          </td>
+                          <td className="fabric-cell fabric-cell--muted">
+                            <span className="fabric-type">
+                              {item.turns
+                                ? `${item.turns.length} turn${item.turns.length === 1 ? "" : "s"}`
+                                : "Single"}
+                            </span>
+                            {category && <span className="fabric-meta">{category}</span>}
+                          </td>
+                          <td className="fabric-td-num">
+                            {item.expected_sources.length > 0 ? item.expected_sources.length : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <Pager
+                page={page}
+                pageCount={pageCount}
+                from={page * PAGE_SIZE + 1}
+                to={page * PAGE_SIZE + pageRows.length}
+                total={previewRows.length}
+                onChange={setPage}
+              />
+            </>
           )}
         </section>
       )}

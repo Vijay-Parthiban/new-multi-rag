@@ -1,4 +1,5 @@
 from rag_db.models.dataset_profile import DatasetProfile
+from rag_db.models.conversation_turn import ConversationTurn
 from rag_db.models.chat import ChatMessage, ChatMessageMetrics, ChatPipelineTrace, ChatSession
 from rag_db.models.evaluation import (
     EvaluationRun,
@@ -21,6 +22,7 @@ __all__ = [
     "ChatMessage",
     "ChatPipelineTrace",
     "ChatMessageMetrics",
+    "ConversationTurn",
     "DatasetProfile",
     "GoldenDataset",
     "GoldenDatasetItem",

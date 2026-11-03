@@ -235,6 +235,8 @@ services:
     ports:
       - 4317:4317
       - 4318:4318
+    extra_hosts:
+      - host.docker.internal:host-gateway
     env_file:
       - ../otel/.env
     volumes:

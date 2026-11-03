@@ -1134,6 +1134,7 @@ export interface DatasetProfile {
 }
 
 export interface DatasetPreviewItem {
+  id: string;
   question: string;
   ground_truth_answer: string | null;
   expected_sources: unknown[];
@@ -1217,6 +1218,126 @@ export async function deleteProfileDataset(
   datasetId: string,
 ): Promise<void> {
   await ragFetch(`/api/dataset-profiles/${profileId}/datasets/${datasetId}`, { method: "DELETE" });
+}
+
+/** A partial row edit. Only the keys sent change. The stored JSONL file is rewritten. */
+export interface DatasetItemUpdate {
+  question?: string;
+  ground_truth_answer?: string | null;
+  expected_sources?: string[];
+  turns?: { role: string; content: string }[] | null;
+  question_type?: string | null;
+  expected_behavior?: "answer_from_corpus" | "refuse_or_abstain";
+}
+
+export async function updateProfileDatasetItem(
+  profileId: string,
+  datasetId: string,
+  itemId: string,
+  body: DatasetItemUpdate,
+): Promise<DatasetPreviewItem> {
+  return ragFetch<DatasetPreviewItem>(
+    `/api/dataset-profiles/${profileId}/datasets/${datasetId}/items/${itemId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+// ── Dataset Feedback ───────────────────────────────────────────────────────
+
+export type FeedbackMode = "all" | "test" | "prod";
+
+export interface FeedbackConversation {
+  session_id: string;
+  turns: number;
+  trace_modes: string[];
+  first_question: string;
+  first_at: string;
+  last_at: string;
+  added: boolean;
+}
+
+export interface FeedbackConversationList {
+  items: FeedbackConversation[];
+  total: number;
+}
+
+export interface FeedbackSource {
+  name: string;
+  rerank_score: number | null;
+}
+
+export interface FeedbackTurn {
+  index: number;
+  trace_id: string;
+  span_id: string;
+  question: string;
+  answer: string;
+  trace_mode: string;
+  started_at: string;
+  sources: FeedbackSource[];
+}
+
+export interface FeedbackConversationDetail {
+  session_id: string;
+  pipeline_slug: string;
+  added: boolean;
+  turns: FeedbackTurn[];
+}
+
+export interface FeedbackRowInput {
+  session_id: string;
+  graded_turn?: number | null;
+  ground_truth_answer: string | null;
+  expected_sources: string[];
+  question_type: string | null;
+  expected_behavior: "answer_from_corpus" | "refuse_or_abstain";
+}
+
+export interface AppendRowsResponse {
+  dataset: DatasetProfileFile;
+  added: number;
+  skipped: { session_id: string; reason: string; detail: string }[];
+}
+
+/** Real test and prod conversations of the profile's pipeline, newest first. */
+export async function listFeedbackConversations(
+  profileId: string,
+  p: { kind: DatasetKind; mode?: FeedbackMode; q?: string; limit?: number; offset?: number },
+): Promise<FeedbackConversationList> {
+  const params = new URLSearchParams({ kind: p.kind });
+  if (p.mode && p.mode !== "all") params.set("mode", p.mode);
+  if (p.q) params.set("q", p.q);
+  if (p.limit) params.set("limit", String(p.limit));
+  if (p.offset) params.set("offset", String(p.offset));
+  return ragFetch<FeedbackConversationList>(
+    `/api/dataset-feedback/profiles/${profileId}/conversations?${params}`,
+  );
+}
+
+export async function getFeedbackConversation(
+  profileId: string,
+  sessionId: string,
+): Promise<FeedbackConversationDetail> {
+  return ragFetch<FeedbackConversationDetail>(
+    `/api/dataset-feedback/profiles/${profileId}/conversations/${encodeURIComponent(sessionId)}`,
+  );
+}
+
+/** Add conversations as rows. The server builds each row from the stored turns. */
+export async function appendFeedbackRows(
+  profileId: string,
+  kind: DatasetKind,
+  rows: FeedbackRowInput[],
+): Promise<AppendRowsResponse> {
+  return ragFetch<AppendRowsResponse>(`/api/dataset-feedback/profiles/${profileId}/rows`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, rows }),
+  });
 }
 
 /**

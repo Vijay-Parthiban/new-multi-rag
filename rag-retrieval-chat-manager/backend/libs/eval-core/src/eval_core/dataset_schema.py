@@ -331,6 +331,23 @@ def parse_golden_dataset_jsonl(raw: str | bytes, *, name: str | None = None) -> 
     )
 
 
+def dataset_items_to_jsonl(items: Iterable[dict[str, Any]]) -> bytes:
+    """The canonical JSONL file of a dataset: one object per row, readable by
+    `parse_golden_dataset_jsonl`. `turns` is written only on a multi-turn row."""
+    lines = []
+    for item in items:
+        row: dict[str, Any] = {
+            "question": item["question"],
+            "ground_truth_answer": item.get("ground_truth_answer"),
+            "expected_sources": item.get("expected_sources") or [],
+            "metadata": item.get("metadata") or {},
+        }
+        if item.get("turns"):
+            row["turns"] = item["turns"]
+        lines.append(json.dumps(row, ensure_ascii=False, default=str))
+    return ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+
+
 # The metadata key the gold passage of a row is kept under. Unchanged from the format the
 # reference dataset and the docs already use.
 _CSV_REFERENCE_CONTEXT = "reference_context"

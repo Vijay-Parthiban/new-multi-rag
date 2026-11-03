@@ -102,7 +102,7 @@ def test_upload_writes_the_file_and_imports_the_rows(client):
             "rag_db.repositories.evaluation_repository.EvaluationRepository",
             return_value=eval_repo,
         ),
-        patch("rag_api.routes.dataset_profiles.resolve_bucket", AsyncMock(return_value="dataset-fabric")),
+        patch("rag_api.routes.dataset_profiles.resolve_bucket", MagicMock(return_value="dataset-fabric")),
         patch("rag_api.routes.dataset_profiles.put_dataset", put),
     ):
         response = _post(client, CSV, "d.csv", "single_turn", profile_id)
@@ -153,7 +153,7 @@ def test_xlsx_upload_imports_its_rows(client):
             "rag_db.repositories.evaluation_repository.EvaluationRepository",
             return_value=eval_repo,
         ),
-        patch("rag_api.routes.dataset_profiles.resolve_bucket", AsyncMock(return_value="b")),
+        patch("rag_api.routes.dataset_profiles.resolve_bucket", MagicMock(return_value="b")),
         patch("rag_api.routes.dataset_profiles.put_dataset", AsyncMock()),
     ):
         response = _post(client, buffer.getvalue(), "d.xlsx", "single_turn", profile_id)
@@ -163,39 +163,241 @@ def test_xlsx_upload_imports_its_rows(client):
     assert eval_repo.create_dataset.call_args.kwargs["row_count"] == 1
 
 
-def test_a_linked_profile_writes_into_the_knowledge_product_bucket():
-    import asyncio
-    import httpx
-
+def test_every_dataset_goes_to_the_fabric_bucket():
+    """A Knowledge Product bucket is an ingestion source, so a dataset must never land there."""
     from rag_api.dataset_storage import resolve_bucket
     from rag_shared.config import Settings
 
-    settings = Settings()
+    settings = Settings(dataset_fabric_bucket="dataset-fabric")
+    assert resolve_bucket(settings) == "dataset-fabric"
 
-    class _Response:
-        status_code = 200
 
-        @staticmethod
-        def json():
-            return {
-                "sources": [
-                    {"minio_bucket": "source-resumes-ab12"},
-                    {"minio_bucket": "local-notes"},
-                    {"minio_bucket": "source-policies-cd34"},
-                ]
-            }
+def _snapshot_fakes(filename="resume.csv", bucket="source-kp", key="datasets/x/single_turn/resume.csv"):
+    from types import SimpleNamespace
 
-    class _Client:
-        async def __aenter__(self):
-            return self
+    class _Db:
+        committed = 0
+        rolled = 0
 
-        async def __aexit__(self, *exc):
-            return False
+        def commit(self):
+            type(self).committed += 1
 
-        async def get(self, *args, **kwargs):
-            return _Response()
+        def rollback(self):
+            type(self).rolled += 1
 
-    with patch("rag_api.dataset_storage.httpx.AsyncClient", return_value=_Client()):
-        bucket = asyncio.run(resolve_bucket(settings, "kp-1"))
+    dataset = SimpleNamespace(
+        id=uuid4(),
+        created_at=None,
+        original_filename=filename,
+        storage_bucket=bucket,
+        storage_key=key,
+        source_format=None,
+        row_count=None,
+    )
+    rows = [
+        SimpleNamespace(
+            question="q1",
+            ground_truth_answer="a1",
+            expected_sources=[{"name": "n.pdf"}],
+            turns=None,
+            metadata_={"question_type": "single_hop"},
+            created_at=None,
+        )
+    ]
+    repo = MagicMock()
+    repo.list_dataset_items.return_value = rows
+    repo.count_dataset_items.return_value = 1
+    settings = SimpleNamespace(dataset_fabric_bucket="dataset-fabric")
+    return settings, _Db(), repo, dataset
 
-    assert bucket == "source-policies-cd34", "the local- bucket and the shared fallback are skipped"
+
+def test_store_snapshot_writes_jsonl_and_drops_the_old_object():
+    import asyncio
+
+    from eval_core.dataset_schema import parse_golden_dataset_jsonl
+    from rag_api.routes.dataset_profiles import store_snapshot
+
+    settings, db, repo, dataset = _snapshot_fakes()
+    put, delete = AsyncMock(), AsyncMock()
+    with (
+        patch("rag_api.routes.dataset_profiles.put_dataset", put),
+        patch("rag_api.routes.dataset_profiles.delete_stored_file", delete),
+    ):
+        asyncio.run(
+            store_snapshot(settings, db, repo, dataset, profile_id=uuid4(), kind="single_turn")
+        )
+
+    kwargs = put.await_args.kwargs
+    assert kwargs["bucket"] == "dataset-fabric"
+    assert kwargs["key"].endswith("/single_turn/resume.jsonl")
+    assert parse_golden_dataset_jsonl(kwargs["data"], name="t").items[0].question == "q1"
+    assert dataset.storage_bucket == "dataset-fabric"
+    assert dataset.row_count == 1
+    delete.assert_awaited_once()
+    assert delete.await_args.kwargs["bucket"] == "source-kp"
+
+
+def test_store_snapshot_rolls_back_when_minio_refuses():
+    import asyncio
+
+    from fastapi import HTTPException
+    from rag_api.dataset_storage import DatasetStorageError
+    from rag_api.routes.dataset_profiles import store_snapshot
+
+    settings, db, repo, dataset = _snapshot_fakes()
+    with patch(
+        "rag_api.routes.dataset_profiles.put_dataset",
+        AsyncMock(side_effect=DatasetStorageError("down")),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                store_snapshot(settings, db, repo, dataset, profile_id=uuid4(), kind="single_turn")
+            )
+    assert exc.value.status_code == 503
+    assert db.rolled == 1
+
+
+# ── Preview and row editing ────────────────────────────────────────────────
+
+
+def _row(question="q1", answer="a1", sources=None, turns=None, metadata=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=uuid4(),
+        dataset_id=None,
+        question=question,
+        ground_truth_answer=answer,
+        expected_sources=sources if sources is not None else [{"name": "a.pdf"}],
+        turns=turns,
+        metadata_=metadata or {},
+    )
+
+
+def _edit(client, *, kind="single_turn", item=None, body=None):
+    """PATCH one row against fakes. Returns (response, row, store_snapshot mock)."""
+    from types import SimpleNamespace
+
+    profile_id = uuid4()
+    dataset = SimpleNamespace(id=uuid4(), profile_id=profile_id, kind=kind)
+    row = item or _row()
+    row.dataset_id = dataset.id
+    eval_repo = MagicMock()
+    eval_repo.get_dataset.return_value = dataset
+    eval_repo.get_dataset_item.return_value = row
+    snapshot = AsyncMock()
+    with (
+        patch("rag_api.routes.dataset_profiles._session_factory", return_value=_FakeSession),
+        patch(
+            "rag_db.repositories.evaluation_repository.EvaluationRepository",
+            return_value=eval_repo,
+        ),
+        patch("rag_api.routes.dataset_profiles.store_snapshot", snapshot),
+    ):
+        response = client.patch(
+            f"/api/dataset-profiles/{profile_id}/datasets/{dataset.id}/items/{row.id}",
+            json=body if body is not None else {},
+        )
+    return response, row, snapshot
+
+
+def test_preview_gives_every_row_its_id(client):
+    from types import SimpleNamespace
+
+    profile_id, dataset_id = uuid4(), uuid4()
+    dataset = SimpleNamespace(
+        id=dataset_id,
+        profile_id=profile_id,
+        original_filename="d.csv",
+        kind="single_turn",
+        row_count=1,
+        storage_bucket="dataset-fabric",
+        storage_key="k",
+    )
+    row = _row()
+    row.dataset_id = dataset_id
+    repo = MagicMock()
+    repo.get_dataset.return_value = dataset
+    repo.list_dataset_items.return_value = [row]
+
+    with (
+        patch("rag_api.routes.dataset_profiles._session_factory", return_value=_FakeSession),
+        patch(
+            "rag_db.repositories.evaluation_repository.EvaluationRepository", return_value=repo
+        ),
+    ):
+        response = client.get(f"/api/dataset-profiles/{profile_id}/datasets/{dataset_id}")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["id"] == str(row.id)
+
+
+def test_edit_rewrites_the_row_and_the_snapshot(client):
+    response, row, snapshot = _edit(
+        client,
+        body={"question": "new?", "ground_truth_answer": "new answer", "question_type": "multi_hop"},
+    )
+    assert response.status_code == 200, response.text
+    assert row.question == "new?"
+    assert row.ground_truth_answer == "new answer"
+    assert row.metadata_["question_type"] == "multi_hop"
+    snapshot.assert_awaited_once()
+    assert snapshot.await_args.kwargs["kind"] == "single_turn"
+    assert response.json()["question"] == "new?"
+
+
+def test_edit_an_abstain_row_clears_the_answer_and_the_sources(client):
+    response, row, _ = _edit(client, body={"expected_behavior": "refuse_or_abstain"})
+    assert response.status_code == 200, response.text
+    assert row.ground_truth_answer is None
+    assert row.expected_sources == []
+    assert row.metadata_["expected_behavior"] == "refuse_or_abstain"
+
+
+def test_edit_normalizes_plain_source_names(client):
+    response, row, _ = _edit(client, body={"expected_sources": [" a.pdf ", "b.pdf", "a.pdf"]})
+    assert response.status_code == 200
+    assert row.expected_sources == [{"name": "a.pdf"}, {"name": "b.pdf"}]
+
+
+def test_turns_on_a_single_turn_row_are_refused(client):
+    response, _, snapshot = _edit(
+        client, body={"turns": [{"role": "user", "content": "q"}, {"role": "user", "content": "q2"}]}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "KIND_MISMATCH"
+    snapshot.assert_not_awaited()
+
+
+def test_a_blank_question_is_refused(client):
+    response, _, snapshot = _edit(client, body={"question": "   "})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_ROW"
+    snapshot.assert_not_awaited()
+
+
+def test_editing_a_row_of_another_dataset_is_404(client):
+    response, _, _ = _edit(client, body={"question": "x"})
+    # The helper points the row at its own dataset, so force a mismatch instead.
+    assert response.status_code == 200
+
+    from types import SimpleNamespace
+
+    profile_id = uuid4()
+    dataset = SimpleNamespace(id=uuid4(), profile_id=profile_id, kind="single_turn")
+    row = _row()
+    row.dataset_id = uuid4()  # another dataset's row
+    repo = MagicMock()
+    repo.get_dataset.return_value = dataset
+    repo.get_dataset_item.return_value = row
+    with (
+        patch("rag_api.routes.dataset_profiles._session_factory", return_value=_FakeSession),
+        patch(
+            "rag_db.repositories.evaluation_repository.EvaluationRepository", return_value=repo
+        ),
+    ):
+        response = client.patch(
+            f"/api/dataset-profiles/{profile_id}/datasets/{dataset.id}/items/{row.id}",
+            json={"question": "x"},
+        )
+    assert response.status_code == 404
