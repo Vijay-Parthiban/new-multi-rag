@@ -8,11 +8,15 @@ dependencies = [
     "retrieval-core",
     "reranker-core",
     "generation-core",
+    "vector-core",
+    "qdrant-client>=1.12",
     "pydantic>=2.0",
     "langchain-openai>=0.2",
     "langchain-community>=0.3.0,<0.4",
     "openai>=1.0",
     "ragas>=0.4",
+    "deepeval>=4.3,<5",
+    "minio>=7.2",
     "datasets>=3.0",
     "scipy>=1.11",
     "pandas>=2.0",
@@ -26,6 +30,7 @@ rag-core = { workspace = true }
 retrieval-core = { workspace = true }
 reranker-core = { workspace = true }
 generation-core = { workspace = true }
+vector-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

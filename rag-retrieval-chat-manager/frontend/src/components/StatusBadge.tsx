@@ -5,6 +5,7 @@ const LABELS: Record<string, string> = {
   deleted: "Deleted",
   duplicate: "Duplicate",
   pending: "Pending",
+  queued: "Queued",
   success: "Complete",
   completed: "Complete",
   running: "Running",

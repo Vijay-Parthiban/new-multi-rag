@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-04T00:00:00Z",
+  "title": "Design System: new-multi-rag",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Electric Signal Blue",
+        "canonical": "#58a6ff",
+        "tonalRamp": ["rgba(56, 139, 253, 0.12)", "#2563eb", "#58a6ff", "#79c0ff"]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Deep Instrument Slate",
+        "canonical": "rgba(11, 14, 20, 1)",
+        "tonalRamp": ["rgba(13, 16, 23, 0.95)", "rgba(17, 21, 30, 0.85)", "rgba(22, 27, 38, 0.7)", "rgba(28, 34, 48, 0.6)"]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Cool Paper",
+        "canonical": "#e6edf3",
+        "tonalRamp": ["#8b949e", "#c3ccd6", "#e6edf3"]
+      },
+      "border-default": {
+        "role": "neutral",
+        "displayName": "Hull Line",
+        "canonical": "rgba(56, 68, 100, 0.45)",
+        "tonalRamp": ["rgba(56, 68, 100, 0.25)", "rgba(56, 68, 100, 0.45)", "rgba(88, 166, 255, 0.2)"]
+      },
+      "success": { "role": "tertiary", "displayName": "Pass Green", "canonical": "#3fb950" },
+      "warn": { "role": "tertiary", "displayName": "Hold Amber", "canonical": "#d29922" },
+      "danger": { "role": "tertiary", "displayName": "Signal Red", "canonical": "#f85149" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Page Title", "purpose": "One per page. The only element that carries the text gradient." },
+      "title": { "displayName": "Panel Title", "purpose": "Section headers inside a page and panel headers." },
+      "body": { "displayName": "Body", "purpose": "Prose, table cells, form values. Descriptions cap at 52ch." },
+      "button": { "displayName": "Control", "purpose": "Button and tab labels." },
+      "label": { "displayName": "Instrument Label", "purpose": "Table headers, badges, field labels, metadata. Uppercase, tracked." },
+      "mono": { "displayName": "Data", "purpose": "Identifiers, metric keys, JSON, scores. Never prose." }
+    },
+    "shadows": [
+      { "name": "rest", "value": "0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2)", "purpose": "Rows, badges, small controls." },
+      { "name": "panel", "value": "0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3)", "purpose": "Every panel and card at rest." },
+      { "name": "overlay", "value": "0 8px 32px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3)", "purpose": "Dialogs, drawers, floating menus." },
+      { "name": "signal-halo", "value": "0 0 20px rgba(56, 139, 253, 0.15)", "purpose": "A running job or a focused accent surface only." },
+      { "name": "primary-lift", "value": "0 4px 16px rgba(37, 99, 235, 0.4)", "purpose": "Primary button hover, with translateY(-1px)." }
+    ],
+    "motion": [
+      { "name": "state", "value": "0.2s ease", "purpose": "Colour, background, border and transform on hover and focus." },
+      { "name": "surface", "value": "0.3s ease", "purpose": "Panel border and shadow change on hover or focus-within." },
+      { "name": "progress", "value": "0.3s ease", "purpose": "Progress bar width. Disabled under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "lg", "value": "1100px" },
+      { "name": "md", "value": "900px" },
+      { "name": "sm", "value": "720px" },
+      { "name": "xs", "value": "560px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single action a surface exists for. Lifts 1px and widens its halo on hover.",
+      "html": "<button class=\"ds-btn ds-btn--primary\" type=\"button\">Create dataset version</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 16px; font: 500 0.875rem/1.25 Inter, system-ui, sans-serif; border: 1px solid transparent; border-radius: 8px; cursor: pointer; transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease; } .ds-btn--primary { background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%); color: #fff; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3); } .ds-btn--primary:hover { background: linear-gradient(135deg, #3b82f6 0%, #22d3ee 100%); box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4); transform: translateY(-1px); } .ds-btn--primary:active { transform: translateY(0); box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Supporting actions, row actions and panel-header controls.",
+      "html": "<button class=\"ds-btn ds-btn--secondary\" type=\"button\">Refresh</button>",
+      "css": ".ds-btn--secondary { background: rgba(20, 25, 40, 0.6); color: #e6edf3; border-color: rgba(56, 68, 100, 0.45); backdrop-filter: blur(8px); } .ds-btn--secondary:hover { background: rgba(30, 38, 58, 0.7); border-color: rgba(88, 166, 255, 0.2); transform: translateY(-1px); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Sunken well with a 3px accent-glow focus ring. Always labelled above.",
+      "html": "<label class=\"ds-field\" for=\"ds-name\">Name</label><input id=\"ds-name\" class=\"ds-input\" value=\"my-resumes-kp\" />",
+      "css": ".ds-field { display: block; margin-bottom: 4px; font: 500 0.72rem/1.4 Inter, system-ui, sans-serif; color: #8b949e; } .ds-input { width: 100%; padding: 8px 14px; font: 400 0.875rem/1.5 Inter, system-ui, sans-serif; color: #e6edf3; background: rgba(20, 25, 40, 0.6); border: 1px solid rgba(56, 68, 100, 0.45); border-radius: 8px; } .ds-input:focus { outline: none; border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.35); }"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "The only container. Frosted glass over the canvas, 12px radius, header on the recessed tone.",
+      "html": "<section class=\"ds-panel\"><header class=\"ds-panel__head\"><h3 class=\"ds-panel__title\">Versions</h3><span class=\"ds-panel__meta\">2</span></header><div class=\"ds-panel__body\">Rows go here.</div></section>",
+      "css": ".ds-panel { background: rgba(17, 21, 30, 0.85); backdrop-filter: blur(16px); border: 1px solid rgba(56, 68, 100, 0.45); border-radius: 12px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3); overflow: hidden; } .ds-panel__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: rgba(22, 27, 38, 0.7); border-bottom: 1px solid rgba(56, 68, 100, 0.25); } .ds-panel__title { margin: 0; font: 600 0.875rem/1.3 Inter, system-ui, sans-serif; color: #e6edf3; } .ds-panel__meta { font-size: 0.72rem; color: #8b949e; } .ds-panel__body { padding: 14px 18px; }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "chip-status",
+      "description": "Outcome only: pass, hold, fail. Colours the text and the border, never the fill.",
+      "html": "<span class=\"ds-chip ds-chip--completed\">Completed</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid rgba(56, 68, 100, 0.45); border-radius: 999px; font: 600 0.6875rem/1.4 Inter, system-ui, sans-serif; letter-spacing: 0.04em; text-transform: uppercase; color: #8b949e; } .ds-chip--completed { color: #3fb950; border-color: #3fb950; } .ds-chip--failed { color: #f85149; border-color: #f85149; } .ds-chip--running { color: #79c0ff; border-color: #58a6ff; }"
+    },
+    {
+      "name": "Data Table",
+      "kind": "custom",
+      "refersTo": "panel",
+      "description": "The primary data surface. Sticky uppercase header, faint dividers, no outer scrollbar.",
+      "html": "<table class=\"ds-table\"><thead><tr><th scope=\"col\">Version</th><th scope=\"col\">Status</th></tr></thead><tbody><tr><td>v2</td><td>Completed</td></tr></tbody></table>",
+      "css": ".ds-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.875rem; color: #e6edf3; } .ds-table th, .ds-table td { padding: 10px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid rgba(56, 68, 100, 0.25); } .ds-table thead th { position: sticky; top: 0; background: rgba(22, 27, 38, 0.7); color: #8b949e; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Control Room",
+    "overview": "The interface is an instrument panel in a dark room. A Knowledge Product is the machine, the sidebar is the console, and every page is one reading on it. Surfaces sit a layer above a deep slate field, lit only where something carries state: the active route, a running job, a failing check.\n\nThe voice is instrumented and quiet. Counts, timestamps, identifiers and metric tables are content, and they stay on screen. Decoration is the thing that gets cut.\n\nInteraction is tactile and confident: a primary control lifts a pixel and gains a blue halo, navigation slides two pixels toward the reader, focus rings are always visible. Small, consistent acknowledgements, never large motion or one identical entrance on every panel.",
+    "keyCharacteristics": [
+      "Dark-first with a maintained light theme.",
+      "Glass panels over a fixed two-tone radial wash; depth from translucency plus an offset shadow.",
+      "One chromatic accent: active route, primary action, links, focus.",
+      "Status colours are semantic only: pass green, hold amber, signal red.",
+      "Dense 14px base; 11px uppercase tracked labels on tables and badges.",
+      "Sidebar 256px collapsing to a 72px icon rail."
+    ],
+    "rules": [
+      { "name": "The One Light Rule", "body": "The accent is the only chromatic light. Spend it on the active route, the primary action, links and focus, and nothing else. If a surface needs attention and is not one of those four, use weight, position or a status colour.", "section": "colors" },
+      { "name": "The Status Is Not Decoration Rule", "body": "Pass green, hold amber and signal red mean outcome. They never style a neutral chip, a brand mark or a hover.", "section": "colors" },
+      { "name": "The One Gradient Rule", "body": "The blue-to-cyan text gradient exists on the page title and nowhere else. New emphasis comes from weight, size or the accent colour as a solid.", "section": "typography" },
+      { "name": "The Glass Is Depth Rule", "body": "Blur marks a surface that floats. Do not blur an inline element or a row, and do not add glass to a surface that already sits on the canvas without a shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do put visible counts, IDs, timestamps and scores on screen.",
+      "Do keep one primary action per surface.",
+      "Do use 127.0.0.1 in every example URL and dev instruction.",
+      "Do give every input a label with htmlFor, and every control a type.",
+      "Do add new colours to both :root and [data-theme=\"light\"].",
+      "Do name a control after its action, and an error after the problem and the fix."
+    ],
+    "donts": [
+      "Don't add a second accent hue; status colours are not accents.",
+      "Don't place the text gradient anywhere except the page title.",
+      "Don't nest a panel inside a panel, or use a card grid as a page structure.",
+      "Don't add an eyebrow, kicker or label above a heading.",
+      "Don't reach for a modal when a panel, drawer or inline form does the job.",
+      "Don't use mono for prose; it marks identifiers, keys, payloads and scores only.",
+      "Don't add motion beyond the 1-2px lift, the 0.2s colour transition and the progress fill; always honour prefers-reduced-motion."
+    ]
+  }
+}

@@ -1246,6 +1246,239 @@ export async function updateProfileDatasetItem(
   );
 }
 
+// ── Synthetic Dataset Creator ──────────────────────────────────────────────
+
+export type SyntheticDatasetKind = "single_turn" | "multi_turn";
+export type SyntheticVersionStatus = "queued" | "running" | "completed" | "failed";
+
+/** The settings one dataset carries. Each kind has its own. */
+export interface SyntheticKindConfig {
+  rows: number;
+  turns: number;
+  chunks_per_context: number;
+  max_goldens_per_context: number;
+  filtration: { enabled: boolean; threshold: number; max_retries: number };
+  evolutions: string[];
+  num_evolutions: number;
+  styling: {
+    task: string | null;
+    scenario: string | null;
+    input_format: string | null;
+    expected_output_format: string | null;
+  };
+  conversational_styling: {
+    scenario_context: string | null;
+    conversational_task: string | null;
+    participant_roles: string | null;
+  };
+}
+
+export interface SyntheticProfile {
+  id: string;
+  name: string;
+  description: string | null;
+  knowledge_product_id: string;
+  knowledge_product_name: string | null;
+  qdrant_collection: string;
+  version_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SyntheticVersionDataset {
+  id: string;
+  kind: SyntheticDatasetKind;
+  row_count: number | null;
+  status: string | null;
+  progress: Record<string, unknown>;
+  config: Partial<SyntheticKindConfig>;
+  created_at: string | null;
+}
+
+export interface SyntheticVersion {
+  id: string;
+  version_no: number;
+  description: string | null;
+  status: SyntheticVersionStatus;
+  progress: Record<string, unknown>;
+  error_message: string | null;
+  row_count_single: number;
+  row_count_multi: number;
+  fabric_profile_id: string | null;
+  config: Record<string, unknown>;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  datasets: SyntheticVersionDataset[];
+}
+
+export interface SyntheticProfileDetail {
+  profile: SyntheticProfile;
+  versions: SyntheticVersion[];
+}
+
+export interface SyntheticVersionItem {
+  id: string;
+  question: string;
+  ground_truth_answer: string | null;
+  expected_sources: unknown[];
+  turns: { role: string; content: string }[] | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface SyntheticVersionCreate {
+  version_no?: number | null;
+  description?: string | null;
+  model: string;
+  fabric_profile_id: string | null;
+  kinds: SyntheticDatasetKind[];
+  single?: SyntheticKindConfig | null;
+  multi?: SyntheticKindConfig | null;
+}
+
+/** The evolution names the server accepts. All seven, in the order the form shows them. */
+export const SYNTHETIC_EVOLUTIONS = [
+  "reasoning",
+  "multicontext",
+  "concretizing",
+  "constrained",
+  "comparative",
+  "hypothetical",
+  "in_breadth",
+] as const;
+
+/** The four that stay answerable from the same context, and the form's default pick. */
+export const SYNTHETIC_RAG_SAFE_EVOLUTIONS = [
+  "multicontext",
+  "concretizing",
+  "constrained",
+  "comparative",
+] as const;
+
+export async function listSyntheticProfiles(): Promise<SyntheticProfile[]> {
+  return ragFetch<SyntheticProfile[]>("/api/synthetic-datasets/profiles");
+}
+
+export async function createSyntheticProfile(body: {
+  name: string;
+  description?: string | null;
+  knowledge_product_id: string;
+}): Promise<SyntheticProfile> {
+  return ragFetch<SyntheticProfile>("/api/synthetic-datasets/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateSyntheticProfile(
+  profileId: string,
+  body: { name?: string; description?: string | null },
+): Promise<SyntheticProfile> {
+  return ragFetch<SyntheticProfile>(`/api/synthetic-datasets/profiles/${profileId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteSyntheticProfile(profileId: string): Promise<void> {
+  await ragFetch(`/api/synthetic-datasets/profiles/${profileId}`, { method: "DELETE" });
+}
+
+export async function getSyntheticProfile(profileId: string): Promise<SyntheticProfileDetail> {
+  return ragFetch<SyntheticProfileDetail>(`/api/synthetic-datasets/profiles/${profileId}`);
+}
+
+export async function createSyntheticVersion(
+  profileId: string,
+  body: SyntheticVersionCreate,
+): Promise<SyntheticVersion> {
+  return ragFetch<SyntheticVersion>(`/api/synthetic-datasets/profiles/${profileId}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getSyntheticVersion(versionId: string): Promise<SyntheticVersion> {
+  return ragFetch<SyntheticVersion>(`/api/synthetic-datasets/versions/${versionId}`);
+}
+
+/** Add the dataset kind this version does not have yet, and generate it. */
+export async function addSyntheticDataset(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+  config: SyntheticKindConfig,
+): Promise<SyntheticVersion> {
+  return ragFetch<SyntheticVersion>(`/api/synthetic-datasets/versions/${versionId}/datasets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, config }),
+  });
+}
+
+/** Save the configuration only. Nothing is generated. */
+export async function updateSyntheticDataset(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+  config: SyntheticKindConfig,
+): Promise<SyntheticVersion> {
+  return ragFetch<SyntheticVersion>(
+    `/api/synthetic-datasets/versions/${versionId}/datasets/${kind}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
+    },
+  );
+}
+
+/** Replace this dataset's rows, optionally with a new configuration. */
+export async function regenerateSyntheticDataset(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+  config?: SyntheticKindConfig,
+): Promise<SyntheticVersion> {
+  // No body at all when the stored configuration is reused. An empty object counts as a
+  // provided body, and the server then requires a `config` field in it.
+  return ragFetch<SyntheticVersion>(
+    `/api/synthetic-datasets/versions/${versionId}/datasets/${kind}/regenerate`,
+    config
+      ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        }
+      : { method: "POST" },
+  );
+}
+
+export async function deleteSyntheticDataset(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+): Promise<void> {
+  await ragFetch(`/api/synthetic-datasets/versions/${versionId}/datasets/${kind}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listSyntheticVersionItems(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+  offset = 0,
+  limit = 20,
+): Promise<{ count: number; items: SyntheticVersionItem[] }> {
+  const query = `kind=${kind}&offset=${offset}&limit=${limit}`;
+  return ragFetch<{ count: number; items: SyntheticVersionItem[] }>(
+    `/api/synthetic-datasets/versions/${versionId}/items?${query}`,
+  );
+}
+
+export async function deleteSyntheticVersion(versionId: string): Promise<void> {
+  await ragFetch(`/api/synthetic-datasets/versions/${versionId}`, { method: "DELETE" });
+}
+
 // ── Dataset Feedback ───────────────────────────────────────────────────────
 
 export type FeedbackMode = "all" | "test" | "prod";

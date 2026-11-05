@@ -31,6 +31,13 @@ class GoldenDataset(Base):
     source_format: Mapped[str | None] = mapped_column(String, nullable=True)
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Set on a dataset the Synthetic Dataset Creator wrote. NULL keeps the dataset on the
+    # profile alone, which is every dataset uploaded by hand.
+    synthetic_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("synthetic_dataset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     items: Mapped[list["GoldenDatasetItem"]] = relationship(back_populates="dataset")
     runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="dataset")

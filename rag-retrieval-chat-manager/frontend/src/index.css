@@ -352,6 +352,7 @@ a:hover {
 .persistent-page--active {
   display: block;
   opacity: 1;
+  padding: 1.75rem 2rem 3rem;
   animation: fadeIn 0.3s ease-out;
 }
 
@@ -596,11 +597,11 @@ a:hover {
    Page Layout
    ═══════════════════════════════════ */
 
+/* The shell owns the page gutter, so every page clears the sidebar the same way.
+   `.page` only sets a reading measure for pages that want one. */
 .page {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 1.75rem 2rem 3rem;
-  animation: fadeIn 0.35s ease-out;
 }
 
 .page-narrow {
@@ -1256,7 +1257,8 @@ select.input option {
   color: #d29922;
 }
 
-.status-pending {
+.status-pending,
+.status-queued {
   background: var(--bg-inset);
   color: var(--text-secondary);
 }
@@ -1328,12 +1330,12 @@ select.input option {
    File Viewer
    ═══════════════════════════════════ */
 
+/* The shell page provides the gutter now; the viewer only lays itself out. */
 .viewer-page {
-  padding: 1rem 1.25rem 1.5rem;
   height: 100%;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 0px);
+  min-height: calc(100vh - 1.75rem - 3rem);
 }
 
 .viewer-loading {
@@ -1459,6 +1461,10 @@ select.input option {
 @media (max-width: 900px) {
   .shell {
     flex-direction: column;
+  }
+
+  .persistent-page--active {
+    padding: 1.25rem 1rem 2rem;
   }
 
   .sidebar {
@@ -1886,6 +1892,34 @@ select.input option {
   background: rgba(255, 255, 255, 0.08);
   color: inherit;
 }
+
+}
+
+@media (max-width: 900px) {
+  /* The sidebar is a top bar here; the collapsed rail only exists on desktop. */
+  .shell--collapsed .sidebar {
+    width: 100%;
+  }
+
+  .shell--collapsed .sidebar-brand,
+  .shell--collapsed .sidebar-label {
+    display: initial;
+  }
+
+  .shell--collapsed .sidebar-link {
+    justify-content: flex-start;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .shell--collapsed .sidebar-head {
+    justify-content: flex-start;
+    padding: 0.875rem 0.5rem 0.875rem 1.25rem;
+  }
+
+  .sidebar-toggle {
+    display: none;
+  }
 
   .sidebar-nav {
     flex-direction: row;
@@ -2596,13 +2630,15 @@ select.input option {
    Chat Page Layout
    ═══════════════════════════════════ */
 
+/* The shell page provides the gutter, so the chat fills it exactly and the page
+   never scrolls behind the composer. */
 .chat-layout {
   display: grid;
   grid-template-columns: 300px 1fr;
   gap: 0;
-  height: calc(100vh - 2rem);
-  max-height: calc(100vh - 2rem);
-  margin: -0.5rem -1rem 0;
+  height: calc(100vh - 1.75rem - 3rem);
+  max-height: calc(100vh - 1.75rem - 3rem);
+  margin: 0;
 }
 
 /* The conversation list is hidden, not just narrowed, so the messages take the
@@ -7765,7 +7801,8 @@ select.input option {
 
 .pager-actions { display: flex; align-items: center; gap: 0.5rem; }
 
-/* ── Row editor drawer ── */
+/* ── Right-side drawer, shared by Dataset Feedback and Synthetic Datasets ── */
+.drawer-backdrop,
 .dfb-backdrop {
   position: fixed;
   inset: 0;
@@ -7775,6 +7812,7 @@ select.input option {
   background: rgba(2, 6, 16, 0.55);
 }
 
+.drawer,
 .dfb-drawer {
   display: flex;
   flex-direction: column;
@@ -7786,6 +7824,7 @@ select.input option {
   animation: dfb-slide-in 0.18s ease-out;
 }
 
+.drawer-head,
 .dfb-drawer-head {
   display: flex;
   align-items: flex-start;
@@ -7795,6 +7834,7 @@ select.input option {
   border-bottom: 1px solid var(--border-muted);
 }
 
+.drawer-body,
 .dfb-drawer-body {
   flex: 1;
   overflow-y: auto;
@@ -7803,6 +7843,7 @@ select.input option {
   padding: 1rem 1.1rem 1.5rem;
 }
 
+.drawer-foot,
 .dfb-drawer-foot {
   display: flex;
   align-items: center;
@@ -7819,5 +7860,552 @@ select.input option {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .drawer,
   .dfb-drawer { animation: none; }
+}
+
+/* Synthetic dataset creator */
+
+/* Profiles */
+.sd-profiles-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.sd-section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sd-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.sd-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  text-align: left;
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.sd-card:hover,
+.sd-card:focus-visible {
+  border-color: var(--border-glow);
+  transform: translateY(-1px);
+}
+
+.sd-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sd-card-kp { font-size: 0.78rem; color: var(--text-secondary); }
+
+.sd-card-collection {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sd-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-muted);
+}
+
+.sd-card-count { font-size: 0.72rem; color: var(--text-secondary); }
+
+.sd-card-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sd-card:hover .sd-card-open,
+.sd-card:focus-visible .sd-card-open { color: var(--accent-emphasis); }
+
+/* Profile view */
+/* The icon set has no left chevron; mirror the right one. */
+.sd-back-icon {
+  display: inline-block;
+  transform: scaleX(-1);
+}
+
+.sd-profile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.sd-profile-head .fabric-meta { margin: 0.25rem 0 0; }
+
+.sd-creator {
+  margin-bottom: 1rem;
+  animation: sd-reveal 0.18s ease-out;
+}
+
+.sd-creator-body {
+  display: grid;
+  gap: 1.25rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+/* Panes hold one dataset's settings, or one dataset record. They are columns of
+   the surface that owns them, never cards: a rule separates them, not a border. */
+.sd-panes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.sd-panes--single { grid-template-columns: minmax(0, 1fr); }
+
+.sd-creator-body > .sd-panes {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-muted);
+}
+
+.sd-panes--divided {
+  gap: 0;
+  align-items: stretch;
+}
+
+.sd-panes--divided > * {
+  min-width: 0;
+  padding: 0 1.25rem;
+}
+
+.sd-panes--divided > *:first-child { padding-left: 0; }
+.sd-panes--divided > *:last-child { padding-right: 0; }
+.sd-panes--divided > * + * { border-left: 1px solid var(--border-muted); }
+
+@media (max-width: 1100px) {
+  .sd-panes { grid-template-columns: minmax(0, 1fr); }
+
+  .sd-panes--divided > * { padding: 1rem 0 0; }
+  .sd-panes--divided > *:first-child { padding-top: 0; }
+  .sd-panes--divided > * + * {
+    border-left: 0;
+    border-top: 1px solid var(--border-muted);
+  }
+}
+
+.sd-pane {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.sd-pane-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Version view */
+.sd-version {
+  margin-top: 1.5rem;
+  scroll-margin-top: 1rem;
+}
+
+.sd-version-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.sd-version-title .sd-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-version-title .fabric-meta {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sd-version-body { padding: 1rem 1.25rem 1.25rem; }
+
+.sd-slot {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.sd-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.sd-slot-body { display: grid; gap: 0.85rem; }
+
+.sd-slot-empty { justify-items: start; gap: 0.6rem; }
+
+.sd-slot-empty .muted {
+  margin: 0;
+  font-size: 0.8rem;
+  max-width: 44ch;
+}
+
+.sd-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 1rem;
+  margin: 0;
+}
+
+.sd-facts dt {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.sd-facts dd {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-slot-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.sd-progress-inline { display: grid; gap: 6px; }
+
+.sd-slot-form {
+  display: grid;
+  gap: 0.85rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border-muted);
+  animation: sd-reveal 0.18s ease-out;
+}
+
+.sd-slot-form-title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.sd-config { display: grid; gap: 0.85rem; }
+
+/* Rows viewer, a section of the version panel. The shared table is
+   table-layout: fixed, so the columns need widths of their own. */
+.sd-rows { border-top: 1px solid var(--border-muted); }
+
+.sd-rows .fabric-table th:nth-child(1) { width: 52px; }
+.sd-rows .fabric-table th:nth-child(2) { width: 25%; }
+.sd-rows .fabric-table th:nth-child(3) { width: 25%; }
+.sd-rows .fabric-table th:nth-child(4) { width: 7%; }
+.sd-rows .fabric-table th:nth-child(5) { width: 20%; }
+.sd-rows .fabric-table th:nth-child(6) { width: 15%; }
+
+/* Below a tablet the version table drops the created time, which is the only
+   column that loses no meaning and the one that collides with the status. */
+@media (max-width: 720px) {
+  .sd-versions .fabric-table th:nth-child(4),
+  .sd-versions .fabric-table td:nth-child(4) {
+    display: none;
+  }
+
+  .sd-versions .fabric-table th:nth-child(1) { width: 30%; }
+  .sd-versions .fabric-table th:nth-child(2) { width: 26%; }
+  .sd-versions .fabric-table th:nth-child(3) { width: 22%; }
+  .sd-versions .fabric-table th:nth-child(5) { width: 22%; }
+}
+
+.sd-row-click { cursor: pointer; }
+
+.sd-row-click:hover td { background: var(--bg-subtle); }
+
+.sd-row-index {
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.sd-row-index:hover { color: var(--accent-emphasis); }
+
+/* A cell shows two lines; the row drawer holds the rest. */
+.sd-cell-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.sd-row-meta { margin: 0.2rem 0 0; }
+
+.sd-row-section { display: grid; gap: 0.35rem; }
+
+.sd-row-label {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.sd-row-text {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sd-chips { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.35rem; }
+
+.sd-conv {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sd-conv-turn {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.75rem 0.85rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+}
+
+.sd-context {
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+}
+
+.sd-context summary {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.sd-context-body {
+  max-height: 320px;
+  margin: 0;
+  padding: 0.7rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.sd-rows-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+}
+
+/* Version table. The shared table is table-layout: fixed, so the columns need
+   widths or every one gets an equal fifth and the chips wrap. */
+.sd-versions .fabric-table th:nth-child(1) { width: 24%; }
+.sd-versions .fabric-table th:nth-child(2) { width: 26%; }
+.sd-versions .fabric-table th:nth-child(3) { width: 14%; }
+.sd-versions .fabric-table th:nth-child(4) { width: 16%; }
+.sd-versions .fabric-table th:nth-child(5) { width: 20%; }
+
+.sd-kinds { display: flex; flex-wrap: nowrap; gap: 0.35rem; }
+
+.sd-kind {
+  padding: 1px 7px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.sd-kind--absent {
+  border-style: dashed;
+  border-color: var(--border-muted);
+  opacity: 0.7;
+}
+
+.sd-entry {
+  display: grid;
+  gap: 1px;
+}
+
+.sd-entry-desc {
+  max-width: 34ch;
+  overflow: hidden;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Zebra striping tints every other row, so the open row needs its own hue. */
+.sd-row-open td { background: var(--accent-subtle); }
+
+.sd-empty { margin: 0; padding: 0.9rem 1.25rem; font-size: 0.8rem; }
+
+/* Form primitives. Controls use the shared .input; the label stays compact
+   because the creator stacks two dense columns of them. */
+.sd-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .sd-grid { grid-template-columns: 1fr; }
+}
+
+.sd-form {
+  display: grid;
+  gap: 12px;
+  padding: 0.9rem;
+  background: var(--bg-subtle);
+}
+
+.sd-form--wide { margin-bottom: 1rem; }
+
+.sd-field { display: grid; gap: 4px; }
+
+.sd-field:only-child,
+.sd-grid > .sd-field:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+.sd-field > label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.sd-field select option { background: var(--bg-inset); color: var(--text-primary); }
+
+/* A count needs a number's width, not the panel's. */
+.sd-field input[type="number"] { max-width: 200px; }
+
+.sd-field input[type="checkbox"],
+.sd-field input[type="radio"],
+.sd-radios input,
+.sd-checks input {
+  width: auto;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.sd-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
+
+.sd-radios { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.sd-radios label,
+.sd-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+}
+
+/* Groups inside a pane read as labeled rules, not boxes. */
+.sd-fieldset {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.85rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-muted);
+}
+
+.sd-fieldset legend {
+  padding: 0 0.35rem 0 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.sd-details { padding-top: 8px; border-top: 1px solid var(--border-muted); }
+
+.sd-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.sd-details .sd-grid { margin-top: 8px; }
+
+.sd-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Keep the destructive icon away from the primary action. */
+.sd-header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.65rem; }
+
+.sd-row-actions { display: flex; flex-wrap: nowrap; gap: 6px; }
+
+.sd-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-default);
+}
+
+.sd-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+@keyframes sd-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-card,
+  .sd-bar-fill,
+  .sd-creator,
+  .sd-slot-form { transition: none; animation: none; }
 }

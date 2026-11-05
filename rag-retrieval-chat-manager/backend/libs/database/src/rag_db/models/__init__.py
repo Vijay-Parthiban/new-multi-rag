@@ -16,6 +16,10 @@ from rag_db.models.guardrails import (
     GuardrailsEvalRunItem,
 )
 from rag_db.models.prompt import PromptTemplate
+from rag_db.models.synthetic_dataset import (
+    SyntheticDatasetProfile,
+    SyntheticDatasetVersion,
+)
 
 __all__ = [
     "ChatSession",
@@ -35,4 +39,6 @@ __all__ = [
     "GuardrailsEvalRun",
     "GuardrailsEvalRunItem",
     "PromptTemplate",
+    "SyntheticDatasetProfile",
+    "SyntheticDatasetVersion",
 ]

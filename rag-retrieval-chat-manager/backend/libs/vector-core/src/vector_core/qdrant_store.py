@@ -65,3 +65,30 @@ class QdrantStore:
             mode=mode,
             query_filter=query_filter,
         )
+
+    def scroll_payloads(
+        self,
+        *,
+        query_filter: qmodels.Filter | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Every point's payload under `query_filter`, in store order.
+
+        `search` answers "the best few for a query"; this answers "the corpus", which is
+        what a synthetic dataset needs. Pages of 256 keep one response small.
+        """
+        out: list[dict] = []
+        offset = None
+        while len(out) < limit:
+            points, offset = self._store.client.scroll(
+                collection_name=self._store.collection,
+                scroll_filter=query_filter,
+                limit=min(256, limit - len(out)),
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            out.extend(point.payload or {} for point in points)
+            if offset is None:
+                break
+        return out

@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from rag_api.dataset_storage import (
+from eval_core.dataset_storage import (
     DatasetStorageError,
     delete_dataset,
     get_dataset,

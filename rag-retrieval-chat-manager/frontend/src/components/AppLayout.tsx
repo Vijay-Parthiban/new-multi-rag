@@ -13,6 +13,7 @@ import EvalRunDetailPage from "../pages/EvalRunDetailPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
 import DatasetFabricPage from "../pages/DatasetFabricPage";
 import DatasetFeedbackPage from "../pages/DatasetFeedbackPage";
+import SyntheticDatasetPage from "../pages/SyntheticDatasetPage";
 import PromptsPage from "../pages/PromptsPage";
 import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
 import GuardrailsTracesPage from "../pages/GuardrailsTracesPage";
@@ -32,6 +33,7 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
   { to: "/dataset-fabric", label: "Dataset Fabric", icon: IconBucket },
   { to: "/dataset-feedback", label: "Dataset Feedback", icon: IconSparkles },
+  { to: "/synthetic-datasets", label: "Synthetic Datasets", icon: IconSparkles },
   { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
   { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
   { to: "/guardrails/traces", label: "Guard Traces", icon: IconGuardrails },
@@ -143,6 +145,7 @@ export default function AppLayout() {
   const isEvaluations = path === "/evaluations";
   const isDatasetFabric = path === "/dataset-fabric";
   const isDatasetFeedback = path === "/dataset-feedback";
+  const isSyntheticDatasets = path === "/synthetic-datasets";
   const isGoldenEvaluations = path === "/golden-evaluations";
   // The run detail page lives under the evaluation page, so it must be matched before the
   // exact comparison below and must not also switch the evaluation page on.
@@ -252,6 +255,10 @@ export default function AppLayout() {
 
         <PersistentPage visible={isDatasetFeedback}>
           <DatasetFeedbackPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isSyntheticDatasets}>
+          <SyntheticDatasetPage />
         </PersistentPage>
 
         <PersistentPage visible={isGoldenEvaluations}>

@@ -165,7 +165,7 @@ def test_xlsx_upload_imports_its_rows(client):
 
 def test_every_dataset_goes_to_the_fabric_bucket():
     """A Knowledge Product bucket is an ingestion source, so a dataset must never land there."""
-    from rag_api.dataset_storage import resolve_bucket
+    from eval_core.dataset_storage import resolve_bucket
     from rag_shared.config import Settings
 
     settings = Settings(dataset_fabric_bucket="dataset-fabric")
@@ -241,7 +241,7 @@ def test_store_snapshot_rolls_back_when_minio_refuses():
     import asyncio
 
     from fastapi import HTTPException
-    from rag_api.dataset_storage import DatasetStorageError
+    from eval_core.dataset_storage import DatasetStorageError
     from rag_api.routes.dataset_profiles import store_snapshot
 
     settings, db, repo, dataset = _snapshot_fakes()

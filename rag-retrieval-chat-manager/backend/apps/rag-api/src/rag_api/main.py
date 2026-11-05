@@ -18,6 +18,7 @@ from rag_api.routes import (
     chat,
     dataset_feedback,
     dataset_profiles,
+    synthetic_datasets,
     evaluate,
     generate,
     guardrails,
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(evaluate.router)
     app.include_router(dataset_profiles.router)
     app.include_router(dataset_feedback.router)
+    app.include_router(synthetic_datasets.router)
     app.include_router(otlp.router)
     app.include_router(prompts.router)
     app.include_router(prompt_templates.router)
