@@ -8,6 +8,7 @@ const LABELS: Record<string, string> = {
   queued: "Queued",
   success: "Complete",
   completed: "Complete",
+  active: "Active",
   running: "Running",
 };
 

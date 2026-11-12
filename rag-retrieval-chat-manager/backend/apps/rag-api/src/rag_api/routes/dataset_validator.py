@@ -1,4 +1,8 @@
-"""Dataset Feedback: turn real conversations of a pipeline into golden dataset rows.
+"""Dataset Validator: validate a dataset profile against a pipeline's collected turns.
+
+A profile of either author, synthetic or manual, links to one RAG pipeline. The page works on
+the profile's ACTIVE version only: its single-turn and multi-turn datasets are what the
+validator shows and what a collected conversation is appended to.
 
 The conversations come from `conversation_turns`, which the OpenTelemetry Collector fills
 (see `routes/otlp.py`). The server builds every row from the stored turns, so the client
@@ -24,12 +28,15 @@ from rag_api.routes.dataset_profiles import (
     _settings,
     store_snapshot,
 )
+from rag_api.routes.synthetic_datasets import ProfileRead, _profile_to_read
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/dataset-feedback", tags=["dataset-feedback"])
+router = APIRouter(prefix="/api/dataset-validator", tags=["dataset-validator"])
 
 Kind = Literal["single_turn", "multi_turn"]
+
+KIND_LABEL: dict[str, str] = {"single_turn": "single-turn", "multi_turn": "multi-turn"}
 
 
 # ── Request and response models ────────────────────────────────────────────
@@ -47,6 +54,13 @@ class FeedbackRow(BaseModel):
 class AppendRowsRequest(BaseModel):
     kind: Kind
     rows: list[FeedbackRow] = Field(min_length=1, max_length=50)
+
+
+class PipelineLink(BaseModel):
+    """The pipeline whose conversations this profile validates. A null slug unlinks."""
+
+    pipeline_slug: str | None = Field(default=None, max_length=128)
+    pipeline_name: str | None = Field(default=None, max_length=256)
 
 
 class SkippedRow(BaseModel):
@@ -148,6 +162,17 @@ def build_item(kind: str, turns: list, row: FeedbackRow, added_at: datetime) -> 
     if (row.question_type or "").strip():
         metadata["question_type"] = row.question_type.strip()
 
+    if kind == "multi_turn":
+        # One answer per user turn, in order: the drawer pairs them by index. The graded
+        # turn takes the row's ground truth, which is the value the user approved or
+        # edited. A refusal row keeps no answer; the reply it aims at is a refusal.
+        expected = [
+            {"content": (answer or "") if index == k - 1 else (turn.answer or "").strip()}
+            for index, turn in enumerate(turns[:k])
+        ]
+        if answer is not None and any(entry["content"] for entry in expected):
+            metadata["expected_turns"] = expected
+
     try:
         GoldenDatasetItemPayload.model_validate(
             {
@@ -172,31 +197,62 @@ def build_item(kind: str, turns: list, row: FeedbackRow, added_at: datetime) -> 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
-def _linked_profile(db, profile_id: uuid.UUID):
-    from rag_db.repositories.dataset_profile_repository import DatasetProfileRepository
-
-    profile = DatasetProfileRepository(db).get(profile_id)
+def _profile(db, repo, profile_id: uuid.UUID):
+    profile = repo.get_profile(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Dataset profile not found.")
+    return profile
+
+
+def _require_pipeline(profile) -> str:
     if not profile.pipeline_slug:
         raise HTTPException(
             status_code=409,
             detail={"code": "PROFILE_NOT_LINKED", "message": "Link this profile to a pipeline first."},
         )
-    return profile
+    return profile.pipeline_slug
 
 
-def _target(profile, kind: str):
-    """The newest dataset of this kind: the one Offline Evaluation runs."""
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    return max(
-        (d for d in profile.datasets or [] if d.kind == kind),
-        key=lambda d: d.created_at or floor,
-        default=None,
+def _active_version(repo, profile):
+    version = next((v for v in repo.list_versions(profile.id) if v.is_active), None)
+    if version is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_ACTIVE_VERSION",
+                "message": "Set a version of this profile active before you validate it.",
+            },
+        )
+    return version
+
+
+def _target(repo, version, kind: str):
+    """The dataset of this kind inside the active version, or None."""
+    return next(
+        (dataset for dataset in repo.datasets_for_version(version.id) if dataset.kind == kind),
+        None,
     )
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
+
+
+@router.put("/profiles/{profile_id}/pipeline", response_model=ProfileRead)
+def link_pipeline(
+    request: Request, profile_id: uuid.UUID, body: PipelineLink
+) -> ProfileRead:
+    """Link or unlink the pipeline whose conversations this profile validates."""
+    from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
+
+    settings = _settings(request)
+    with _session_factory(settings)() as db:
+        repo = SyntheticDatasetRepository(db)
+        profile = _profile(db, repo, profile_id)
+        slug = (body.pipeline_slug or "").strip() or None
+        profile.pipeline_slug = slug
+        profile.pipeline_name = ((body.pipeline_name or "").strip() or None) if slug else None
+        db.commit()
+        return _profile_to_read(repo, profile)
 
 
 @router.get("/profiles/{profile_id}/conversations", response_model=ConversationList)
@@ -211,13 +267,17 @@ def list_conversations(
 ) -> ConversationList:
     from rag_db.repositories.conversation_turn_repository import ConversationTurnRepository
     from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
 
     with _session_factory(_settings(request))() as db:
-        profile = _linked_profile(db, profile_id)
-        target = _target(profile, kind)
+        repo = SyntheticDatasetRepository(db)
+        profile = _profile(db, repo, profile_id)
+        slug = _require_pipeline(profile)
+        version = _active_version(repo, profile)
+        target = _target(repo, version, kind)
         added = EvaluationRepository(db).source_session_ids(target.id) if target else set()
         items, total = ConversationTurnRepository(db).list_conversations(
-            pipeline_slug=profile.pipeline_slug,
+            pipeline_slug=slug,
             kind=kind,
             mode=mode,
             q=(q or "").strip() or None,
@@ -234,21 +294,25 @@ def list_conversations(
 def get_conversation(request: Request, profile_id: uuid.UUID, session_id: str) -> ConversationDetail:
     from rag_db.repositories.conversation_turn_repository import ConversationTurnRepository
     from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
 
     with _session_factory(_settings(request))() as db:
-        profile = _linked_profile(db, profile_id)
-        repo = ConversationTurnRepository(db)
-        turns = repo.get_conversation(pipeline_slug=profile.pipeline_slug, session_id=session_id)
+        repo = SyntheticDatasetRepository(db)
+        profile = _profile(db, repo, profile_id)
+        slug = _require_pipeline(profile)
+        turns_repo = ConversationTurnRepository(db)
+        turns = turns_repo.get_conversation(pipeline_slug=slug, session_id=session_id)
         if not turns:
             raise HTTPException(status_code=404, detail="Conversation not found.")
-        sources = repo.sources_by_message([t.message_id for t in turns if t.message_id])
+        sources = turns_repo.sources_by_message([t.message_id for t in turns if t.message_id])
+        eval_repo = EvaluationRepository(db)
         added = any(
-            session_id in EvaluationRepository(db).source_session_ids(d.id)
-            for d in profile.datasets or []
+            session_id in eval_repo.source_session_ids(dataset.id)
+            for dataset in repo.datasets_for_version(_active_version(repo, profile).id)
         )
         return ConversationDetail(
             session_id=session_id,
-            pipeline_slug=profile.pipeline_slug,
+            pipeline_slug=slug,
             added=added,
             turns=[
                 TurnRead(
@@ -270,27 +334,33 @@ def get_conversation(request: Request, profile_id: uuid.UUID, session_id: str) -
 async def append_rows(
     request: Request, profile_id: uuid.UUID, body: AppendRowsRequest
 ) -> AppendRowsResponse:
-    """Add the chosen conversations as rows, creating the dataset on the first add."""
+    """Add the chosen conversations to the active version's dataset of this kind.
+
+    The dataset is created on the first add, so a version that holds only one kind can
+    still gain the other from a trace.
+    """
     from rag_db.repositories.conversation_turn_repository import ConversationTurnRepository
     from rag_db.repositories.evaluation_repository import EvaluationRepository
+    from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
 
     settings = _settings(request)
     kind = body.kind
     added_at = datetime.now(timezone.utc)
 
     with _session_factory(settings)() as db:
-        profile = _linked_profile(db, profile_id)
+        repo = SyntheticDatasetRepository(db)
+        profile = _profile(db, repo, profile_id)
+        slug = _require_pipeline(profile)
+        version = _active_version(repo, profile)
         turns_repo = ConversationTurnRepository(db)
-        repo = EvaluationRepository(db)
-        target = _target(profile, kind)
-        seen = repo.source_session_ids(target.id) if target else set()
+        eval_repo = EvaluationRepository(db)
+        target = _target(repo, version, kind)
+        seen = eval_repo.source_session_ids(target.id) if target else set()
 
         items: list[dict[str, Any]] = []
         skipped: list[SkippedRow] = []
         for row in body.rows:
-            turns = turns_repo.get_conversation(
-                pipeline_slug=profile.pipeline_slug, session_id=row.session_id
-            )
+            turns = turns_repo.get_conversation(pipeline_slug=slug, session_id=row.session_id)
             if not turns:
                 skipped.append(SkippedRow(session_id=row.session_id, reason="conversation_not_found"))
                 continue
@@ -316,18 +386,37 @@ async def append_rows(
             return AppendRowsResponse(dataset=_dataset_to_read(target), added=0, skipped=skipped)
 
         if target is None:
-            dataset = repo.create_dataset(
-                f"{profile.name}::{kind}::{uuid.uuid4().hex[:6]}",
-                description=f"Collected from {profile.pipeline_slug} conversations",
+            dataset = eval_repo.create_dataset(
+                f"{profile.name} v{version.version_no} · {KIND_LABEL[kind]}",
+                description=version.description,
                 kind=kind,
-                profile_id=profile.id,
+                profile_id=profile.fabric_profile_id or version.fabric_profile_id,
                 row_count=0,
             )
+            dataset.version_id = version.id
         else:
             dataset = target
 
         for item in items:
-            repo.add_dataset_item(dataset.id, **item)
+            eval_repo.add_dataset_item(dataset.id, **item)
 
-        await store_snapshot(settings, db, repo, dataset, profile_id=profile.id, kind=kind)
+        await store_snapshot(
+            settings,
+            db,
+            eval_repo,
+            dataset,
+            profile_id=profile.id,
+            kind=kind,
+            kp_id=profile.knowledge_product_id,
+            version_no=version.version_no,
+        )
+        repo.update_version(
+            version.id,
+            **(
+                {"row_count_single": dataset.row_count}
+                if kind == "single_turn"
+                else {"row_count_multi": dataset.row_count}
+            ),
+        )
+        db.commit()
         return AppendRowsResponse(dataset=_dataset_to_read(dataset), added=len(items), skipped=skipped)

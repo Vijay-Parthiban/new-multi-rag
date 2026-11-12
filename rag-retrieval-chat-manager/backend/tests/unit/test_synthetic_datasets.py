@@ -108,38 +108,6 @@ def test_version_rejects_one_turn(client):
     assert response.json()["detail"]["code"] == "INVALID_TURNS"
 
 
-def test_version_rejects_a_fabric_profile_of_another_product(client):
-    repo = MagicMock()
-    repo.get_profile.return_value = _profile("kp-1")
-    fabric_repo = MagicMock()
-    fabric_repo.get.return_value = SimpleNamespace(id=uuid4(), knowledge_product_id="kp-2")
-    body = {
-        "kinds": ["single_turn"],
-        "single": {},
-        "model": "gpt-4o-mini",
-        "fabric_profile_id": str(uuid4()),
-    }
-
-    with (
-        patch("rag_api.routes.synthetic_datasets._session_factory", return_value=_FakeSession),
-        patch(
-            "rag_db.repositories.synthetic_dataset_repository.SyntheticDatasetRepository",
-            return_value=repo,
-        ),
-        patch(
-            "rag_db.repositories.dataset_profile_repository.DatasetProfileRepository",
-            return_value=fabric_repo,
-        ),
-    ):
-        response = client.post(
-            f"/api/synthetic-datasets/profiles/{repo.get_profile.return_value.id}/versions",
-            json=body,
-        )
-
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "FABRIC_PROFILE_MISMATCH"
-
-
 def test_version_refuses_a_number_already_used(client):
     profile = _profile()
     repo = MagicMock()

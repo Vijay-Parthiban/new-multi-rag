@@ -23,6 +23,7 @@ export default function App() {
       <Route path="directories" element={<Navigate to="/browse" replace />} />
       <Route path="directories/:name" element={<LegacyFolderRedirect />} />
       <Route path="directories/:name/view/:fileId" element={<LegacyViewerRedirect />} />
+      <Route path="dataset-feedback" element={<Navigate to="/dataset-validator" replace />} />
       {/* Catch-all renders the persistent layout */}
       <Route path="*" element={<AppLayout />} />
     </Routes>

@@ -44,6 +44,9 @@ class EvalItemResult:
     rerank_metrics: dict
     generated_answer: str
     generation_metrics: dict
+    # The conversation the pipeline actually produced, as user/assistant pairs, in order.
+    # Empty on a single-turn row, where `generated_answer` already is the whole record.
+    generated_turns: list[dict[str, str]] = field(default_factory=list)
 
 
 class GoldenItemEvaluator:
@@ -67,11 +70,14 @@ class GoldenItemEvaluator:
         revision branches live there, and a direct retrieve → rerank → generate call never
         reached them.
         """
+        generated_turns: list[dict[str, str]] = []
         if item.turns:
-            result = self._run_conversation(item, config, session_memory)
+            result, generated_turns = self._run_conversation(item, config, session_memory)
         else:
             result = self._pipeline.chat(item.question, config=config)
-        return self._score(result, item, k_values, judge_model)
+        return self._score(
+            result, item, k_values, judge_model, generated_turns=generated_turns
+        )
 
     def _run_conversation(
         self,
@@ -87,6 +93,7 @@ class GoldenItemEvaluator:
         """
         session_id = str(uuid.uuid4())
         last = None
+        transcript: list[dict[str, str]] = []
         try:
             for turn in item.turns or []:
                 if turn.get("role") != "user":
@@ -94,6 +101,8 @@ class GoldenItemEvaluator:
                 if memory is not None:
                     config.history = memory.load(session_id)
                 last = self._pipeline.chat(turn["content"], config=config)
+                transcript.append({"role": "user", "content": turn["content"]})
+                transcript.append({"role": "assistant", "content": last.answer})
                 if memory is not None:
                     memory.append(
                         session_id,
@@ -110,7 +119,7 @@ class GoldenItemEvaluator:
                     logger.warning("eval session clear failed session=%s", session_id)
         if last is None:
             raise ValueError("a multi-turn row needs at least one user turn")
-        return last
+        return last, transcript
 
     def _score(
         self,
@@ -118,6 +127,7 @@ class GoldenItemEvaluator:
         item: GoldenItem,
         k_values: list[int] | None,
         judge_model: str | None,
+        generated_turns: list[dict[str, str]] | None = None,
     ) -> EvalItemResult:
         k_values = k_values or [1, 3, 5, 10]
         expected = item.parsed_sources()
@@ -176,4 +186,5 @@ class GoldenItemEvaluator:
             rerank_metrics=rerank_metrics,
             generated_answer=result.answer,
             generation_metrics=generation_metrics,
+            generated_turns=generated_turns or [],
         )

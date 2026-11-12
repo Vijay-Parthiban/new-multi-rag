@@ -259,6 +259,7 @@ class EvaluationRepository:
         rerank_metrics: dict,
         generated_answer: str,
         generation_metrics: dict,
+        generated_turns: list | None = None,
     ) -> None:
         item = self._session.get(EvaluationRunItem, item_id)
         if not item:
@@ -270,6 +271,7 @@ class EvaluationRepository:
         item.rerank_metrics = strip_null_bytes(rerank_metrics)
         item.generated_answer = strip_null_bytes(generated_answer)
         item.generation_metrics = strip_null_bytes(generation_metrics)
+        item.generated_turns = strip_null_bytes(generated_turns or [])
         self._session.flush()
 
     def fail_run_item(self, item_id: uuid.UUID, error: str) -> None:

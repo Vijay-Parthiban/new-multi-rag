@@ -30,6 +30,7 @@ from eval_core.dataset_storage import (
     delete_dataset as delete_stored_file,
     object_key,
     put_dataset,
+    versioned_key,
     resolve_bucket,
 )
 from rag_shared.config import Settings
@@ -234,7 +235,9 @@ def _item_preview(item) -> DatasetItemPreview:
     )
 
 
-async def store_snapshot(settings, db, repo, dataset, *, profile_id, kind) -> None:
+async def store_snapshot(
+    settings, db, repo, dataset, *, profile_id, kind, kp_id=None, version_no=None
+) -> None:
     """Rewrite the dataset's canonical JSONL object and point the row at it.
 
     The file is written before the commit, so no row exists without the snapshot it
@@ -258,7 +261,27 @@ async def store_snapshot(settings, db, repo, dataset, *, profile_id, kind) -> No
     stem = Path(dataset.original_filename).stem if dataset.original_filename else f"{kind}_feedback"
     filename = f"{stem}.jsonl"
     bucket = resolve_bucket(settings)
-    new_key = object_key(str(profile_id), kind, filename)
+    # A dataset already in its version's tree keeps its key, so an edit never moves a file
+    # and never takes over another version's object. A dataset outside the tree, or in an
+    # old Knowledge Product bucket, moves to the canonical key and the old object goes.
+    canonical = (
+        versioned_key(str(kp_id), str(profile_id), version_no, kind, filename)
+        if kp_id and version_no
+        else None
+    )
+    in_place = bool(
+        dataset.storage_key
+        and dataset.storage_bucket == bucket
+        and (
+            canonical is None
+            or dataset.storage_key.startswith(canonical.rsplit("/", 1)[0] + "/")
+        )
+    )
+    new_key = (
+        dataset.storage_key
+        if in_place
+        else (canonical or object_key(str(profile_id), kind, filename))
+    )
     old_bucket, old_key = dataset.storage_bucket, dataset.storage_key
 
     try:

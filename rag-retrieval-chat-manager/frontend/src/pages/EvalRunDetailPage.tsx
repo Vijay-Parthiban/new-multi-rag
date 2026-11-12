@@ -308,6 +308,39 @@ export default function EvalRunDetailPage() {
 
                   {open && (
                     <div style={{ display: "grid", gap: "0.6rem", marginTop: "0.5rem" }}>
+                      {(item.generated_turns?.length ?? 0) > 0 && (
+                        <div>
+                          <div style={{ fontSize: "0.72rem", fontWeight: 700, color: "#94a3b8", marginBottom: 3 }}>
+                            Conversation
+                          </div>
+                          <ol style={{ display: "grid", gap: "0.4rem", margin: 0, padding: 0, listStyle: "none" }}>
+                            {item.generated_turns!.map((turn, index) => (
+                              <li
+                                key={`${turn.role}-${index}`}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "64px 1fr",
+                                  gap: "0.6rem",
+                                  fontSize: "0.78rem",
+                                  lineHeight: 1.5,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    color: turn.role === "user" ? "#93c5fd" : "#94a3b8",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {turn.role === "user" ? "User" : "Assistant"}
+                                </span>
+                                <span style={{ color: turn.role === "user" ? "#e2e8f0" : "#cbd5e1" }}>
+                                  {turn.content}
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
                       <div>
                         <div style={{ fontSize: "0.72rem", fontWeight: 700, color: "#94a3b8", marginBottom: 3 }}>
                           Answer

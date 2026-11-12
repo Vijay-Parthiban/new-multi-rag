@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from rag_db.models.dataset_profile import DatasetProfile
 from rag_db.models.evaluation import GoldenDataset, GoldenDatasetItem
 from rag_db.models.synthetic_dataset import (
     SyntheticDatasetProfile,
@@ -21,21 +22,33 @@ class SyntheticDatasetRepository:
 
     # ── Profiles ───────────────────────────────────────────────────────────
 
-    def list_profiles(self) -> list[SyntheticDatasetProfile]:
+    def list_profiles(
+        self, *, source: str | None = None, knowledge_product_id: str | None = None
+    ) -> list[SyntheticDatasetProfile]:
         """Oldest first: a profile keeps its place in the list as versions are added."""
-        return (
-            self._session.query(SyntheticDatasetProfile)
-            .order_by(SyntheticDatasetProfile.created_at.asc(), SyntheticDatasetProfile.id.asc())
-            .all()
-        )
+        query = self._session.query(SyntheticDatasetProfile)
+        if source:
+            query = query.filter(SyntheticDatasetProfile.source == source)
+        if knowledge_product_id:
+            query = query.filter(
+                SyntheticDatasetProfile.knowledge_product_id == knowledge_product_id
+            )
+        return query.order_by(
+            SyntheticDatasetProfile.created_at.asc(), SyntheticDatasetProfile.id.asc()
+        ).all()
 
     def get_profile(self, profile_id: uuid.UUID) -> SyntheticDatasetProfile | None:
         return self._session.get(SyntheticDatasetProfile, profile_id)
 
-    def get_profile_by_name(self, name: str) -> SyntheticDatasetProfile | None:
+    def get_profile_by_name(
+        self, name: str, source: str = "synthetic"
+    ) -> SyntheticDatasetProfile | None:
         return (
             self._session.query(SyntheticDatasetProfile)
-            .filter(SyntheticDatasetProfile.name == name.strip())
+            .filter(
+                SyntheticDatasetProfile.name == name.strip(),
+                SyntheticDatasetProfile.source == source,
+            )
             .one_or_none()
         )
 
@@ -53,6 +66,22 @@ class SyntheticDatasetRepository:
             setattr(profile, key, value)
         self._session.flush()
         return profile
+
+    def first_fabric_profile(self, knowledge_product_id: str) -> DatasetProfile | None:
+        """The Dataset Fabric profile a synthetic profile writes into.
+
+        A product may hold more than one. The oldest is taken, once, when the synthetic
+        profile is created, so no run ever asks the user to choose one.
+        """
+        return (
+            self._session.query(DatasetProfile)
+            .filter(DatasetProfile.knowledge_product_id == knowledge_product_id)
+            .order_by(DatasetProfile.created_at.asc())
+            .first()
+        )
+
+    def get_fabric_profile(self, fabric_profile_id: uuid.UUID) -> DatasetProfile | None:
+        return self._session.get(DatasetProfile, fabric_profile_id)
 
     def delete_profile(self, profile_id: uuid.UUID) -> None:
         profile = self.get_profile(profile_id)
@@ -105,6 +134,19 @@ class SyntheticDatasetRepository:
         self._session.flush()
         return version
 
+    def activate_version(self, version_id: uuid.UUID) -> SyntheticDatasetVersion | None:
+        """Make one version the active one of its profile."""
+        version = self.get_version(version_id)
+        if version is None:
+            return None
+        self._session.query(SyntheticDatasetVersion).filter(
+            SyntheticDatasetVersion.profile_id == version.profile_id,
+            SyntheticDatasetVersion.id != version.id,
+        ).update({SyntheticDatasetVersion.is_active: False}, synchronize_session=False)
+        version.is_active = True
+        self._session.flush()
+        return version
+
     def delete_version(self, version_id: uuid.UUID) -> None:
         version = self.get_version(version_id)
         if version:
@@ -114,7 +156,7 @@ class SyntheticDatasetRepository:
     def datasets_for_version(self, version_id: uuid.UUID) -> list[GoldenDataset]:
         return (
             self._session.query(GoldenDataset)
-            .filter(GoldenDataset.synthetic_version_id == version_id)
+            .filter(GoldenDataset.version_id == version_id)
             .order_by(GoldenDataset.created_at.asc())
             .all()
         )

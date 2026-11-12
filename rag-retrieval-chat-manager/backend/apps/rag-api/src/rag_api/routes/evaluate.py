@@ -468,6 +468,7 @@ class EvalRunItemResponse(BaseModel):
     expected_sources: list = Field(default_factory=list)
     ground_truth_answer: str | None = None
     generated_answer: str | None = None
+    generated_turns: list[dict] = Field(default_factory=list)
     retrieval_metrics: dict | None = None
     rerank_metrics: dict | None = None
     generation_metrics: dict | None = None
@@ -547,6 +548,7 @@ def list_eval_run_items(
                     expected_sources=list(di.expected_sources or []) if di else [],
                     ground_truth_answer=di.ground_truth_answer if di else None,
                     generated_answer=ri.generated_answer,
+                    generated_turns=ri.generated_turns or [],
                     retrieval_metrics=ri.retrieval_metrics,
                     rerank_metrics=ri.rerank_metrics,
                     generation_metrics=ri.generation_metrics,

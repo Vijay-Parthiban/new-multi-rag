@@ -50,6 +50,20 @@ def object_key(profile_id: str, kind: str, filename: str) -> str:
     return f"datasets/{profile_id}/{kind}/{name}"
 
 
+def versioned_key(
+    knowledge_product_id: str, profile_id: str, version_no: int, kind: str, filename: str
+) -> str:
+    """`datasets/<kp>/<profile>/v<version>/<kind>/<file>`.
+
+    One Knowledge Product, one profile, one version, one kind, one file. Two versions of
+    one profile therefore never share an object, and a product's whole tree is one prefix.
+    The bucket is `dataset-fabric`, which no ingestion source lists, so these files never
+    reach a Knowledge Product's destinations.
+    """
+    name = Path(filename or "dataset").name
+    return f"datasets/{knowledge_product_id}/{profile_id}/v{version_no}/{kind}/{name}"
+
+
 def _client(settings: Settings) -> Minio:
     raw = (settings.minio_endpoint or "").strip()
     secure = bool(settings.minio_use_ssl) or raw.startswith("https://")

@@ -271,6 +271,7 @@ def run_evaluation(run_id: str) -> None:
                         rerank_metrics=result.rerank_metrics,
                         generated_answer=result.generated_answer,
                         generation_metrics=result.generation_metrics,
+                        generated_turns=result.generated_turns,
                     )
                     progress = eval_repo.get_run_progress(run_uuid)
                     db.commit()
@@ -438,7 +439,7 @@ def run_synthesis(version_id: str, kinds: list[str] | None = None) -> None:
 
         def generate(kind: str) -> None:
             from eval_core.dataset_schema import dataset_items_to_jsonl
-            from eval_core.dataset_storage import object_key, put_dataset, resolve_bucket
+            from eval_core.dataset_storage import versioned_key, put_dataset, resolve_bucket
             from eval_core.synthesis import (
                 LiteLlmModel,
                 SynthesisError,
@@ -530,7 +531,9 @@ def run_synthesis(version_id: str, kinds: list[str] | None = None) -> None:
                     for item in eval_repo.list_dataset_items(dataset.id)
                 ]
                 filename = f"v{version.version_no}.jsonl"
-                key = object_key(str(profile.id), kind, filename)
+                key = versioned_key(
+                    profile.knowledge_product_id, str(profile.id), version.version_no, kind, filename
+                )
                 bucket = resolve_bucket(settings)
                 asyncio.run(
                     put_dataset(

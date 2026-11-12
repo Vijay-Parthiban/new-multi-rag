@@ -114,7 +114,7 @@ Design rules:
 | Knowledge Product buckets | Source files for one product | The ingestion service indexes every object in the bucket |
 | `dataset-fabric` | Every golden dataset file | No source points at it, so nothing is chunked or embedded |
 
-A dataset object key is `datasets/<profile_id>/<kind>/<basename>`. The row stores the bucket
+A dataset object key is `datasets/<kp_id>/<profile_id>/v<version>/<kind>/<basename>`, so one Knowledge Product's whole tree is one prefix and two versions never share a file. A dataset with no version, uploaded straight to Dataset Fabric, keeps `datasets/<profile_id>/<kind>/<basename>`. The row stores the bucket
 and key. Appending rows rewrites the object as JSONL. The JSONL file is the canonical
 snapshot, and the database rows are the working copy.
 
@@ -239,7 +239,7 @@ Uploaded files become `golden_datasets` rows that point at the profile. The page
 A profile with no linked pipeline is a real state. The datasets are authored before the
 pipeline exists. Such a profile never appears on the Offline Evaluation page.
 
-### 6.2 Dataset Feedback (harvest real conversations)
+### 6.2 Dataset Validator (harvest real conversations)
 
 A reviewer picks a profile that is linked to a pipeline. The page lists the real test and
 prod conversations of that pipeline from `conversation_turns`. The reviewer reads a
@@ -383,7 +383,9 @@ re-reads old runs under the new rule.
 | `failed` | The job raised; `error_message` holds the cause |
 
 Per-row records keep the retrieved chunks, the reranked chunks, the answer, and each metric
-block. Image payloads are stripped before storage.
+block. Image payloads are stripped before storage. A multi-turn row also keeps the transcript it produced, as
+`generated_turns`: the user turn and the assistant answer, repeated for every turn. That is
+the evidence a conversation-level metric reads.
 
 ---
 
@@ -415,7 +417,7 @@ still completes.
 | `/chat` | Chat and assistant endpoints |
 | `/evaluations` | Real Time Monitoring |
 | `/dataset-fabric` | Dataset authoring and viewer |
-| `/dataset-feedback` | Conversation harvesting |
+| `/dataset-validator` | Profile validation and trace curation |
 | `/golden-evaluations` | Offline Evaluation |
 | `/guardrails/config`, `/traces`, `/evaluation` | Guardrails |
 
@@ -445,9 +447,10 @@ still completes.
 | `GET` | `/api/dataset-profiles/{id}/datasets/{dataset_id}` | Preview rows |
 | `PATCH` | `/api/dataset-profiles/{id}/datasets/{dataset_id}/items/{item_id}` | Edit one row |
 | `DELETE` | `/api/dataset-profiles/{id}/datasets/{dataset_id}` | Delete a dataset |
-| `GET` | `/api/dataset-feedback/profiles/{id}/conversations` | List collected conversations |
-| `GET` | `/api/dataset-feedback/profiles/{id}/conversations/{session_id}` | Read one conversation |
-| `POST` | `/api/dataset-feedback/profiles/{id}/rows` | Append conversations as rows |
+| `GET` | `/api/dataset-validator/profiles/{id}/conversations` | List collected conversations |
+| `GET` | `/api/dataset-validator/profiles/{id}/conversations/{session_id}` | Read one conversation |
+| `POST` | `/api/dataset-validator/profiles/{id}/rows` | Append conversations as rows |
+| `PUT` | `/api/dataset-validator/profiles/{id}/pipeline` | Link or unlink the validating pipeline |
 | `GET` | `/evaluate/datasets` | List datasets |
 | `POST` | `/evaluate/datasets/upload` | Import a dataset file |
 | `POST` | `/evaluate/runs` | Create a run |

@@ -1249,7 +1249,7 @@ export async function updateProfileDatasetItem(
 // ── Synthetic Dataset Creator ──────────────────────────────────────────────
 
 export type SyntheticDatasetKind = "single_turn" | "multi_turn";
-export type SyntheticVersionStatus = "queued" | "running" | "completed" | "failed";
+export type SyntheticVersionStatus = "queued" | "running" | "completed" | "failed" | "empty";
 
 /** The settings one dataset carries. Each kind has its own. */
 export interface SyntheticKindConfig {
@@ -1280,6 +1280,12 @@ export interface SyntheticProfile {
   knowledge_product_id: string;
   knowledge_product_name: string | null;
   qdrant_collection: string;
+  /** Resolved from the Knowledge Product when the profile is created. */
+  fabric_profile_id: string | null;
+  fabric_profile_name: string | null;
+  /** The pipeline the Dataset Validator reads conversations from. NULL means unlinked. */
+  pipeline_slug?: string | null;
+  pipeline_name?: string | null;
   version_count: number;
   created_at: string | null;
   updated_at: string | null;
@@ -1289,6 +1295,9 @@ export interface SyntheticVersionDataset {
   id: string;
   kind: SyntheticDatasetKind;
   row_count: number | null;
+  profile_id?: string | null;
+  original_filename?: string | null;
+  source_format?: string | null;
   status: string | null;
   progress: Record<string, unknown>;
   config: Partial<SyntheticKindConfig>;
@@ -1305,6 +1314,8 @@ export interface SyntheticVersion {
   row_count_single: number;
   row_count_multi: number;
   fabric_profile_id: string | null;
+  /** The one active version of a profile. */
+  is_active: boolean;
   config: Record<string, unknown>;
   created_at: string | null;
   started_at: string | null;
@@ -1330,7 +1341,6 @@ export interface SyntheticVersionCreate {
   version_no?: number | null;
   description?: string | null;
   model: string;
-  fabric_profile_id: string | null;
   kinds: SyntheticDatasetKind[];
   single?: SyntheticKindConfig | null;
   multi?: SyntheticKindConfig | null;
@@ -1379,6 +1389,12 @@ export async function updateSyntheticProfile(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export async function activateSyntheticVersion(versionId: string): Promise<SyntheticVersion> {
+  return ragFetch<SyntheticVersion>(`/api/synthetic-datasets/versions/${versionId}/activate`, {
+    method: "POST",
   });
 }
 
@@ -1479,11 +1495,98 @@ export async function deleteSyntheticVersion(versionId: string): Promise<void> {
   await ragFetch(`/api/synthetic-datasets/versions/${versionId}`, { method: "DELETE" });
 }
 
-// ── Dataset Feedback ───────────────────────────────────────────────────────
+// ── Uploaded Datasets ──────────────────────────────────────────────────────
 
-export type FeedbackMode = "all" | "test" | "prod";
+/** The payloads match the synthetic page: same profile and version shape. */
+export type UploadedProfile = SyntheticProfile;
+export type UploadedVersion = SyntheticVersion;
 
-export interface FeedbackConversation {
+export async function listUploadedProfiles(): Promise<UploadedProfile[]> {
+  return ragFetch<UploadedProfile[]>("/api/uploaded-datasets/profiles");
+}
+
+export async function createUploadedProfile(body: {
+  name: string;
+  description?: string | null;
+  knowledge_product_id: string;
+}): Promise<UploadedProfile> {
+  return ragFetch<UploadedProfile>("/api/uploaded-datasets/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getUploadedProfile(profileId: string): Promise<SyntheticProfileDetail> {
+  return ragFetch<SyntheticProfileDetail>(`/api/uploaded-datasets/profiles/${profileId}`);
+}
+
+export async function deleteUploadedProfile(profileId: string): Promise<void> {
+  await ragFetch(`/api/uploaded-datasets/profiles/${profileId}`, { method: "DELETE" });
+}
+
+export async function createUploadedVersion(
+  profileId: string,
+  body: { version_no?: number; description?: string | null },
+): Promise<UploadedVersion> {
+  return ragFetch<UploadedVersion>(`/api/uploaded-datasets/profiles/${profileId}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function activateUploadedVersion(versionId: string): Promise<UploadedVersion> {
+  return ragFetch<UploadedVersion>(`/api/uploaded-datasets/versions/${versionId}/activate`, {
+    method: "POST",
+  });
+}
+
+export async function deleteUploadedVersion(versionId: string): Promise<void> {
+  await ragFetch(`/api/uploaded-datasets/versions/${versionId}`, { method: "DELETE" });
+}
+
+/** Upload or replace one kind of a version. The server removes the previous dataset. */
+export async function uploadVersionDataset(
+  versionId: string,
+  file: File,
+  kind: SyntheticDatasetKind,
+): Promise<UploadedVersion> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("kind", kind);
+  return ragFetch<UploadedVersion>(`/api/uploaded-datasets/versions/${versionId}/datasets`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function deleteVersionDataset(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+): Promise<void> {
+  await ragFetch(`/api/uploaded-datasets/versions/${versionId}/datasets/${kind}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listUploadedVersionItems(
+  versionId: string,
+  kind: SyntheticDatasetKind,
+  offset = 0,
+  limit = 20,
+): Promise<{ count: number; items: SyntheticVersionItem[] }> {
+  const query = `kind=${kind}&offset=${offset}&limit=${limit}`;
+  return ragFetch<{ count: number; items: SyntheticVersionItem[] }>(
+    `/api/uploaded-datasets/versions/${versionId}/items?${query}`,
+  );
+}
+
+// ── Dataset Validator ──────────────────────────────────────────────────────
+
+export type ValidatorMode = "all" | "test" | "prod";
+
+export interface ValidatorConversation {
   session_id: string;
   turns: number;
   trace_modes: string[];
@@ -1493,17 +1596,17 @@ export interface FeedbackConversation {
   added: boolean;
 }
 
-export interface FeedbackConversationList {
-  items: FeedbackConversation[];
+export interface ValidatorConversationList {
+  items: ValidatorConversation[];
   total: number;
 }
 
-export interface FeedbackSource {
+export interface ValidatorSource {
   name: string;
   rerank_score: number | null;
 }
 
-export interface FeedbackTurn {
+export interface ValidatorTurn {
   index: number;
   trace_id: string;
   span_id: string;
@@ -1511,17 +1614,17 @@ export interface FeedbackTurn {
   answer: string;
   trace_mode: string;
   started_at: string;
-  sources: FeedbackSource[];
+  sources: ValidatorSource[];
 }
 
-export interface FeedbackConversationDetail {
+export interface ValidatorConversationDetail {
   session_id: string;
   pipeline_slug: string;
   added: boolean;
-  turns: FeedbackTurn[];
+  turns: ValidatorTurn[];
 }
 
-export interface FeedbackRowInput {
+export interface ValidatorRowInput {
   session_id: string;
   graded_turn?: number | null;
   ground_truth_answer: string | null;
@@ -1530,43 +1633,55 @@ export interface FeedbackRowInput {
   expected_behavior: "answer_from_corpus" | "refuse_or_abstain";
 }
 
-export interface AppendRowsResponse {
+export interface ValidatorAppendResponse {
   dataset: DatasetProfileFile;
   added: number;
   skipped: { session_id: string; reason: string; detail: string }[];
 }
 
-/** Real test and prod conversations of the profile's pipeline, newest first. */
-export async function listFeedbackConversations(
+/** Link or unlink the pipeline whose conversations this profile validates. */
+export async function linkValidatorPipeline(
   profileId: string,
-  p: { kind: DatasetKind; mode?: FeedbackMode; q?: string; limit?: number; offset?: number },
-): Promise<FeedbackConversationList> {
+  pipeline: { pipeline_slug: string | null; pipeline_name: string | null },
+): Promise<SyntheticProfile> {
+  return ragFetch<SyntheticProfile>(`/api/dataset-validator/profiles/${profileId}/pipeline`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pipeline),
+  });
+}
+
+/** Real test and prod conversations of the profile's pipeline, newest first. */
+export async function listValidatorConversations(
+  profileId: string,
+  p: { kind: DatasetKind; mode?: ValidatorMode; q?: string; limit?: number; offset?: number },
+): Promise<ValidatorConversationList> {
   const params = new URLSearchParams({ kind: p.kind });
   if (p.mode && p.mode !== "all") params.set("mode", p.mode);
   if (p.q) params.set("q", p.q);
   if (p.limit) params.set("limit", String(p.limit));
   if (p.offset) params.set("offset", String(p.offset));
-  return ragFetch<FeedbackConversationList>(
-    `/api/dataset-feedback/profiles/${profileId}/conversations?${params}`,
+  return ragFetch<ValidatorConversationList>(
+    `/api/dataset-validator/profiles/${profileId}/conversations?${params}`,
   );
 }
 
-export async function getFeedbackConversation(
+export async function getValidatorConversation(
   profileId: string,
   sessionId: string,
-): Promise<FeedbackConversationDetail> {
-  return ragFetch<FeedbackConversationDetail>(
-    `/api/dataset-feedback/profiles/${profileId}/conversations/${encodeURIComponent(sessionId)}`,
+): Promise<ValidatorConversationDetail> {
+  return ragFetch<ValidatorConversationDetail>(
+    `/api/dataset-validator/profiles/${profileId}/conversations/${encodeURIComponent(sessionId)}`,
   );
 }
 
-/** Add conversations as rows. The server builds each row from the stored turns. */
-export async function appendFeedbackRows(
+/** Add conversations as rows to the active version. The server builds each row. */
+export async function appendValidatorRows(
   profileId: string,
   kind: DatasetKind,
-  rows: FeedbackRowInput[],
-): Promise<AppendRowsResponse> {
-  return ragFetch<AppendRowsResponse>(`/api/dataset-feedback/profiles/${profileId}/rows`, {
+  rows: ValidatorRowInput[],
+): Promise<ValidatorAppendResponse> {
+  return ragFetch<ValidatorAppendResponse>(`/api/dataset-validator/profiles/${profileId}/rows`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, rows }),
@@ -1652,6 +1767,8 @@ export interface EvalRunItemRow {
   expected_sources: Array<string | { name: string; page?: number }>;
   ground_truth_answer: string | null;
   generated_answer: string | null;
+  /** The conversation the pipeline produced, as user/assistant pairs. Empty on a single-turn row. */
+  generated_turns?: { role: string; content: string }[];
   retrieval_metrics: Record<string, any> | null;
   rerank_metrics: Record<string, any> | null;
   generation_metrics: Record<string, any> | null;

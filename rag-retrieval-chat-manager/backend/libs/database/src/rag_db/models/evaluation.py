@@ -31,9 +31,9 @@ class GoldenDataset(Base):
     source_format: Mapped[str | None] = mapped_column(String, nullable=True)
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # Set on a dataset the Synthetic Dataset Creator wrote. NULL keeps the dataset on the
-    # profile alone, which is every dataset uploaded by hand.
-    synthetic_version_id: Mapped[uuid.UUID | None] = mapped_column(
+    # Set on a dataset a version holds, whichever author wrote it. NULL keeps the dataset
+    # on the profile alone, which is an upload to Dataset Fabric directly.
+    version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("synthetic_dataset_versions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -93,6 +93,9 @@ class EvaluationRunItem(Base):
     rerank_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     generated_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     generation_metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # The conversation the pipeline produced for a multi-turn row, as user/assistant
+    # pairs. NULL on a single-turn row and on every row that ran before this column.
+    generated_turns: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

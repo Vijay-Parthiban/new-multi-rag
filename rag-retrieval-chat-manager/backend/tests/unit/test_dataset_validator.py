@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 
 from rag_api.main import create_app
-from rag_api.routes.dataset_feedback import FeedbackRow, RowRejected, build_item
+from rag_api.routes.dataset_validator import FeedbackRow, RowRejected, build_item
 
 NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
 
@@ -53,12 +53,24 @@ def test_multi_turn_defaults_to_the_last_turn_and_keeps_user_turns_only():
     assert item["turns"] == [{"role": "user", "content": f"q{n}"} for n in (1, 2, 3)]
     assert item["question"] == "q3"
     assert item["metadata"]["source_span_id"] == "s3"
+    # One answer per user turn, in order. The last is the row's ground truth.
+    assert item["metadata"]["expected_turns"] == [
+        {"content": "a1"},
+        {"content": "a2"},
+        {"content": "Right."},
+    ]
+    assert GoldenDatasetItemPayload.model_validate(item).metadata["expected_turns"] == [
+        {"content": "a1"},
+        {"content": "a2"},
+        {"content": "Right."},
+    ]
 
 
 def test_multi_turn_graded_turn_cuts_the_conversation():
     item = build_item("multi_turn", [_turn(1), _turn(2), _turn(3)], _row(graded_turn=2), NOW)
     assert [t["content"] for t in item["turns"]] == ["q1", "q2"]
     assert item["question"] == "q2"
+    assert item["metadata"]["expected_turns"] == [{"content": "a1"}, {"content": "Right."}]
     assert item["metadata"]["source_trace_id"] == "t2"
     assert GoldenDatasetItemPayload.model_validate(item).turns is not None
 
@@ -86,6 +98,11 @@ def test_blank_answer_is_rejected_unless_the_row_is_a_refusal():
     assert item["ground_truth_answer"] is None
     assert item["expected_sources"] == []
     assert item["metadata"]["expected_behavior"] == "refuse_or_abstain"
+
+    refusal = build_item(
+        "multi_turn", [_turn(1), _turn(2)], _row(expected_behavior="refuse_or_abstain"), NOW
+    )
+    assert "expected_turns" not in refusal["metadata"]
 
 
 def test_sources_are_stripped_deduped_and_wrapped():
@@ -121,7 +138,7 @@ class _Db:
         type(self).rolled_back = True
 
 
-def _dataset(kind="single_turn", filename=None, key=None):
+def _dataset(kind="single_turn", filename=None, key=None, profile_id=None):
     return SimpleNamespace(
         id=uuid4(),
         kind=kind,
@@ -131,14 +148,28 @@ def _dataset(kind="single_turn", filename=None, key=None):
         row_count=None,
         storage_bucket="b" if key else None,
         storage_key=key,
+        profile_id=profile_id,
     )
 
 
-def _post(client, *, profile, target=None, seen=(), turns=None, kind="single_turn", rows=None):
+def _post(
+    client,
+    *,
+    profile,
+    version=None,
+    target=None,
+    seen=(),
+    turns=None,
+    kind="single_turn",
+    rows=None,
+):
     """Run POST /rows against fakes; returns (response, mocks)."""
     _Db.rolled_back = False
-    profile_repo = MagicMock()
-    profile_repo.get.return_value = profile
+    version = version or _version()
+    repo = MagicMock()
+    repo.get_profile.return_value = profile
+    repo.list_versions.return_value = [version]
+    repo.datasets_for_version.return_value = [target] if target else []
     turns_repo = MagicMock()
     turns_repo.get_conversation.return_value = turns if turns is not None else [_turn(1)]
     created = _dataset(kind)
@@ -152,26 +183,43 @@ def _post(client, *, profile, target=None, seen=(), turns=None, kind="single_tur
             turns=None, metadata_={"source_session_id": "sess"}, created_at=NOW,
         )
     ]
-    mocks = SimpleNamespace(snapshot=AsyncMock(), eval_repo=eval_repo, created=created)
+    mocks = SimpleNamespace(
+        snapshot=AsyncMock(), eval_repo=eval_repo, created=created, repo=repo, version=version
+    )
     with ExitStack() as stack:
         for target_path, value in {
-            "rag_api.routes.dataset_feedback._session_factory": MagicMock(return_value=_Db),
-            "rag_db.repositories.dataset_profile_repository.DatasetProfileRepository": MagicMock(return_value=profile_repo),
+            "rag_api.routes.dataset_validator._session_factory": MagicMock(return_value=_Db),
+            "rag_db.repositories.synthetic_dataset_repository.SyntheticDatasetRepository": MagicMock(return_value=repo),
             "rag_db.repositories.conversation_turn_repository.ConversationTurnRepository": MagicMock(return_value=turns_repo),
             "rag_db.repositories.evaluation_repository.EvaluationRepository": MagicMock(return_value=eval_repo),
-            "rag_api.routes.dataset_feedback.store_snapshot": mocks.snapshot,
+            "rag_api.routes.dataset_validator.store_snapshot": mocks.snapshot,
         }.items():
             stack.enter_context(patch(target_path, value))
         response = client.post(
-            f"/api/dataset-feedback/profiles/{profile.id}/rows",
+            f"/api/dataset-validator/profiles/{profile.id}/rows",
             json={"kind": kind, "rows": rows or [{"session_id": "sess", "ground_truth_answer": "Right.", "expected_sources": ["a.pdf"]}]},
         )
     return response, mocks
 
 
-def _profile(datasets=(), slug="resume-q-a"):
+def _profile(slug="resume-q-a", fabric=None):
     return SimpleNamespace(
-        id=uuid4(), name="Resume", pipeline_slug=slug, knowledge_product_id="kp", datasets=list(datasets)
+        id=uuid4(),
+        name="Resume",
+        pipeline_slug=slug,
+        pipeline_name="Resume pipeline" if slug else None,
+        knowledge_product_id="kp",
+        fabric_profile_id=fabric or uuid4(),
+    )
+
+
+def _version(active=True, fabric=None, number=1):
+    return SimpleNamespace(
+        id=uuid4(),
+        version_no=number,
+        is_active=active,
+        description=None,
+        fabric_profile_id=fabric or uuid4(),
     )
 
 
@@ -188,9 +236,10 @@ def test_first_add_creates_the_dataset_and_writes_a_snapshot(client):
     assert response.json()["added"] == 1
 
     create = m.eval_repo.create_dataset.call_args.kwargs
-    assert create["profile_id"] == profile.id
+    assert create["profile_id"] == profile.fabric_profile_id
     assert create["kind"] == "single_turn"
     m.snapshot.assert_awaited_once()
+    # The created dataset has no fabric profile of its own, so the profile id names the object.
     assert m.snapshot.await_args.kwargs["profile_id"] == profile.id
     assert m.snapshot.await_args.kwargs["kind"] == "single_turn"
     assert m.eval_repo.add_dataset_item.call_count == 1
@@ -198,7 +247,7 @@ def test_first_add_creates_the_dataset_and_writes_a_snapshot(client):
 
 def test_append_reuses_the_existing_dataset(client):
     target = _dataset(filename="resume.csv", key="datasets/x/single_turn/resume.csv")
-    response, m = _post(client, profile=_profile([target]))
+    response, m = _post(client, profile=_profile(), target=target)
     assert response.status_code == 200, response.text
     m.eval_repo.create_dataset.assert_not_called()
     assert m.snapshot.await_args.args[3] is target
@@ -206,7 +255,7 @@ def test_append_reuses_the_existing_dataset(client):
 
 def test_a_session_already_in_the_dataset_is_skipped(client):
     target = _dataset(filename="resume.csv", key="datasets/x/single_turn/resume.csv")
-    response, m = _post(client, profile=_profile([target]), seen={"sess"})
+    response, m = _post(client, profile=_profile(), target=target, seen={"sess"})
     body = response.json()
     assert response.status_code == 200
     assert body["added"] == 0
@@ -230,3 +279,9 @@ def test_multi_turn_row_stores_user_turns(client):
     added = m.eval_repo.add_dataset_item.call_args.kwargs
     assert added["turns"] == [{"role": "user", "content": "q1"}, {"role": "user", "content": "q2"}]
     assert added["question"] == "q2"
+
+
+def test_profile_without_an_active_version_is_409(client):
+    response, _ = _post(client, profile=_profile(), version=_version(active=False))
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "NO_ACTIVE_VERSION"

@@ -3,17 +3,16 @@ import type { FormEvent } from "react";
 
 import PageHeader from "../components/PageHeader";
 import Pager from "../components/Pager";
+import RowDrawer, { KIND_WORD } from "../components/RowDrawer";
 import StatusBadge from "../components/StatusBadge";
 import {
   IconChevronRight,
-  IconClose,
   IconPlus,
   IconRefresh,
   IconSparkles,
   IconTrash,
 } from "../components/Icons";
 import {
-  DatasetProfile,
   KnowledgeProduct,
   SYNTHETIC_EVOLUTIONS,
   SYNTHETIC_RAG_SAFE_EVOLUTIONS,
@@ -25,6 +24,7 @@ import {
   SyntheticVersionStatus,
   SyntheticVersionDataset,
   SyntheticVersionItem,
+  activateSyntheticVersion,
   addSyntheticDataset,
   createSyntheticProfile,
   createSyntheticVersion,
@@ -34,7 +34,6 @@ import {
   getLiteLLMModels,
   getSyntheticProfile,
   getSyntheticVersion,
-  listDatasetProfiles,
   listKnowledgeProducts,
   listSyntheticProfiles,
   listSyntheticVersionItems,
@@ -44,11 +43,6 @@ import {
 import { formatRelativeTime } from "../utils/format";
 
 const PAGE_SIZE = 20;
-
-const KIND_WORD: Record<SyntheticDatasetKind, string> = {
-  single_turn: "Single-turn",
-  multi_turn: "Multi-turn",
-};
 
 const PHASE_LABEL: Record<string, string> = {
   reading_chunks: "Reading chunks",
@@ -393,162 +387,12 @@ function KindConfigFields({
   );
 }
 
-/** Pairs a row's user turns with the assistant answers kept in `metadata.expected_turns`. */
-function rowConversation(item: SyntheticVersionItem) {
-  const raw = item.metadata?.expected_turns;
-  const answers = Array.isArray(raw)
-    ? raw.map((turn) =>
-        typeof turn === "string"
-          ? turn
-          : String((turn as { content?: unknown } | null)?.content ?? ""),
-      )
-    : [];
-  return (item.turns ?? []).map((turn, index) => ({
-    user: turn.content,
-    answer: answers[index] ?? "",
-  }));
-}
-
-function asList(value: unknown): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item)) : [];
-}
-
-/** The whole record, because a table cell can hold one line of it at most. */
-function RowDrawer({
-  item,
-  position,
-  kind,
-  onClose,
-}: {
-  item: SyntheticVersionItem;
-  position: number;
-  kind: SyntheticDatasetKind;
-  onClose: () => void;
-}) {
-  const conversation = rowConversation(item);
-  const sources = asList(item.expected_sources);
-  const evolutions = asList(item.metadata?.evolutions);
-  const contexts = asList(item.metadata?.source_contexts);
-  const scenario = typeof item.metadata?.scenario === "string" ? item.metadata.scenario : null;
-  const model = typeof item.metadata?.model === "string" ? item.metadata.model : null;
-
-  return (
-    <div className="drawer-backdrop" onMouseDown={onClose} role="presentation">
-      <aside
-        className="drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sd-row-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="drawer-head">
-          <div>
-            <h3 id="sd-row-title" className="panel-title">
-              Row {position}
-            </h3>
-            <p className="fabric-meta sd-row-meta">
-              {KIND_WORD[kind]} · {conversation.length > 1 ? `${conversation.length} turns` : "1 turn"}
-              {model ? ` · ${model}` : ""}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onClose}
-            aria-label="Close row"
-            autoFocus
-          >
-            <IconClose size={14} />
-          </button>
-        </div>
-
-        <div className="drawer-body">
-          {conversation.length > 0 ? (
-            <ol className="sd-conv">
-              {conversation.map((turn, index) => (
-                <li className="sd-conv-turn" key={index}>
-                  <p className="sd-row-label">Turn {index + 1} · user</p>
-                  <p className="sd-row-text">{turn.user}</p>
-                  {turn.answer && (
-                    <>
-                      <p className="sd-row-label">Turn {index + 1} · assistant</p>
-                      <p className="sd-row-text">{turn.answer}</p>
-                    </>
-                  )}
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <>
-              <section className="sd-row-section">
-                <p className="sd-row-label">Question</p>
-                <p className="sd-row-text">{item.question}</p>
-              </section>
-              <section className="sd-row-section">
-                <p className="sd-row-label">Ground truth</p>
-                <p className="sd-row-text">{item.ground_truth_answer ?? "—"}</p>
-              </section>
-            </>
-          )}
-
-          <section className="sd-row-section">
-            <p className="sd-row-label">Expected sources</p>
-            {sources.length > 0 ? (
-              <div className="sd-chips">
-                {sources.map((source, index) => (
-                  <span className="sd-kind" key={`${source}-${index}`}>
-                    {source}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="sd-row-text">None</p>
-            )}
-          </section>
-
-          {scenario && (
-            <section className="sd-row-section">
-              <p className="sd-row-label">Scenario</p>
-              <p className="sd-row-text">{scenario}</p>
-            </section>
-          )}
-
-          {evolutions.length > 0 && (
-            <section className="sd-row-section">
-              <p className="sd-row-label">Evolutions</p>
-              <div className="sd-chips">
-                {evolutions.map((name, index) => (
-                  <span className="sd-kind" key={`${name}-${index}`}>
-                    {name}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {contexts.length > 0 && (
-            <section className="sd-row-section">
-              <p className="sd-row-label">Reference contexts</p>
-              {contexts.map((context, index) => (
-                <details className="sd-context" key={index}>
-                  <summary>
-                    Context {index + 1} · {context.length.toLocaleString()} characters
-                  </summary>
-                  <pre className="sd-context-body">{context}</pre>
-                </details>
-              ))}
-            </section>
-          )}
-        </div>
-      </aside>
-    </div>
-  );
-}
-
 export default function SyntheticDatasetPage() {
   const [profiles, setProfiles] = useState<SyntheticProfile[]>([]);
   const [products, setProducts] = useState<KnowledgeProduct[]>([]);
-  const [fabricProfiles, setFabricProfiles] = useState<DatasetProfile[]>([]);
+  // The Knowledge Product the page is looking at. Its synthetic profiles are the only ones
+  // shown, and a new profile belongs to it.
+  const [productId, setProductId] = useState("");
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -558,14 +402,12 @@ export default function SyntheticDatasetPage() {
   const [profileFormOpen, setProfileFormOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
-  const [newProductId, setNewProductId] = useState("");
 
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creator, setCreator] = useState({
     versionNo: "",
     description: "",
     model: "",
-    fabricProfileId: "",
     type: "single" as "single" | "multi" | "both",
     single: newDraft(),
     multi: newDraft(),
@@ -594,12 +436,9 @@ export default function SyntheticDatasetPage() {
 
   const profile = detail?.profile ?? profiles.find((p) => p.id === profileId) ?? null;
 
-  const fabricForProduct = useMemo(
-    () =>
-      fabricProfiles.filter(
-        (item) => (item.knowledge_product_id ?? "") === (profile?.knowledge_product_id ?? "-"),
-      ),
-    [fabricProfiles, profile],
+  const profilesForProduct = useMemo(
+    () => profiles.filter((item) => item.knowledge_product_id === productId),
+    [profiles, productId],
   );
 
   const nextVersionNo = useMemo(() => {
@@ -627,17 +466,23 @@ export default function SyntheticDatasetPage() {
     let alive = true;
     (async () => {
       try {
-        const [nextProfiles, nextProducts, nextFabric, models] = await Promise.all([
+        const [nextProfiles, nextProducts, models] = await Promise.all([
           listSyntheticProfiles(),
           listKnowledgeProducts().catch(() => [] as KnowledgeProduct[]),
-          listDatasetProfiles().catch(() => [] as DatasetProfile[]),
           getLiteLLMModels("chat").catch(() => [] as { id: string; label: string }[]),
         ]);
         if (!alive) return;
         setProfiles(nextProfiles);
         setProducts(nextProducts);
-        setFabricProfiles(nextFabric);
         setChatModels(models);
+        // Land on the product that already holds presets, else on the first product.
+        setProductId(
+          (prev) =>
+            prev ||
+            nextProfiles[0]?.knowledge_product_id ||
+            nextProducts[0]?.id ||
+            "",
+        );
       } catch (exc) {
         if (alive) setError(exc instanceof Error ? exc.message : String(exc));
       } finally {
@@ -710,6 +555,8 @@ export default function SyntheticDatasetPage() {
   }, [versionId, rowsKind, page, version]);
 
   const selectProfile = (id: string) => {
+    const target = profiles.find((item) => item.id === id);
+    if (target) setProductId(target.knowledge_product_id);
     setProfileId(id);
     setVersion(null);
     setVersionId(null);
@@ -738,11 +585,10 @@ export default function SyntheticDatasetPage() {
       const created = await createSyntheticProfile({
         name: newName.trim(),
         description: optional(newDescription),
-        knowledge_product_id: newProductId,
+        knowledge_product_id: productId,
       });
       setNewName("");
       setNewDescription("");
-      setNewProductId("");
       setProfileFormOpen(false);
       await loadProfiles();
       selectProfile(created.id);
@@ -758,7 +604,6 @@ export default function SyntheticDatasetPage() {
       versionNo: "",
       description: "",
       model: chatModels[0]?.id ?? "",
-      fabricProfileId: "",
       type: "single",
       single: newDraft(),
       multi: newDraft(),
@@ -780,7 +625,6 @@ export default function SyntheticDatasetPage() {
         version_no: creator.versionNo.trim() ? Number(creator.versionNo) : null,
         description: optional(creator.description),
         model: creator.model,
-        fabric_profile_id: creator.fabricProfileId || null,
         kinds,
         single: kinds.includes("single_turn") ? configFromDraft(creator.single) : null,
         multi: kinds.includes("multi_turn") ? configFromDraft(creator.multi) : null,
@@ -795,14 +639,20 @@ export default function SyntheticDatasetPage() {
     }
   };
 
-  useEffect(() => {
-    if (!detailRow) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDetailRow(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [detailRow]);
+  const onActivateVersion = async (row: SyntheticVersion) => {
+    if (row.is_active) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await activateSyntheticVersion(row.id);
+      if (versionId === row.id) setVersion(next);
+      if (profileId) await loadDetail(profileId);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!versionId) return;
@@ -930,11 +780,6 @@ export default function SyntheticDatasetPage() {
     }
   };
 
-  const fabricName = (id: string | null): string => {
-    if (!id) return "None";
-    return fabricProfiles.find((item) => item.id === id)?.name ?? "Linked profile";
-  };
-
   const renderSlot = (kind: SyntheticDatasetKind) => {
     const dataset: SyntheticVersionDataset | undefined = version?.datasets.find(
       (item) => item.kind === kind,
@@ -980,7 +825,7 @@ export default function SyntheticDatasetPage() {
               </div>
               <div>
                 <dt>Fabric</dt>
-                <dd>{fabricName(version?.fabric_profile_id ?? null)}</dd>
+                <dd>{profile?.fabric_profile_name ?? "—"}</dd>
               </div>
             </dl>
 
@@ -1130,7 +975,7 @@ export default function SyntheticDatasetPage() {
     <>
       <PageHeader
         title="Synthetic Datasets"
-        description="One profile per Knowledge Product. Each version holds a single-turn dataset and a multi-turn dataset, each with its own settings."
+        description="Pick a Knowledge Product, then keep one active version in each synthetic profile. Each version holds a single-turn dataset and a multi-turn dataset, each with its own settings."
         breadcrumbs={[
           { label: "Overview", to: "/" },
           { label: "Synthetic Datasets", to: "/synthetic-datasets" },
@@ -1155,9 +1000,32 @@ export default function SyntheticDatasetPage() {
 
       {!profileId ? (
         <section className="sd-profiles">
+          <div className="sd-product">
+            <div className="sd-field">
+              <label htmlFor="sd-product">Knowledge Product</label>
+              <select
+                className="input"
+                id="sd-product"
+                value={productId}
+                onChange={(e) => {
+                  setProductId(e.target.value);
+                  setProfileId(null);
+                  setProfileFormOpen(false);
+                }}
+              >
+                <option value="">Pick a product</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="sd-profiles-head">
-            <h2 className="sd-section-title">Profiles</h2>
-            {profiles.length > 0 && (
+            <h2 className="sd-section-title">Synthetic profiles</h2>
+            {productId && (
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -1175,7 +1043,7 @@ export default function SyntheticDatasetPage() {
                 <div className="sd-field">
                   <label htmlFor="sd-new-name">Name</label>
                   <input
-                  className="input"
+                    className="input"
                     id="sd-new-name"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
@@ -1185,29 +1053,12 @@ export default function SyntheticDatasetPage() {
                 <div className="sd-field">
                   <label htmlFor="sd-new-description">Description</label>
                   <input
-                  className="input"
+                    className="input"
                     id="sd-new-description"
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
                   />
                 </div>
-              </div>
-              <div className="sd-field">
-                <label htmlFor="sd-new-product">Knowledge Product</label>
-                <select
-                className="input"
-                  id="sd-new-product"
-                  value={newProductId}
-                  onChange={(e) => setNewProductId(e.target.value)}
-                  required
-                >
-                  <option value="">Pick a product</option>
-                  {products.map((product) => (
-                    <option key={product.id} value={product.id}>
-                      {product.name}
-                    </option>
-                  ))}
-                </select>
               </div>
               <div className="sd-form-actions">
                 <button type="submit" className="btn btn-primary btn-sm" disabled={busy}>
@@ -1226,10 +1077,12 @@ export default function SyntheticDatasetPage() {
 
           {loading ? (
             <p className="muted">Loading…</p>
-          ) : profiles.length === 0 ? (
+          ) : !productId ? (
+            <p className="muted">Pick a Knowledge Product to see its synthetic profiles.</p>
+          ) : profilesForProduct.length === 0 ? (
             <div className="panel panel-empty">
               <p className="muted" style={{ margin: 0 }}>
-                A profile groups the datasets of one Knowledge Product.
+                No synthetic profile for this Knowledge Product yet.
               </p>
               <button
                 type="button"
@@ -1242,25 +1095,28 @@ export default function SyntheticDatasetPage() {
             </div>
           ) : (
             <div className="sd-cards">
-              {profiles.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="sd-card"
-                  onClick={() => selectProfile(item.id)}
-                >
+              {profilesForProduct.map((item) => (
+                <div key={item.id} className="sd-card">
                   <span className="sd-card-name">{item.name}</span>
+                  <span className="sd-card-kp">{item.description ?? "No description"}</span>
                   <span className="sd-card-kp">
-                    {item.knowledge_product_name ?? item.knowledge_product_id}
+                    Fabric profile · {item.fabric_profile_name ?? "none"}
                   </span>
-                  <span className="sd-card-collection mono">{item.qdrant_collection}</span>
                   <span className="sd-card-foot">
                     <span className="sd-card-count">
                       {item.version_count} {item.version_count === 1 ? "version" : "versions"}
                     </span>
-                    <span className="sd-card-open">Open</span>
+                    <span className="sd-card-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => selectProfile(item.id)}
+                      >
+                        Open
+                      </button>
+                    </span>
                   </span>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -1337,22 +1193,6 @@ export default function SyntheticDatasetPage() {
                       value={creator.description}
                       onChange={(e) => setCreator({ ...creator, description: e.target.value })}
                     />
-                  </div>
-                  <div className="sd-field">
-                    <label htmlFor="sd-fabric-profile">Fabric profile</label>
-                    <select
-                    className="input"
-                      id="sd-fabric-profile"
-                      value={creator.fabricProfileId}
-                      onChange={(e) => setCreator({ ...creator, fabricProfileId: e.target.value })}
-                    >
-                      <option value="">None</option>
-                      {fabricForProduct.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
                   </div>
                   <div className="sd-field">
                     <label htmlFor="sd-model">Chat model</label>
@@ -1446,6 +1286,7 @@ export default function SyntheticDatasetPage() {
                     <th scope="col">Datasets</th>
                     <th scope="col">Status</th>
                     <th scope="col">Created</th>
+                    <th scope="col">Active</th>
                     <th scope="col">Actions</th>
                   </tr>
                 </thead>
@@ -1484,6 +1325,20 @@ export default function SyntheticDatasetPage() {
                         <StatusBadge status={row.status} />
                       </td>
                       <td>{row.created_at ? formatRelativeTime(row.created_at) : "—"}</td>
+                      <td>
+                        {row.is_active ? (
+                          <StatusBadge status="active" />
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => void onActivateVersion(row)}
+                            disabled={busy}
+                          >
+                            Activate
+                          </button>
+                        )}
+                      </td>
                       <td>
                         <div className="sd-row-actions">
                           <button

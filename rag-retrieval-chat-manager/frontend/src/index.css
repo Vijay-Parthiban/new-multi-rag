@@ -1264,7 +1264,8 @@ select.input option {
 }
 
 .status-success,
-.status-completed {
+.status-completed,
+.status-active {
   background: var(--success-subtle);
   color: var(--success-text);
 }
@@ -7867,6 +7868,11 @@ select.input option {
 /* Synthetic dataset creator */
 
 /* Profiles */
+.sd-product {
+  max-width: 420px;
+  margin-bottom: 1.25rem;
+}
+
 .sd-profiles-head {
   display: flex;
   align-items: center;
@@ -7892,19 +7898,16 @@ select.input option {
   display: grid;
   gap: 0.35rem;
   padding: 1rem;
-  text-align: left;
   background: var(--bg-default);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  cursor: pointer;
-  transition: border-color 0.2s ease, transform 0.2s ease;
 }
 
-.sd-card:hover,
-.sd-card:focus-visible {
-  border-color: var(--border-glow);
-  transform: translateY(-1px);
+.sd-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .sd-card-name {
@@ -7933,18 +7936,6 @@ select.input option {
 }
 
 .sd-card-count { font-size: 0.72rem; color: var(--text-secondary); }
-
-.sd-card-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.sd-card:hover .sd-card-open,
-.sd-card:focus-visible .sd-card-open { color: var(--accent-emphasis); }
 
 /* Profile view */
 /* The icon set has no left chevron; mirror the right one. */
@@ -8102,6 +8093,56 @@ select.input option {
 
 .sd-slot-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
+/* Uploaded Datasets: one file control per kind, styled as a secondary button so it
+   sits in the same family as the controls beside it. */
+.sd-file {
+  width: 100%;
+  max-width: 100%;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.sd-file::file-selector-button {
+  margin-right: 0.6rem;
+  padding: 5px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.sd-file::file-selector-button:hover {
+  border-color: var(--border-glow);
+  background: var(--bg-glass-hover);
+}
+
+.sd-file:focus-visible {
+  outline: none;
+}
+
+.sd-file:focus-visible::file-selector-button {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.sd-file:disabled {
+  opacity: 0.5;
+}
+
+.sd-slot-hint {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 0.8rem;
+}
+
+.sd-file-name {
+  overflow-wrap: anywhere;
+}
+
 .sd-progress-inline { display: grid; gap: 6px; }
 
 .sd-slot-form {
@@ -8142,13 +8183,22 @@ select.input option {
     display: none;
   }
 
-  .sd-versions .fabric-table th:nth-child(1) { width: 30%; }
-  .sd-versions .fabric-table th:nth-child(2) { width: 26%; }
-  .sd-versions .fabric-table th:nth-child(3) { width: 22%; }
-  .sd-versions .fabric-table th:nth-child(5) { width: 22%; }
+  .sd-versions .fabric-table th:nth-child(1) { width: 28%; }
+  .sd-versions .fabric-table th:nth-child(2) { width: 24%; }
+  .sd-versions .fabric-table th:nth-child(3) { width: 16%; }
+  .sd-versions .fabric-table th:nth-child(5) { width: 14%; }
+  .sd-versions .fabric-table th:nth-child(6) { width: 18%; }
 }
 
 .sd-row-click { cursor: pointer; }
+
+/* The manual table has five columns and no evolutions column, so its shares of the
+   width are its own. Without this the leftover space lands on the row number. */
+.sd-rows--manual .fabric-table th:nth-child(1) { width: 5%; }
+.sd-rows--manual .fabric-table th:nth-child(2) { width: 40%; }
+.sd-rows--manual .fabric-table th:nth-child(3) { width: 35%; }
+.sd-rows--manual .fabric-table th:nth-child(4) { width: 7%; }
+.sd-rows--manual .fabric-table th:nth-child(5) { width: 13%; }
 
 .sd-row-click:hover td { background: var(--bg-subtle); }
 
@@ -8249,11 +8299,12 @@ select.input option {
 
 /* Version table. The shared table is table-layout: fixed, so the columns need
    widths or every one gets an equal fifth and the chips wrap. */
-.sd-versions .fabric-table th:nth-child(1) { width: 24%; }
-.sd-versions .fabric-table th:nth-child(2) { width: 26%; }
-.sd-versions .fabric-table th:nth-child(3) { width: 14%; }
-.sd-versions .fabric-table th:nth-child(4) { width: 16%; }
-.sd-versions .fabric-table th:nth-child(5) { width: 20%; }
+.sd-versions .fabric-table th:nth-child(1) { width: 20%; }
+.sd-versions .fabric-table th:nth-child(2) { width: 22%; }
+.sd-versions .fabric-table th:nth-child(3) { width: 12%; }
+.sd-versions .fabric-table th:nth-child(4) { width: 12%; }
+.sd-versions .fabric-table th:nth-child(5) { width: 12%; }
+.sd-versions .fabric-table th:nth-child(6) { width: 22%; }
 
 .sd-kinds { display: flex; flex-wrap: nowrap; gap: 0.35rem; }
 
@@ -8408,4 +8459,213 @@ select.input option {
   .sd-bar-fill,
   .sd-creator,
   .sd-slot-form { transition: none; animation: none; }
+}
+
+
+/* ══════════════════════════════════════════════
+   Dataset Validator
+   ══════════════════════════════════════════════ */
+
+button.sd-card {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button.sd-card:hover {
+  border-color: var(--border-glow);
+}
+
+.form-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: var(--success-text);
+}
+
+.dv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.dv-filters .sd-field { min-width: 260px; }
+
+.dv-source {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+
+.dv-source-opt {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dv-source-opt:hover {
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+}
+
+.dv-source-opt--on,
+.dv-source-opt--on:hover {
+  color: var(--accent-emphasis);
+  background: var(--accent-subtle);
+}
+
+.dv-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.dv-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 6px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dv-kind:hover {
+  border-color: var(--border-glow);
+  color: var(--text-primary);
+}
+
+.dv-kind--on,
+.dv-kind--on:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--accent-subtle);
+}
+
+.dv-kind-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.dv-kind--on .dv-kind-count { color: var(--accent-emphasis); }
+
+.dv-side { padding-bottom: 0.75rem; }
+.dv-dataset { min-width: 0; }
+
+.dv-empty {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+  padding: 0.9rem;
+}
+
+.dv-empty .muted {
+  max-width: 46ch;
+  font-size: 0.82rem;
+}
+
+/* Wide rows scroll sideways; the row number stays put. */
+.dv-grid-scroll {
+  overflow: auto;
+  max-height: 66vh;
+  border-top: 1px solid var(--border-muted);
+}
+
+.dv-grid-table { min-width: 1760px; }
+
+.dv-grid-table th:nth-child(1) { width: 48px; }
+.dv-grid-table th:nth-child(2) { width: 120px; }
+.dv-grid-table th:nth-child(3) { width: 300px; }
+.dv-grid-table th:nth-child(4) { width: 300px; }
+.dv-grid-table th:nth-child(5) { width: 160px; }
+.dv-grid-table th:nth-child(6) { width: 64px; }
+.dv-grid-table th:nth-child(7) { width: 96px; }
+.dv-grid-table th:nth-child(8) { width: 180px; }
+.dv-grid-table th:nth-child(9) { width: 100px; }
+.dv-grid-table th:nth-child(10) { width: 220px; }
+.dv-grid-table th:nth-child(11) { width: 280px; }
+
+.dv-grid-table th:first-child,
+.dv-grid-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-default);
+}
+
+.dv-grid-table thead th:first-child {
+  z-index: 3;
+  background: var(--bg-subtle);
+}
+
+.dv-col-num { text-align: right; }
+
+.dv-grid-table td {
+  vertical-align: top;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.dv-grid-table td .sd-cell-clamp { max-width: 100%; }
+
+.dv-contents { display: grid; gap: 0.45rem; }
+
+.dv-contents-title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.dv-chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+.dv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 3px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+/* The shared drawer body stretches its grid rows to the full height; these drawers hold
+   short facts and one control, so the rows keep their own height. */
+.dv-drawer .dfb-drawer-body { align-content: start; }
+
+.dv-chip-row { align-items: flex-start; }
+
+/* The trace body scrolls on its own, so the draft fields below stay reachable. */
+.dv-transcript {
+  max-height: 34vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.dv-answer-md {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-primary);
 }

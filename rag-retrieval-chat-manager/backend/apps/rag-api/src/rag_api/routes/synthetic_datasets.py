@@ -49,6 +49,11 @@ class ProfileRead(BaseModel):
     knowledge_product_id: str
     knowledge_product_name: str | None = None
     qdrant_collection: str
+    fabric_profile_id: uuid.UUID | None = None
+    fabric_profile_name: str | None = None
+    # The pipeline the Dataset Validator reads conversations from. NULL means unlinked.
+    pipeline_slug: str | None = None
+    pipeline_name: str | None = None
     version_count: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -58,6 +63,11 @@ class VersionDatasetRead(BaseModel):
     id: uuid.UUID
     kind: str
     row_count: int | None = None
+    # The Dataset Fabric profile this dataset belongs to. The page reads the rows through it.
+    profile_id: uuid.UUID | None = None
+    # The file an uploaded dataset came from. Empty on a generated dataset.
+    original_filename: str | None = None
+    source_format: str | None = None
     status: str | None = None
     progress: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
@@ -74,6 +84,7 @@ class VersionRead(BaseModel):
     row_count_single: int = 0
     row_count_multi: int = 0
     fabric_profile_id: uuid.UUID | None = None
+    is_active: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
     started_at: datetime | None = None
@@ -154,7 +165,6 @@ class VersionCreate(BaseModel):
     version_no: int | None = None
     description: str | None = None
     model: str = ""
-    fabric_profile_id: uuid.UUID | None = None
     # Which datasets this version starts with. The other kind can be added later.
     # Kept as plain strings so an unknown value returns a coded 422, not a pydantic list.
     kinds: list[str] = Field(default_factory=lambda: ["single_turn"])
@@ -242,6 +252,11 @@ def _dataset_name(profile, version_no: int, kind: str) -> str:
 
 
 def _profile_to_read(repo, profile) -> ProfileRead:
+    fabric = (
+        repo.get_fabric_profile(profile.fabric_profile_id)
+        if profile.fabric_profile_id
+        else None
+    )
     return ProfileRead(
         id=profile.id,
         name=profile.name,
@@ -249,6 +264,10 @@ def _profile_to_read(repo, profile) -> ProfileRead:
         knowledge_product_id=profile.knowledge_product_id,
         knowledge_product_name=profile.knowledge_product_name,
         qdrant_collection=profile.qdrant_collection,
+        fabric_profile_id=profile.fabric_profile_id,
+        fabric_profile_name=fabric.name if fabric else None,
+        pipeline_slug=profile.pipeline_slug,
+        pipeline_name=profile.pipeline_name,
         version_count=repo.count_versions(profile.id),
         created_at=profile.created_at,
         updated_at=profile.updated_at,
@@ -270,6 +289,7 @@ def _version_to_read(repo, version) -> VersionRead:
         row_count_single=version.row_count_single or 0,
         row_count_multi=version.row_count_multi or 0,
         fabric_profile_id=version.fabric_profile_id,
+        is_active=bool(version.is_active),
         config=config,
         created_at=version.created_at,
         started_at=version.started_at,
@@ -279,6 +299,9 @@ def _version_to_read(repo, version) -> VersionRead:
                 id=dataset.id,
                 kind=dataset.kind,
                 row_count=dataset.row_count or 0,
+                profile_id=dataset.profile_id,
+                original_filename=dataset.original_filename,
+                source_format=dataset.source_format,
                 # Versions generated before per-kind progress carry no status. Rows on
                 # disk mean the dataset completed, which is what the page must show.
                 status=(kind_progress.get(dataset.kind) or {}).get("status")
@@ -376,12 +399,13 @@ def _create_dataset_row(eval_repo, settings: Settings, profile, version, kind: s
         name=_dataset_name(profile, version.version_no, kind),
         description=version.description,
         kind=kind,
-        profile_id=version.fabric_profile_id,
+        # The profile owns the dataset, not the version: the version is a slot inside it.
+        profile_id=profile.fabric_profile_id,
         storage_bucket=resolve_bucket(settings),
         source_format="jsonl",
         row_count=0,
     )
-    dataset.synthetic_version_id = version.id
+    dataset.version_id = version.id
     return dataset
 
 
@@ -402,7 +426,10 @@ async def list_profiles(request: Request) -> list[ProfileRead]:
     settings = _settings(request)
     with _session_factory(settings)() as db:
         repo = SyntheticDatasetRepository(db)
-        return [_profile_to_read(repo, profile) for profile in repo.list_profiles()]
+        return [
+            _profile_to_read(repo, profile)
+            for profile in repo.list_profiles(source="synthetic")
+        ]
 
 
 @router.post("/profiles", response_model=ProfileRead, status_code=201)
@@ -413,7 +440,7 @@ async def create_profile(request: Request, body: ProfileCreate) -> ProfileRead:
     name = body.name.strip()
     with _session_factory(settings)() as db:
         repo = SyntheticDatasetRepository(db)
-        if not name or repo.get_profile_by_name(name):
+        if not name or repo.get_profile_by_name(name, "synthetic"):
             raise _error(
                 409, "PROFILE_NAME_TAKEN", f"A synthetic profile named '{name}' already exists."
             )
@@ -423,16 +450,21 @@ async def create_profile(request: Request, body: ProfileCreate) -> ProfileRead:
 
     with _session_factory(settings)() as db:
         repo = SyntheticDatasetRepository(db)
-        if repo.get_profile_by_name(name):
+        if repo.get_profile_by_name(name, "synthetic"):
             raise _error(
                 409, "PROFILE_NAME_TAKEN", f"A synthetic profile named '{name}' already exists."
             )
+        # The profile is created with a name and a description only, so the Dataset Fabric
+        # profile of the product is resolved here, once, instead of on every version.
+        fabric = repo.first_fabric_profile(body.knowledge_product_id)
         profile = repo.create_profile(
             name=name,
             description=(body.description or "").strip() or None,
             knowledge_product_id=body.knowledge_product_id,
             knowledge_product_name=product_name or None,
             qdrant_collection=collection,
+            source="synthetic",
+            fabric_profile_id=fabric.id if fabric else None,
         )
         db.commit()
         return _profile_to_read(repo, profile)
@@ -507,7 +539,6 @@ async def delete_profile(request: Request, profile_id: uuid.UUID) -> None:
 async def create_version(
     request: Request, profile_id: uuid.UUID, body: VersionCreate
 ) -> VersionRead:
-    from rag_db.repositories.dataset_profile_repository import DatasetProfileRepository
     from rag_db.repositories.evaluation_repository import EvaluationRepository
     from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
 
@@ -521,17 +552,6 @@ async def create_version(
         profile = repo.get_profile(profile_id)
         if not profile:
             raise HTTPException(status_code=404, detail="Synthetic profile not found.")
-
-        if body.fabric_profile_id is not None:
-            fabric = DatasetProfileRepository(db).get(body.fabric_profile_id)
-            if not fabric:
-                raise _error(422, "FABRIC_PROFILE_MISMATCH", "No such Dataset Fabric profile.")
-            if (fabric.knowledge_product_id or "") != profile.knowledge_product_id:
-                raise _error(
-                    422,
-                    "FABRIC_PROFILE_MISMATCH",
-                    "The Dataset Fabric profile belongs to a different Knowledge Product.",
-                )
 
         if body.version_no is not None and any(
             version.version_no == body.version_no for version in repo.list_versions(profile_id)
@@ -550,7 +570,8 @@ async def create_version(
                     kind: {"status": "queued", "rows": 0, "rows_target": 0} for kind in kinds
                 }
             },
-            fabric_profile_id=body.fabric_profile_id,
+            # The version inherits the profile's fabric profile; the page never asks.
+            fabric_profile_id=profile.fabric_profile_id,
         )
 
         for kind in kinds:
@@ -560,6 +581,21 @@ async def create_version(
         version_uuid = version.id
         _enqueue(request, version_uuid, kinds)
         return _version_to_read(repo, repo.get_version(version_uuid))
+
+
+@router.post("/versions/{version_id}/activate", response_model=VersionRead)
+def activate_version(request: Request, version_id: uuid.UUID) -> VersionRead:
+    """Make this version the active one of its profile."""
+    from rag_db.repositories.synthetic_dataset_repository import SyntheticDatasetRepository
+
+    settings = _settings(request)
+    with _session_factory(settings)() as db:
+        repo = SyntheticDatasetRepository(db)
+        version = repo.activate_version(version_id)
+        if not version:
+            raise HTTPException(status_code=404, detail="Synthetic version not found.")
+        db.commit()
+        return _version_to_read(repo, version)
 
 
 @router.get("/versions/{version_id}", response_model=VersionRead)

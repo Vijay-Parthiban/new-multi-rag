@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { IconChat, IconChevronRight, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconEvaluation, IconSparkles } from "./Icons";
+import { IconChat, IconCheckCircle, IconChevronRight, IconGuardrails, IconHome, IconIngestion, IconPipeline, IconPrompts, IconEvaluation, IconSparkles, IconUpload } from "./Icons";
 import HomePage from "../pages/HomePage";
 import BrowsePage from "../pages/BrowsePage";
 import UploadPage from "../pages/UploadPage";
@@ -12,7 +12,8 @@ import EvaluationsPage from "../pages/EvaluationsPage";
 import EvalRunDetailPage from "../pages/EvalRunDetailPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
 import DatasetFabricPage from "../pages/DatasetFabricPage";
-import DatasetFeedbackPage from "../pages/DatasetFeedbackPage";
+import DatasetValidatorPage from "../pages/DatasetValidatorPage";
+import UploadedDatasetsPage from "../pages/UploadedDatasetsPage";
 import SyntheticDatasetPage from "../pages/SyntheticDatasetPage";
 import PromptsPage from "../pages/PromptsPage";
 import GuardrailsConfigPage from "../pages/GuardrailsConfigPage";
@@ -32,7 +33,8 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/prompts", label: "Prompts", icon: IconPrompts },
   { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
   { to: "/dataset-fabric", label: "Dataset Fabric", icon: IconBucket },
-  { to: "/dataset-feedback", label: "Dataset Feedback", icon: IconSparkles },
+  { to: "/dataset-validator", label: "Dataset Validator", icon: IconCheckCircle },
+  { to: "/uploaded-datasets", label: "Uploaded Datasets", icon: IconUpload },
   { to: "/synthetic-datasets", label: "Synthetic Datasets", icon: IconSparkles },
   { to: "/golden-evaluations", label: "Offline Evaluation", icon: IconEvaluation },
   { to: "/guardrails/config", label: "Guard Config", icon: IconGuardrails },
@@ -144,7 +146,8 @@ export default function AppLayout() {
   const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
   const isDatasetFabric = path === "/dataset-fabric";
-  const isDatasetFeedback = path === "/dataset-feedback";
+  const isDatasetValidator = path === "/dataset-validator";
+  const isUploadedDatasets = path === "/uploaded-datasets";
   const isSyntheticDatasets = path === "/synthetic-datasets";
   const isGoldenEvaluations = path === "/golden-evaluations";
   // The run detail page lives under the evaluation page, so it must be matched before the
@@ -253,8 +256,12 @@ export default function AppLayout() {
           <DatasetFabricPage />
         </PersistentPage>
 
-        <PersistentPage visible={isDatasetFeedback}>
-          <DatasetFeedbackPage />
+        <PersistentPage visible={isDatasetValidator}>
+          <DatasetValidatorPage />
+        </PersistentPage>
+
+        <PersistentPage visible={isUploadedDatasets}>
+          <UploadedDatasetsPage />
         </PersistentPage>
 
         <PersistentPage visible={isSyntheticDatasets}>
