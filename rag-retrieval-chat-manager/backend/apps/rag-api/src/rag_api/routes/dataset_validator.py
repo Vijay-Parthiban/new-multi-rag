@@ -161,6 +161,7 @@ def build_item(kind: str, turns: list, row: FeedbackRow, added_at: datetime) -> 
     }
     if (row.question_type or "").strip():
         metadata["question_type"] = row.question_type.strip()
+        metadata["evolutions"] = [row.question_type.strip()]
 
     if kind == "multi_turn":
         # One answer per user turn, in order: the drawer pairs them by index. The graded

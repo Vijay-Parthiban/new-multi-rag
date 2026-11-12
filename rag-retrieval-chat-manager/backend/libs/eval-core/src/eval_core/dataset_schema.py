@@ -70,6 +70,20 @@ class GoldenDatasetItemPayload(BaseModel):
             self.metadata.setdefault("expected_turns", expected)
         return self
 
+    @model_validator(mode="after")
+    def evolution_from_question_type(self) -> GoldenDatasetItemPayload:
+        """Keep one key for the question type, whatever wrote the row.
+
+        A manual file and the Dataset Validator write `question_type`; the generator writes
+        `evolutions`. They are the same vocabulary, so the row keeps `evolutions` and all
+        three pages read one field.
+        """
+        if not self.metadata.get("evolutions"):
+            name = self.metadata.get("question_type")
+            if isinstance(name, str) and name.strip():
+                self.metadata["evolutions"] = [name.strip()]
+        return self
+
 
 class GoldenDatasetPayload(BaseModel):
     name: str

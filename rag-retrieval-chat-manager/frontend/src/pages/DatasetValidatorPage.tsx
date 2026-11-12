@@ -36,6 +36,7 @@ import {
   ValidatorConversationDetail,
   ValidatorMode,
 } from "../api";
+import { QUESTION_TYPES, rowQuestionTypes } from "../questionTypes";
 import { formatRelativeTime } from "../utils/format";
 
 const PAGE_SIZE = 25;
@@ -58,11 +59,6 @@ const SOURCE_LABEL: Record<Source, string> = {
 const KIND_LABEL: Record<DatasetKind, string> = {
   single_turn: "Single-turn",
   multi_turn: "Multi-turn",
-};
-
-const QUESTION_TYPES: Record<DatasetKind, string[]> = {
-  single_turn: ["single_hop", "multi_hop", "comparative_cross_document", "edge_case", "out_of_corpus"],
-  multi_turn: ["follow_up", "coreference", "multi_turn_multi_hop"],
 };
 
 const MODES: { value: ValidatorMode; label: string }[] = [
@@ -295,7 +291,7 @@ function RowEditor({
                 onChange={(e) => setType(e.target.value)}
               />
               <datalist id="dfb-edit-type-list">
-                {QUESTION_TYPES[kind].map((t) => (
+                {QUESTION_TYPES.map((t) => (
                   <option key={t} value={t} />
                 ))}
               </datalist>
@@ -943,7 +939,7 @@ export default function DatasetValidatorPage() {
                                 {index + 1}
                               </button>
                             </td>
-                            <td>{metaText(item, "question_type")}</td>
+                            <td>{rowQuestionTypes(item.metadata).join(", ") || "—"}</td>
                             <td>
                               <span className="sd-cell-clamp" title={item.question}>
                                 {item.question}
@@ -1108,19 +1104,19 @@ export default function DatasetValidatorPage() {
                         </div>
                         <div className="sd-field">
                           <label htmlFor="dv-type">Question type</label>
-                          <select
+                          <input
                             className="input"
                             id="dv-type"
+                            list="dv-type-list"
+                            placeholder="Not set"
                             value={questionType}
                             onChange={(event) => setQuestionType(event.target.value)}
-                          >
-                            <option value="">Not set</option>
-                            {QUESTION_TYPES[kind].map((name) => (
-                              <option key={name} value={name}>
-                                {name.replace(/_/g, " ")}
-                              </option>
+                          />
+                          <datalist id="dv-type-list">
+                            {QUESTION_TYPES.map((name) => (
+                              <option key={name} value={name} />
                             ))}
-                          </select>
+                          </datalist>
                         </div>
                       </>
                     )}

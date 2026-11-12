@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { IconClose } from "./Icons";
 import MarkdownMessage from "./MarkdownMessage";
 import type { SyntheticDatasetKind, SyntheticVersionItem } from "../api";
+import { rowQuestionTypes } from "../questionTypes";
 
 export const KIND_WORD: Record<SyntheticDatasetKind, string> = {
   single_turn: "Single-turn",
@@ -66,7 +67,7 @@ export default function RowDrawer({
   const sources = Array.isArray(item.expected_sources)
     ? item.expected_sources.map(sourceLabel)
     : [];
-  const evolutions = asList(item.metadata?.evolutions);
+  const evolutions = rowQuestionTypes(item.metadata);
   const contexts = asList(item.metadata?.source_contexts);
   const scenario = typeof item.metadata?.scenario === "string" ? item.metadata.scenario : null;
   const model = typeof item.metadata?.model === "string" ? item.metadata.model : null;
@@ -168,7 +169,7 @@ export default function RowDrawer({
 
           {evolutions.length > 0 && (
             <section className="sd-row-section">
-              <p className="sd-row-label">Evolutions</p>
+              <p className="sd-row-label">Question type</p>
               <div className="sd-chips">
                 {evolutions.map((name, index) => (
                   <span className="sd-kind" key={`${name}-${index}`}>

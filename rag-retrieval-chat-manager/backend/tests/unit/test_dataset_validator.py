@@ -105,6 +105,11 @@ def test_blank_answer_is_rejected_unless_the_row_is_a_refusal():
     assert "expected_turns" not in refusal["metadata"]
 
 
+def test_question_type_is_stored_as_one_evolution():
+    item = build_item("single_turn", [_turn(1)], _row(question_type="comparative"), NOW)
+    assert item["metadata"]["evolutions"] == ["comparative"]
+
+
 def test_sources_are_stripped_deduped_and_wrapped():
     item = build_item("single_turn", [_turn(1)], _row(expected_sources=[" a.pdf", "b.pdf", "a.pdf", " "]), NOW)
     assert item["expected_sources"] == [{"name": "a.pdf"}, {"name": "b.pdf"}]

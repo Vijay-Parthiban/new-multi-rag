@@ -239,3 +239,28 @@ def test_the_multi_turn_dataset_is_ten_conversations():
     for item in payload.items:
         assert item.turns and item.turns[-1].content == item.question
         assert any(turn.role == "user" for turn in item.turns)
+
+
+def test_a_question_type_becomes_the_row_evolution():
+    payload = parse_golden_dataset_csv(
+        "question,ground_truth_answer,question_type\n"
+        "Who approved the policy?,The Board,comparative\n",
+        name="Types",
+    )
+    assert payload.items[0].metadata["evolutions"] == ["comparative"]
+
+
+def test_an_existing_evolution_list_wins():
+    payload = parse_golden_dataset_payload(
+        {
+            "name": "Types",
+            "items": [
+                {
+                    "question": "q",
+                    "ground_truth_answer": "a",
+                    "metadata": {"question_type": "comparative", "evolutions": ["reasoning"]},
+                }
+            ],
+        }
+    )
+    assert payload.items[0].metadata["evolutions"] == ["reasoning"]

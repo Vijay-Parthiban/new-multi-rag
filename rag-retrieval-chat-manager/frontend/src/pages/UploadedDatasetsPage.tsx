@@ -31,6 +31,7 @@ import {
   type SyntheticVersionItem,
   type UploadedProfile,
 } from "../api";
+import { rowQuestionTypes } from "../questionTypes";
 import { formatRelativeTime } from "../utils/format";
 
 const KINDS: SyntheticDatasetKind[] = ["single_turn", "multi_turn"];
@@ -884,6 +885,7 @@ export default function UploadedDatasetsPage() {
                               Turns
                             </th>
                             <th scope="col">Sources</th>
+                            <th scope="col">Question type</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -925,6 +927,11 @@ export default function UploadedDatasetsPage() {
                                 <td>
                                   <span className="sd-cell-clamp">
                                     {(row.expected_sources ?? []).map(sourceLabel).join(", ") || "—"}
+                                  </span>
+                                </td>
+                                <td>
+                                  <span className="sd-cell-clamp">
+                                    {rowQuestionTypes(row.metadata).join(", ") || "—"}
                                   </span>
                                 </td>
                               </tr>

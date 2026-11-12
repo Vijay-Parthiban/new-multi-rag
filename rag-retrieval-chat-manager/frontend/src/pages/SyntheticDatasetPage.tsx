@@ -1425,7 +1425,7 @@ export default function SyntheticDatasetPage() {
                               Turns
                             </th>
                             <th scope="col">Sources</th>
-                            <th scope="col">Evolutions</th>
+                            <th scope="col">Question type</th>
                           </tr>
                         </thead>
                         <tbody>

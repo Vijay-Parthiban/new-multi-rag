@@ -205,6 +205,14 @@ deletes an older one.
 
 Not scored: `reference_context`, `id`, `difficulty`, `notes`. They help the reviewer, not the score.
 
+### One question-type field on all three pages
+
+The Synthetic Datasets page names a row's type by the evolution that produced it (`reasoning`,
+`multicontext`, `concretizing`, `constrained`, `comparative`, `hypothetical`, `in_breadth`). The
+Uploaded Datasets and Dataset Validator pages show the same field and suggest the same names, but
+they also accept a value you already use, such as `follow_up`. The row stores it twice: as
+`question_type` and as a one-item `metadata.evolutions`, so every page reads one field.
+
 ## 9. Check the file before the upload
 
 ```bash
