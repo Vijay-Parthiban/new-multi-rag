@@ -84,6 +84,30 @@ const sourceName = (s: unknown) =>
 
 type Turn = { role: string; content: string };
 
+/** The answers a multi-turn row keeps, one per user turn, in `metadata.expected_turns`. */
+function expectedAnswers(metadata: Record<string, unknown> | undefined, count: number): string[] {
+  const raw = metadata?.expected_turns;
+  const stored = Array.isArray(raw)
+    ? raw.map((entry) =>
+        typeof entry === "string"
+          ? entry
+          : String((entry as { content?: unknown } | null)?.content ?? ""),
+      )
+    : [];
+  return Array.from({ length: count }, (_, index) => stored[index] ?? "");
+}
+
+/** The turns a save sends: each user turn, then its answer. The model splits them again. */
+function conversation(turns: Turn[], answers: string[]) {
+  return turns
+    .flatMap((turn, index) => {
+      const user = { role: "user", content: turn.content.trim() };
+      const answer = (answers[index] ?? "").trim();
+      return answer ? [user, { role: "assistant", content: answer }] : [user];
+    })
+    .filter((turn) => turn.content);
+}
+
 function metaValue(metadata: Record<string, unknown> | undefined, key: string): string {
   const value = metadata?.[key];
   if (typeof value === "string") return value;
@@ -114,14 +138,18 @@ function RowEditor({
 }) {
   const isMulti = kind === "multi_turn";
   const [question, setQuestion] = useState(item.question);
-  const [turns, setTurns] = useState<Turn[]>(
-    () => (item.turns ?? []).map((t) => ({ role: t.role, content: t.content })),
+  const stored = (item.turns ?? []).filter((t) => t.role === "user");
+  const [turns, setTurns] = useState<Turn[]>(() =>
+    stored.map((t) => ({ role: "user", content: t.content })),
+  );
+  const [answers, setAnswers] = useState<string[]>(() =>
+    expectedAnswers(item.metadata, stored.length),
   );
   const [answer, setAnswer] = useState(item.ground_truth_answer ?? "");
   const [sources, setSources] = useState(item.expected_sources.map(sourceName).join(", "));
-  const [type, setType] = useState(
-    typeof item.metadata?.question_type === "string" ? item.metadata.question_type : "",
-  );
+  // A synthetic row carries `evolutions`; a manual row or a feedback row carries
+  // `question_type`. The picker shows whichever the row has.
+  const [type, setType] = useState(() => rowQuestionTypes(item.metadata)[0] ?? "");
   const [behavior, setBehavior] = useState<Behavior>(
     item.metadata?.expected_behavior === "refuse_or_abstain" ? "refuse_or_abstain" : "answer_from_corpus",
   );
@@ -156,26 +184,41 @@ function RowEditor({
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean),
-    turns: isMulti
-      ? turns.map((t) => ({ role: t.role, content: t.content.trim() })).filter((t) => t.content)
-      : null,
+    turns: isMulti ? conversation(turns, answers) : null,
     question_type: type.trim() || null,
     expected_behavior: behavior,
-    metadata: Object.fromEntries(
-      Object.entries(meta).map(([key, value]) => [key, value.trim()]),
-    ),
+    metadata: {
+      ...Object.fromEntries(Object.entries(meta).map(([key, value]) => [key, value.trim()])),
+      // One entry per user turn, so a cleared response stays cleared.
+      ...(isMulti
+        ? { expected_turns: answers.map((text) => ({ content: text.trim() })) }
+        : {}),
+    },
   };
   const before = {
     question: item.question,
     ground_truth_answer: item.ground_truth_answer ?? null,
     expected_sources: item.expected_sources.map(sourceName),
-    turns: isMulti ? (item.turns ?? []).map((t) => ({ role: t.role, content: t.content })) : null,
-    question_type:
-      typeof item.metadata?.question_type === "string" ? item.metadata.question_type : null,
+    turns: isMulti
+      ? conversation(
+          stored.map((t) => ({ role: "user" as const, content: t.content })),
+          expectedAnswers(item.metadata, stored.length),
+        )
+      : null,
+    question_type: rowQuestionTypes(item.metadata)[0] ?? null,
     expected_behavior: (item.metadata?.expected_behavior as string) ?? "answer_from_corpus",
-    metadata: Object.fromEntries(
-      Object.keys(meta).map((key) => [key, metaValue(item.metadata, key).trim()]),
-    ),
+    metadata: {
+      ...Object.fromEntries(
+        Object.keys(meta).map((key) => [key, metaValue(item.metadata, key).trim()]),
+      ),
+      ...(isMulti
+        ? {
+            expected_turns: expectedAnswers(item.metadata, stored.length).map((text) => ({
+              content: text,
+            })),
+          }
+        : {}),
+    },
   };
   const dirty = JSON.stringify(body) !== JSON.stringify(before);
   const setTurn = (index: number, content: string) =>
@@ -224,12 +267,10 @@ function RowEditor({
             <div>
               <span className="field-label">Conversation</span>
               <div style={{ display: "grid", gap: "0.5rem" }}>
-                {turns.map((turn, index) =>
-                  turn.role === "user" ? (
-                    <label key={index} style={{ display: "grid", gap: "0.2rem" }}>
-                      <span className="fabric-meta">
-                        User turn {turns.slice(0, index + 1).filter((t) => t.role === "user").length}
-                      </span>
+                {turns.map((turn, index) => (
+                  <div key={index} style={{ display: "grid", gap: "0.35rem" }}>
+                    <label style={{ display: "grid", gap: "0.2rem" }}>
+                      <span className="fabric-meta">Turn {index + 1} · user</span>
                       <textarea
                         className="input"
                         rows={2}
@@ -237,18 +278,25 @@ function RowEditor({
                         onChange={(e) => setTurn(index, e.target.value)}
                       />
                     </label>
-                  ) : (
-                    <div key={index} className="dfb-readonly">
-                      <span className="fabric-meta" style={{ display: "block" }}>
-                        Assistant turn, kept as written
-                      </span>
-                      {turn.content}
-                    </div>
-                  ),
-                )}
+                    <label style={{ display: "grid", gap: "0.2rem" }}>
+                      <span className="fabric-meta">Turn {index + 1} · assistant</span>
+                      <textarea
+                        className="input"
+                        rows={3}
+                        value={answers[index] ?? ""}
+                        onChange={(e) =>
+                          setAnswers((prev) =>
+                            prev.map((text, i) => (i === index ? e.target.value : text)),
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                ))}
               </div>
               <p className="field-hint" style={{ marginBottom: 0 }}>
-                The row&apos;s question is its last user turn.
+                The row&apos;s question is its last user turn. A response is the answer the row
+                aims at; the run never replays it.
               </p>
             </div>
           ) : (

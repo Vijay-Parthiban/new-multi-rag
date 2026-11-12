@@ -631,6 +631,8 @@ async def update_dataset_item(
         # An abstain row has no reference to score against, so it holds neither.
         if metadata.get("expected_behavior") == "refuse_or_abstain":
             answer, sources = None, []
+            # An abstain row aims at no answer, so no per-turn answers remain.
+            metadata.pop("expected_turns", None)
 
         if dataset.kind == "single_turn" and turns:
             raise HTTPException(
@@ -673,8 +675,10 @@ async def update_dataset_item(
         item.question = payload.question
         item.ground_truth_answer = payload.ground_truth_answer
         item.expected_sources = payload.expected_sources
-        # JSONB needs plain dicts; the payload holds validated models.
-        item.turns = [turn.model_dump() for turn in payload.turns] if payload.turns else None
+        # The row keeps the user turns; the answers it aims at live in
+        # `metadata.expected_turns`, which the payload filled from the assistant turns.
+        user_turns = [turn.model_dump() for turn in (payload.turns or []) if turn.role == "user"]
+        item.turns = user_turns or None
         item.metadata_ = payload.metadata
         db.flush()
         await store_snapshot(settings, db, repo, dataset, profile_id=profile_id, kind=dataset.kind)
