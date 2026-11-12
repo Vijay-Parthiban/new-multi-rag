@@ -1228,6 +1228,8 @@ export interface DatasetItemUpdate {
   turns?: { role: string; content: string }[] | null;
   question_type?: string | null;
   expected_behavior?: "answer_from_corpus" | "refuse_or_abstain";
+  /** The row's other columns. A null or "" value removes the key. */
+  metadata?: Record<string, string>;
 }
 
 export async function updateProfileDatasetItem(

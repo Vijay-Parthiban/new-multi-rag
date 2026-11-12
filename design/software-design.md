@@ -258,8 +258,11 @@ Each row records provenance in `metadata`: `source`, `source_session_id`, `sourc
 duplicates. The pipeline answer pre-fills an editable ground truth.
 
 The page also edits a stored row. A partial `PATCH` validates the row, rewrites the
-snapshot, and keeps row order. Fields: question, ground-truth answer, expected sources,
-question type, expected behavior.
+snapshot, and keeps row order. The editor shows every field the row holds: question (or
+the user turns), ground-truth answer, expected sources, question type, expected behavior,
+id, keypoints covered, difficulty, notes, and reference context. The `PATCH` also takes a
+`metadata` object for the last five, and a key sent empty is removed. A kind switch above
+the grid loads that kind's dataset with all its columns.
 
 ### 6.3 Offline Evaluation (run the dataset)
 

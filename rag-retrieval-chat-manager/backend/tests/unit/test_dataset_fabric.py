@@ -360,6 +360,19 @@ def test_edit_normalizes_plain_source_names(client):
     assert row.expected_sources == [{"name": "a.pdf"}, {"name": "b.pdf"}]
 
 
+def test_edit_writes_the_other_row_fields(client):
+    response, row, _ = _edit(
+        client,
+        item=_row(metadata={"id": "S1", "difficulty": "easy", "notes": "old"}),
+        body={"metadata": {"difficulty": "hard", "notes": "", "reference_context": "ctx"}},
+    )
+    assert response.status_code == 200, response.text
+    assert row.metadata_["id"] == "S1"
+    assert row.metadata_["difficulty"] == "hard"
+    assert "notes" not in row.metadata_
+    assert row.metadata_["reference_context"] == "ctx"
+
+
 def test_turns_on_a_single_turn_row_are_refused(client):
     response, _, snapshot = _edit(
         client, body={"turns": [{"role": "user", "content": "q"}, {"role": "user", "content": "q2"}]}

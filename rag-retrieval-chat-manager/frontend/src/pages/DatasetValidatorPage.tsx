@@ -84,6 +84,12 @@ const sourceName = (s: unknown) =>
 
 type Turn = { role: string; content: string };
 
+function metaValue(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key];
+  if (typeof value === "string") return value;
+  return value === null || value === undefined ? "" : String(value);
+}
+
 /**
  * One dataset row in a side panel.
  *
@@ -119,6 +125,14 @@ function RowEditor({
   const [behavior, setBehavior] = useState<Behavior>(
     item.metadata?.expected_behavior === "refuse_or_abstain" ? "refuse_or_abstain" : "answer_from_corpus",
   );
+  // The row's other columns, edited as text. An empty value removes the key.
+  const [meta, setMeta] = useState<Record<string, string>>(() => ({
+    id: metaValue(item.metadata, "id"),
+    keypoints_covered: metaValue(item.metadata, "keypoints_covered"),
+    difficulty: metaValue(item.metadata, "difficulty"),
+    notes: metaValue(item.metadata, "notes"),
+    reference_context: metaValue(item.metadata, "reference_context"),
+  }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,6 +161,9 @@ function RowEditor({
       : null,
     question_type: type.trim() || null,
     expected_behavior: behavior,
+    metadata: Object.fromEntries(
+      Object.entries(meta).map(([key, value]) => [key, value.trim()]),
+    ),
   };
   const before = {
     question: item.question,
@@ -156,6 +173,9 @@ function RowEditor({
     question_type:
       typeof item.metadata?.question_type === "string" ? item.metadata.question_type : null,
     expected_behavior: (item.metadata?.expected_behavior as string) ?? "answer_from_corpus",
+    metadata: Object.fromEntries(
+      Object.keys(meta).map((key) => [key, metaValue(item.metadata, key).trim()]),
+    ),
   };
   const dirty = JSON.stringify(body) !== JSON.stringify(before);
   const setTurn = (index: number, content: string) =>
@@ -311,6 +331,71 @@ function RowEditor({
               </select>
             </div>
           </div>
+
+          <fieldset className="sd-fieldset">
+            <legend>Row fields</legend>
+            <div className="dfb-two">
+              <div>
+                <label className="field-label" htmlFor="dfb-edit-id">
+                  ID
+                </label>
+                <input
+                  id="dfb-edit-id"
+                  className="input"
+                  value={meta.id}
+                  onChange={(e) => setMeta({ ...meta, id: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="dfb-edit-difficulty">
+                  Difficulty
+                </label>
+                <input
+                  id="dfb-edit-difficulty"
+                  className="input"
+                  value={meta.difficulty}
+                  onChange={(e) => setMeta({ ...meta, difficulty: e.target.value })}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="field-label" htmlFor="dfb-edit-keypoints">
+                Keypoints covered
+              </label>
+              <textarea
+                id="dfb-edit-keypoints"
+                className="input"
+                rows={2}
+                value={meta.keypoints_covered}
+                placeholder="cgpa=8.49; company=Google"
+                onChange={(e) => setMeta({ ...meta, keypoints_covered: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="field-label" htmlFor="dfb-edit-notes">
+                Notes
+              </label>
+              <textarea
+                id="dfb-edit-notes"
+                className="input"
+                rows={2}
+                value={meta.notes}
+                onChange={(e) => setMeta({ ...meta, notes: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="field-label" htmlFor="dfb-edit-context">
+                Reference context
+              </label>
+              <textarea
+                id="dfb-edit-context"
+                className="input"
+                rows={4}
+                value={meta.reference_context}
+                onChange={(e) => setMeta({ ...meta, reference_context: e.target.value })}
+              />
+            </div>
+          </fieldset>
         </div>
 
         <div className="dfb-drawer-foot">
@@ -767,6 +852,7 @@ export default function DatasetValidatorPage() {
                   aria-pressed={entry.kind === kind}
                   onClick={() => {
                     setKind(entry.kind);
+                    setRowItem(null);
                     closeTrace();
                   }}
                 >

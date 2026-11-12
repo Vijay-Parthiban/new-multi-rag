@@ -103,6 +103,9 @@ class DatasetItemUpdate(BaseModel):
     turns: list[Any] | None = None
     question_type: str | None = None
     expected_behavior: Literal["answer_from_corpus", "refuse_or_abstain"] | None = None
+    # The row's other columns: id, keypoints_covered, difficulty, notes, reference_context.
+    # A key sent with null or "" is removed from the row.
+    metadata: dict[str, Any] | None = None
 
 
 class DatasetPreviewRead(BaseModel):
@@ -613,10 +616,18 @@ async def update_dataset_item(
             label = (body.question_type or "").strip()
             if label:
                 metadata["question_type"] = label
+                metadata["evolutions"] = [label]
             else:
                 metadata.pop("question_type", None)
+                metadata.pop("evolutions", None)
         if body.expected_behavior:
             metadata["expected_behavior"] = body.expected_behavior
+        if "metadata" in sent and body.metadata is not None:
+            for key, value in body.metadata.items():
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    metadata.pop(key, None)
+                else:
+                    metadata[key] = value
         # An abstain row has no reference to score against, so it holds neither.
         if metadata.get("expected_behavior") == "refuse_or_abstain":
             answer, sources = None, []
