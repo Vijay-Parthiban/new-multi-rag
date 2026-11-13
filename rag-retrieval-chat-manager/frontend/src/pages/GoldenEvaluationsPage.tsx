@@ -6,7 +6,6 @@ import TriadPanel from "../components/TriadPanel";
 import {
   createEvaluationRun,
   DatasetKind,
-  DatasetProfile,
   DatasetProfileFile,
   destinationStoreLabel,
   EvalPipelineDefaults,
@@ -17,9 +16,12 @@ import {
   getEvalPipelineDefaults,
   getEvaluationRun,
   getAssistant,
+  getSyntheticProfile,
+  getUploadedProfile,
   getLiteLLMModels,
-  listDatasetProfiles,
   listDatasetRuns,
+  listUploadedProfiles,
+  listSyntheticProfiles,
   listEvaluationRunItems,
   listGuardrailsConfigs,
   listPipelines,
@@ -45,8 +47,17 @@ const VISION_BLOCK_MESSAGE =
 // The two radios the page offers. A kind the selected profile does not hold is frozen,
 // not hidden, so the page says which dataset is missing.
 const KIND_LABEL: Record<DatasetKind, string> = {
-  single_turn: "Only Single turn",
-  multi_turn: "Only Multi-Turn",
+  single_turn: "Single-turn evaluation",
+  multi_turn: "Multi-turn evaluation",
+};
+
+/** A profile the Dataset Validator linked to a pipeline, with its active version's files. */
+type OfflineProfile = {
+  id: string;
+  name: string;
+  description: string | null;
+  source: "synthetic" | "manual";
+  datasets: DatasetProfileFile[];
 };
 
 const MEMORY_BLOCK_MESSAGE =
@@ -576,9 +587,9 @@ function PipelineSummary({
 }
 
 export default function GoldenEvaluationsPage() {
-  // Only the profiles linked to the selected pipeline appear here. A profile with no
-  // pipeline is authored in Dataset Fabric and is not runnable from this page.
-  const [profiles, setProfiles] = useState<DatasetProfile[]>([]);
+  // Only the profiles the Dataset Validator linked to the selected pipeline appear here.
+  // They come from both authors: a synthetic profile and a manual profile.
+  const [profiles, setProfiles] = useState<OfflineProfile[]>([]);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [kind, setKind] = useState<DatasetKind>("single_turn");
   const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
@@ -701,11 +712,52 @@ export default function GoldenEvaluationsPage() {
       setProfileId(null);
       return;
     }
-    const items = await listDatasetProfiles(slug);
+    const [synthetic, manual] = await Promise.all([listSyntheticProfiles(), listUploadedProfiles()]);
+    const linked = [
+      ...synthetic
+        .filter((profile) => profile.pipeline_slug === slug)
+        .map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          description: profile.description,
+          source: "synthetic" as const,
+        })),
+      ...manual
+        .filter((profile) => profile.pipeline_slug === slug)
+        .map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          description: profile.description,
+          source: "manual" as const,
+        })),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+    const items = await Promise.all(
+      linked.map(async (profile) => {
+        const detail =
+          profile.source === "synthetic"
+            ? await getSyntheticProfile(profile.id)
+            : await getUploadedProfile(profile.id);
+        const active = detail.versions.find((version) => version.is_active) ?? detail.versions[0];
+        return {
+          ...profile,
+          datasets: (active?.datasets ?? []).map((dataset) => ({
+            dataset_id: dataset.id,
+            kind: dataset.kind,
+            filename: dataset.original_filename ?? null,
+            format: dataset.source_format ?? null,
+            row_count: dataset.row_count,
+            bucket: null,
+            key: null,
+            created_at: dataset.created_at,
+          })),
+        };
+      }),
+    );
     setProfiles(items);
     setProfileId((prev) => {
       if (prev && items.some((p) => p.id === prev)) return prev;
-      return items[0]?.id ?? null;
+      // A profile with no dataset cannot start a run, so one that holds rows is the default.
+      return (items.find((profile) => profile.datasets.length > 0) ?? items[0])?.id ?? null;
     });
   }, []);
 
@@ -942,7 +994,7 @@ export default function GoldenEvaluationsPage() {
             className="btn btn-secondary"
             onClick={() => {
               // The pipeline list and the profiles both change outside this page, so one
-              // click has to reload both or a profile made in Dataset Fabric never appears.
+              // click has to reload both or a newly linked profile never appears.
               void refresh();
               void loadProfiles(selectedPipeline?.slug ?? null);
             }}
@@ -959,6 +1011,41 @@ export default function GoldenEvaluationsPage() {
         </div>
       )}
 
+      <div className="panel" style={{ marginBottom: "1rem" }}>
+        <div className="panel-header">
+          <h3 className="panel-title">Pipeline</h3>
+        </div>
+        <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
+          <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
+            Pipeline configuration
+            <select
+              className="input"
+              value={pipelineId}
+              onChange={(e) => setPipelineId(e.target.value)}
+            >
+              {pipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} · {p.rag_strategy}
+                  {p.knowledge_product ? ` · ${p.knowledge_product.name}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedPipeline && (
+            <PipelineSummary
+              pipeline={selectedPipeline}
+              stores={stores}
+              defaults={pipelineDefaults}
+              templates={templates}
+              guardrails={guardrails}
+              memoryEnabled={memoryEnabled}
+              memoryTtl={memoryTtl}
+              memoryReason={memoryReason}
+            />
+          )}
+        </div>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
         <div className="panel">
           <div className="panel-header" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
@@ -966,16 +1053,16 @@ export default function GoldenEvaluationsPage() {
             <button
               type="button"
               className="btn btn-sm btn-ghost"
-              onClick={() => navigate("/dataset-fabric")}
+              onClick={() => navigate("/dataset-validator")}
             >
-              Manage in Dataset Fabric
+              Link profiles in Dataset Validator
             </button>
           </div>
           <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
             {profiles.length === 0 ? (
               <p className="muted" style={{ margin: 0, fontSize: "0.85rem", lineHeight: 1.5 }}>
                 {selectedPipeline?.slug
-                  ? "No dataset profile is linked to this pipeline. Create one in Dataset Fabric and link it to this pipeline."
+                  ? "No dataset profile is linked to this pipeline. Link one in the Dataset Validator first."
                   : "Select a pipeline to see the dataset profiles linked to it."}
               </p>
             ) : (
@@ -988,7 +1075,7 @@ export default function GoldenEvaluationsPage() {
                 >
                   {profiles.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name}
+                      {p.name} · {p.source === "synthetic" ? "Synthetic" : "Manual"}
                     </option>
                   ))}
                 </select>
@@ -1051,33 +1138,6 @@ export default function GoldenEvaluationsPage() {
             <h3 className="panel-title">Run</h3>
           </div>
           <div style={{ padding: "1rem", display: "grid", gap: "0.75rem" }}>
-            <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
-              Pipeline configuration
-              <select
-                className="input"
-                value={pipelineId}
-                onChange={(e) => setPipelineId(e.target.value)}
-              >
-                {pipelines.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.rag_strategy}
-                    {p.knowledge_product ? ` · ${p.knowledge_product.name}` : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {selectedPipeline && (
-              <PipelineSummary
-                pipeline={selectedPipeline}
-                stores={stores}
-                defaults={pipelineDefaults}
-                templates={templates}
-                guardrails={guardrails}
-                memoryEnabled={memoryEnabled}
-                memoryTtl={memoryTtl}
-                memoryReason={memoryReason}
-              />
-            )}
             <label className="muted" style={{ display: "grid", gap: "0.25rem" }}>
               Rows to test
               <input

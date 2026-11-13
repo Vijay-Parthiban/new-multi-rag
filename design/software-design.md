@@ -228,16 +228,14 @@ The system has three dataset stages. Each stage has one owner page.
 
 ### 6.1 Dataset Fabric (authoring store)
 
-A profile is the unit. It has a name, a purpose, a linked pipeline, and a Knowledge Product.
-Uploaded files become `golden_datasets` rows that point at the profile. The page shows:
+The store stays; the standalone page is gone. A profile is the unit: a name, a purpose, a
+source (`synthetic` or `manual`), a linked pipeline, and a Knowledge Product. A version
+holds one file per kind, and `golden_datasets` points at each file.
 
-- The profile list, with linked pipeline and dataset count.
-- A file list per profile, with kind, rows, and upload time.
-- A full-width viewer with a pager (20 rows per page).
-- An edit form for the profile.
-
-A profile with no linked pipeline is a real state. The datasets are authored before the
-pipeline exists. Such a profile never appears on the Offline Evaluation page.
+Two pages author it: Synthetic Datasets makes a profile with generated versions, and
+Uploaded Datasets makes a manual profile with uploaded files. The Dataset Validator links
+a profile to a pipeline. A profile with no linked pipeline is a real state; it never
+appears on Offline Evaluation.
 
 ### 6.2 Dataset Validator (harvest real conversations)
 
@@ -266,8 +264,18 @@ the grid loads that kind's dataset with all its columns.
 
 ### 6.3 Offline Evaluation (run the dataset)
 
-The page selects a pipeline, then a profile linked to it, then a kind. Today it uses the
-newest dataset of that kind. The run samples up to N rows and queues a job.
+The pipeline is the first choice. Once it is set, the page lists every profile linked to
+it, from both authors, and shows each one's author and active version. It then offers
+`Single-turn evaluation` and `Multi-turn evaluation`; a mode the profile does not hold is
+frozen with the reason. A profile that holds no rows is listed last and is not the default.
+
+The page reads the profiles from `synthetic_dataset_profiles`, filtered by `pipeline_slug`,
+through the same endpoints the Uploaded and Synthetic pages use. The old `dataset_profiles`
+store no longer feeds this page. A run uses the active version's dataset of the chosen
+kind, samples up to N rows on every run, and queues a job.
+
+A multi-turn run also needs the pipeline's session memory. A pipeline without a Redis
+destination freezes that mode and states the reason.
 
 ### 6.4 Format rules
 

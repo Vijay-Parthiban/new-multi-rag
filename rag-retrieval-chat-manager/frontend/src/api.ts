@@ -1103,7 +1103,7 @@ export async function listGoldenDatasets(limit = 50): Promise<GoldenDatasetSumma
   return res.items || [];
 }
 
-// ── Dataset Fabric ─────────────────────────────────────────────────────────
+// ── Dataset profile, preview, and row edit ─────────────────────────────────
 
 export type DatasetKind = "single_turn" | "multi_turn";
 
@@ -1116,21 +1116,6 @@ export interface DatasetProfileFile {
   bucket: string | null;
   key: string | null;
   created_at: string | null;
-}
-
-export interface DatasetProfile {
-  id: string;
-  name: string;
-  description: string | null;
-  /** NULL means "yet to be linked with a RAG pipeline". */
-  pipeline_slug: string | null;
-  pipeline_name: string | null;
-  knowledge_product_id: string | null;
-  knowledge_product_name: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-  /** Newest first. */
-  datasets: DatasetProfileFile[];
 }
 
 export interface DatasetPreviewItem {
@@ -1151,59 +1136,6 @@ export interface DatasetPreview {
   bucket: string | null;
   key: string | null;
   items: DatasetPreviewItem[];
-}
-
-/** Every profile, or only the ones linked to one pipeline. */
-export async function listDatasetProfiles(pipelineSlug?: string | null): Promise<DatasetProfile[]> {
-  const query = pipelineSlug ? `?pipeline_slug=${encodeURIComponent(pipelineSlug)}` : "";
-  return ragFetch<DatasetProfile[]>(`/api/dataset-profiles${query}`);
-}
-
-export async function createDatasetProfile(body: {
-  name: string;
-  description?: string | null;
-  pipeline_slug?: string | null;
-}): Promise<DatasetProfile> {
-  return ragFetch<DatasetProfile>("/api/dataset-profiles", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-export async function updateDatasetProfile(
-  profileId: string,
-  body: { name?: string; description?: string | null; pipeline_slug?: string | null },
-): Promise<DatasetProfile> {
-  return ragFetch<DatasetProfile>(`/api/dataset-profiles/${profileId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-export async function deleteDatasetProfile(profileId: string): Promise<void> {
-  await ragFetch(`/api/dataset-profiles/${profileId}`, { method: "DELETE" });
-}
-
-/**
- * Upload one dataset into a profile's section.
- *
- * Accepts `.csv`, `.json`, `.jsonl`, `.xlsx` and `.parquet`. The server refuses a file whose
- * rows do not match `kind`, so a multi-turn file cannot land in the single-turn section.
- */
-export async function uploadProfileDataset(
-  profileId: string,
-  file: File,
-  kind: DatasetKind,
-): Promise<DatasetProfileFile> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("kind", kind);
-  return ragFetch<DatasetProfileFile>(`/api/dataset-profiles/${profileId}/datasets`, {
-    method: "POST",
-    body: form,
-  });
 }
 
 export async function previewProfileDataset(

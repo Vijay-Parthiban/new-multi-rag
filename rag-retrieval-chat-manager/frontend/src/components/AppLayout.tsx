@@ -11,7 +11,6 @@ import ChatPage from "../pages/ChatPage";
 import EvaluationsPage from "../pages/EvaluationsPage";
 import EvalRunDetailPage from "../pages/EvalRunDetailPage";
 import GoldenEvaluationsPage from "../pages/GoldenEvaluationsPage";
-import DatasetFabricPage from "../pages/DatasetFabricPage";
 import DatasetValidatorPage from "../pages/DatasetValidatorPage";
 import UploadedDatasetsPage from "../pages/UploadedDatasetsPage";
 import SyntheticDatasetPage from "../pages/SyntheticDatasetPage";
@@ -23,7 +22,7 @@ import SourcesPage from "../pages/SourcesPage";
 import SourceDetailPage from "../pages/SourceDetailPage";
 import KnowledgeStorePage from "../pages/KnowledgeStorePage";
 import KnowledgeProductPage from "../pages/KnowledgeProductPage";
-import { IconBucket, IconDatabase } from "./Icons";
+import { IconDatabase } from "./Icons";
 
 const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[] = [
   { to: "/", label: "Overview", icon: IconHome, end: true },
@@ -32,7 +31,6 @@ const NAV: { to: string; label: string; icon: typeof IconHome; end?: boolean }[]
   { to: "/chat", label: "Chat", icon: IconChat },
   { to: "/prompts", label: "Prompts", icon: IconPrompts },
   { to: "/evaluations", label: "Real Time Monitoring", icon: IconEvaluation },
-  { to: "/dataset-fabric", label: "Dataset Fabric", icon: IconBucket },
   { to: "/dataset-validator", label: "Dataset Validator", icon: IconCheckCircle },
   { to: "/uploaded-datasets", label: "Uploaded Datasets", icon: IconUpload },
   { to: "/synthetic-datasets", label: "Synthetic Datasets", icon: IconSparkles },
@@ -145,7 +143,6 @@ export default function AppLayout() {
   const isChat = path === "/chat";
   const isPrompts = path === "/prompts";
   const isEvaluations = path === "/evaluations";
-  const isDatasetFabric = path === "/dataset-fabric";
   const isDatasetValidator = path === "/dataset-validator";
   const isUploadedDatasets = path === "/uploaded-datasets";
   const isSyntheticDatasets = path === "/synthetic-datasets";
@@ -252,9 +249,6 @@ export default function AppLayout() {
           <EvaluationsPage />
         </PersistentPage>
 
-        <PersistentPage visible={isDatasetFabric}>
-          <DatasetFabricPage />
-        </PersistentPage>
 
         <PersistentPage visible={isDatasetValidator}>
           <DatasetValidatorPage />

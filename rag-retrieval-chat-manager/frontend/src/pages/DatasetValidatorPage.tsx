@@ -1018,7 +1018,7 @@ export default function DatasetValidatorPage() {
                       ? ""
                       : fabricId
                         ? "Loading the rows..."
-                        : "This dataset is not linked to a Dataset Fabric profile."}
+                        : "This dataset is not linked to a profile."}
                   </p>
                 ) : preview.items.length === 0 ? (
                   <div className="dv-empty">
