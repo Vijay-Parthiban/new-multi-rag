@@ -108,10 +108,32 @@ function conversation(turns: Turn[], answers: string[]) {
     .filter((turn) => turn.content);
 }
 
-function metaValue(metadata: Record<string, unknown> | undefined, key: string): string {
-  const value = metadata?.[key];
-  if (typeof value === "string") return value;
-  return value === null || value === undefined ? "" : String(value);
+/**
+ * A field's value as text. A list or an object is JSON, because a context chunk holds
+ * newlines and a line-per-entry format would cut it apart.
+ */
+function fieldText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value) || typeof value === "object") return JSON.stringify(value, null, 1);
+  return String(value);
+}
+
+/** The text back in the field's own type, so a number stays a number. */
+function fieldValue(stored: unknown, text: string): unknown {
+  if (Array.isArray(stored) || (stored !== null && typeof stored === "object")) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return stored;
+    }
+  }
+  if (typeof stored === "number") {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : stored;
+  }
+  if (typeof stored === "boolean") return text === "true";
+  if (stored === null || stored === undefined) return text.trim() ? text : null;
+  return text;
 }
 
 /**
@@ -153,14 +175,18 @@ function RowEditor({
   const [behavior, setBehavior] = useState<Behavior>(
     item.metadata?.expected_behavior === "refuse_or_abstain" ? "refuse_or_abstain" : "answer_from_corpus",
   );
-  // The row's other columns, edited as text. An empty value removes the key.
-  const [meta, setMeta] = useState<Record<string, string>>(() => ({
-    id: metaValue(item.metadata, "id"),
-    keypoints_covered: metaValue(item.metadata, "keypoints_covered"),
-    difficulty: metaValue(item.metadata, "difficulty"),
-    notes: metaValue(item.metadata, "notes"),
-    reference_context: metaValue(item.metadata, "reference_context"),
-  }));
+  // Every field the row holds, except the ones shown above. The editor shows what the
+  // row has, so no empty input appears for a field the row never carried.
+  const rowKeys = Object.keys(item.metadata ?? {}).filter(
+    (key) =>
+      key !== "expected_turns" &&
+      key !== "evolutions" &&
+      key !== "question_type" &&
+      key !== "expected_behavior",
+  );
+  const [meta, setMeta] = useState<Record<string, string>>(() =>
+    Object.fromEntries(rowKeys.map((key) => [key, fieldText(item.metadata[key])])),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -188,7 +214,9 @@ function RowEditor({
     question_type: type.trim() || null,
     expected_behavior: behavior,
     metadata: {
-      ...Object.fromEntries(Object.entries(meta).map(([key, value]) => [key, value.trim()])),
+      ...Object.fromEntries(
+        rowKeys.map((key) => [key, fieldValue(item.metadata[key], meta[key] ?? "")]),
+      ),
       // One entry per user turn, so a cleared response stays cleared.
       ...(isMulti
         ? { expected_turns: answers.map((text) => ({ content: text.trim() })) }
@@ -208,9 +236,7 @@ function RowEditor({
     question_type: rowQuestionTypes(item.metadata)[0] ?? null,
     expected_behavior: (item.metadata?.expected_behavior as string) ?? "answer_from_corpus",
     metadata: {
-      ...Object.fromEntries(
-        Object.keys(meta).map((key) => [key, metaValue(item.metadata, key).trim()]),
-      ),
+      ...Object.fromEntries(rowKeys.map((key) => [key, item.metadata[key]])),
       ...(isMulti
         ? {
             expected_turns: expectedAnswers(item.metadata, stored.length).map((text) => ({
@@ -380,70 +406,39 @@ function RowEditor({
             </div>
           </div>
 
-          <fieldset className="sd-fieldset">
-            <legend>Row fields</legend>
-            <div className="dfb-two">
-              <div>
-                <label className="field-label" htmlFor="dfb-edit-id">
-                  ID
-                </label>
-                <input
-                  id="dfb-edit-id"
-                  className="input"
-                  value={meta.id}
-                  onChange={(e) => setMeta({ ...meta, id: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="field-label" htmlFor="dfb-edit-difficulty">
-                  Difficulty
-                </label>
-                <input
-                  id="dfb-edit-difficulty"
-                  className="input"
-                  value={meta.difficulty}
-                  onChange={(e) => setMeta({ ...meta, difficulty: e.target.value })}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="field-label" htmlFor="dfb-edit-keypoints">
-                Keypoints covered
-              </label>
-              <textarea
-                id="dfb-edit-keypoints"
-                className="input"
-                rows={2}
-                value={meta.keypoints_covered}
-                placeholder="cgpa=8.49; company=Google"
-                onChange={(e) => setMeta({ ...meta, keypoints_covered: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="field-label" htmlFor="dfb-edit-notes">
-                Notes
-              </label>
-              <textarea
-                id="dfb-edit-notes"
-                className="input"
-                rows={2}
-                value={meta.notes}
-                onChange={(e) => setMeta({ ...meta, notes: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="field-label" htmlFor="dfb-edit-context">
-                Reference context
-              </label>
-              <textarea
-                id="dfb-edit-context"
-                className="input"
-                rows={4}
-                value={meta.reference_context}
-                onChange={(e) => setMeta({ ...meta, reference_context: e.target.value })}
-              />
-            </div>
-          </fieldset>
+          {rowKeys.length > 0 && (
+            <fieldset className="sd-fieldset">
+              <legend>Row fields</legend>
+              {rowKeys.map((key) => {
+                const stored = item.metadata[key];
+                const wide =
+                  Array.isArray(stored) || (stored !== null && typeof stored === "object");
+                return (
+                  <div key={key}>
+                    <label className="field-label" htmlFor={`dfb-edit-${key}`}>
+                      {key.replace(/_/g, " ")}
+                    </label>
+                    {wide ? (
+                      <textarea
+                        id={`dfb-edit-${key}`}
+                        className="input"
+                        rows={3}
+                        value={meta[key] ?? ""}
+                        onChange={(e) => setMeta({ ...meta, [key]: e.target.value })}
+                      />
+                    ) : (
+                      <input
+                        id={`dfb-edit-${key}`}
+                        className="input"
+                        value={meta[key] ?? ""}
+                        onChange={(e) => setMeta({ ...meta, [key]: e.target.value })}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </fieldset>
+          )}
         </div>
 
         <div className="dfb-drawer-foot">
