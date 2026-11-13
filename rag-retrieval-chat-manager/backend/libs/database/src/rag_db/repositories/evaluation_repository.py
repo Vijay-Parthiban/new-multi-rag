@@ -345,6 +345,12 @@ class EvaluationRepository:
                 if values:
                     grouped[stage].update(_mean_coverage_percentiles(values, key))
                     coverage[stage][key] = len(values)
+            skipped_union: dict[str, str] = {}
+            for item in items:
+                for key, reason in ((getattr(item, attr) or {}).get("skipped") or {}).items():
+                    skipped_union.setdefault(key, reason)
+            if skipped_union:
+                grouped[stage]["skipped"] = skipped_union
 
         # A single mean hides the case this breakdown exists for: a strategy that is strong
         # on single-hop lookups and weak on multi-hop reasoning scores the same overall as
@@ -377,6 +383,12 @@ class EvaluationRepository:
                     if values:
                         block[stage].update(_mean_coverage_percentiles(values, key))
                         block_coverage[stage][key] = len(values)
+                skipped_union: dict[str, str] = {}
+                for item in subset:
+                    for key, reason in ((getattr(item, attr) or {}).get("skipped") or {}).items():
+                        skipped_union.setdefault(key, reason)
+                if skipped_union:
+                    block[stage]["skipped"] = skipped_union
             block["coverage"] = block_coverage
             block["item_count"] = len(subset)
             categories[category] = block

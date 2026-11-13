@@ -91,6 +91,11 @@ def compute_retrieval_metrics(
     The key carries its k, so a run holds recall@5 beside recall@10 rather than one reading
     whose depth the caller has to remember.
     """
+    if not parse_expected_sources(expected_sources):
+        # Without an expected source every ranking metric is undefined. An empty block is
+        # honest; a zero would read as a retrieval failure.
+        return {}
+
     ks = sorted({int(k) for k in (k_values or [5]) if int(k) > 0})
     metrics: dict[str, float] = {
         "mrr": mrr(chunks, expected_sources),

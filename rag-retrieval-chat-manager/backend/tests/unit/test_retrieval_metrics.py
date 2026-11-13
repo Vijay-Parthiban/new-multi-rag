@@ -93,3 +93,8 @@ def test_k_values_emit_at_k_keys():
     assert "map" in metrics
     assert "mrr" in metrics
     assert "precision" not in metrics
+
+
+def test_no_expected_sources_returns_an_empty_block():
+    # A row without a source cannot be scored, and a zero would read as a failure.
+    assert compute_retrieval_metrics([_chunk(0, "https://example.com/a")], []) == {}

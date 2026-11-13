@@ -53,9 +53,16 @@ def compute_rerank_metrics(
     expected_sources: ExpectedSources,
     k_values: list[int] | None = None,
 ) -> dict[str, float | None]:
+    metrics: dict[str, float | None] = {
+        "kendall_tau": kendall_tau_rank_correlation(before, after),
+    }
+    if not parse_expected_sources(expected_sources):
+        # The rank correlation stands on its own; every source-based reading is undefined.
+        return metrics
+
     mrr_before = mrr(before, expected_sources)
     mrr_after = mrr(after, expected_sources)
-    metrics: dict[str, float | None] = {
+    metrics.update({
         "mrr_before": mrr_before,
         "mrr_after": mrr_after,
         "mrr": mrr_after,
@@ -66,10 +73,9 @@ def compute_rerank_metrics(
         # reranker for the retriever's low rank. This is the same measurement at the same
         # depth, which is the only pair a stage reading can compare.
         "mrr_before_at_k": mrr(before[: len(after)] or before, expected_sources),
-        "kendall_tau": kendall_tau_rank_correlation(before, after),
         # Saved chat traces read this bare name as the k=5 value, so it stays.
         "ndcg": ndcg_at_k(after, expected_sources, 5),
-    }
+    })
     for k in sorted({int(k) for k in (k_values or [5]) if int(k) > 0}):
         if k != 5:
             metrics[f"ndcg_at_{k}"] = ndcg_at_k(after, expected_sources, k)

@@ -135,6 +135,34 @@ class GoldenItemEvaluator:
     ) -> EvalItemResult:
         k_values = k_values or [1, 3, 5, 10]
         expected = item.parsed_sources()
+        ks = sorted({int(k) for k in k_values if int(k) > 0})
+
+        # The names each block would hold, so a metric that cannot score is recorded by name
+        # in that block instead of disappearing or reading as a zero.
+        retrieval_names = ["mrr", "map"] + [
+            f"{name}_at_{k}" for k in ks for name in ("precision", "recall", "hit", "ndcg")
+        ]
+        rerank_names = [
+            "mrr_before",
+            "mrr_after",
+            "mrr_delta",
+            "mrr_before_at_k",
+            "ndcg",
+        ] + [f"ndcg_at_{k}" for k in ks if k != 5]
+        judge_retrieval_names = [
+            "context_precision",
+            "context_recall",
+            "context_entity_recall",
+            "noise_resistance",
+        ]
+        judge_generation_names = [
+            "answer_correctness",
+            "semantic_similarity",
+            "factual_correctness",
+            "bleu",
+            "rouge",
+            "chrf",
+        ]
 
         # Formula-based retrieval metrics only (no LLM-as-judge for IRS).
         retrieval_metrics = compute_retrieval_metrics(result.retrieved_chunks, expected, k_values)
@@ -157,27 +185,14 @@ class GoldenItemEvaluator:
         # as a zero the aggregate would average in.
         reference = (item.ground_truth_answer or "").strip()
         skipped: dict[str, str] = {}
+        if not expected:
+            for key in retrieval_names + rerank_names:
+                skipped[key] = "no_expected_sources"
         if not reference:
-            for key in (
-                "context_precision",
-                "context_recall",
-                "context_entity_recall",
-                "noise_resistance",
-                "answer_correctness",
-                "semantic_similarity",
-                "factual_correctness",
-                "bleu",
-                "rouge",
-                "chrf",
-            ):
+            for key in judge_retrieval_names + judge_generation_names:
                 skipped[key] = "no_reference"
         if not contexts:
-            for key in (
-                "context_precision",
-                "context_recall",
-                "context_entity_recall",
-                "noise_resistance",
-            ):
+            for key in judge_retrieval_names:
                 skipped[key] = "no_contexts"
 
         retrieval_metrics.update(
@@ -224,27 +239,14 @@ class GoldenItemEvaluator:
             **compute_custom_metrics(item.metadata, result.answer),
         }
 
-        retrieval_keys = {
-            "context_precision",
-            "context_recall",
-            "context_entity_recall",
-            "noise_resistance",
-        }
-        generation_keys = {
-            "answer_correctness",
-            "semantic_similarity",
-            "factual_correctness",
-            "bleu",
-            "rouge",
-            "chrf",
-        }
-        if skipped:
-            retrieval_metrics["skipped"] = {
-                key: reason for key, reason in skipped.items() if key in retrieval_keys
-            }
-            generation_metrics["skipped"] = {
-                key: reason for key, reason in skipped.items() if key in generation_keys
-            }
+        for block, names in (
+            (retrieval_metrics, retrieval_names + judge_retrieval_names),
+            (rerank_metrics, rerank_names),
+            (generation_metrics, judge_generation_names),
+        ):
+            block_skips = {key: reason for key, reason in skipped.items() if key in names}
+            if block_skips:
+                block["skipped"] = block_skips
 
         # Stage timings the pipeline already measured. No token count: ChatResult holds none,
         # and an estimate from text length would be invented.
