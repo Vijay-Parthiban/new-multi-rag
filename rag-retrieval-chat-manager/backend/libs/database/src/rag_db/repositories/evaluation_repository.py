@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 from statistics import mean
@@ -14,6 +15,22 @@ from rag_db.models.evaluation import (
     GoldenDatasetItem,
 )
 from rag_db.sanitize import strip_null_bytes
+
+
+def _percentile(ordered: list[float], q: float) -> float:
+    """Nearest-rank percentile: the value at or just above the q-th rank."""
+    rank = max(1, math.ceil(q * len(ordered)))
+    return ordered[min(rank - 1, len(ordered) - 1)]
+
+
+def _mean_coverage_percentiles(values: list[float], key: str) -> dict[str, float]:
+    """One key's mean, plus p50 and p95 when the key is a timing."""
+    block = {f"mean_{key}": mean(values)}
+    if key.endswith("_ms"):
+        ordered = sorted(values)
+        block[f"p50_{key}"] = _percentile(ordered, 0.5)
+        block[f"p95_{key}"] = _percentile(ordered, 0.95)
+    return block
 
 
 class EvaluationRepository:
@@ -310,6 +327,10 @@ class EvaluationRepository:
             "generation": {},
         }
 
+        # How many rows each metric could score. A mean of 2 rows and a mean of 40 read the
+        # same without it.
+        coverage: dict[str, dict[str, int]] = {"retrieval": {}, "reranker": {}, "generation": {}}
+
         for stage, attr in stage_blocks.items():
             keys: set[str] = set()
             for item in items:
@@ -322,7 +343,8 @@ class EvaluationRepository:
                     if isinstance((getattr(item, attr) or {}).get(key), (int, float))
                 ]
                 if values:
-                    grouped[stage][f"mean_{key}"] = mean(values)
+                    grouped[stage].update(_mean_coverage_percentiles(values, key))
+                    coverage[stage][key] = len(values)
 
         # A single mean hides the case this breakdown exists for: a strategy that is strong
         # on single-hop lookups and weak on multi-hop reasoning scores the same overall as
@@ -334,6 +356,11 @@ class EvaluationRepository:
         for category in sorted(set(category_of.values())):
             subset = [i for i in items if category_of.get(i.dataset_item_id) == category]
             block: dict[str, dict] = {"retrieval": {}, "reranker": {}, "generation": {}}
+            block_coverage: dict[str, dict[str, int]] = {
+                "retrieval": {},
+                "reranker": {},
+                "generation": {},
+            }
             for stage, attr in stage_blocks.items():
                 keys: set[str] = set()
                 for item in subset:
@@ -348,12 +375,15 @@ class EvaluationRepository:
                         if isinstance((getattr(item, attr) or {}).get(key), (int, float))
                     ]
                     if values:
-                        block[stage][f"mean_{key}"] = mean(values)
+                        block[stage].update(_mean_coverage_percentiles(values, key))
+                        block_coverage[stage][key] = len(values)
+            block["coverage"] = block_coverage
             block["item_count"] = len(subset)
             categories[category] = block
 
         return {
             **grouped,
+            "coverage": coverage,
             "categories": categories,
             "item_count": len(items),
             "config": (run.config if run else {}) or {},

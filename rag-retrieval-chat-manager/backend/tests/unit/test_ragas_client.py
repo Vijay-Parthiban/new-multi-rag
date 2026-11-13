@@ -44,6 +44,18 @@ def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(
     faith_scorer.ascore = AsyncMock(return_value=_MetricResult(0.8))
     relevancy = MagicMock()
     relevancy.ascore = AsyncMock(return_value=_MetricResult(0.75))
+    correctness = MagicMock()
+    correctness.ascore = AsyncMock(return_value=_MetricResult(0.5))
+    similarity = MagicMock()
+    similarity.ascore = AsyncMock(return_value=_MetricResult(0.4))
+    factual = MagicMock()
+    factual.ascore = AsyncMock(return_value=_MetricResult(0.6))
+    bleu = MagicMock()
+    bleu.ascore = AsyncMock(return_value=_MetricResult(0.1))
+    rouge = MagicMock()
+    rouge.ascore = AsyncMock(return_value=_MetricResult(0.2))
+    chrf = MagicMock()
+    chrf.ascore = AsyncMock(return_value=_MetricResult(0.3))
 
     settings = MagicMock()
     settings.ragas_enabled = True
@@ -52,6 +64,12 @@ def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(
     with (
         patch("ragas.metrics.collections.Faithfulness", return_value=faith_scorer),
         patch("ragas.metrics.collections.AnswerRelevancy", return_value=relevancy),
+        patch("ragas.metrics.collections.AnswerCorrectness", return_value=correctness),
+        patch("ragas.metrics.collections.SemanticSimilarity", return_value=similarity),
+        patch("ragas.metrics.collections.FactualCorrectness", return_value=factual),
+        patch("ragas.metrics.collections.BleuScore", return_value=bleu),
+        patch("ragas.metrics.collections.RougeScore", return_value=rouge),
+        patch("ragas.metrics.collections.CHRFScore", return_value=chrf),
     ):
         scores = compute_generation_metrics(
             settings,
@@ -62,7 +80,17 @@ def test_compute_generation_metrics_skips_precision_recall_for_out_of_corpus(
             category="out_of_corpus",
         )
 
-    assert scores == {"faithfulness": 0.8, "answer_relevancy": 0.75}
+    assert scores == {
+        "faithfulness": 0.8,
+        "answer_relevancy": 0.75,
+        "accuracy": 0.5,
+        "answer_correctness": 0.5,
+        "semantic_similarity": 0.4,
+        "factual_correctness": 0.6,
+        "bleu": 0.1,
+        "rouge": 0.2,
+        "chrf": 0.3,
+    }
     faith_scorer.ascore.assert_awaited_once()
 
 
@@ -75,6 +103,8 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
     precision.ascore = AsyncMock(return_value=_MetricResult(0.7))
     recall = MagicMock()
     recall.ascore = AsyncMock(return_value=_MetricResult(0.6))
+    entity = MagicMock()
+    entity.ascore = AsyncMock(return_value=_MetricResult(0.5))
 
     settings = MagicMock()
     settings.ragas_enabled = True
@@ -83,6 +113,7 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
     with (
         patch("ragas.metrics.collections.ContextPrecision", return_value=precision),
         patch("ragas.metrics.collections.ContextRecall", return_value=recall),
+        patch("ragas.metrics.collections.ContextEntityRecall", return_value=entity),
     ):
         scores = compute_retrieval_ragas_metrics(
             settings,
@@ -91,7 +122,11 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
             reference="HTML is markup.",
         )
 
-    assert scores == {"context_precision": 0.7, "context_recall": 0.6}
+    assert scores == {
+        "context_precision": 0.7,
+        "context_entity_recall": 0.5,
+        "context_recall": 0.6,
+    }
     precision.ascore.assert_awaited_once()
     recall.ascore.assert_awaited_once()
 
@@ -134,6 +169,20 @@ def test_compute_generation_metrics_returns_all_metrics(mock_llm, mock_embedding
     faith.ascore = AsyncMock(return_value=_MetricResult(0.9))
     relevancy = MagicMock()
     relevancy.ascore = AsyncMock(return_value=_MetricResult(0.85))
+    entity = MagicMock()
+    entity.ascore = AsyncMock(return_value=_MetricResult(0.5))
+    correctness = MagicMock()
+    correctness.ascore = AsyncMock(return_value=_MetricResult(0.5))
+    similarity = MagicMock()
+    similarity.ascore = AsyncMock(return_value=_MetricResult(0.4))
+    factual = MagicMock()
+    factual.ascore = AsyncMock(return_value=_MetricResult(0.6))
+    bleu = MagicMock()
+    bleu.ascore = AsyncMock(return_value=_MetricResult(0.1))
+    rouge = MagicMock()
+    rouge.ascore = AsyncMock(return_value=_MetricResult(0.2))
+    chrf = MagicMock()
+    chrf.ascore = AsyncMock(return_value=_MetricResult(0.3))
 
     settings = MagicMock()
     settings.ragas_enabled = True
@@ -142,8 +191,15 @@ def test_compute_generation_metrics_returns_all_metrics(mock_llm, mock_embedding
     with (
         patch("ragas.metrics.collections.ContextPrecision", return_value=precision),
         patch("ragas.metrics.collections.ContextRecall", return_value=recall),
+        patch("ragas.metrics.collections.ContextEntityRecall", return_value=entity),
         patch("ragas.metrics.collections.Faithfulness", return_value=faith),
         patch("ragas.metrics.collections.AnswerRelevancy", return_value=relevancy),
+        patch("ragas.metrics.collections.AnswerCorrectness", return_value=correctness),
+        patch("ragas.metrics.collections.SemanticSimilarity", return_value=similarity),
+        patch("ragas.metrics.collections.FactualCorrectness", return_value=factual),
+        patch("ragas.metrics.collections.BleuScore", return_value=bleu),
+        patch("ragas.metrics.collections.RougeScore", return_value=rouge),
+        patch("ragas.metrics.collections.CHRFScore", return_value=chrf),
     ):
         scores = compute_generation_metrics(
             settings,
@@ -156,9 +212,17 @@ def test_compute_generation_metrics_returns_all_metrics(mock_llm, mock_embedding
 
     assert scores == {
         "context_precision": 0.7,
+        "context_entity_recall": 0.5,
         "context_recall": 0.6,
         "faithfulness": 0.9,
         "answer_relevancy": 0.85,
+        "accuracy": 0.5,
+        "answer_correctness": 0.5,
+        "semantic_similarity": 0.4,
+        "factual_correctness": 0.6,
+        "bleu": 0.1,
+        "rouge": 0.2,
+        "chrf": 0.3,
     }
 
 

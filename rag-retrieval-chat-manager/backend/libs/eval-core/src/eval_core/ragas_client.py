@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -140,9 +140,15 @@ async def calculate_retrieval_ragas_async(
     label: str | None = None,
     category: str | None = None,
     include_context_recall: bool = True,
+    answer: str | None = None,
 ) -> dict[str, float | None]:
-    """RAGAS retrieval metrics: context_precision and context_recall."""
-    from ragas.metrics.collections import ContextPrecision, ContextRecall
+    """RAGAS context metrics: precision, recall, entity recall, and noise resistance."""
+    from ragas.metrics.collections import (
+        ContextEntityRecall,
+        ContextPrecision,
+        ContextRecall,
+        NoiseSensitivity,
+    )
 
     if not settings.ragas_enabled:
         return {}
@@ -157,25 +163,61 @@ async def calculate_retrieval_ragas_async(
         return {}
 
     llm = build_ragas_llm(settings)
-    precision_scorer = ContextPrecision(llm=llm)
-    recall_scorer = ContextRecall(llm=llm)
 
     # ragas>=0.4 collections metrics use ascore(**fields), not single_turn_ascore(sample)
-    precision_result = await precision_scorer.ascore(
-        user_input=question,
-        reference=reference,
-        retrieved_contexts=contexts,
-    )
-    scores: dict[str, float | None] = {
-        "context_precision": _score_value(precision_result, metric_name="context_precision"),
-    }
+    jobs: list[tuple[str, Any]] = [
+        (
+            "context_precision",
+            ContextPrecision(llm=llm).ascore(
+                user_input=question,
+                reference=reference,
+                retrieved_contexts=contexts,
+            ),
+        ),
+        (
+            "context_entity_recall",
+            ContextEntityRecall(llm=llm).ascore(
+                reference=reference,
+                retrieved_contexts=contexts,
+            ),
+        ),
+    ]
     if include_context_recall:
-        recall_result = await recall_scorer.ascore(
-            user_input=question,
-            reference=reference,
-            retrieved_contexts=contexts,
+        jobs.append(
+            (
+                "context_recall",
+                ContextRecall(llm=llm).ascore(
+                    user_input=question,
+                    reference=reference,
+                    retrieved_contexts=contexts,
+                ),
+            )
         )
-        scores["context_recall"] = _score_value(recall_result, metric_name="context_recall")
+    if answer and answer.strip():
+        jobs.append(
+            (
+                "noise_sensitivity",
+                NoiseSensitivity(llm=llm, mode="irrelevant").ascore(
+                    user_input=question,
+                    response=answer,
+                    reference=reference,
+                    retrieved_contexts=contexts,
+                ),
+            )
+        )
+
+    # One failing judge call must not lose the others: every task runs, and a failed one is
+    # simply absent from the block.
+    results = await asyncio.gather(*(task for _, task in jobs), return_exceptions=True)
+    scores: dict[str, float | None] = {}
+    for (name, _), result in zip(jobs, results):
+        value = _score_value(result, metric_name=name)
+        if value is None:
+            continue
+        # NoiseSensitivity is a failure rate; the stored key reads "higher is better".
+        scores["noise_resistance" if name == "noise_sensitivity" else name] = (
+            1.0 - value if name == "noise_sensitivity" else value
+        )
     return scores
 
 
@@ -218,59 +260,88 @@ async def calculate_generation_ragas_async(
         retrieved_contexts=contexts,
     )
 
-    tasks = [faith_task]
-    if include_answer_relevancy:
+    # The embedding model serves answer relevancy, answer correctness and semantic
+    # similarity. Its failure must not lose the judge-only metrics, so it is optional.
+    embeddings = None
+    try:
+        embeddings = build_ragas_embeddings(settings)
+    except Exception as exc:  # noqa: BLE001 — optional metrics, not the run
+        logger.warning("RAGAS embeddings unavailable: %s", exc)
+
+    # Every judge task carries its key, so a missing metric cannot shift another's score.
+    jobs: list[tuple[str, Any]] = [("faithfulness", faith_task)]
+    if include_answer_relevancy and embeddings is not None:
         from ragas.metrics.collections import AnswerRelevancy
 
-        relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=build_ragas_embeddings(settings))
+        relevancy_scorer = AnswerRelevancy(llm=llm, embeddings=embeddings)
         # AnswerRelevancy.ascore only accepts user_input + response in ragas 0.4
-        tasks.append(
-            relevancy_scorer.ascore(
-                user_input=question,
-                response=answer,
+        jobs.append(
+            (
+                "answer_relevancy",
+                relevancy_scorer.ascore(user_input=question, response=answer),
             )
         )
 
-    correctness_task = None
     reference = (ground_truth or "").strip()
     if reference:
-        try:
-            from ragas.metrics.collections import AnswerCorrectness
+        from ragas.metrics.collections import (
+            AnswerCorrectness,
+            BleuScore,
+            CHRFScore,
+            FactualCorrectness,
+            RougeScore,
+            SemanticSimilarity,
+        )
 
-            correctness_scorer = AnswerCorrectness(
-                llm=llm, embeddings=build_ragas_embeddings(settings)
+        if embeddings is not None:
+            jobs.append(
+                (
+                    "answer_correctness",
+                    AnswerCorrectness(llm=llm, embeddings=embeddings).ascore(
+                        user_input=question,
+                        response=answer,
+                        reference=reference,
+                    ),
+                )
             )
-            correctness_task = correctness_scorer.ascore(
-                user_input=question,
-                response=answer,
-                reference=reference,
+            jobs.append(
+                (
+                    "semantic_similarity",
+                    SemanticSimilarity(embeddings=embeddings).ascore(
+                        reference=reference,
+                        response=answer,
+                    ),
+                )
             )
-            tasks.append(correctness_task)
-        except Exception as exc:  # noqa: BLE001 — optional metric
-            logger.warning("AnswerCorrectness unavailable: %s", exc)
+        jobs.extend(
+            [
+                (
+                    "factual_correctness",
+                    FactualCorrectness(llm=llm).ascore(response=answer, reference=reference),
+                ),
+                ("bleu", BleuScore().ascore(reference=reference, response=answer)),
+                (
+                    "rouge",
+                    RougeScore(rouge_type="rougeL", mode="fmeasure").ascore(
+                        reference=reference,
+                        response=answer,
+                    ),
+                ),
+                ("chrf", CHRFScore().ascore(reference=reference, response=answer)),
+            ]
+        )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*(task for _, task in jobs), return_exceptions=True)
 
     output: dict[str, float | None] = {}
-    index = 0
-
-    f_val = _score_value(results[index], metric_name="faithfulness")
-    if f_val is not None:
-        output["faithfulness"] = f_val
-    index += 1
-
-    if include_answer_relevancy:
-        r_val = _score_value(results[index], metric_name="answer_relevancy")
-        if r_val is not None:
-            output["answer_relevancy"] = r_val
-        index += 1
-
-    if correctness_task is not None and len(results) > index:
-        a_val = _score_value(results[index], metric_name="answer_correctness")
-        if a_val is not None:
-            output["accuracy"] = a_val
-            output["answer_correctness"] = a_val
-
+    for (name, _), result in zip(jobs, results):
+        value = _score_value(result, metric_name=name)
+        if value is None:
+            continue
+        if name == "answer_correctness":
+            # Older readers (and the page's allowlist) use `accuracy`.
+            output["accuracy"] = value
+        output[name] = value
     return output
 
 
@@ -421,6 +492,7 @@ def compute_retrieval_ragas_metrics(
     label: str | None = None,
     category: str | None = None,
     include_context_recall: bool = True,
+    answer: str | None = None,
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_retrieval_ragas_async(
@@ -431,6 +503,7 @@ def compute_retrieval_ragas_metrics(
             label=label,
             category=category,
             include_context_recall=include_context_recall,
+            answer=answer,
         )
     )
 

@@ -11,7 +11,11 @@ from rag_shared.config import Settings
 from rag_shared.types import RerankedChunk, RetrievedChunk
 
 from eval_core.custom_metrics import compute_custom_metrics
-from eval_core.ragas_client import compute_generation_ragas_metrics, compute_triad_metrics
+from eval_core.ragas_client import (
+    compute_generation_ragas_metrics,
+    compute_retrieval_ragas_metrics,
+    compute_triad_metrics,
+)
 from eval_core.rerank_metrics import compute_rerank_metrics
 from eval_core.retrieval_metrics import compute_retrieval_metrics
 from eval_core.source_match import ExpectedSource, parse_expected_sources
@@ -147,6 +151,47 @@ class GoldenItemEvaluator:
             passage_text_for_chunk(c) if is_image_chunk(c) else c.content
             for c in result.reranked_chunks
         ]
+
+        # Every judge metric that reads the reference. The reasons a metric cannot run are
+        # stored beside the scores, so a missing key reads as "not applicable" rather than
+        # as a zero the aggregate would average in.
+        reference = (item.ground_truth_answer or "").strip()
+        skipped: dict[str, str] = {}
+        if not reference:
+            for key in (
+                "context_precision",
+                "context_recall",
+                "context_entity_recall",
+                "noise_resistance",
+                "answer_correctness",
+                "semantic_similarity",
+                "factual_correctness",
+                "bleu",
+                "rouge",
+                "chrf",
+            ):
+                skipped[key] = "no_reference"
+        if not contexts:
+            for key in (
+                "context_precision",
+                "context_recall",
+                "context_entity_recall",
+                "noise_resistance",
+            ):
+                skipped[key] = "no_contexts"
+
+        retrieval_metrics.update(
+            compute_retrieval_ragas_metrics(
+                self._settings,
+                question=item.question,
+                answer=result.answer,
+                contexts=contexts,
+                reference=reference,
+                label=item.label,
+                category=item.category,
+            )
+        )
+
         generation_metrics = compute_generation_ragas_metrics(
             self._settings,
             question=item.question,
@@ -178,6 +223,45 @@ class GoldenItemEvaluator:
             **generation_metrics,
             **compute_custom_metrics(item.metadata, result.answer),
         }
+
+        retrieval_keys = {
+            "context_precision",
+            "context_recall",
+            "context_entity_recall",
+            "noise_resistance",
+        }
+        generation_keys = {
+            "answer_correctness",
+            "semantic_similarity",
+            "factual_correctness",
+            "bleu",
+            "rouge",
+            "chrf",
+        }
+        if skipped:
+            retrieval_metrics["skipped"] = {
+                key: reason for key, reason in skipped.items() if key in retrieval_keys
+            }
+            generation_metrics["skipped"] = {
+                key: reason for key, reason in skipped.items() if key in generation_keys
+            }
+
+        # Stage timings the pipeline already measured. No token count: ChatResult holds none,
+        # and an estimate from text length would be invented.
+        latency = getattr(result, "latency_ms", {}) or {}
+        for block, key, source in (
+            (retrieval_metrics, "retrieve_ms", "retrieve"),
+            (rerank_metrics, "rerank_ms", "rerank"),
+            (generation_metrics, "generate_ms", "generate"),
+        ):
+            value = int(latency.get(source, 0) or 0)
+            if value > 0:
+                block[key] = value
+        total_ms = sum(
+            int(latency.get(name, 0) or 0) for name in ("retrieve", "rerank", "generate")
+        )
+        if total_ms > 0:
+            generation_metrics["total_ms"] = total_ms
 
         return EvalItemResult(
             retrieved_chunks=result.retrieved_chunks,

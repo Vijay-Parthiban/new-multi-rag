@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from rag_shared.types import RetrievedChunk, RerankedChunk
 
-from eval_core.retrieval_metrics import mrr
+from eval_core.retrieval_metrics import mrr, ndcg_at_k
 from eval_core.source_match import ExpectedSource, is_relevant_chunk, parse_expected_sources
 
 
 ExpectedSources = list[str] | list[ExpectedSource] | list[Any]
-
-
-def ndcg_at_k(chunks: list[RetrievedChunk], expected: ExpectedSources, k: int) -> float:
-    sources = parse_expected_sources(expected)
-    dcg = 0.0
-    for i, chunk in enumerate(chunks[:k], start=1):
-        rel = 1.0 if is_relevant_chunk(chunk, sources) else 0.0
-        dcg += rel / math.log2(i + 1)
-    ideal_rels = sorted(
-        [1.0 if is_relevant_chunk(c, sources) else 0.0 for c in chunks],
-        reverse=True,
-    )[:k]
-    idcg = sum(rel / math.log2(i + 1) for i, rel in enumerate(ideal_rels, start=1))
-    return dcg / idcg if idcg > 0 else 0.0
 
 
 def kendall_tau_rank_correlation(
@@ -68,7 +53,6 @@ def compute_rerank_metrics(
     expected_sources: ExpectedSources,
     k_values: list[int] | None = None,
 ) -> dict[str, float | None]:
-    k = 5
     mrr_before = mrr(before, expected_sources)
     mrr_after = mrr(after, expected_sources)
     metrics: dict[str, float | None] = {
@@ -83,6 +67,10 @@ def compute_rerank_metrics(
         # depth, which is the only pair a stage reading can compare.
         "mrr_before_at_k": mrr(before[: len(after)] or before, expected_sources),
         "kendall_tau": kendall_tau_rank_correlation(before, after),
-        "ndcg": ndcg_at_k(after, expected_sources, k),
+        # Saved chat traces read this bare name as the k=5 value, so it stays.
+        "ndcg": ndcg_at_k(after, expected_sources, 5),
     }
+    for k in sorted({int(k) for k in (k_values or [5]) if int(k) > 0}):
+        if k != 5:
+            metrics[f"ndcg_at_{k}"] = ndcg_at_k(after, expected_sources, k)
     return metrics

@@ -51,6 +51,27 @@ const KIND_LABEL: Record<DatasetKind, string> = {
   multi_turn: "Multi-turn evaluation",
 };
 
+/** A rank correlation or a timing is not a quality score, so it stays out of the mean. */
+const NON_QUALITY = /(_ms$|kendall_tau|mrr_delta|mrr_before)/;
+const isQualityKey = (key: string) => !NON_QUALITY.test(key.replace(/^mean_/, ""));
+
+/** The shape of a run's stored aggregate. */
+type Agg = {
+  retrieval?: Record<string, number>;
+  reranker?: Record<string, number>;
+  generation?: Record<string, number>;
+  coverage?: Record<string, Record<string, number>>;
+  categories?: Record<
+    string,
+    {
+      retrieval?: Record<string, number>;
+      reranker?: Record<string, number>;
+      generation?: Record<string, number>;
+      item_count?: number;
+    }
+  >;
+};
+
 /** A profile the Dataset Validator linked to a pipeline, with its active version's files. */
 type OfflineProfile = {
   id: string;
@@ -79,16 +100,8 @@ function StageKpis({
   metrics: Record<string, number> | undefined;
   itemCount?: number;
 }) {
-  // Prefer canonical quality scores; skip rank-correlation / delta keys in the headline bar
-  const QUALITY_KEYS = new Set([
-    "mean_precision", "mean_recall", "mean_mrr", "mean_hit", "mean_ndcg",
-    "mean_faithfulness", "mean_answer_relevancy", "mean_accuracy", "mean_answer_correctness",
-    "precision", "recall", "mrr", "hit", "ndcg", "faithfulness", "answer_relevancy", "accuracy", "answer_correctness",
-  ]);
   const entries = Object.entries(metrics || {}).filter(([, v]) => typeof v === "number");
-  const qualityValues = entries
-    .filter(([k]) => QUALITY_KEYS.has(k) || QUALITY_KEYS.has(k.replace(/^mean_/, "")))
-    .map(([, v]) => v);
+  const qualityValues = entries.filter(([k]) => isQualityKey(k)).map(([, v]) => v);
   const avgQuality = qualityValues.length > 0
     ? qualityValues.reduce((a, b) => a + b, 0) / qualityValues.length
     : null;
@@ -213,12 +226,15 @@ function MetricsBarChart({ data }: { data: { label: string; value: number }[] })
 // ── Stage-filtered KPI panel with chart toggle ────────────────────────────
 type Stage = "retrieval" | "reranker" | "generation";
 
-function OverallKpis({ agg }: { agg: { retrieval?: Record<string, number>; reranker?: Record<string, number>; generation?: Record<string, number> } }) {
+function OverallKpis({ agg, baseline }: { agg: Agg; baseline?: Agg | null }) {
   const [stage, setStage] = useState<Stage>("retrieval");
   const [showChart, setShowChart] = useState(false);
 
   const stageMetrics: Record<string, number> | undefined = agg[stage];
   const entries = Object.entries(stageMetrics || {}).filter(([, v]) => typeof v === "number");
+  // The reasons a metric could not score are stored beside the numbers.
+  const skips =
+    ((stageMetrics as unknown as { skipped?: Record<string, string> } | undefined)?.skipped) ?? {};
   const chartData = entries.map(([k, v]) => ({ label: k.replace(/^mean_/, ""), value: v }));
 
   const STAGES: { key: Stage; label: string; emoji: string }[] = [
@@ -259,7 +275,12 @@ function OverallKpis({ agg }: { agg: { retrieval?: Record<string, number>; reran
           <MetricsBarChart data={chartData} />
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "0.75rem" }}>
-            {entries.map(([k, v]) => (
+            {entries.map(([k, v]) => {
+              const short = k.replace(/^mean_/, "");
+              const count = agg.coverage?.[stage]?.[short];
+              const base = baseline?.[stage]?.[k];
+              const delta = typeof base === "number" ? v - base : null;
+              return (
               <div
                 key={k}
                 style={{
@@ -272,8 +293,23 @@ function OverallKpis({ agg }: { agg: { retrieval?: Record<string, number>; reran
                   gap: "0.2rem",
                 }}
               >
-                <span className="muted" style={{ fontSize: "0.75rem" }}>{k.replace(/^mean_/, "")}</span>
+                <span className="muted" style={{ fontSize: "0.75rem" }}>
+                  {short}
+                  {count !== undefined ? ` · ${count} rows` : ""}
+                </span>
                 <span className="mono" style={{ fontSize: "1.1rem", fontWeight: 700 }}>{formatMetric(v)}</span>
+                {delta !== null && (
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: "0.72rem",
+                      color: delta >= 0 ? "var(--success, #10b981)" : "var(--danger, #ef4444)",
+                    }}
+                  >
+                    Δ {delta >= 0 ? "+" : ""}
+                    {delta.toFixed(3)}
+                  </span>
+                )}
                 <div style={{
                   height: 4,
                   borderRadius: 2,
@@ -290,8 +326,14 @@ function OverallKpis({ agg }: { agg: { retrieval?: Record<string, number>; reran
                   }} />
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
+        )}
+        {Object.keys(skips).length > 0 && (
+          <p className="muted" style={{ fontSize: "0.75rem", margin: "0.6rem 0 0" }}>
+            Not scored: {Object.entries(skips).map(([key, reason]) => `${key} (${reason})`).join(", ")}
+          </p>
         )}
       </div>
     </div>
@@ -604,6 +646,8 @@ export default function GoldenEvaluationsPage() {
   const [runsCount, setRunsCount] = useState(0);
   const [page, setPage] = useState(0);
   const [selectedRun, setSelectedRun] = useState<EvalRunResponse | null>(null);
+  const [baselineId, setBaselineId] = useState("");
+  const [baselineAgg, setBaselineAgg] = useState<Agg | null>(null);
 
   const navigate = useNavigate();
 
@@ -950,6 +994,21 @@ export default function GoldenEvaluationsPage() {
     }
   }
 
+  async function onPickBaseline(id: string) {
+    setBaselineId(id);
+    if (!id) {
+      setBaselineAgg(null);
+      return;
+    }
+    try {
+      const run = await getEvaluationRun(id);
+      setBaselineAgg((run.aggregate_metrics || {}) as Agg);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load the baseline run");
+      setBaselineAgg(null);
+    }
+  }
+
   async function onSelectRun(run: EvalRunResponse) {
     setSelectedRun(run);
     setRunItems([]);
@@ -965,17 +1024,7 @@ export default function GoldenEvaluationsPage() {
     }
   }
 
-  const agg = (selectedRun?.aggregate_metrics || {}) as {
-    retrieval?: Record<string, number>;
-    reranker?: Record<string, number>;
-    generation?: Record<string, number>;
-    categories?: Record<string, {
-      retrieval?: Record<string, number>;
-      reranker?: Record<string, number>;
-      generation?: Record<string, number>;
-      item_count?: number;
-    }>;
-  };
+  const agg = (selectedRun?.aggregate_metrics || {}) as Agg;
 
   const categoryEntries = Object.entries(agg.categories || {});
 
@@ -1329,7 +1378,31 @@ export default function GoldenEvaluationsPage() {
           </div>
 
               {/* ── Overall KPIs with stage tabs + chart ────────────────── */}
-              <OverallKpis agg={agg} />
+              {runs.length > 1 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.5rem" }}>
+                  <label
+                    className="muted"
+                    style={{ display: "flex", gap: "0.5rem", alignItems: "center", fontSize: "0.8rem" }}
+                  >
+                    Compare with
+                    <select
+                      className="input"
+                      value={baselineId}
+                      onChange={(e) => void onPickBaseline(e.target.value)}
+                    >
+                      <option value="">No baseline</option>
+                      {runs
+                        .filter((r) => r.run_id !== selectedRun?.run_id)
+                        .map((r) => (
+                          <option key={r.run_id} value={r.run_id}>
+                            Run {r.run_id.slice(0, 8)} · {r.status}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              <OverallKpis agg={agg} baseline={baselineAgg} />
 
 
               {/* ── Per-Category KPIs ───────────────────────────────────── */}

@@ -49,3 +49,47 @@ def test_recall_at_k():
     )
     assert metrics["recall_at_3"] == 0.5
     assert metrics["hit_at_3"] == 1.0
+
+
+def _chunk(index: int, locator: str) -> RetrievedChunk:
+    return RetrievedChunk(
+        id=str(index),
+        content="x",
+        source_type="web_scrape",
+        source_id="j",
+        source_locator=locator,
+        chunk_index=index,
+        chunk_type="text",
+        retrieval_score=1.0,
+    )
+
+
+def test_map_rewards_higher_rank():
+    relevant = "https://arxiv.org/html/1706.03762v7"
+    at_rank_1 = [
+        _chunk(0, relevant),
+        _chunk(1, "https://example.com/a"),
+        _chunk(2, "https://example.com/b"),
+    ]
+    at_rank_3 = [
+        _chunk(0, "https://example.com/a"),
+        _chunk(1, "https://example.com/b"),
+        _chunk(2, relevant),
+    ]
+
+    assert compute_retrieval_metrics(at_rank_1, [relevant])["map"] == 1.0
+    assert compute_retrieval_metrics(at_rank_3, [relevant])["map"] == pytest.approx(1 / 3)
+
+
+def test_k_values_emit_at_k_keys():
+    metrics = compute_retrieval_metrics(
+        [_chunk(0, "https://example.com/a")], ["a.pdf"], k_values=[1, 3, 5, 10]
+    )
+
+    assert "precision_at_1" in metrics
+    assert "recall_at_3" in metrics
+    assert "hit_at_5" in metrics
+    assert "ndcg_at_10" in metrics
+    assert "map" in metrics
+    assert "mrr" in metrics
+    assert "precision" not in metrics
