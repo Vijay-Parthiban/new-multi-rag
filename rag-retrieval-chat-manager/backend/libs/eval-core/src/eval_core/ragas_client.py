@@ -24,7 +24,10 @@ _ragas_openai_client: AsyncOpenAI | None = None
 # needs about 5200 tokens for AnswerCorrectness, so 4096 truncated it and the metric
 # failed. A failure reads as a missing score rather than a wrong one, which is why this
 # looked like an intermittent judge problem instead of a budget problem.
-JUDGE_MAX_TOKENS = 8192
+# A reasoning judge spends part of this budget on thinking before it writes the JSON.
+# 8192 was not enough for an 11-sentence answer: faithfulness returned truncated output,
+# ragas retried it, and the retry alone added minutes to the row.
+JUDGE_MAX_TOKENS = 16384
 
 
 def _ragas_litellm_proxy_url(settings: "Settings") -> str:
@@ -58,6 +61,12 @@ def get_ragas_openai_client(settings: "Settings") -> "AsyncOpenAI":
         _ragas_openai_client = AsyncOpenAI(
             base_url=_ragas_openai_v1_base_url(settings),
             api_key=_ragas_litellm_api_key(settings),
+            # The gateway stalls a request now and then: a run showed a 5.8-minute gap with
+            # no answer. The SDK default waits 600 s and retries twice, so one stall holds a
+            # row for half an hour. End the call at 180 s with one retry; the metric is
+            # absent with its reason in the log and the row moves on.
+            timeout=180.0,
+            max_retries=1,
         )
         logger.info(
             "ragas_openai_client_ready base_url=%s",
