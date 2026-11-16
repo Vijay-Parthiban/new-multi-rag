@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -131,6 +132,46 @@ def _normalize_contexts(contexts: list[str]) -> list[str]:
     return [str(c).strip() for c in contexts if c and str(c).strip()]
 
 
+def _average_precision(verdicts: list[int]) -> float:
+    """The AP formula ragas uses for context precision, over the per-context verdicts."""
+    found = sum(verdicts) or 1e-10
+    total = sum(
+        (sum(verdicts[: i + 1]) / (i + 1)) * verdicts[i] for i in range(len(verdicts))
+    )
+    return total / found
+
+
+async def _context_precision_score(
+    llm: Any, *, question: str, reference: str, contexts: list[str]
+) -> float:
+    """Context precision with the per-context verdicts asked at once.
+
+    ragas `ContextPrecision.ascore` awaits one judge call per context in a loop, so a
+    five-context row waits five calls deep before the next metric starts. The verdicts do
+    not depend on each other: ask them together and combine with ragas's own formula.
+    """
+    from ragas.metrics.collections import ContextPrecision
+
+    async def verdict(context: str) -> int:
+        result = await ContextPrecision(llm=llm).ascore(
+            user_input=question, reference=reference, retrieved_contexts=[context]
+        )
+        value = getattr(result, "value", result)
+        return 1 if value else 0
+
+    verdicts = await asyncio.gather(*(verdict(context) for context in contexts))
+    return _average_precision([int(v) for v in verdicts])
+
+
+async def _timed_judge(name: str, task: Any) -> Any:
+    """Await one judge call and log its wall time, so a slow metric is visible by name."""
+    started = time.monotonic()
+    try:
+        return await task
+    finally:
+        logger.info("judge metric=%s elapsed=%.1fs", name, time.monotonic() - started)
+
+
 async def calculate_retrieval_ragas_async(
     settings: "Settings",
     *,
@@ -140,14 +181,17 @@ async def calculate_retrieval_ragas_async(
     label: str | None = None,
     category: str | None = None,
     include_context_recall: bool = True,
-    answer: str | None = None,
 ) -> dict[str, float | None]:
-    """RAGAS context metrics: precision, recall, entity recall, and noise resistance."""
+    """RAGAS context metrics: precision, recall, and entity recall.
+
+    NoiseSensitivity is not here. It awaits 2 + 2 x len(contexts) + 1 judge calls one at a
+    time: 13 calls for a five-context row, about 13 minutes on a reasoning judge. The row's
+    other twelve calls run together and finish in minutes, so that one metric set the pace
+    for the whole run.
+    """
     from ragas.metrics.collections import (
         ContextEntityRecall,
-        ContextPrecision,
         ContextRecall,
-        NoiseSensitivity,
     )
 
     if not settings.ragas_enabled:
@@ -168,10 +212,8 @@ async def calculate_retrieval_ragas_async(
     jobs: list[tuple[str, Any]] = [
         (
             "context_precision",
-            ContextPrecision(llm=llm).ascore(
-                user_input=question,
-                reference=reference,
-                retrieved_contexts=contexts,
+            _context_precision_score(
+                llm, question=question, reference=reference, contexts=contexts
             ),
         ),
         (
@@ -193,31 +235,16 @@ async def calculate_retrieval_ragas_async(
                 ),
             )
         )
-    if answer and answer.strip():
-        jobs.append(
-            (
-                "noise_sensitivity",
-                NoiseSensitivity(llm=llm, mode="irrelevant").ascore(
-                    user_input=question,
-                    response=answer,
-                    reference=reference,
-                    retrieved_contexts=contexts,
-                ),
-            )
-        )
-
     # One failing judge call must not lose the others: every task runs, and a failed one is
     # simply absent from the block.
-    results = await asyncio.gather(*(task for _, task in jobs), return_exceptions=True)
+    results = await asyncio.gather(
+        *(_timed_judge(name, task) for name, task in jobs), return_exceptions=True
+    )
     scores: dict[str, float | None] = {}
     for (name, _), result in zip(jobs, results):
         value = _score_value(result, metric_name=name)
-        if value is None:
-            continue
-        # NoiseSensitivity is a failure rate; the stored key reads "higher is better".
-        scores["noise_resistance" if name == "noise_sensitivity" else name] = (
-            1.0 - value if name == "noise_sensitivity" else value
-        )
+        if value is not None:
+            scores[name] = value
     return scores
 
 
@@ -331,7 +358,9 @@ async def calculate_generation_ragas_async(
             ]
         )
 
-    results = await asyncio.gather(*(task for _, task in jobs), return_exceptions=True)
+    results = await asyncio.gather(
+        *(_timed_judge(name, task) for name, task in jobs), return_exceptions=True
+    )
 
     output: dict[str, float | None] = {}
     for (name, _), result in zip(jobs, results):
@@ -418,7 +447,10 @@ async def calculate_triad_async(
     }
 
     names = list(calls)
-    results = await asyncio.gather(*calls.values(), return_exceptions=True)
+    results = await asyncio.gather(
+        *(_timed_judge(name, task) for name, task in calls.items()),
+        return_exceptions=True,
+    )
 
     output: dict[str, float | None] = {}
     for name, result in zip(names, results, strict=True):
@@ -445,6 +477,58 @@ def compute_triad_metrics(
             judge_model=judge_model,
         )
     )
+
+
+async def calculate_row_metrics_async(
+    settings: "Settings",
+    *,
+    question: str,
+    answer: str,
+    contexts: list[str],
+    reference: str,
+    label: str | None = None,
+    category: str | None = None,
+    ground_truth: str | None = None,
+    judge_model: str | None = None,
+) -> tuple[dict[str, float | None], dict[str, float | None], dict[str, float | None]]:
+    """Every judge call a row needs, in one event loop.
+
+    The three groups are independent. Run together, a row waits on its slowest judge call
+    instead of on the sum of three waves, which is most of a row's wall time.
+    """
+    retrieval, generation, triad = await asyncio.gather(
+        calculate_retrieval_ragas_async(
+            settings,
+            question=question,
+            contexts=contexts,
+            reference=reference,
+            label=label,
+            category=category,
+        ),
+        calculate_generation_ragas_async(
+            settings,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            ground_truth=ground_truth,
+            judge_model=judge_model,
+            include_answer_relevancy=False,
+        ),
+        calculate_triad_async(
+            settings,
+            question=question,
+            answer=answer,
+            contexts=contexts,
+            judge_model=judge_model,
+        ),
+    )
+    return retrieval, generation, triad
+
+
+def compute_row_metrics(settings: "Settings", **kwargs: Any) -> tuple[
+    dict[str, float | None], dict[str, float | None], dict[str, float | None]
+]:
+    return asyncio.run(calculate_row_metrics_async(settings, **kwargs))
 
 
 async def calculate_eval_metrics_async(
@@ -503,7 +587,6 @@ def compute_retrieval_ragas_metrics(
             label=label,
             category=category,
             include_context_recall=include_context_recall,
-            answer=answer,
         )
     )
 

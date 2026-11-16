@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import random
 import uuid
 
@@ -14,6 +15,9 @@ from rag_shared.config import get_settings
 from rag_shared.types import KpStores, SearchMode
 
 logger = logging.getLogger(__name__)
+# The worker is a daemon, so its log is the only view of a run. rq configures only its own
+# logger: without this, every row line and every judge timing below is dropped at INFO.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 def _dump_chunks(chunks: list) -> list[dict]:
@@ -229,6 +233,7 @@ def run_evaluation(run_id: str) -> None:
     try:
         for index, item in enumerate(dataset_items, start=1):
             run_item_id: uuid.UUID | None = None
+            item_started = time.monotonic()
             try:
                 with session_factory() as db:
                     eval_repo = EvaluationRepository(db)
@@ -310,11 +315,12 @@ def run_evaluation(run_id: str) -> None:
                     )
 
                     logger.info(
-                        "Completed run=%s progress %d/%d (failed=%d)",
+                        "Completed run=%s progress %d/%d (failed=%d) in %.1fs",
                         run_uuid,
                         progress["items_completed"],
                         progress["items_total"],
                         progress["items_failed"],
+                        time.monotonic() - item_started,
                     )
             except Exception as exc:
                 logger.exception("Eval item failed run=%s query %d/%d", run_uuid, index, total_items)

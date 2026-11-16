@@ -49,11 +49,11 @@ def mrr(chunks: list[RetrievedChunk], expected: ExpectedSources) -> float:
 
 
 def average_precision(chunks: list[RetrievedChunk], expected: ExpectedSources) -> float:
-    """Mean precision at every rank that holds a relevant chunk, over the expected count.
+    """Mean precision at every rank that holds a relevant chunk.
 
     Relevance is chunk-level, like `precision_at_k`: one file can match several chunks and
-    each match counts. A source that never appears stays in the denominator, which is what
-    makes an unreachable source cost the score.
+    each match counts. The divisor is the larger of the expected count and the match count,
+    so the value stays inside [0, 1] and an unreachable source still costs the score.
     """
     sources = parse_expected_sources(expected)
     if not sources:
@@ -64,7 +64,9 @@ def average_precision(chunks: list[RetrievedChunk], expected: ExpectedSources) -
         if is_relevant_chunk(chunk, sources):
             hits += 1
             total += hits / rank
-    return total / len(sources)
+    if not hits:
+        return 0.0
+    return total / max(len(sources), hits)
 
 
 def ndcg_at_k(chunks: list[RetrievedChunk], expected: ExpectedSources, k: int) -> float:

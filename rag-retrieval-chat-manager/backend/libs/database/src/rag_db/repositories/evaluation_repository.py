@@ -243,6 +243,11 @@ class EvaluationRepository:
             return {"items_total": 0, "items_completed": 0, "items_failed": 0}
 
         items_total = self.count_dataset_items(run.dataset_id)
+        # A sampled run scores fewer rows than the set holds. The set's size is not the
+        # denominator: the page would read 3/7 on a run of three rows.
+        sample = (run.config or {}).get("sample_size")
+        if sample:
+            items_total = min(items_total, int(sample))
         rows = (
             self._session.query(EvaluationRunItem.status)
             .filter(EvaluationRunItem.run_id == run_id)

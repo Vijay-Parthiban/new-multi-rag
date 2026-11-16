@@ -123,7 +123,7 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
         )
 
     assert scores == {
-        "context_precision": 0.7,
+        "context_precision": 1.0,
         "context_entity_recall": 0.5,
         "context_recall": 0.6,
     }
@@ -211,7 +211,7 @@ def test_compute_generation_metrics_returns_all_metrics(mock_llm, mock_embedding
         )
 
     assert scores == {
-        "context_precision": 0.7,
+        "context_precision": 1.0,
         "context_entity_recall": 0.5,
         "context_recall": 0.6,
         "faithfulness": 0.9,
@@ -262,3 +262,12 @@ def test_get_ragas_openai_client_uses_v1_base_and_cached_singleton() -> None:
     assert first is second
     assert str(first.base_url).rstrip("/") == "http://localhost:4000/v1"
     reset_ragas_openai_client()
+
+
+def test_average_precision_matches_ragas() -> None:
+    # ragas combines per-context verdicts this way: [useful, not, useful] -> 5/6.
+    from eval_core.ragas_client import _average_precision
+
+    assert _average_precision([1, 0, 1]) == pytest.approx(5 / 6)
+    assert _average_precision([1, 1, 1]) == pytest.approx(1.0)
+    assert _average_precision([0, 0, 0]) == pytest.approx(0.0)

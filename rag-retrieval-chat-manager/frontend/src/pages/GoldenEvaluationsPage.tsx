@@ -662,7 +662,7 @@ export default function GoldenEvaluationsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
-  const [rowsToTest, setRowsToTest] = useState(5);
+  const [rowsToTest, setRowsToTest] = useState(3);
   // Empty means the service default judge. The dropdown still offers "Service default" so
   // the choice is visible rather than implicit.
   const [judgeModel, setJudgeModel] = useState("");

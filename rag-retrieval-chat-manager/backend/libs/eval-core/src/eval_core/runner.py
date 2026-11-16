@@ -11,11 +11,7 @@ from rag_shared.config import Settings
 from rag_shared.types import RerankedChunk, RetrievedChunk
 
 from eval_core.custom_metrics import compute_custom_metrics
-from eval_core.ragas_client import (
-    compute_generation_ragas_metrics,
-    compute_retrieval_ragas_metrics,
-    compute_triad_metrics,
-)
+from eval_core.ragas_client import compute_row_metrics
 from eval_core.rerank_metrics import compute_rerank_metrics
 from eval_core.retrieval_metrics import compute_retrieval_metrics
 from eval_core.source_match import ExpectedSource, parse_expected_sources
@@ -153,7 +149,6 @@ class GoldenItemEvaluator:
             "context_precision",
             "context_recall",
             "context_entity_recall",
-            "noise_resistance",
         ]
         judge_generation_names = [
             "answer_correctness",
@@ -195,41 +190,21 @@ class GoldenItemEvaluator:
             for key in judge_retrieval_names:
                 skipped[key] = "no_contexts"
 
-        retrieval_metrics.update(
-            compute_retrieval_ragas_metrics(
-                self._settings,
-                question=item.question,
-                answer=result.answer,
-                contexts=contexts,
-                reference=reference,
-                label=item.label,
-                category=item.category,
-            )
-        )
-
-        generation_metrics = compute_generation_ragas_metrics(
+        # One event loop for every judge call: a row waits on its slowest call, not on the sum
+        # of three waves. The triad scores answer_relevancy from the same question and answer,
+        # and the generation call skips it, so that value lands here.
+        retrieval_scores, generation_metrics, triad = compute_row_metrics(
             self._settings,
             question=item.question,
             answer=result.answer,
             contexts=contexts,
+            reference=reference,
+            label=item.label,
+            category=item.category,
             ground_truth=item.ground_truth_answer,
             judge_model=judge_model,
-            # The triad scores answer_relevancy from the same question and answer below, so
-            # scoring it here too would be a second judge call for a value that is overwritten.
-            include_answer_relevancy=False,
         )
-        # The triad reads the retrieved contexts and the answer, so it belongs beside the
-        # other generation metrics. It runs even when the dataset carries no ground truth,
-        # which is what lets an unanswerable row still name a failing stage. The stage
-        # reading itself is computed when a report is read, from these stored numbers, so
-        # the rules can change without re-running a run.
-        triad = compute_triad_metrics(
-            self._settings,
-            question=item.question,
-            answer=result.answer,
-            contexts=contexts,
-            judge_model=judge_model,
-        )
+        retrieval_metrics.update(retrieval_scores)
         generation_metrics = {**generation_metrics, **triad}
         # The dataset's own checks ride along in the same block, so the aggregate picks them
         # up with no new column and no new stage. A key is present only when the row carried
