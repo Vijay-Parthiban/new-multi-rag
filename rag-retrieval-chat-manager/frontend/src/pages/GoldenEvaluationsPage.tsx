@@ -663,6 +663,9 @@ export default function GoldenEvaluationsPage() {
   const [error, setError] = useState<string | null>(null);
   // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
   const [rowsToTest, setRowsToTest] = useState(3);
+  // What the user asked for, before the selected set caps it. The clamp must not erase the
+  // request: switching from a one-row set to a seven-row set used to leave 1 in the box.
+  const rowsChoice = useRef(3);
   // Empty means the service default judge. The dropdown still offers "Service default" so
   // the choice is visible rather than implicit.
   const [judgeModel, setJudgeModel] = useState("");
@@ -703,7 +706,7 @@ export default function GoldenEvaluationsPage() {
   // input, the copy and the button label on the number the worker will actually run.
   useEffect(() => {
     if (selectedDatasetCount > 0) {
-      setRowsToTest((current) => Math.min(current, selectedDatasetCount));
+      setRowsToTest(Math.min(rowsChoice.current, selectedDatasetCount));
     }
   }, [selectedDatasetCount]);
 
@@ -1195,7 +1198,11 @@ export default function GoldenEvaluationsPage() {
                 min={1}
                 max={selectedDatasetCount > 0 ? selectedDatasetCount : 200}
                 value={rowsToTest}
-                onChange={(e) => setRowsToTest(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => {
+                  const next = Math.max(1, Number(e.target.value) || 1);
+                  rowsChoice.current = next;
+                  setRowsToTest(Math.min(next, selectedDatasetCount || next));
+                }}
                 style={{ width: 110 }}
               />
             </label>
