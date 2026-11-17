@@ -177,6 +177,11 @@ Both are listed as separate ragas metrics [W4], so dropping them is a choice abo
 must show, not a library limit. Make them per-run flags with a default of off; the run config
 already carries per-run options. Expected: a 3–4 min row becomes 2–3 min.
 
+**Measured cost of `context_entity_recall`.** In the width-1 run of 2026-11-17 it failed on two
+rows after **140.2 s** and **167.1 s** with `The output is incomplete due to a max_tokens length
+limit` (the judge budget is 16384 tokens, `ragas_client.py:30`). Two and a half minutes per row
+bought no score at all. That is the strongest case for dropping it first.
+
 ### 4.4 Use a cheap judge for routine runs, a strong judge for the reference run
 
 A judge's design choices move cost by orders of magnitude with limited quality loss [W5]. Keep
