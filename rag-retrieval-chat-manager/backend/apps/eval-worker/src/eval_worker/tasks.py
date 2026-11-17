@@ -333,7 +333,10 @@ def run_evaluation(run_id: str) -> None:
 
     # Rows are independent: each opens its own database session and its own chat session.
     # The cap is the proxy's: every row issues its judge calls at the same time.
-    concurrency = max(1, int(settings.eval_row_concurrency or 1))
+    # A run may pin its own width, which is how two widths are compared on one dataset.
+    concurrency = max(
+        1, int(config_data.get("row_concurrency") or settings.eval_row_concurrency or 1)
+    )
     logger.info("Evaluation run=%s rows=%d concurrency=%d", run_uuid, total_items, concurrency)
     try:
         if concurrency <= 1:
