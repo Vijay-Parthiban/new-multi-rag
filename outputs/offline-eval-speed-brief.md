@@ -137,6 +137,12 @@ Why it matters here:
 Enable it in `tharun.yaml`, start Redis, and confirm with `/cache/ping`. Expected: repeated runs
 drop to the cost of the first; a first run is unchanged.
 
+**Attempted 2026-11-17, then reverted.** The cache block was added to `litellm_settings`
+(`cache: true`, `cache_params: redis`, `host.docker.internal:6379`, `ttl: 3600`), but the
+container did not bind port 4000 after the restart. A revert to the original config showed the
+same failure, so the cause is the container's startup (its `prisma migrate deploy` step hangs),
+not the cache block. The change is ready to re-apply once the container starts reliably.
+
 ### 4.2 Score rows concurrently — about 2× for a 3-row run
 
 The rows are independent: each creates its own run item and its own session memory. The pipeline
@@ -151,6 +157,12 @@ with ThreadPoolExecutor(max_workers=3) as pool:
 Expected: 33.6 min → about `max(row)` ≈ 17 min for three rows, and flat as rows grow. The ceiling
 moves to the proxy: 3 rows × ~11 judge calls issue together. Set the pool size from a setting and
 start at 3. The same idea is what `RunConfig.max_workers` gives the ragas batch API [W3].
+
+**Implemented in `8e0135e`.** `eval_worker.tasks.run_evaluation` keeps its per-row body as
+`score_row` and runs it through a `ThreadPoolExecutor` sized by
+`settings.eval_row_concurrency` (default 3). Each row still creates, saves and reports its own
+run item, and a failed row fails alone. The unit suite stays at 305 pass. **The measurement is
+pending**: the proxy was down for the whole window after the change.
 
 ### 4.3 Trim the judge set to what the page reports
 

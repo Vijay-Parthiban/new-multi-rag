@@ -43,6 +43,8 @@ Produced 2026-11-17. Every claim in the brief traces to one row below.
 | A stalled call waited 600 s | worker log gap 11:34:02 → 11:39:53 in run `48ec1802` | log + [W2] for SDK default |
 | Truncated judge output at 8192 | worker log: `RAGAS faithfulness failed: The output is incomplete due to a max_tokens length limit` | log |
 | The proxy cache is disabled | `tharun.yaml:272` `#  cache_responses: true` | [R9] |
+| The cache attempt did not cause the startup failure | container did not bind with the cache block; the same failure followed a revert to the original config | container probe, 2026-11-17 |
+| Parallel rows are implemented | `apps/eval-worker/src/eval_worker/tasks.py` `score_row` + `ThreadPoolExecutor`; `rag_shared/config.py` `eval_row_concurrency` | commit `8e0135e`; `eval_worker.tasks` imports clean |
 | LiteLLM caches chat, embeddings and rerank | LiteLLM caching page, "with `cache: True` … caching is on for `/chat/completions` … `/embeddings` … `/rerank`" | [W2] |
 | Redis is the default cache backend | same page, "LiteLLM defaults to using a redis cache" | [W2] |
 | ragas `evaluate()` parallelises with `max_workers` (default 16) | RunConfig page | [W3] |
