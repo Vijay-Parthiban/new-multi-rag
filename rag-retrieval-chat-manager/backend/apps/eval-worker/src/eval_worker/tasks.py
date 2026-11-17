@@ -230,106 +230,125 @@ def run_evaluation(run_id: str) -> None:
     total_items = len(dataset_items)
     logger.info("Starting evaluation run=%s dataset_items=%d", run_uuid, total_items)
 
-    try:
-        for index, item in enumerate(dataset_items, start=1):
-            run_item_id: uuid.UUID | None = None
-            item_started = time.monotonic()
-            try:
-                with session_factory() as db:
-                    eval_repo = EvaluationRepository(db)
-                    run_item = eval_repo.create_run_item(run_uuid, item["id"])
-                    db.commit()
-                    run_item_id = run_item.id
+    def score_row(index: int, item: dict) -> None:
+        """Score one row and save it. Runs on a worker thread when the pool is wider."""
+
+        run_item_id: uuid.UUID | None = None
+        item_started = time.monotonic()
+        try:
+            with session_factory() as db:
+                eval_repo = EvaluationRepository(db)
+                run_item = eval_repo.create_run_item(run_uuid, item["id"])
+                db.commit()
+                run_item_id = run_item.id
+
+            logger.info(
+                "Evaluating run=%s query %d/%d item_id=%s",
+                run_uuid,
+                index,
+                total_items,
+                item["id"],
+            )
+
+            golden = GoldenItem(
+                question=item["question"],
+                ground_truth_answer=item["ground_truth_answer"],
+                expected_sources=item["expected_sources"],
+                label=item["metadata"].get("label"),
+                category=item["metadata"].get("category"),
+                turns=item["turns"],
+                metadata=item["metadata"],
+            )
+            result = evaluator.evaluate_item(
+                golden,
+                config,
+                k_values,
+                judge_model=config_data.get("judge_model"),
+                session_memory=session_memory,
+            )
+
+            with session_factory() as db:
+                eval_repo = EvaluationRepository(db)
+                eval_repo.save_run_item_result(
+                    run_item_id,
+                    retrieved_chunks=_dump_chunks(result.retrieved_chunks),
+                    retrieval_metrics=result.retrieval_metrics,
+                    reranked_chunks=_dump_chunks(result.reranked_chunks),
+                    rerank_metrics=result.rerank_metrics,
+                    generated_answer=result.generated_answer,
+                    generation_metrics=result.generation_metrics,
+                    generated_turns=result.generated_turns,
+                )
+                progress = eval_repo.get_run_progress(run_uuid)
+                db.commit()
+                
+                # Combine all metrics for OTel tracing
+                combined_scores = {}
+                if result.retrieval_metrics:
+                    combined_scores.update(result.retrieval_metrics)
+                if result.rerank_metrics:
+                    combined_scores.update(result.rerank_metrics)
+                if result.generation_metrics:
+                    combined_scores.update(result.generation_metrics)
+
+                # The evaluator does not time its stages, so EvalItemResult carries no
+                # latency. Reading it directly raised on every item, which meant no result
+                # was ever saved even when the evaluation itself succeeded.
+                latency_ms = getattr(result, "latency_ms", None) or {}
+                trace_info = {
+                    "retrieval_mode": config.retrieval_mode.value,
+                    "rerank_enabled": config.rerank_enabled,
+                    "generation_model": config.generation_model,
+                    "route": (result.generation_metrics or {}).get("route", "normal"),
+                    "prompt_tokens": latency_ms.get("prompt_tokens"),
+                    "completion_tokens": latency_ms.get("completion_tokens"),
+                }
+
+                emit_otel_synthetic_trace(
+                    session_id=f"eval_run_{run_uuid}",
+                    message_id=str(run_item_id),
+                    query=item["question"],
+                    answer=result.generated_answer,
+                    latency_ms=latency_ms,
+                    scores=combined_scores,
+                    retrieved_chunks=_dump_chunks(result.retrieved_chunks),
+                    trace_info=trace_info
+                )
 
                 logger.info(
-                    "Evaluating run=%s query %d/%d item_id=%s",
+                    "Completed run=%s progress %d/%d (failed=%d) in %.1fs",
                     run_uuid,
-                    index,
-                    total_items,
-                    item["id"],
+                    progress["items_completed"],
+                    progress["items_total"],
+                    progress["items_failed"],
+                    time.monotonic() - item_started,
                 )
-
-                golden = GoldenItem(
-                    question=item["question"],
-                    ground_truth_answer=item["ground_truth_answer"],
-                    expected_sources=item["expected_sources"],
-                    label=item["metadata"].get("label"),
-                    category=item["metadata"].get("category"),
-                    turns=item["turns"],
-                    metadata=item["metadata"],
-                )
-                result = evaluator.evaluate_item(
-                    golden,
-                    config,
-                    k_values,
-                    judge_model=config_data.get("judge_model"),
-                    session_memory=session_memory,
-                )
-
+        except Exception as exc:
+            logger.exception("Eval item failed run=%s query %d/%d", run_uuid, index, total_items)
+            if run_item_id:
                 with session_factory() as db:
                     eval_repo = EvaluationRepository(db)
-                    eval_repo.save_run_item_result(
-                        run_item_id,
-                        retrieved_chunks=_dump_chunks(result.retrieved_chunks),
-                        retrieval_metrics=result.retrieval_metrics,
-                        reranked_chunks=_dump_chunks(result.reranked_chunks),
-                        rerank_metrics=result.rerank_metrics,
-                        generated_answer=result.generated_answer,
-                        generation_metrics=result.generation_metrics,
-                        generated_turns=result.generated_turns,
-                    )
-                    progress = eval_repo.get_run_progress(run_uuid)
+                    eval_repo.fail_run_item(run_item_id, str(exc))
                     db.commit()
-                    
-                    # Combine all metrics for OTel tracing
-                    combined_scores = {}
-                    if result.retrieval_metrics:
-                        combined_scores.update(result.retrieval_metrics)
-                    if result.rerank_metrics:
-                        combined_scores.update(result.rerank_metrics)
-                    if result.generation_metrics:
-                        combined_scores.update(result.generation_metrics)
 
-                    # The evaluator does not time its stages, so EvalItemResult carries no
-                    # latency. Reading it directly raised on every item, which meant no result
-                    # was ever saved even when the evaluation itself succeeded.
-                    latency_ms = getattr(result, "latency_ms", None) or {}
-                    trace_info = {
-                        "retrieval_mode": config.retrieval_mode.value,
-                        "rerank_enabled": config.rerank_enabled,
-                        "generation_model": config.generation_model,
-                        "route": (result.generation_metrics or {}).get("route", "normal"),
-                        "prompt_tokens": latency_ms.get("prompt_tokens"),
-                        "completion_tokens": latency_ms.get("completion_tokens"),
-                    }
+    # Rows are independent: each opens its own database session and its own chat session.
+    # The cap is the proxy's: every row issues its judge calls at the same time.
+    concurrency = max(1, int(settings.eval_row_concurrency or 1))
+    logger.info("Evaluation run=%s rows=%d concurrency=%d", run_uuid, total_items, concurrency)
+    try:
+        if concurrency <= 1:
+            for index, item in enumerate(dataset_items, start=1):
+                score_row(index, item)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
 
-                    emit_otel_synthetic_trace(
-                        session_id=f"eval_run_{run_uuid}",
-                        message_id=str(run_item_id),
-                        query=item["question"],
-                        answer=result.generated_answer,
-                        latency_ms=latency_ms,
-                        scores=combined_scores,
-                        retrieved_chunks=_dump_chunks(result.retrieved_chunks),
-                        trace_info=trace_info
-                    )
-
-                    logger.info(
-                        "Completed run=%s progress %d/%d (failed=%d) in %.1fs",
-                        run_uuid,
-                        progress["items_completed"],
-                        progress["items_total"],
-                        progress["items_failed"],
-                        time.monotonic() - item_started,
-                    )
-            except Exception as exc:
-                logger.exception("Eval item failed run=%s query %d/%d", run_uuid, index, total_items)
-                if run_item_id:
-                    with session_factory() as db:
-                        eval_repo = EvaluationRepository(db)
-                        eval_repo.fail_run_item(run_item_id, str(exc))
-                        db.commit()
-
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = [
+                    pool.submit(score_row, index, item)
+                    for index, item in enumerate(dataset_items, start=1)
+                ]
+                for future in futures:
+                    future.result()
         with session_factory() as db:
             eval_repo = EvaluationRepository(db)
             aggregate = eval_repo.aggregate_run_metrics(run_uuid)
