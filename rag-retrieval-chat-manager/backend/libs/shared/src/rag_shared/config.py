@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     ragas_judge_model: str = "llama-3.3-70b-versatile"
     # Rows an evaluation job scores at the same time. Each row issues its judge calls
     # together, so this multiplies the load on the proxy; 3 fits a single GPU-free gateway.
-    eval_row_concurrency: int = 3
+    eval_row_concurrency: int = 2
     ragas_enabled: bool = True
     chat_metrics_async: bool = True
 
