@@ -158,11 +158,23 @@ Expected: 33.6 min → about `max(row)` ≈ 17 min for three rows, and flat as r
 moves to the proxy: 3 rows × ~11 judge calls issue together. Set the pool size from a setting and
 start at 3. The same idea is what `RunConfig.max_workers` gives the ragas batch API [W3].
 
-**Implemented in `8e0135e`.** `eval_worker.tasks.run_evaluation` keeps its per-row body as
-`score_row` and runs it through a `ThreadPoolExecutor` sized by
-`settings.eval_row_concurrency` (default 3). Each row still creates, saves and reports its own
-run item, and a failed row fails alone. The unit suite stays at 305 pass. **The measurement is
-pending**: the proxy was down for the whole window after the change.
+**Implemented in `8e0135e`** (`score_row` + `ThreadPoolExecutor`), with a per-run override in
+`91efb1f`/`00eaea8` and a default of 2 in `f10ddaa`. Each row still creates, saves and reports
+its own run item, and a failed row fails alone. The unit suite stays at 305 pass.
+
+**Measured 2026-11-17, same seed, same dataset, one worker, back to back:**
+
+| Row width | Wall time, 3 rows | vs width 1 | Coverage gaps |
+|---|---|---|---|
+| 1 | 561 s | — | none |
+| 2 | **316 s** | **1.78× faster** | `factual_correctness` 2/3 |
+
+The means barely moved: `answer_relevancy` 0.467 → 0.442, `context_precision` 0.833 → 0.841,
+`context_recall` 1.0 → 1.0. So the width does not bias the scores; it costs the odd judge call.
+
+A width of 3 was tried first and rejected: 275 s, but `answer_relevancy` failed on **all three
+rows** with `Connection error`, and `factual_correctness` covered 1 of 3. Thirty-three
+simultaneous judge calls is more than this proxy serves. That is why the default is 2.
 
 ### 4.3 Trim the judge set to what the page reports
 

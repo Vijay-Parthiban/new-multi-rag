@@ -44,7 +44,12 @@ Produced 2026-11-17. Every claim in the brief traces to one row below.
 | Truncated judge output at 8192 | worker log: `RAGAS faithfulness failed: The output is incomplete due to a max_tokens length limit` | log |
 | The proxy cache is disabled | `tharun.yaml:272` `#  cache_responses: true` | [R9] |
 | The cache attempt did not cause the startup failure | container did not bind with the cache block; the same failure followed a revert to the original config | container probe, 2026-11-17 |
-| Parallel rows are implemented | `apps/eval-worker/src/eval_worker/tasks.py` `score_row` + `ThreadPoolExecutor`; `rag_shared/config.py` `eval_row_concurrency` | commit `8e0135e`; `eval_worker.tasks` imports clean |
+| Parallel rows are implemented | `apps/eval-worker/src/eval_worker/tasks.py` `score_row` + `ThreadPoolExecutor`; `rag_shared/config.py` `eval_row_concurrency`; `routes/evaluate.py` `row_concurrency` | commits `8e0135e`, `91efb1f`, `00eaea8`, `f10ddaa`; `eval_worker.tasks` imports clean |
+| Width 2 is 1.78× faster than width 1 | runs `007ef821` (561 s) and `1d078261` (316 s), seed 7, one worker, back to back | started/completed timestamps from the API |
+| Width 2 keeps the scores | `answer_relevancy` 0.467 vs 0.442; `context_precision` 0.833 vs 0.841; `context_recall` 1.0 vs 1.0 | run aggregates |
+| Width 2 loses one judge call | `factual_correctness` 2/3 in `1d078261` | run coverage |
+| Width 3 breaks the proxy | run `8741f9f3`: 275 s, `answer_relevancy` 0/3 with `Connection error`, `factual_correctness` 1/3 | run aggregate + coverage |
+| `context_entity_recall` burns 140–167 s and scores nothing | worker log 18:49:41, 18:50:08: `The output is incomplete due to a max_tokens length limit` | worker log |
 | LiteLLM caches chat, embeddings and rerank | LiteLLM caching page, "with `cache: True` … caching is on for `/chat/completions` … `/embeddings` … `/rerank`" | [W2] |
 | Redis is the default cache backend | same page, "LiteLLM defaults to using a redis cache" | [W2] |
 | ragas `evaluate()` parallelises with `max_workers` (default 16) | RunConfig page | [W3] |
