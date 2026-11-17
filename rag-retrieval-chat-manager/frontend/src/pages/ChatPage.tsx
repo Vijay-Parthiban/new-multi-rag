@@ -422,6 +422,9 @@ export default function ChatPage() {
     };
 
     const handleStartNewSession = () => {
+        // A turn needs a pipeline: without one the request carries no collection and no
+        // strategy, and the backend answers from the scrape default. Refuse here instead.
+        if (!selectedPipeline) return;
         setActiveSessionId(null);
         setMessages([]);
         setMessageMetrics({});
@@ -508,7 +511,7 @@ export default function ChatPage() {
 
     const handleSendMessage = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!inputText.trim() || chatLoading) return;
+        if (!inputText.trim() || chatLoading || !selectedPipeline) return;
 
         const userMessage: ChatMessage = {
             id: `temp-${Date.now()}`,
