@@ -67,6 +67,8 @@ class EvalRunConfig(BaseModel):
     # so a sample can be reproduced exactly.
     sample_size: int | None = Field(default=None, ge=1, le=500)
     seed: int | None = None
+    # Rows the worker scores at the same time. Absent means the deployment's setting.
+    row_concurrency: int | None = Field(default=None, ge=1, le=16)
     # RAG execution strategy
     rag_mode: str = "normal"  # "normal" | "self_corrective"
     self_corrective_max_loops: int = 3
