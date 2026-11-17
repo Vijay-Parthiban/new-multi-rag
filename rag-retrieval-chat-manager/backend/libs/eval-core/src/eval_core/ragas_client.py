@@ -190,6 +190,7 @@ async def calculate_retrieval_ragas_async(
     label: str | None = None,
     category: str | None = None,
     include_context_recall: bool = True,
+    judge_model: str | None = None,
 ) -> dict[str, float | None]:
     """RAGAS context metrics: precision, recall, and entity recall.
 
@@ -215,7 +216,10 @@ async def calculate_retrieval_ragas_async(
         logger.warning("Skipping retrieval RAGAS — missing contexts or reference")
         return {}
 
-    llm = build_ragas_llm(settings)
+    # The run's judge. Without it these three metrics used the service default while
+    # generation and the triad used the model the run names, so one row was graded by
+    # two models.
+    llm = build_ragas_llm(settings, judge_model)
 
     # ragas>=0.4 collections metrics use ascore(**fields), not single_turn_ascore(sample)
     jobs: list[tuple[str, Any]] = [
@@ -513,6 +517,7 @@ async def calculate_row_metrics_async(
             reference=reference,
             label=label,
             category=category,
+            judge_model=judge_model,
         ),
         calculate_generation_ragas_async(
             settings,
@@ -585,7 +590,7 @@ def compute_retrieval_ragas_metrics(
     label: str | None = None,
     category: str | None = None,
     include_context_recall: bool = True,
-    answer: str | None = None,
+    judge_model: str | None = None,
 ) -> dict[str, float | None]:
     return asyncio.run(
         calculate_retrieval_ragas_async(
@@ -596,6 +601,7 @@ def compute_retrieval_ragas_metrics(
             label=label,
             category=category,
             include_context_recall=include_context_recall,
+            judge_model=judge_model,
         )
     )
 

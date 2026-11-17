@@ -120,6 +120,7 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
             question="What is HTML?",
             contexts=["HTML is markup language."],
             reference="HTML is markup.",
+            judge_model="cc-deepseek-v4-flash",
         )
 
     assert scores == {
@@ -129,6 +130,8 @@ def test_compute_retrieval_ragas_metrics_only(mock_llm) -> None:
     }
     precision.ascore.assert_awaited_once()
     recall.ascore.assert_awaited_once()
+    # The retrieval judge is the run's judge, not the service default.
+    mock_llm.assert_called_once_with(settings, "cc-deepseek-v4-flash")
 
 
 @patch("eval_core.ragas_client.build_ragas_llm")

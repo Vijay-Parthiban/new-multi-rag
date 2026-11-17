@@ -47,6 +47,8 @@ class EvalItemResult:
     # The conversation the pipeline actually produced, as user/assistant pairs, in order.
     # Empty on a single-turn row, where `generated_answer` already is the whole record.
     generated_turns: list[dict[str, str]] = field(default_factory=list)
+    # The pipeline's own stage timings. The worker emits them with the OTel trace.
+    latency_ms: dict[str, int] = field(default_factory=dict)
 
 
 class GoldenItemEvaluator:
@@ -248,4 +250,5 @@ class GoldenItemEvaluator:
             generated_answer=result.answer,
             generation_metrics=generation_metrics,
             generated_turns=generated_turns or [],
+            latency_ms=dict(latency),
         )
