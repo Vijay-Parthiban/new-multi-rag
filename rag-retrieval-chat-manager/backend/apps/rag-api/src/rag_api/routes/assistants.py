@@ -257,8 +257,18 @@ async def _build_chat_request(
     stores = pipeline["_stores"]
     product = pipeline.get("knowledge_product") or {}
 
+    # The trace reports the mode the pipeline actually reads. A knowledge-product turn fuses
+    # both stores on `hybrid` and never reads the request's `retrieval_mode`, so a literal
+    # default of dense labelled a hybrid turn as dense.
+    strategy = pipeline["rag_strategy"]
+    if strategy == KpStrategy.LEXICAL:
+        mode_from_strategy = SearchMode.LEXICAL
+    elif strategy in (KpStrategy.HYBRID, KpStrategy.SELF_RAG, KpStrategy.CORRECTIVE):
+        mode_from_strategy = SearchMode.HYBRID if stores.opensearch_index else SearchMode.DENSE
+    else:
+        mode_from_strategy = SearchMode.DENSE
     # The dense store is the only vector search the fanout collections support.
-    retrieval_mode = body.retrieval_mode or SearchMode.DENSE
+    retrieval_mode = body.retrieval_mode or mode_from_strategy
     if stores.qdrant_collection is None and retrieval_mode is SearchMode.HYBRID:
         retrieval_mode = SearchMode.DENSE
 
