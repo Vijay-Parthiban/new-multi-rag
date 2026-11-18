@@ -663,9 +663,6 @@ export default function GoldenEvaluationsPage() {
   const [error, setError] = useState<string | null>(null);
   // How many rows of the evaluation set to run, and whether the built-in set is being fetched.
   const [rowsToTest, setRowsToTest] = useState(3);
-  // What the user asked for, before the selected set caps it. The clamp must not erase the
-  // request: switching from a one-row set to a seven-row set used to leave 1 in the box.
-  const rowsChoice = useRef(3);
   // Empty means the service default judge. The dropdown still offers "Service default" so
   // the choice is visible rather than implicit.
   const [judgeModel, setJudgeModel] = useState("");
@@ -702,13 +699,10 @@ export default function GoldenEvaluationsPage() {
   const selectedDatasetId = chosenDataset?.dataset_id ?? null;
   const selectedDatasetCount = chosenDataset?.row_count ?? 0;
 
-  // A run cannot sample more rows than the chosen upload holds. Clamping here keeps the
-  // input, the copy and the button label on the number the worker will actually run.
-  useEffect(() => {
-    if (selectedDatasetCount > 0) {
-      setRowsToTest(Math.min(rowsChoice.current, selectedDatasetCount));
-    }
-  }, [selectedDatasetCount]);
+  // The field starts at 3 for every profile and keeps whatever the user types. A set
+  // smaller than the request is scored whole; the copy and the button say how many rows the
+  // run will actually score.
+  const effectiveRows = Math.min(rowsToTest, selectedDatasetCount || rowsToTest);
 
   // A multi-turn run drives the pipeline's session memory, so the page has to know whether
   // the selected pipeline has one. Only an assistant pipeline can: the memory lives on its
@@ -1196,19 +1190,18 @@ export default function GoldenEvaluationsPage() {
                 className="input"
                 type="number"
                 min={1}
-                max={selectedDatasetCount > 0 ? selectedDatasetCount : 200}
+                max={500}
                 value={rowsToTest}
-                onChange={(e) => {
-                  const next = Math.max(1, Number(e.target.value) || 1);
-                  rowsChoice.current = next;
-                  setRowsToTest(Math.min(next, selectedDatasetCount || next));
-                }}
+                onChange={(e) => setRowsToTest(Math.max(1, Number(e.target.value) || 1))}
                 style={{ width: 110 }}
               />
             </label>
             <p className="muted" style={{ fontSize: "0.75rem", margin: 0 }}>
-              {rowsToTest} of {selectedDatasetCount} rows, chosen at random on every run. Each row
-              costs one retrieval, one generation and one scoring pass.
+              {effectiveRows} of {selectedDatasetCount} rows, chosen at random on every run. Each
+              row costs one retrieval, one generation and one scoring pass.
+              {effectiveRows < rowsToTest
+                ? ` This set holds ${selectedDatasetCount} row${selectedDatasetCount === 1 ? "" : "s"}, so all of them run.`
+                : ""}
             </p>
             {/* The retrieval settings are not controls. A run measures the pipeline above as it
                 stands, so the route resolves the mode, the chunk limit, the rerank switch and
@@ -1246,7 +1239,7 @@ export default function GoldenEvaluationsPage() {
               disabled={busy || !selectedDatasetId || !pipelineId || strategyBlocked || datasetBlocked}
               onClick={() => void onStartRun()}
             >
-              {busy ? "Running…" : `Run evaluation on ${rowsToTest} row${rowsToTest === 1 ? "" : "s"}`}
+              {busy ? "Running…" : `Run evaluation on ${effectiveRows} row${effectiveRows === 1 ? "" : "s"}`}
             </button>
           </div>
         </div>
