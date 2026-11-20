@@ -672,6 +672,27 @@ export default function GuardrailsConfigPage() {
         }
     };
 
+    /** A copy of one config under a free name. The settings travel as they are, so a pinned
+     *  judge model and every policy come with it. */
+    const handleDuplicate = async (c: GuardrailsConfig) => {
+        const taken = new Set(configs.map((existing) => existing.name));
+        let name = `${c.name} copy`;
+        for (let n = 2; taken.has(name); n += 1) name = `${c.name} copy ${n}`;
+        try {
+            await createGuardrailsConfig({
+                name,
+                description: c.description || undefined,
+                guards: [...c.guards],
+                mode: c.mode,
+                settings: c.settings,
+            });
+            await load();
+        } catch (e) {
+            console.error("Duplicate failed", e);
+            setConfigsError(e instanceof Error ? e.message : "Could not duplicate the config.");
+        }
+    };
+
     const groupedGuards = useMemo(() => {
         const groups = new Map<string, GuardOption[]>();
         for (const guard of guards) {
@@ -998,6 +1019,7 @@ export default function GuardrailsConfigPage() {
                                 <button className="btn btn-sm" onClick={() => handleToggleActive(c)}>
                                     {c.is_active ? "Disable" : "Enable"}
                                 </button>
+                                <button className="btn btn-sm" onClick={() => void handleDuplicate(c)}>Duplicate</button>
                                 <button className="btn btn-sm" onClick={() => openEdit(c)}>Edit</button>
                                 <button className="btn btn-sm btn-danger" onClick={() => setPendingDelete(c)}>Delete</button>
                             </div>
