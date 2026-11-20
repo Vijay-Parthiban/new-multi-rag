@@ -6026,6 +6026,11 @@ select.input option {
   letter-spacing: 0.01em;
 }
 
+/* On its own line in the narrow picker: inline, it squeezed the guard name to an ellipsis. */
+.gr-picker-text > .gr-tag--framework {
+  margin: 0.15rem 0 0.2rem;
+}
+
 .gr-guard-block--unavailable {
   opacity: 0.55;
 }

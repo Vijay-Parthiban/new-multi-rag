@@ -217,6 +217,23 @@ function ItemPicker({
     );
 }
 
+/** Which framework implements each check. The catalog carries this when the guardrails
+ *  service image is current; the map keeps the label on an older image. */
+const FRAMEWORK_FALLBACK: Record<string, string> = {
+  ban_list: "Guardrails AI",
+  detect_pii: "Guardrails AI · Presidio",
+  toxic_language: "LiteLLM judge",
+  self_check_input: "NeMo Guardrails",
+  jailbreak_heuristics: "NeMo Guardrails · LiteLLM judge",
+  template_scope: "NeMo Guardrails · LiteLLM judge",
+  pii_retrieval: "NeMo Guardrails · Presidio",
+  self_check_output: "NeMo Guardrails",
+  self_check_facts: "NeMo Guardrails · LiteLLM judge",
+};
+
+const frameworkOf = (guard: GuardOption): string =>
+  guard.framework || FRAMEWORK_FALLBACK[guard.id] || "";
+
 /** One guard's parameter values, keyed by parameter name. `on_fail` sits next to them. */
 type ParamValues = Record<string, unknown>;
 
@@ -778,13 +795,13 @@ export default function GuardrailsConfigPage() {
                                                 <span className="gr-picker-text">
                                                     <span className="gr-picker-head">
                                                         <span className="gr-picker-name">{g.label}</span>
-                                                        {g.framework && (
-                                                            <span className="gr-tag gr-tag--framework" title="Which framework implements this check">
-                                                                {g.framework}
-                                                            </span>
-                                                        )}
                                                         <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.kind || "local"}</span>
                                                     </span>
+                                                    {frameworkOf(g) && (
+                                                        <span className="gr-tag gr-tag--framework" title="Which framework implements this check">
+                                                            {frameworkOf(g)}
+                                                        </span>
+                                                    )}
                                                     {note && <span className="gr-picker-desc">{note}</span>}
                                                 </span>
                                             </label>
@@ -813,8 +830,8 @@ export default function GuardrailsConfigPage() {
                                         <div className="gr-setting-head">
                                             <div>
                                                 <span className="gr-setting-name">{g.label}</span>
-                                                {g.framework && (
-                                                    <span className="gr-tag gr-tag--framework">{g.framework}</span>
+                                                {frameworkOf(g) && (
+                                                    <span className="gr-tag gr-tag--framework">{frameworkOf(g)}</span>
                                                 )}
                                                 <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.phase || "both"}</span>
                                             </div>
