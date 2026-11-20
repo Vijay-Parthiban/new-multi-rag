@@ -778,6 +778,11 @@ export default function GuardrailsConfigPage() {
                                                 <span className="gr-picker-text">
                                                     <span className="gr-picker-head">
                                                         <span className="gr-picker-name">{g.label}</span>
+                                                        {g.framework && (
+                                                            <span className="gr-tag gr-tag--framework" title="Which framework implements this check">
+                                                                {g.framework}
+                                                            </span>
+                                                        )}
                                                         <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.kind || "local"}</span>
                                                     </span>
                                                     {note && <span className="gr-picker-desc">{note}</span>}
@@ -808,6 +813,9 @@ export default function GuardrailsConfigPage() {
                                         <div className="gr-setting-head">
                                             <div>
                                                 <span className="gr-setting-name">{g.label}</span>
+                                                {g.framework && (
+                                                    <span className="gr-tag gr-tag--framework">{g.framework}</span>
+                                                )}
                                                 <span className={`gr-tag gr-tag--${g.kind || "local"}`}>{g.phase || "both"}</span>
                                             </div>
                                             <button

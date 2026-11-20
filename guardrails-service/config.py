@@ -171,6 +171,7 @@ _VALIDATORS: list[dict[str, Any]] = [
         "category": "Content Safety",
         "phase": "both",
         "kind": "local",
+        "framework": "Guardrails AI",
         "module": "guardrails_ai.ban_list",
         "alias": "guardrails/ban_list",
         "package": "guardrails-ai-ban-list",
@@ -202,6 +203,7 @@ _VALIDATORS: list[dict[str, Any]] = [
         "category": "Privacy",
         "phase": "both",
         "kind": "model",
+        "framework": "Guardrails AI · Presidio",
         "module": "guardrails_ai.detect_pii",
         "alias": "guardrails/detect_pii",
         "package": "guardrails-ai-detect-pii",
@@ -224,6 +226,7 @@ _VALIDATORS: list[dict[str, Any]] = [
         "category": "Content Safety",
         "phase": "both",
         "kind": "llm",
+        "framework": "LiteLLM judge",
         "module": None,
         "alias": "local/toxic_language",
         "package": None,
@@ -321,6 +324,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Content Safety",
         "phase": "input",
         "kind": "llm",
+        "framework": "NeMo Guardrails",
         "rail": True,
         "params": [
             {
@@ -348,6 +352,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Content Safety",
         "phase": "input",
         "kind": "llm",
+        "framework": "NeMo Guardrails · LiteLLM judge",
         "rail": True,
         "params": [
             {
@@ -375,6 +380,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Topic Control",
         "phase": "input",
         "kind": "llm",
+        "framework": "NeMo Guardrails · LiteLLM judge",
         "rail": True,
         "params": [
             {
@@ -402,6 +408,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Privacy",
         "phase": "retrieval",
         "kind": "model",
+        "framework": "NeMo Guardrails · Presidio",
         "rail": True,
         "params": [
             {
@@ -432,6 +439,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Content Safety",
         "phase": "output",
         "kind": "llm",
+        "framework": "NeMo Guardrails",
         "rail": True,
         "params": [
             {
@@ -459,6 +467,7 @@ RAIL_SPECS: list[dict[str, Any]] = [
         "category": "Grounding",
         "phase": "output",
         "kind": "llm",
+        "framework": "NeMo Guardrails · LiteLLM judge",
         "rail": True,
         "params": [
             {

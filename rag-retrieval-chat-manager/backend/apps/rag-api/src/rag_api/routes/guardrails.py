@@ -165,6 +165,8 @@ class GuardOption(BaseModel):
     category: str | None = None
     phase: str | None = None
     kind: str | None = None
+    # Which framework implements it: Guardrails AI, NeMo Guardrails, Presidio, the LiteLLM judge.
+    framework: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
     params: list[GuardParamSpec] = []

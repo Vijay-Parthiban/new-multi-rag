@@ -6019,6 +6019,13 @@ select.input option {
   color: #c4b5fd;
 }
 
+.gr-tag--framework {
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #86efac;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
 .gr-guard-block--unavailable {
   opacity: 0.55;
 }

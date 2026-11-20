@@ -2028,6 +2028,8 @@ export interface GuardOption {
   phase?: string;
   /** local | model | llm */
   kind?: string;
+  /** Which framework implements it, e.g. "NeMo Guardrails · LiteLLM judge". */
+  framework?: string;
   available?: boolean;
   unavailable_reason?: string | null;
   params?: GuardParam[];
