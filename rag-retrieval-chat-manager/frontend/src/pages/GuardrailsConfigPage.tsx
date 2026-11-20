@@ -293,6 +293,7 @@ function firstMissingRequired(guard: GuardOption, values: ParamValues): GuardPar
 function buildSettings(
     selected: GuardOption[],
     values: Record<string, ParamValues>,
+    judgeModel: string,
 ): GuardrailsSettings {
     const settings: GuardrailsSettings = {};
     for (const guard of selected) {
@@ -302,6 +303,11 @@ function buildSettings(
         for (const param of guard.params ?? []) {
             const value = entry[param.name];
             if (!isEmptyValue(value)) clean[param.name] = value;
+        }
+        // The form has one judge for the whole config. It is written to each guard that takes
+        // one, so the service needs no change and a single guard keeps its own key.
+        if (judgeModel && (guard.params ?? []).some((p) => p.name === "model")) {
+            clean.model = judgeModel;
         }
         settings[guard.id] = clean;
     }
@@ -335,38 +341,16 @@ interface ParamFieldProps {
     param: GuardParam;
     value: unknown;
     onChange: (next: unknown) => void;
-    /** The proxy's chat models, so a rail can point its judge at one of them. */
-    models: { id: string; label: string }[];
 }
 
 /** One control per declared parameter type. The catalog decides, not the validator id. */
-function ParamField({ guard, param, value, onChange, models }: ParamFieldProps) {
+function ParamField({ guard, param, value, onChange }: ParamFieldProps) {
     const id = `gr-param-${guard.id}-${param.name}`;
     const options = param.options ?? [];
     const stored = typeof value === "string" ? value : "";
     let control: ReactNode;
 
-    // The judge model is one of the proxy's chat models. An empty setting follows the service
-    // default, so the select shows that model as the selected default without pinning it.
-    if (param.name === "model" && models.length > 0) {
-        control = (
-            <select
-                id={id}
-                className="gr-select gr-select--block"
-                value={stored || DEFAULT_JUDGE_MODEL}
-                onChange={(e) => onChange(e.target.value)}
-            >
-                <option value={DEFAULT_JUDGE_MODEL}>{DEFAULT_JUDGE_MODEL} (default)</option>
-                {models
-                    .filter((m) => m.id !== DEFAULT_JUDGE_MODEL)
-                    .map((m) => (
-                        <option key={m.id} value={m.id}>
-                            {m.label || m.id}
-                        </option>
-                    ))}
-            </select>
-        );
-    } else switch (param.type) {
+    switch (param.type) {
         case "boolean":
             control = (
                 <label className="gr-toggle" htmlFor={id}>
@@ -492,6 +476,8 @@ export default function GuardrailsConfigPage() {
     const [formGuards, setFormGuards] = useState<string[]>([]);
     const [formParams, setFormParams] = useState<Record<string, ParamValues>>({});
     const [formMode, setFormMode] = useState("both");
+    // One judge for every LLM-assisted guard in this config. Empty means the service default.
+    const [formJudgeModel, setFormJudgeModel] = useState("");
     const [editingId, setEditingId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [formError, setFormError] = useState<string | null>(null);
@@ -549,6 +535,7 @@ export default function GuardrailsConfigPage() {
         setFormGuards([]);
         setFormParams({});
         setFormMode("both");
+        setFormJudgeModel("");
         setEditingId(null);
         setShowForm(false);
         setFormError(null);
@@ -591,6 +578,12 @@ export default function GuardrailsConfigPage() {
         setFormDescription(c.description || "");
         setFormGuards([...c.guards]);
         setFormParams(seeded);
+        // The common judge was stored on each LLM guard; the first one names it.
+        setFormJudgeModel(
+            Object.values(seeded)
+                .map((entry) => entry.model)
+                .find((value): value is string => typeof value === "string" && value.length > 0) ?? "",
+        );
         setFormMode(c.mode);
         setEditingId(c.id);
         setShowForm(true);
@@ -627,7 +620,7 @@ export default function GuardrailsConfigPage() {
         }
         setSaving(true);
         setFormError(null);
-        const settings = buildSettings(selectedGuards, formParams);
+        const settings = buildSettings(selectedGuards, formParams, formJudgeModel);
         try {
             if (editingId) {
                 await updateGuardrailsConfig(editingId, {
@@ -754,6 +747,36 @@ export default function GuardrailsConfigPage() {
                         placeholder="Brief description..."
                     />
 
+                    <label className="gr-label" htmlFor="gr-judge-model">
+                        LLM judge
+                    </label>
+                    <select
+                        id="gr-judge-model"
+                        className="gr-select gr-select--block"
+                        value={formJudgeModel || DEFAULT_JUDGE_MODEL}
+                        onChange={(e) =>
+                            setFormJudgeModel(e.target.value === DEFAULT_JUDGE_MODEL ? "" : e.target.value)
+                        }
+                    >
+                        <option value={DEFAULT_JUDGE_MODEL}>{DEFAULT_JUDGE_MODEL} (service default)</option>
+                        {chatModels
+                            .filter((m) => m.id !== DEFAULT_JUDGE_MODEL)
+                            .map((m) => (
+                                <option key={m.id} value={m.id}>
+                                    {m.label || m.id}
+                                </option>
+                            ))}
+                        {formJudgeModel &&
+                            formJudgeModel !== DEFAULT_JUDGE_MODEL &&
+                            !chatModels.some((m) => m.id === formJudgeModel) && (
+                                <option value={formJudgeModel}>{formJudgeModel}</option>
+                            )}
+                    </select>
+                    <p className="gr-param-help">
+                        Used by every LLM-assisted guard below: self checks, jailbreak, scope, facts and
+                        toxic language. Each guard keeps its own policy.
+                    </p>
+
                     {/* The picker and the settings are separate. Showing every validator's
                         parameters at once buried the form under sixteen open panels. */}
                     <div className="gr-form-split">
@@ -846,16 +869,17 @@ export default function GuardrailsConfigPage() {
                                         </div>
                                         <p className="gr-setting-desc">{g.description}</p>
 
-                                        {(g.params ?? []).map((param) => (
-                                            <ParamField
-                                                key={param.name}
-                                                guard={g}
-                                                param={param}
-                                                value={(formParams[g.id] ?? {})[param.name]}
-                                                onChange={(next) => setParamValue(g.id, param.name, next)}
-                                                models={chatModels}
-                                            />
-                                        ))}
+                                        {(g.params ?? [])
+                                            .filter((param) => param.name !== "model")
+                                            .map((param) => (
+                                                <ParamField
+                                                    key={param.name}
+                                                    guard={g}
+                                                    param={param}
+                                                    value={(formParams[g.id] ?? {})[param.name]}
+                                                    onChange={(next) => setParamValue(g.id, param.name, next)}
+                                                />
+                                            ))}
 
                                         <div className="gr-param">
                                             <label className="gr-param-label" htmlFor={`gr-onfail-${g.id}`}>
